@@ -18,6 +18,10 @@ public partial class App : Application
     /// UI self-test is not disturbed by a saved session.</summary>
     public static bool UiTestMode { get; private set; }
 
+    /// <summary>True when launched with --live-demo; builds a graph carrying
+    /// real audio instead of restoring the saved session.</summary>
+    public static bool LiveDemoMode { get; private set; }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         if (e.Args.Contains("--demo", StringComparer.OrdinalIgnoreCase))
@@ -28,6 +32,11 @@ public partial class App : Application
         if (e.Args.Contains("--uitest", StringComparer.OrdinalIgnoreCase))
         {
             UiTestMode = true;
+
+            // Keep the self-test completely away from the user's real settings
+            // and saved session.
+            AppSettings.OverrideDirectory = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(), "Ruse-uitest");
         }
 
         if (e.Args.Contains("--selftest", StringComparer.OrdinalIgnoreCase))
@@ -167,6 +176,29 @@ public partial class App : Application
 
             WriteResult("chain-test.txt", chainLine);
             Shutdown();
+            return;
+        }
+
+        if (e.Args.Contains("--live-demo", StringComparer.OrdinalIgnoreCase))
+        {
+            // Carries real audio so the UI (meters, cable waveforms) can be
+            // checked against a genuine signal. The window stays open.
+            uint pid = (uint)GetIntArg(e.Args, "--pid", 0);
+            LiveDemoMode = true;
+            base.OnStartup(e);
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+                new Action(() =>
+                {
+                    try
+                    {
+                        (MainWindow as Ruse.App.MainWindow)?.BuildLiveGraph(pid);
+                    }
+                    catch (Exception ex)
+                    {
+                        (MainWindow as Ruse.App.MainWindow)?.ShowStatus($"Live graph failed: {ex.Message}");
+                    }
+                }),
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             return;
         }
 

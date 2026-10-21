@@ -470,8 +470,9 @@
                     <Button x:Name="LoadPresetButton" Style="{StaticResource ToolButton}" Content="⭱ Load preset"
                             Click="OnLoadPresetClick"/>
                     <Border Width="1" Background="{StaticResource PanelBorderBrush}" Margin="6,5,14,5"/>
-                    <Button x:Name="PanicButton" Style="{StaticResource ToolButton}" Content="⏻ Panic stop"
-                            Click="OnPanicClick"/>
+                    <Button x:Name="MicMuteButton" Style="{StaticResource ToolButton}" Content="🎙 Mute mic"
+                            Click="OnMicMuteClick"
+                            ToolTip="Kill switch for every microphone source (device inputs)"/>
                 </WrapPanel>
             </Border>
 

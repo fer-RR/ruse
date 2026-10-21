@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     private Point _dragFromAnchor;
     private NodeViewModel? _selected;
     private NodeViewModel? _dropHighlight;
+    private bool _micsMuted;
 
     private readonly UiSoundPlayer _sounds = new();
 
@@ -57,6 +58,9 @@ public partial class MainWindow : Window
 
         GraphScroll.SizeChanged += OnGraphResized;
 
+        // Drive the cable waveforms from the render tick.
+        CompositionTarget.Rendering += OnRender;
+
         // The whole graph world scales through this one transform, so the
         // cables and the nodes always stay aligned at any zoom level.
         GraphLayer.LayoutTransform = _zoomTransform;
@@ -73,7 +77,7 @@ public partial class MainWindow : Window
             {
                 BuildDemoGraph();
             }
-            else if (!App.UiTestMode && _settings.AutoLoadSession && System.IO.File.Exists(AppSettings.SessionPath))
+            else if (!App.UiTestMode && !App.LiveDemoMode && _settings.AutoLoadSession && System.IO.File.Exists(AppSettings.SessionPath))
             {
                 TryLoadSession();
             }
@@ -83,6 +87,7 @@ public partial class MainWindow : Window
 
         Closing += (_, _) =>
         {
+            CompositionTarget.Rendering -= OnRender;
             SaveWindowState();
             _sounds.Dispose();
         };
@@ -140,8 +145,9 @@ public partial class MainWindow : Window
 
             _settings.Save();
 
-            // Persist the current graph as the next session (skip demo placeholder).
-            if (!App.DemoMode && _nodeBacking.Count > 0)
+            // Persist the current graph as the next session (skip demo placeholder
+            // and self-tests, which must never overwrite the user's real session).
+            if (!App.DemoMode && !App.UiTestMode && _nodeBacking.Count > 0)
             {
                 System.IO.Directory.CreateDirectory(AppSettings.Directory);
                 System.IO.File.WriteAllText(AppSettings.SessionPath, BuildPreset().ToJson());
@@ -250,6 +256,37 @@ public partial class MainWindow : Window
         }
 
         SetStatus("Demo graph — showing sample routing.");
+        SetRunState(true);
+    }
+
+    /// <summary>
+    /// Builds a graph that carries real audio from a running process through a
+    /// modifier into the first output, so the UI can be checked end to end
+    /// (meters, cable waveforms) with genuine signal. Used by --live-demo.
+    /// </summary>
+    public void BuildLiveGraph(uint processId)
+    {
+        var source = AddSourceNode(new SourceNode("Live audio", SourceKind.Application, processId), 40, 140);
+        var modifier = AudioProcessorCatalog.Find("highpass") is { } descriptor
+            ? AddModifierNode(descriptor, 400, 140)
+            : null;
+        var output = AddOutputNode(FirstOutputItem(), 740, 140);
+
+        if (source != null && modifier != null)
+        {
+            ConnectDemo(source, modifier);
+        }
+
+        if (modifier != null && output != null)
+        {
+            ConnectDemo(modifier, output);
+        }
+        else if (source != null && output != null)
+        {
+            ConnectDemo(source, output);
+        }
+
+        SetStatus("Live graph — carrying real audio.");
         SetRunState(true);
     }
 
@@ -2087,10 +2124,160 @@ public partial class MainWindow : Window
         conn.Cable = cable;
         conn.HitPath = hitPath;
 
+        // The travelling waveform that shows audio flowing along the cable.
+        var waveFigure = new PathFigure { StartPoint = fromPort.Anchor };
+        var waveSegment = new PolyLineSegment();
+        for (int i = 0; i <= WaveSegments; i++)
+        {
+            waveSegment.Points.Add(fromPort.Anchor);
+        }
+
+        waveFigure.Segments.Add(waveSegment);
+        var wave = new Path
+        {
+            Data = new PathGeometry { Figures = { waveFigure } },
+            Stroke = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#BFD8FF")),
+            StrokeThickness = 2,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            Opacity = 0.95,
+            IsHitTestVisible = false,
+            Visibility = Visibility.Collapsed,
+        };
+
+        conn.Wave = wave;
+        conn.WaveFigure = waveFigure;
+        conn.WaveSegment = waveSegment;
+
         _connections.Add(conn);
         ConnectionCanvas.Children.Add(cable);
         ConnectionCanvas.Children.Add(hitPath);
+        ConnectionCanvas.Children.Add(wave);
         UpdateConnections();
+    }
+
+    /// <summary>Number of straight segments used to draw a cable's waveform.</summary>
+    private const int WaveSegments = 48;
+
+    /// <summary>How far the waveform can swing from the cable, in pixels.</summary>
+    private const double WaveAmplitude = 7;
+
+    private readonly System.Diagnostics.Stopwatch _waveClock = System.Diagnostics.Stopwatch.StartNew();
+
+    /// <summary>
+    /// Draws the travelling waveform on every cable that is carrying audio.
+    /// Runs on the render tick so the motion is smooth; the geometry is
+    /// updated in place, so nothing is allocated per frame.
+    /// </summary>
+    private void OnRender(object? sender, EventArgs e)
+    {
+        if (_connections.Count == 0)
+        {
+            return;
+        }
+
+        double time = _waveClock.Elapsed.TotalSeconds;
+
+        foreach (var conn in _connections)
+        {
+            var wave = conn.Wave;
+            var segment = conn.WaveSegment;
+            if (wave == null || segment == null)
+            {
+                continue;
+            }
+
+            float level = LevelForConnection(conn);
+            conn.Level = level;
+
+            if (level <= 0.004f)
+            {
+                if (wave.Visibility != Visibility.Collapsed)
+                {
+                    wave.Visibility = Visibility.Collapsed;
+                }
+
+                continue;
+            }
+
+            if (wave.Visibility != Visibility.Visible)
+            {
+                wave.Visibility = Visibility.Visible;
+            }
+
+            Point start = conn.Start;
+            Point end = conn.End;
+            var (c1, c2) = CableControls(start, end);
+
+            double amplitude = WaveAmplitude * Math.Clamp(level * 1.8, 0, 1);
+            double phase = time * 7.5;
+
+            var points = segment.Points;
+            for (int i = 0; i <= WaveSegments && i < points.Count; i++)
+            {
+                double u = i / (double)WaveSegments;
+                Point p = CubicPoint(start, c1, c2, end, u);
+                var (dx, dy) = CubicTangent(start, c1, c2, end, u);
+                double len = Math.Sqrt((dx * dx) + (dy * dy));
+                if (len < 0.0001)
+                {
+                    len = 1;
+                }
+
+                // Normal of the curve, so the wave always crosses the cable.
+                double nx = -dy / len;
+                double ny = dx / len;
+
+                // Taper to zero at both ends so the wave stays inside the ports.
+                double taper = Math.Sin(Math.PI * u);
+                double offset = Math.Sin((u * Math.PI * 6) + phase) * amplitude * taper;
+
+                points[i] = new Point(p.X + (nx * offset), p.Y + (ny * offset));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Signal level on a cable: the source's own level, or — for a cable that
+    /// leaves a modifier — the level of the source feeding that chain.
+    /// </summary>
+    private float LevelForConnection(ConnectionViewModel conn)
+    {
+        if (_nodeBacking.TryGetValue(conn.From.Owner, out var fromObj) && fromObj is SourceNode source)
+        {
+            return source.MeterLevel;
+        }
+
+        return UpstreamLevel(conn.From.Owner, 0);
+    }
+
+    private float UpstreamLevel(NodeViewModel node, int depth)
+    {
+        if (depth > 8)
+        {
+            return 0f;
+        }
+
+        foreach (var c in _connections)
+        {
+            if (!ReferenceEquals(c.To.Owner, node))
+            {
+                continue;
+            }
+
+            if (_nodeBacking.TryGetValue(c.From.Owner, out var obj) && obj is SourceNode source)
+            {
+                return source.MeterLevel;
+            }
+
+            float deeper = UpstreamLevel(c.From.Owner, depth + 1);
+            if (deeper > 0f)
+            {
+                return deeper;
+            }
+        }
+
+        return 0f;
     }
 
     /// <summary>Removes a single link between two nodes (any supported pairing).</summary>
@@ -2538,6 +2725,11 @@ public partial class MainWindow : Window
             {
                 conn.HitPath.StrokeThickness = hit;
             }
+
+            if (conn.Wave != null)
+            {
+                conn.Wave.StrokeThickness = WaveThickness / scale;
+            }
         }
 
         if (_dragLine != null)
@@ -2548,6 +2740,7 @@ public partial class MainWindow : Window
 
     private const double CableThickness = 2.5;
     private const double CableHitThickness = 16;
+    private const double WaveThickness = 2;
 
     private void OnGraphResized(object sender, SizeChangedEventArgs e) => UpdateGraphExtent();
 
@@ -2676,6 +2869,19 @@ public partial class MainWindow : Window
     /// </summary>
     private static Geometry BuildCable(Point start, Point end)
     {
+        var (c1, c2) = CableControls(start, end);
+
+        var figure = new PathFigure { StartPoint = start };
+        figure.Segments.Add(new BezierSegment(c1, c2, end, true));
+
+        var geometry = new PathGeometry();
+        geometry.Figures.Add(figure);
+        return geometry;
+    }
+
+    /// <summary>The two control points that shape a slack cable.</summary>
+    private static (Point C1, Point C2) CableControls(Point start, Point end)
+    {
         double dx = Math.Abs(end.X - start.X);
 
         // Horizontal pull keeps the cable tangent to the dots' sides.
@@ -2685,16 +2891,32 @@ public partial class MainWindow : Window
         // stacked vertically, so short/vertical links stay near-straight.
         double sag = Math.Clamp(dx * 0.16, 5, 48);
 
-        var figure = new PathFigure { StartPoint = start };
-        figure.Segments.Add(new BezierSegment(
-            new Point(start.X + pull, start.Y + sag),
-            new Point(end.X - pull, end.Y + sag),
-            end,
-            true));
+        return (new Point(start.X + pull, start.Y + sag), new Point(end.X - pull, end.Y + sag));
+    }
 
-        var geometry = new PathGeometry();
-        geometry.Figures.Add(figure);
-        return geometry;
+    /// <summary>Point on a cubic bezier at parameter u (0..1).</summary>
+    private static Point CubicPoint(Point p0, Point p1, Point p2, Point p3, double u)
+    {
+        double v = 1 - u;
+        double a = v * v * v;
+        double b = 3 * v * v * u;
+        double c = 3 * v * u * u;
+        double d = u * u * u;
+        return new Point(
+            (a * p0.X) + (b * p1.X) + (c * p2.X) + (d * p3.X),
+            (a * p0.Y) + (b * p1.Y) + (c * p2.Y) + (d * p3.Y));
+    }
+
+    /// <summary>Tangent of a cubic bezier at parameter u (0..1).</summary>
+    private static (double X, double Y) CubicTangent(Point p0, Point p1, Point p2, Point p3, double u)
+    {
+        double v = 1 - u;
+        double a = 3 * v * v;
+        double b = 6 * v * u;
+        double c = 3 * u * u;
+        return (
+            (a * (p1.X - p0.X)) + (b * (p2.X - p1.X)) + (c * (p3.X - p2.X)),
+            (a * (p1.Y - p0.Y)) + (b * (p2.Y - p1.Y)) + (c * (p3.Y - p2.Y)));
     }
 
     // ---------- Transport ----------
@@ -2736,13 +2958,32 @@ public partial class MainWindow : Window
         SetRunState(false);
     }
 
-    private void OnPanicClick(object sender, RoutedEventArgs e)
+    private void OnMicMuteClick(object sender, RoutedEventArgs e)
     {
-        StopAllRouting();
-        OutputNode.MasterMuted = true;
-        MasterMuteButton.Content = "🔊 Unmute all";
-        SetStatus("Panic stop — all routing halted and outputs muted.");
-        SetRunState(false);
+        // A microphone kill switch: every device-input source is muted at once,
+        // so the room cannot be picked up while the graph stays running.
+        bool mute = !_micsMuted;
+        _micsMuted = mute;
+
+        int affected = 0;
+        foreach (var (vm, obj) in _nodeBacking)
+        {
+            if (obj is SourceNode source && source.Kind == SourceKind.Device)
+            {
+                source.Muted = mute;
+                vm.Muted = mute;
+                affected++;
+            }
+        }
+
+        MicMuteButton.Content = mute ? "🎙 Mic muted" : "🎙 Mute mic";
+        MicMuteButton.Foreground = mute
+            ? new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF5C5C"))
+            : Brushes.White;
+
+        SetStatus(mute
+            ? $"Microphones muted ({affected} device input(s)). Everything else keeps running."
+            : "Microphones live again.");
     }
 
     private void OnMasterMuteClick(object sender, RoutedEventArgs e)
@@ -2936,6 +3177,9 @@ public partial class MainWindow : Window
     }
 
     private long _clipHoldUntil;
+
+    /// <summary>Shows a message in the status bar (also used by diagnostics).</summary>
+    public void ShowStatus(string text) => SetStatus(text);
 
     private void SetStatus(string text)
     {

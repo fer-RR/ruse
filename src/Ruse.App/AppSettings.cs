@@ -17,9 +17,18 @@ public sealed class AppSettings
     public bool Maximized { get; set; }
     public bool AutoLoadSession { get; set; } = true;
 
+    /// <summary>
+    /// Where settings and the last session live. Self-tests override this so they
+    /// never read or overwrite the user's real data.
+    /// </summary>
     [JsonIgnore]
     public static string Directory =>
+        OverrideDirectory ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Ruse");
+
+    /// <summary>Redirects settings/session storage (used by the UI self-test).</summary>
+    [JsonIgnore]
+    public static string? OverrideDirectory { get; set; }
 
     [JsonIgnore]
     public static string SettingsPath => Path.Combine(Directory, "settings.json");
