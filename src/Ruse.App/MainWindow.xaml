@@ -1,4 +1,5 @@
 <Window x:Class="Ruse.App.MainWindow"
+        PreviewKeyDown="OnWindowKeyDown"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -480,6 +481,13 @@
                     <Button x:Name="SettingsButton" Style="{StaticResource ToolButton}" Content="⚙ Settings"
                             Click="OnSettingsClick"
                             ToolTip="Appearance, diagnostics and other options"/>
+                    <Border Width="1" Background="{StaticResource PanelBorderBrush}" Margin="6,5,14,5"/>
+                    <Button x:Name="UndoButton" Style="{StaticResource ToolButton}" Content="↶ Undo"
+                            Click="OnUndoClick" IsEnabled="False"
+                            ToolTip="Undo the last change (Ctrl+Z)"/>
+                    <Button x:Name="RedoButton" Style="{StaticResource ToolButton}" Content="↷ Redo"
+                            Click="OnRedoClick" IsEnabled="False"
+                            ToolTip="Redo the last undone change (Ctrl+Y)"/>
                 </WrapPanel>
             </Border>
 

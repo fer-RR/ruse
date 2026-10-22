@@ -63,6 +63,9 @@ public partial class MainWindow : Window
         _wavesEnabled = _settings.AnimateCables;
         WaveButton.Content = _wavesEnabled ? "Wave on" : "Wave off";
 
+        _history.Changed += UpdateHistoryButtons;
+        UpdateHistoryButtons();
+
         // The cable animation attaches its own render tick while audio flows
         // (see UpdateCableAnimation) — it is not attached permanently.
         _waveOverlay = new WaveOverlay(this);
@@ -739,13 +742,13 @@ public partial class MainWindow : Window
         return AddSourceNode(source, x, y);
     }
 
-    private NodeViewModel? AddSourceNode(SourceNode source, double? x = null, double? y = null)
+    private NodeViewModel? AddSourceNode(SourceNode source, double? x = null, double? y = null, string? id = null)
     {
         _graph.AddSource(source);
 
         var vm = new NodeViewModel
         {
-            Id = source.Id,
+            Id = id ?? source.Id,
             Title = source.Title,
             Subtitle = source.Kind switch
             {
@@ -770,6 +773,7 @@ public partial class MainWindow : Window
         BuildNodeVisual(vm, isSource: true);
         SubscribeSourceFaults(source, vm);
         SetStatus($"Added source: {source.Title}");
+                PushAddNode(vm);
         return vm;
     }
 
@@ -848,7 +852,7 @@ public partial class MainWindow : Window
         return null;
     }
 
-    private NodeViewModel? AddOutputNode(DeviceItem item, double? x = null, double? y = null)
+    private NodeViewModel? AddOutputNode(DeviceItem item, double? x = null, double? y = null, string? id = null)
     {
         var duplicate = FindOutputVmByDeviceId(item.Id);
         if (duplicate != null)
@@ -864,11 +868,11 @@ public partial class MainWindow : Window
             var device = enumerator.GetDevice(item.Id);
             var output = _graph.AddOutput(device);
 
-            var vm = new NodeViewModel
-            {
-                Id = output.Id,
-                Title = output.Title,
-                Subtitle = "Output device",
+        var vm = new NodeViewModel
+        {
+            Id = id ?? output.Id,
+            Title = output.Title,
+            Subtitle = "Output device",
                 Accent = "#39D98A",
                 Kind = NodeKind.Output,
                 CanBeSource = false,
@@ -887,6 +891,7 @@ public partial class MainWindow : Window
             BuildNodeVisual(vm, isSource: false);
             SubscribeOutputFaults(output, vm);
             SetStatus($"Added output: {output.Title}");
+                    PushAddNode(vm);
             return vm;
         }
         catch (Exception ex)
@@ -929,7 +934,7 @@ public partial class MainWindow : Window
         AddSourceNode(new SourceNode("System audio (everything)", SourceKind.SystemLoopback));
     }
 
-    private NodeViewModel? AddVirtualOutputNode(VirtualOutputInfo info, double? x = null, double? y = null)
+    private NodeViewModel? AddVirtualOutputNode(VirtualOutputInfo info, double? x = null, double? y = null, string? id = null)
     {
         var duplicate = FindOutputVmByDeviceId(info.RenderDeviceId);
         if (duplicate != null)
@@ -945,11 +950,11 @@ public partial class MainWindow : Window
             var device = enumerator.GetDevice(info.RenderDeviceId);
             var output = _graph.AddOutput(device);
 
-            var vm = new NodeViewModel
-            {
-                Id = output.Id,
-                Title = info.RenderFriendlyName,
-                Subtitle = $"{info.Provider} virtual output",
+        var vm = new NodeViewModel
+        {
+            Id = id ?? output.Id,
+            Title = info.RenderFriendlyName,
+            Subtitle = $"{info.Provider} virtual output",
                 Accent = "#E0A33A",
                 Kind = NodeKind.Output,
                 CanBeSource = false,
@@ -967,8 +972,9 @@ public partial class MainWindow : Window
             _nodes.Add(vm);
             BuildNodeVisual(vm, isSource: false);
             SubscribeOutputFaults(output, vm);
-            SetStatus($"Added virtual output: {info.RenderFriendlyName}. In Discord/OBS select \"{info.CaptureFriendlyName}\" as the microphone.");
-            return vm;
+        SetStatus($"Added virtual output: {info.RenderFriendlyName}. In Discord/OBS select \"{info.CaptureFriendlyName}\" as the microphone.");
+        PushAddNode(vm);
+        return vm;
         }
         catch (Exception ex)
         {
@@ -986,13 +992,13 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Registers an already-configured modifier node and builds its visual.</summary>
-    private NodeViewModel? AddModifierNodeCore(ModifierNode modifier, string title, double? x = null, double? y = null)
+    private NodeViewModel? AddModifierNodeCore(ModifierNode modifier, string title, double? x = null, double? y = null, string? id = null)
     {
         _graph.AddModifier(modifier);
 
         var vm = new NodeViewModel
         {
-            Id = modifier.Id,
+            Id = id ?? modifier.Id,
             Title = title,
             Subtitle = "Modifier",
             Accent = "#E0A63A",
@@ -1006,6 +1012,7 @@ public partial class MainWindow : Window
         _nodes.Add(vm);
         BuildModifierVisual(vm, modifier);
         SetStatus($"Added modifier: {title}. Connect a source into it, then it into an output.");
+        PushAddNode(vm);
         return vm;
     }
 
@@ -1109,11 +1116,14 @@ public partial class MainWindow : Window
                     Margin = new Thickness(PortLabelGutter, 0, PortLabelGutter, 6),
                     Height = 20,
                 };
+                float lastParam = parameter.Get();
                 slider.ValueChanged += (_, _) =>
                 {
                     float value = logarithmic ? (float)Math.Pow(10, slider.Value) : (float)slider.Value;
                     parameter.Set(value);
                     label.Text = Format(value);
+                    PushParameter(vm, parameter.Name, lastParam, value);
+                    lastParam = value;
                 };
 
                 stack.Children.Add(label);
@@ -1236,10 +1246,14 @@ public partial class MainWindow : Window
         };
 
         bool dragging = false;
+        double dragStartX = 0;
+        double dragStartY = 0;
         Point dragOffset = default;
         body.MouseLeftButtonDown += (_, e) =>
         {
             dragging = true;
+                dragStartX = vm.X;
+                dragStartY = vm.Y;
             _selected = vm;
             dragOffset = e.GetPosition(NodeCanvas);
             dragOffset.X -= vm.X;
@@ -1262,8 +1276,11 @@ public partial class MainWindow : Window
         {
             if (dragging)
             {
-                vm.X = SnapToGrid(vm.X);
-                vm.Y = SnapToGrid(vm.Y);
+                double newX = SnapToGrid(vm.X);
+                double newY = SnapToGrid(vm.Y);
+                vm.X = newX;
+                vm.Y = newY;
+                PushMoveNode(vm, dragStartX, dragStartY, newX, newY);
             }
 
             dragging = false;
@@ -1473,6 +1490,10 @@ public partial class MainWindow : Window
 
     private void ApplyPreset(Preset preset)
     {
+        // Loading a preset replaces the whole graph, so the old history no
+        // longer describes the canvas.
+        _history.Clear();
+
         OnClearClick(this, new RoutedEventArgs());
 
         // Clearing the graph stops routing and turns auto-run off, so turn it
@@ -1717,7 +1738,17 @@ public partial class MainWindow : Window
             Margin = new Thickness(12, 2, 12, 4),
             Height = 20,
         };
-        volume.ValueChanged += (_, _) => vm.Volume = (float)volume.Value;
+        float lastVolume = (float)volume.Value;
+        volume.ValueChanged += (_, _) =>
+        {
+            float now = (float)volume.Value;
+            if (Math.Abs(now - lastVolume) > 0.0001f)
+            {
+                PushVolume(vm, lastVolume, now);
+            }
+
+            lastVolume = now;
+        };
 
         var muteButton = new Button
         {
@@ -1729,8 +1760,10 @@ public partial class MainWindow : Window
         };
         muteButton.Click += (_, _) =>
         {
+            bool wasMuted = vm.Muted;
             vm.Muted = !vm.Muted;
             muteButton.Content = vm.Muted ? "Unmute" : "Mute";
+            PushMute(vm, wasMuted, vm.Muted);
         };
 
         var disconnectButton = new Button
@@ -1850,10 +1883,14 @@ public partial class MainWindow : Window
 
         // Dragging the node body.
         bool dragging = false;
+        double dragStartX = 0;
+        double dragStartY = 0;
         Point dragOffset = default;
         body.MouseLeftButtonDown += (_, e) =>
         {
             dragging = true;
+                dragStartX = vm.X;
+                dragStartY = vm.Y;
             _selected = vm;
             dragOffset = e.GetPosition(NodeCanvas);
             dragOffset.X -= vm.X;
@@ -1876,8 +1913,11 @@ public partial class MainWindow : Window
         {
             if (dragging)
             {
-                vm.X = SnapToGrid(vm.X);
-                vm.Y = SnapToGrid(vm.Y);
+                double newX = SnapToGrid(vm.X);
+                double newY = SnapToGrid(vm.Y);
+                vm.X = newX;
+                vm.Y = newY;
+                PushMoveNode(vm, dragStartX, dragStartY, newX, newY);
             }
 
             dragging = false;
@@ -2072,6 +2112,21 @@ public partial class MainWindow : Window
     /// modifier→output and modifier→modifier.
     /// </summary>
     private bool TryConnect(NodeViewModel from, NodeViewModel to)
+    {
+        if (!ConnectNodes(from, to))
+        {
+            return false;
+        }
+
+        PushConnect(from, to);
+        return true;
+    }
+
+    /// <summary>
+    /// Wires two nodes together. Returns false when the pairing is not allowed
+    /// or the cable already exists. Does not touch the undo history.
+    /// </summary>
+    private bool ConnectNodes(NodeViewModel from, NodeViewModel to)
     {
         if (!_nodeBacking.TryGetValue(from, out var fromObj) ||
             !_nodeBacking.TryGetValue(to, out var toObj))
@@ -2606,6 +2661,444 @@ public partial class MainWindow : Window
         SetStatus("Settings saved.");
     }
 
+    // ---------- Undo / redo ----------
+
+    private readonly UndoHistory _history = new();
+
+    /// <summary>Set while an undo/redo is being applied, so it does not record itself.</summary>
+    private bool _historySuspended;
+
+    /// <summary>Everything needed to put a node back exactly as it was.</summary>
+    private sealed record NodeData(
+        string Id,
+        NodeKind Kind,
+        string Title,
+        string? DeviceId,
+        uint? ProcessId,
+        SourceKind SourceKind,
+        bool IsVirtual,
+        string? MicHint,
+        double X,
+        double Y,
+        float Volume,
+        bool Muted,
+        List<PresetProcessor> Processors);
+
+    /// <summary>
+    /// Finds a node by its stable id. Undo commands keep ids rather than node
+    /// references, because undoing an "add node" recreates the node object and
+    /// any reference to the old one would go stale.
+    /// </summary>
+    private NodeViewModel? FindNodeById(string id)
+    {
+        foreach (var vm in _nodeBacking.Keys)
+        {
+            if (string.Equals(vm.Id, id, StringComparison.Ordinal))
+            {
+                return vm;
+            }
+        }
+
+        return null;
+    }
+
+    private NodeData CaptureNodeData(NodeViewModel vm)
+    {
+        var data = new NodeData(
+            vm.Id, vm.Kind, vm.Title, null, null, SourceKind.Application, false, vm.MicHint,
+            vm.X, vm.Y, vm.Volume, vm.Muted, new List<PresetProcessor>());
+
+        if (!_nodeBacking.TryGetValue(vm, out var obj))
+        {
+            return data;
+        }
+
+        switch (obj)
+        {
+            case SourceNode source:
+                data = data with { DeviceId = source.DeviceId, ProcessId = source.ProcessId, SourceKind = source.Kind };
+                break;
+            case OutputNode output:
+                data = data with { DeviceId = output.DeviceId, IsVirtual = vm.MicHint != null };
+                break;
+            case ModifierNode modifier:
+                data = data with
+                {
+                    Processors = modifier.Processors.Select(PresetSerializer.SerializeProcessor).ToList(),
+                };
+                break;
+        }
+
+        return data;
+    }
+
+    /// <summary>Recreates a node from captured data and puts it back on the canvas.</summary>
+    private NodeViewModel? RestoreNode(NodeData data)
+    {
+        NodeViewModel? vm = data.Kind switch
+        {
+            NodeKind.Source => AddSourceNode(
+                new SourceNode(data.Title, data.SourceKind, data.ProcessId, data.DeviceId), data.X, data.Y, data.Id),
+            NodeKind.Output => RestoreOutputNode(data),
+            NodeKind.Modifier => RestoreModifierNode(data),
+            _ => null,
+        };
+
+        if (vm != null)
+        {
+            vm.Volume = data.Volume;
+            vm.Muted = data.Muted;
+        }
+
+        return vm;
+    }
+
+    private NodeViewModel? RestoreOutputNode(NodeData data)
+    {
+        if (string.IsNullOrEmpty(data.DeviceId))
+        {
+            return null;
+        }
+
+        try
+        {
+            if (data.IsVirtual)
+            {
+                return AddVirtualOutputNode(
+                    VirtualDeviceCatalog.ResolveRender(data.DeviceId, data.Title, data.MicHint), data.X, data.Y, data.Id);
+            }
+
+            using var enumerator = new MMDeviceEnumerator();
+            var device = enumerator.GetDevice(data.DeviceId);
+            return AddOutputNode(new DeviceItem(device), data.X, data.Y, data.Id);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning($"Could not restore the output '{data.Title}': {ex.Message}");
+            return null;
+        }
+    }
+
+    private NodeViewModel? RestoreModifierNode(NodeData data)
+    {
+        var modifier = new ModifierNode(data.Title);
+        foreach (var entry in data.Processors)
+        {
+            var processor = PresetSerializer.CreateProcessor(entry);
+            if (processor != null)
+            {
+                modifier.Add(processor);
+            }
+        }
+
+        return AddModifierNodeCore(modifier, data.Title, data.X, data.Y, data.Id);
+    }
+
+    /// <summary>The links a node takes part in, as live node references.</summary>
+    private List<(NodeViewModel From, NodeViewModel To)> CaptureLinks(NodeViewModel vm)
+    {
+        var links = new List<(NodeViewModel, NodeViewModel)>();
+        foreach (var conn in _connections)
+        {
+            if (ReferenceEquals(conn.From.Owner, vm) || ReferenceEquals(conn.To.Owner, vm))
+            {
+                links.Add((conn.From.Owner, conn.To.Owner));
+            }
+        }
+
+        return links;
+    }
+
+    // ---------- History helpers ----------
+
+    private void PushAddNode(NodeViewModel vm)
+    {
+        if (_historySuspended)
+        {
+            return;
+        }
+
+        NodeData data = CaptureNodeData(vm);
+        NodeViewModel current = vm;
+        _history.Push(new DelegateUndoCommand(
+            "Add node",
+            undo: () => RemoveNodeInternal(current),
+            redo: () => { current = RestoreNode(data) ?? current; }));
+    }
+
+    private void PushRemoveNode(NodeViewModel vm)
+    {
+        if (_historySuspended)
+        {
+            return;
+        }
+
+        NodeData data = CaptureNodeData(vm);
+        var links = CaptureLinks(vm);
+        NodeViewModel current = vm;
+
+        _history.Push(new DelegateUndoCommand(
+            "Remove node",
+            undo: () =>
+            {
+                NodeViewModel? restored = RestoreNode(data);
+                if (restored == null)
+                {
+                    return;
+                }
+
+                current = restored;
+                foreach (var (from, to) in links)
+                {
+                    ConnectNodes(from, to);
+                }
+            },
+            redo: () => RemoveNodeInternal(current)));
+    }
+
+    private void PushMoveNode(NodeViewModel vm, double oldX, double oldY, double newX, double newY)
+    {
+        if (_historySuspended || (Math.Abs(oldX - newX) < 0.5 && Math.Abs(oldY - newY) < 0.5))
+        {
+            return;
+        }
+
+        string id = vm.Id;
+        _history.Push(new DelegateUndoCommand(
+            "Move node",
+            undo: () =>
+            {
+                var node = FindNodeById(id);
+                if (node != null)
+                {
+                    node.X = oldX;
+                    node.Y = oldY;
+                }
+            },
+            redo: () =>
+            {
+                var node = FindNodeById(id);
+                if (node != null)
+                {
+                    node.X = newX;
+                    node.Y = newY;
+                }
+            }));
+    }
+
+    private void PushConnect(NodeViewModel from, NodeViewModel to)
+    {
+        if (_historySuspended)
+        {
+            return;
+        }
+
+        string fromId = from.Id;
+        string toId = to.Id;
+        _history.Push(new DelegateUndoCommand(
+            "Connect",
+            undo: () =>
+            {
+                var f = FindNodeById(fromId);
+                var t = FindNodeById(toId);
+                if (f != null && t != null)
+                {
+                    DisconnectNodes(f, t);
+                }
+            },
+            redo: () =>
+            {
+                var f = FindNodeById(fromId);
+                var t = FindNodeById(toId);
+                if (f != null && t != null)
+                {
+                    ConnectNodes(f, t);
+                }
+            }));
+    }
+
+    private void PushDisconnect(NodeViewModel from, NodeViewModel to)
+    {
+        if (_historySuspended)
+        {
+            return;
+        }
+
+        string fromId = from.Id;
+        string toId = to.Id;
+        _history.Push(new DelegateUndoCommand(
+            "Disconnect",
+            undo: () =>
+            {
+                var f = FindNodeById(fromId);
+                var t = FindNodeById(toId);
+                if (f != null && t != null)
+                {
+                    ConnectNodes(f, t);
+                }
+            },
+            redo: () =>
+            {
+                var f = FindNodeById(fromId);
+                var t = FindNodeById(toId);
+                if (f != null && t != null)
+                {
+                    DisconnectNodes(f, t);
+                }
+            }));
+    }
+
+    private void PushValue(string label, string key, Action<float> apply, float oldValue, float newValue)
+    {
+        if (_historySuspended || Math.Abs(oldValue - newValue) < 0.0001f)
+        {
+            return;
+        }
+
+        _history.Push(new ValueUndoCommand(label, key, apply, oldValue, newValue));
+    }
+
+    /// <summary>Records a node's volume, resolving the node by id when applied.</summary>
+    private void PushVolume(NodeViewModel vm, float oldValue, float newValue)
+    {
+        string id = vm.Id;
+        PushValue("Volume", "volume:" + id, v =>
+        {
+            var node = FindNodeById(id);
+            if (node != null)
+            {
+                node.Volume = v;
+            }
+        }, oldValue, newValue);
+    }
+
+    /// <summary>Records a node's mute state, resolving the node by id when applied.</summary>
+    private void PushMute(NodeViewModel vm, bool oldValue, bool newValue)
+    {
+        string id = vm.Id;
+        PushValue("Mute", "mute:" + id, v =>
+        {
+            var node = FindNodeById(id);
+            if (node != null)
+            {
+                node.Muted = v >= 0.5f;
+            }
+        }, oldValue ? 1 : 0, newValue ? 1 : 0);
+    }
+
+    /// <summary>
+    /// Records an effect parameter change. The parameter is looked up again on
+    /// the live modifier when the change is undone, so it survives a node being
+    /// removed and restored.
+    /// </summary>
+    private void PushParameter(NodeViewModel vm, string parameterName, float oldValue, float newValue)
+    {
+        string id = vm.Id;
+        PushValue(
+            $"{vm.Title}: {parameterName}",
+            $"param:{id}:{parameterName}",
+            v =>
+            {
+                var node = FindNodeById(id);
+                if (node == null || !_nodeBacking.TryGetValue(node, out var obj) || obj is not ModifierNode modifier)
+                {
+                    return;
+                }
+
+                foreach (var processor in modifier.Processors.OfType<IParameterizedProcessor>())
+                {
+                    var parameter = processor.Parameters.FirstOrDefault(p => p.Name == parameterName);
+                    parameter?.Set(v);
+                }
+            },
+            oldValue,
+            newValue);
+    }
+
+    private void OnUndoClick(object sender, RoutedEventArgs e) => Undo();
+
+    private void OnRedoClick(object sender, RoutedEventArgs e) => Redo();
+
+    private void Undo()
+    {
+        if (!_history.CanUndo)
+        {
+            return;
+        }
+
+        _historySuspended = true;
+        try
+        {
+            _history.Undo();
+        }
+        finally
+        {
+            _historySuspended = false;
+        }
+
+        SetStatus("Undone.");
+    }
+
+    private void Redo()
+    {
+        if (!_history.CanRedo)
+        {
+            return;
+        }
+
+        _historySuspended = true;
+        try
+        {
+            _history.Redo();
+        }
+        finally
+        {
+            _historySuspended = false;
+        }
+
+        SetStatus("Redone.");
+    }
+
+    private void UpdateHistoryButtons()
+    {
+        UndoButton.IsEnabled = _history.CanUndo;
+        RedoButton.IsEnabled = _history.CanRedo;
+        UndoButton.ToolTip = _history.CanUndo ? $"Undo: {_history.UndoLabel} (Ctrl+Z)" : "Nothing to undo";
+        RedoButton.ToolTip = _history.CanRedo ? $"Redo: {_history.RedoLabel} (Ctrl+Y)" : "Nothing to redo";
+    }
+
+    private void OnWindowKeyDown(object sender, KeyEventArgs e)
+    {
+        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0)
+        {
+            return;
+        }
+
+        // Let the search box keep its own text undo.
+        if (Keyboard.FocusedElement is TextBox)
+        {
+            return;
+        }
+
+        if (e.Key == Key.Z)
+        {
+            e.Handled = true;
+            if ((Keyboard.Modifiers & ModifierKeys.Shift) == 0)
+            {
+                Undo();
+            }
+            else
+            {
+                Redo();
+            }
+        }
+        else if (e.Key == Key.Y)
+        {
+            e.Handled = true;
+            Redo();
+        }
+    }
+
     // ---------- Problem reporting ----------
 
     /// <summary>Shows a message in the critical-message bar and logs it.</summary>
@@ -2630,6 +3123,69 @@ public partial class MainWindow : Window
         int count = AppLog.ErrorCount;
         ErrorButton.Content = $"⚠ {count}";
         ErrorButton.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Self-test for the undo/redo stack: connecting, adding a node and
+    /// changing a value must all be reversible, in both directions.
+    /// </summary>
+    public string RunUndoSelfTest()
+    {
+        int linksBefore = _connections.Count;
+        int nodesBefore = _nodes.Count;
+
+        var output = AddTestSinkOutput(950, 520);
+        var source = AddSourceNode(new SourceNode("Undo source", SourceKind.Application, 0), 40, 520);
+        if (output == null || source == null)
+        {
+            return "undo: setup failed -> FAIL";
+        }
+
+        // Add-source is already on the history; connect on top of it.
+        bool connected = TryConnect(source, output);
+        int linksAfterConnect = _connections.Count;
+
+        Undo();
+        int linksAfterUndo = _connections.Count;
+
+        Redo();
+        int linksAfterRedo = _connections.Count;
+
+        Undo();
+        Undo();
+        int nodesAfterUndos = _nodes.Count;
+        string depth = $"depth={(_history.CanUndo ? "u" : "-")}{(_history.CanRedo ? "r" : "-")}";
+
+        Redo();
+        Redo();
+        int nodesAfterRedos = _nodes.Count;
+        int linksAfterRedos = _connections.Count;
+
+        // A value change must be reversible as well.
+        float volumeBefore = source.Volume;
+        source.Volume = 0.42f;
+        PushValue("Volume", "volume:test", v => source.Volume = v, volumeBefore, 0.42f);
+        Undo();
+        float volumeAfterUndo = source.Volume;
+        Redo();
+        float volumeAfterRedo = source.Volume;
+
+        bool pass =
+            connected &&
+            linksAfterConnect == linksBefore + 1 &&
+            linksAfterUndo == linksBefore &&
+            linksAfterRedo == linksAfterConnect &&
+            nodesAfterUndos == nodesBefore + 1 &&
+            nodesAfterRedos == nodesBefore + 2 &&
+            linksAfterRedos == linksBefore + 1 &&
+            Math.Abs(volumeAfterUndo - volumeBefore) < 0.001f &&
+            Math.Abs(volumeAfterRedo - 0.42f) < 0.001f;
+
+        return $"undo: links {linksBefore}->{linksAfterConnect}->{linksAfterUndo}->{linksAfterRedo}, " +
+               $"nodes {nodesBefore}->{nodesAfterUndos}->{nodesAfterRedos} ({depth}), " +
+               $"links after redo {linksAfterRedos}, " +
+               $"volume {volumeBefore:0.00}->{volumeAfterUndo:0.00}->{volumeAfterRedo:0.00} " +
+               $"-> {(pass ? "PASS" : "FAIL")}";
     }
 
     /// <summary>
@@ -2744,8 +3300,21 @@ public partial class MainWindow : Window
     /// <summary>Removes a single link between two nodes (any supported pairing).</summary>
     private void RemoveConnection(ConnectionViewModel conn)
     {
-        if (_nodeBacking.TryGetValue(conn.From.Owner, out var fromObj) &&
-            _nodeBacking.TryGetValue(conn.To.Owner, out var toObj))
+        var from = conn.From.Owner;
+        var to = conn.To.Owner;
+
+        DisconnectNodes(from, to);
+        PushDisconnect(from, to);
+    }
+
+    /// <summary>
+    /// Removes the link between two nodes (audio graph and cable). Does not
+    /// touch the undo history.
+    /// </summary>
+    private void DisconnectNodes(NodeViewModel from, NodeViewModel to)
+    {
+        if (_nodeBacking.TryGetValue(from, out var fromObj) &&
+            _nodeBacking.TryGetValue(to, out var toObj))
         {
             switch (fromObj, toObj)
             {
@@ -2762,6 +3331,14 @@ public partial class MainWindow : Window
                     _graph.DisconnectModifierFromModifier(first, second);
                     break;
             }
+        }
+
+        var conn = _connections.FirstOrDefault(c =>
+            ReferenceEquals(c.From.Owner, from) && ReferenceEquals(c.To.Owner, to));
+
+        if (conn == null)
+        {
+            return;
         }
 
         if (conn.Cable != null)
@@ -2862,8 +3439,25 @@ public partial class MainWindow : Window
             : $"'{vm.Title}' had no connections.");
     }
 
-    /// <summary>Removes a node and every route attached to it.</summary>
+    /// <summary>Removes a node and every route attached to it (undoable).</summary>
     private void RemoveNode(NodeViewModel vm)
+    {
+        PushRemoveNode(vm);
+
+        // The routes that go with the node are part of the same undo step.
+        _historySuspended = true;
+        try
+        {
+            RemoveNodeInternal(vm);
+        }
+        finally
+        {
+            _historySuspended = false;
+        }
+    }
+
+    /// <summary>Removes a node without recording an undo step.</summary>
+    private void RemoveNodeInternal(NodeViewModel vm)
     {
         DisconnectNode(vm);
 

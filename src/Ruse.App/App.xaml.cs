@@ -254,7 +254,8 @@ public partial class App : Application
                         var window = MainWindow as Ruse.App.MainWindow;
                         result = window == null
                             ? "no main window -> FAIL"
-                            : window.RunDropTargetSelfTest() + " | " + window.RunAppearanceSelfTest() +
+                            : window.RunDropTargetSelfTest() + " | " + window.RunUndoSelfTest() +
+                              " | " + window.RunAppearanceSelfTest() +
                               " | " + window.RunAlertSelfTest();
                     }
                     catch (Exception ex)
