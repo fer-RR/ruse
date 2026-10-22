@@ -1555,6 +1555,302 @@ public static class LatencySelfTest
     }
 
     /// <summary>
+    /// Measures the delay a listener actually hears: it captures the target
+    /// process the way the router does (process loopback) and simultaneously
+    /// captures the render endpoint's loopback (what comes out of the
+    /// speakers), then cross-correlates the two.
+    ///
+    /// The difference between the two is the whole chain: the app's own
+    /// buffering plus whatever the app being captured does internally.
+    /// </summary>
+    public static string TestEndToEndDelay(uint processId, double seconds)
+    {
+        seconds = Math.Clamp(seconds, 2.0, 30.0);
+
+        using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+        var renderDevice = enumerator.GetDefaultAudioEndpoint(
+            NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Multimedia);
+
+        var processSamples = new List<float>(48000 * 8);
+        var deviceSamples = new List<float>(48000 * 8);
+        int processPackets = 0;
+        double processPeak = 0;
+        int devicePackets = 0;
+
+        // A: the process, tapped exactly like the router taps it.
+        var processCapture = new ProcessLoopbackCapture(processId);
+        processCapture.DataAvailable += (_, e) =>
+        {
+            lock (processSamples)
+            {
+                processPackets++;
+                int count = e.BytesRecorded / 2;
+                for (int i = 0; i < count; i += 2)
+                {
+                    float l = BitConverter.ToInt16(e.Buffer, i * 2) * (1f / 32768f);
+                    float r = BitConverter.ToInt16(e.Buffer, (i + 1) * 2) * (1f / 32768f);
+                    processPeak = Math.Max(processPeak, Math.Max(Math.Abs(l), Math.Abs(r)));
+                    processSamples.Add((l + r) * 0.5f);
+                }
+            }
+        };
+
+        // B: the speakers, as the listener hears them.
+        var recorder = new NAudio.Wave.WasapiRecorderBuilder()
+            .WithDevice(renderDevice)
+            .WithSharedMode()
+            .WithEventSync()
+            .WithLoopbackCapture()
+            .Build();
+
+        recorder.DataAvailable += (span, flags, devPos, qpcPos) =>
+        {
+            if (span.Length == 0)
+            {
+                return;
+            }
+
+            // The endpoint's mix format may be float or 32-bit int, and it can
+            // be WAVE_FORMAT_EXTENSIBLE, so decode by bits rather than by
+            // casting blindly.
+            lock (deviceSamples)
+            {
+                devicePackets++;
+                if (recorder.WaveFormat.BitsPerSample == 32 &&
+                    recorder.WaveFormat.Encoding == NAudio.Wave.WaveFormatEncoding.IeeeFloat)
+                {
+                    var floats = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(span);
+                    for (int i = 0; i + 1 < floats.Length; i += 2)
+                    {
+                        deviceSamples.Add((floats[i] + floats[i + 1]) * 0.5f);
+                    }
+                }
+                else if (recorder.WaveFormat.BitsPerSample == 32)
+                {
+                    var ints = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, int>(span);
+                    for (int i = 0; i + 1 < ints.Length; i += 2)
+                    {
+                        deviceSamples.Add((ints[i] / 2147483648f + ints[i + 1] / 2147483648f) * 0.5f);
+                    }
+                }
+                else
+                {
+                    var shorts = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(span);
+                    for (int i = 0; i + 1 < shorts.Length; i += 2)
+                    {
+                        deviceSamples.Add((shorts[i] / 32768f + shorts[i + 1] / 32768f) * 0.5f);
+                    }
+                }
+            }
+        };
+
+        processCapture.Start();
+        recorder.StartRecording();
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (clock.Elapsed.TotalSeconds < seconds)
+        {
+            Thread.Sleep(100);
+        }
+
+        recorder.StopRecording();
+        recorder.Dispose();
+        processCapture.Stop();
+        processCapture.Dispose();
+
+        float[] a;
+        float[] b;
+        lock (processSamples)
+        {
+            a = processSamples.ToArray();
+        }
+
+        lock (deviceSamples)
+        {
+            b = deviceSamples.ToArray();
+        }
+
+        if (a.Length < 48000 || b.Length < 48000)
+        {
+            return $"delay: not enough audio (process {a.Length} samples, device {b.Length} samples) -> inconclusive";
+        }
+
+        // Energy envelope at 1 ms resolution.
+        const int hop = 48; // 1 ms at 48 kHz
+        int aBins = a.Length / hop;
+        int bBins = b.Length / hop;
+        var envA = new float[aBins];
+        var envB = new float[bBins];
+
+        for (int i = 0; i < aBins; i++)
+        {
+            envA[i] = Envelope(a, i, hop);
+        }
+
+        for (int i = 0; i < bBins; i++)
+        {
+            envB[i] = Envelope(b, i, hop);
+        }
+
+        // Match click onsets rather than correlating envelopes: a sparse
+        // signal makes envelope correlation ambiguous (many lags score alike).
+        var onsetsA = FindOnsets(envA);
+        var onsetsB = FindOnsets(envB);
+
+        if (onsetsA.Count < 3 || onsetsB.Count < 3)
+        {
+            float maxA = 0, maxB = 0;
+            foreach (float v in envA) if (v > maxA) maxA = v;
+            foreach (float v in envB) if (v > maxB) maxB = v;
+            return $"delay: too few onsets to align (process {onsetsA.Count} peak {maxA:0.000}, " +
+                   $"device {onsetsB.Count} peak {maxB:0.000}) | " +
+                   $"process packets {processPackets} raw peak {processPeak:0.0000} format {processCapture.WaveFormat}, " +
+                   $"device packets {devicePackets} format {recorder.WaveFormat} -> inconclusive";
+        }
+
+        var offsets = new List<int>();
+        foreach (int ta in onsetsA)
+        {
+            int best = int.MaxValue;
+            int bestDelta = 0;
+            foreach (int tb in onsetsB)
+            {
+                int delta = tb - ta;
+                if (delta < -2500 || delta > 2500)
+                {
+                    continue;
+                }
+
+                if (Math.Abs(delta) < Math.Abs(bestDelta) || best == int.MaxValue)
+                {
+                    best = tb;
+                    bestDelta = delta;
+                }
+            }
+
+            if (best != int.MaxValue)
+            {
+                offsets.Add(bestDelta);
+            }
+        }
+
+        if (offsets.Count < 3)
+        {
+            return "delay: could not align onsets -> inconclusive";
+        }
+
+        offsets.Sort();
+        int median = offsets[offsets.Count / 2];
+        int min = offsets[0];
+        int max = offsets[^1];
+
+        // The trend: is the delay growing (a starved audio thread) or fixed?
+        var trend = new List<string>();
+        int half = offsets.Count / 2;
+        int early = offsets[Math.Max(0, half / 2)];
+        int late = offsets[Math.Min(offsets.Count - 1, half + (half / 2))];
+        trend.Add($"first={early}ms last={late}ms");
+
+        return $"delay (process tap -> speakers): median {median} ms, range {min}..{max} ms over {offsets.Count} clicks, " +
+               $"trend {string.Join(" ", trend)}; " +
+               $"process audio {a.Length / 48000.0:0.0} s, speaker audio {b.Length / 48000.0:0.0} s";
+    }
+
+    /// <summary>Finds the rising edges of bursts in a 1 ms energy envelope.</summary>
+    private static List<int> FindOnsets(float[] envelope)
+    {
+        float max = 0;
+        foreach (float v in envelope)
+        {
+            if (v > max)
+            {
+                max = v;
+            }
+        }
+
+        var onsets = new List<int>();
+        float threshold = Math.Max(0.01f, max * 0.25f);
+        int last = -100;
+
+        for (int i = 1; i < envelope.Length; i++)
+        {
+            if (envelope[i] > threshold && envelope[i - 1] <= threshold && i - last > 40)
+            {
+                onsets.Add(i);
+                last = i;
+            }
+        }
+
+        return onsets;
+    }
+
+    private static float Envelope(float[] samples, int bin, int hop)
+    {
+        double sum = 0;
+        int start = bin * hop;
+        for (int j = 0; j < hop && start + j < samples.Length; j++)
+        {
+            float v = samples[start + j];
+            if (!float.IsFinite(v))
+            {
+                continue;
+            }
+
+            sum += v * v;
+        }
+
+        return (float)Math.Sqrt(sum / hop);
+    }
+
+    /// <summary>
+    /// Measures where the delay in a live route comes from: the capture ring
+    /// filling up, the mixer consuming at a different rate, or a one-off offset
+    /// created at startup.
+    /// </summary>
+    public static string TestLatencyProfile(uint processId, double seconds)
+    {
+        seconds = Math.Clamp(seconds, 1.0, 30.0);
+
+        var source = new SourceNode($"latency {processId}", SourceKind.Application, processId);
+        long consumed = 0;
+
+        var output = OutputNode.CreateForTest((mix, length) =>
+        {
+            consumed += length / 2;
+        });
+
+        output.PaceRealTime = true;
+        output.Inputs.Add(new OutputNode.Route { Source = source, Gain = 1f });
+        output.RefreshRoutes();
+        output.Start();
+        source.Start();
+
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var samples = new List<string>();
+
+        while (clock.Elapsed.TotalSeconds < seconds)
+        {
+            Thread.Sleep(250);
+            double elapsed = clock.Elapsed.TotalSeconds;
+            long captured = source.CapturedFrames;
+            samples.Add(
+                $"t={elapsed:0.00}s captured={captured / 48000.0 * 1000:0}ms consumed={consumed / 48000.0 * 1000:0}ms " +
+                $"ring={source.BufferedMs:0}ms meter={source.MeterLevel:0.00}");
+        }
+
+        output.Stop();
+        output.Dispose();
+        source.Stop();
+        source.Dispose();
+
+        long finalCaptured = source.CapturedFrames;
+        double drift = (finalCaptured - consumed) / 48000.0 * 1000.0;
+
+        return "latency profile: " + string.Join(" | ", samples) +
+               $" | drift (captured-consumed) {drift:0} ms, final ring {source.BufferedMs:0} ms";
+    }
+
+    /// <summary>
     /// Reports the ASIO drivers on this machine and, when there is one, opens it
     /// and renders the mix through it for a moment. Drivers whose host is not
     /// running have no clock, so "no clock" is reported rather than failed.

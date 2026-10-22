@@ -109,4 +109,35 @@ public sealed class FloatRingBuffer
             _writePos = 0;
         }
     }
+
+    /// <summary>
+    /// Drops the oldest <paramref name="count"/> samples, so a consumer that
+    /// fell behind can catch up to the live edge instead of replaying stale
+    /// audio forever.
+    /// </summary>
+    public int Skip(int count)
+    {
+        if (count <= 0)
+        {
+            return 0;
+        }
+
+        lock (_sync)
+        {
+            int available = _writePos - _readPos;
+            if (available < 0)
+            {
+                available += _capacityFloats;
+            }
+
+            int skipped = Math.Min(count, available);
+            _readPos += skipped;
+            if (_readPos >= _capacityFloats)
+            {
+                _readPos -= _capacityFloats;
+            }
+
+            return skipped;
+        }
+    }
 }

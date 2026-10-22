@@ -5063,8 +5063,9 @@ public partial class MainWindow : Window
     private void UpdateMeters()
     {
         long start = System.Diagnostics.Stopwatch.GetTimestamp();
-        double worstLatency = 0;
-        bool anyRunning = false;
+    double worstLatency = 0;
+    double worstBacklog = 0;
+    bool anyRunning = false;
         bool anyClipping = false;
         bool anyLowLatency = false;
 
@@ -5078,6 +5079,16 @@ public partial class MainWindow : Window
                 case SourceNode s:
                     level = s.MeterLevel;
                     anyRunning |= s.IsRunning;
+
+                    // How much captured audio is waiting. Anything above a few
+                    // tens of milliseconds is heard as delay, so it is worth
+                    // showing next to the output latency.
+                    double backlog = s.BufferedMs;
+                    if (backlog > worstBacklog)
+                    {
+                        worstBacklog = backlog;
+                    }
+
                     break;
                 case OutputNode o:
                     level = o.MeterLevel;
@@ -5165,6 +5176,13 @@ public partial class MainWindow : Window
         };
 
         LatencyText.Text = worstLatency > 0 ? $"~{worstLatency:0} ms" : "";
+
+        // The capture backlog is real, audible delay that is not part of the
+        // output latency figure, so it is shown separately.
+        if (worstBacklog > 5)
+        {
+            LatencyText.Text += $"  (+{worstBacklog:0} ms capture)";
+        }
 
         // Low-latency chip: show only when at least one live output has it active.
         LowLatencyChip.Visibility = anyLowLatency ? Visibility.Visible : Visibility.Collapsed;

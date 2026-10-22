@@ -282,7 +282,12 @@ public sealed class OutputNode : IDisposable
     }
 
     /// <summary>Render-buffer depth to keep ahead of the device, in ms.</summary>
-    private const double TargetBufferMs = 30;
+    /// <remarks>
+    /// This is pure added latency: the device plays what is queued. Two or
+    /// three chunks of headroom is enough to ride out a scheduling hiccup
+    /// without the buffer growing into an audible delay.
+    /// </remarks>
+    private const double TargetBufferMs = 12;
 
     /// <summary>Set by diagnostics to pace a test sink at real time instead of full speed.</summary>
     public bool PaceRealTime { get; set; }

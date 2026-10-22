@@ -201,6 +201,63 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--sessions", StringComparer.OrdinalIgnoreCase))
+        {
+            string sessionLine;
+            try
+            {
+                var sessions = Audio.AudioSessionEnumerator.GetRenderSessions();
+                sessionLine = "Ruse sessions: " + string.Join(" | ", sessions.Select(s =>
+                    $"{s.Label} pid={s.ProcessId}"));
+            }
+            catch (Exception ex)
+            {
+                sessionLine = $"Ruse sessions FAILED: {ex}";
+            }
+
+            WriteResult("sessions.txt", sessionLine);
+            Shutdown();
+            return;
+        }
+
+        if (e.Args.Contains("--delay-test", StringComparer.OrdinalIgnoreCase))
+        {
+            uint delayPid = (uint)GetIntArg(e.Args, "--pid", 0);
+            double delaySeconds = GetDoubleArg(e.Args, "--seconds", 6.0);
+            string delayLine;
+            try
+            {
+                delayLine = $"Ruse delay test: {LatencySelfTest.TestEndToEndDelay(delayPid, delaySeconds)}";
+            }
+            catch (Exception ex)
+            {
+                delayLine = $"Ruse delay test FAILED: {ex}";
+            }
+
+            WriteResult("delay-test.txt", delayLine);
+            Shutdown();
+            return;
+        }
+
+        if (e.Args.Contains("--latency-test", StringComparer.OrdinalIgnoreCase))
+        {
+            uint latPid = (uint)GetIntArg(e.Args, "--pid", 0);
+            double latSeconds = GetDoubleArg(e.Args, "--seconds", 6.0);
+            string latLine;
+            try
+            {
+                latLine = $"Ruse latency test: {LatencySelfTest.TestLatencyProfile(latPid, latSeconds)}";
+            }
+            catch (Exception ex)
+            {
+                latLine = $"Ruse latency test FAILED: {ex}";
+            }
+
+            WriteResult("latency-test.txt", latLine);
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Contains("--asio-test", StringComparer.OrdinalIgnoreCase))
         {
             string asioLine;

@@ -362,8 +362,36 @@ public sealed class SourceNode : IDisposable
     /// <summary>Reads up to <paramref name="destination"/> stereo-compatible frames as floats.</summary>
     public int Read(Span<float> destination)
     {
+        // If the render thread fell behind (a stall, a long GC, a starved
+        // pump), the ring holds audio that is now in the past. Playing it
+        // would add that delay permanently, so the stale head is dropped and
+        // the live edge is played instead.
+        int maxFrames = (int)(MaxBufferedMs * FormatConverter.TargetSampleRate / 1000.0);
+        int available = _ringBuffer.AvailableToRead / 2;
+        if (available > maxFrames)
+        {
+            int skipped = _ringBuffer.Skip((available - maxFrames) * 2) / 2;
+            SkippedFrames += skipped;
+        }
+
         return _ringBuffer.Read(destination);
     }
+
+    /// <summary>
+    /// How much captured audio is waiting in the ring, in ms. A large value
+    /// means the consumer is behind the capture, which is heard as delay.
+    /// </summary>
+    public double BufferedMs => _ringBuffer.AvailableToRead / 2.0 * 1000.0 / FormatConverter.TargetSampleRate;
+
+    /// <summary>
+    /// Most captured audio that may wait in the ring. Beyond this the oldest
+    /// audio is dropped, so a hiccup in the render thread can never turn into
+    /// a permanent delay.
+    /// </summary>
+    private const double MaxBufferedMs = 40;
+
+    /// <summary>Frames dropped to catch up with the live edge (diagnostics).</summary>
+    public long SkippedFrames { get; private set; }
 
     /// <summary>Injects samples directly into the ring buffer (latency self-test).</summary>
     public void WriteTestSamples(ReadOnlySpan<float> samples)
