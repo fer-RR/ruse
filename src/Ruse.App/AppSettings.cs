@@ -23,6 +23,9 @@ public sealed class AppSettings
     /// <summary>Animate a waveform on the cables while audio flows.</summary>
     public bool AnimateCables { get; set; } = true;
 
+    /// <summary>When the mini-map is shown (0 = always, 1 = never, 2 = when zoomed in).</summary>
+    public int MinimapMode { get; set; } = 2;
+
     /// <summary>
     /// Where settings and the last session live. Self-tests override this so they
     /// never read or overwrite the user's real data.

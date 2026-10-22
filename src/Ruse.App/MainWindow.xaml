@@ -629,7 +629,10 @@
             </Border>
 
             <!-- Canvas: scrollable/pannable viewport; GraphHost grows to fit the nodes. -->
-            <ScrollViewer x:Name="GraphScroll" Grid.Row="2" Background="#0E1015"
+            <!-- The canvas viewport. The mini-map is an overlay on top of it,
+                 so it stays put while the world scrolls underneath. -->
+            <Grid Grid.Row="2">
+            <ScrollViewer x:Name="GraphScroll" Background="#0E1015"
                           HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                           PanningMode="Both"
                           PreviewMouseDown="OnGraphPanDown"
@@ -673,6 +676,12 @@
                     </Grid>
                 </Grid>
             </ScrollViewer>
+
+                <!-- The mini-map floats over the viewport, bottom-right. -->
+                <Grid x:Name="MinimapHost" Width="210" Height="150"
+                      HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                      Margin="0,0,18,18" Visibility="Collapsed"/>
+            </Grid>
 
             <!-- Empty-state hint (shown when no nodes) -->
             <StackPanel x:Name="EmptyHint" Grid.Row="1" HorizontalAlignment="Center" VerticalAlignment="Center"

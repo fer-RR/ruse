@@ -10,6 +10,7 @@ public sealed class SettingsResult
 {
     public bool HighlightMutedNodes { get; init; }
     public bool AnimateCables { get; init; }
+    public int MinimapMode { get; init; } = 2;
 }
 
 /// <summary>
@@ -18,7 +19,7 @@ public sealed class SettingsResult
 /// </summary>
 public static class SettingsDialog
 {
-    public static SettingsResult? Show(Window owner, bool highlightMutedNodes, bool animateCables)
+    public static SettingsResult? Show(Window owner, bool highlightMutedNodes, bool animateCables, int minimapMode = 2)
     {
         var window = new Window
         {
@@ -55,6 +56,34 @@ public static class SettingsDialog
 
         root.Children.Add(mutedBox);
         root.Children.Add(waveBox);
+
+        // ---- Mini-map ----
+        root.Children.Add(SectionHeader("Canvas"));
+
+        int minimapChanged = minimapMode;
+
+        var minimapBox = new ComboBox
+        {
+            Margin = new Thickness(0, 4, 0, 14),
+            Padding = new Thickness(6, 3, 6, 3),
+            FontSize = 12,
+            MinWidth = 220,
+        };
+
+        minimapBox.Items.Add("Always show the mini-map");
+        minimapBox.Items.Add("Never show the mini-map");
+        minimapBox.Items.Add("Show it only when zoomed in");
+        minimapBox.SelectedIndex = minimapMode < 0 ? 0 : (minimapMode > 2 ? 2 : minimapMode);
+        minimapBox.SelectionChanged += (_, _) => minimapChanged = minimapBox.SelectedIndex;
+
+        root.Children.Add(new TextBlock
+        {
+            Text = "Mini-map",
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 2),
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C9D1E1")),
+        });
+        root.Children.Add(minimapBox);
 
         // ---- Diagnostics ------------------------------------------------
         root.Children.Add(SectionHeader("Diagnostics"));
@@ -129,6 +158,7 @@ public static class SettingsDialog
             {
                 HighlightMutedNodes = mutedBox.IsChecked == true,
                 AnimateCables = waveBox.IsChecked == true,
+                MinimapMode = minimapChanged,
             };
             window.DialogResult = true;
         };
