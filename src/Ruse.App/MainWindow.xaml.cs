@@ -3170,6 +3170,17 @@ public partial class MainWindow : Window
         Redo();
         float volumeAfterRedo = source.Volume;
 
+        // So must a rename. (The node was removed and restored by the undos
+        // above, so the live one has to be looked up by id.)
+        var liveSource = FindNodeById(source.Id) ?? source;
+        string titleBefore = liveSource.Title;
+        ApplyNodeTitle(liveSource, "Renamed source");
+        PushRename(liveSource, titleBefore, "Renamed source");
+        Undo();
+        string titleAfterUndo = liveSource.Title;
+        Redo();
+        string titleAfterRedo = liveSource.Title;
+
         bool pass =
             connected &&
             linksAfterConnect == linksBefore + 1 &&
@@ -3179,12 +3190,15 @@ public partial class MainWindow : Window
             nodesAfterRedos == nodesBefore + 2 &&
             linksAfterRedos == linksBefore + 1 &&
             Math.Abs(volumeAfterUndo - volumeBefore) < 0.001f &&
-            Math.Abs(volumeAfterRedo - 0.42f) < 0.001f;
+            Math.Abs(volumeAfterRedo - 0.42f) < 0.001f &&
+            titleAfterUndo == titleBefore &&
+            titleAfterRedo == "Renamed source";
 
         return $"undo: links {linksBefore}->{linksAfterConnect}->{linksAfterUndo}->{linksAfterRedo}, " +
                $"nodes {nodesBefore}->{nodesAfterUndos}->{nodesAfterRedos} ({depth}), " +
                $"links after redo {linksAfterRedos}, " +
-               $"volume {volumeBefore:0.00}->{volumeAfterUndo:0.00}->{volumeAfterRedo:0.00} " +
+               $"volume {volumeBefore:0.00}->{volumeAfterUndo:0.00}->{volumeAfterRedo:0.00}, " +
+               $"title '{titleBefore}'->'{titleAfterUndo}'->'{titleAfterRedo}' " +
                $"-> {(pass ? "PASS" : "FAIL")}";
     }
 
@@ -3364,25 +3378,68 @@ public partial class MainWindow : Window
         }
 
         name = name.Trim();
-        vm.Title = name;
-
-        if (_nodeBacking.TryGetValue(vm, out var obj))
+        string oldTitle = vm.Title;
+        if (oldTitle == name)
         {
-            switch (obj)
-            {
-                case SourceNode source:
-                    source.Title = name;
-                    break;
-                case OutputNode output:
-                    output.Title = name;
-                    break;
-                case ModifierNode modifier:
-                    modifier.Title = name;
-                    break;
-            }
+            return;
         }
 
+        ApplyNodeTitle(vm, name);
+        PushRename(vm, oldTitle, name);
         SetStatus($"Renamed node to '{name}'.");
+    }
+
+    /// <summary>Applies a name to the node and its backing audio node.</summary>
+    private void ApplyNodeTitle(NodeViewModel vm, string name)
+    {
+        vm.Title = name;
+
+        if (!_nodeBacking.TryGetValue(vm, out var obj))
+        {
+            return;
+        }
+
+        switch (obj)
+        {
+            case SourceNode source:
+                source.Title = name;
+                break;
+            case OutputNode output:
+                output.Title = name;
+                break;
+            case ModifierNode modifier:
+                modifier.Title = name;
+                break;
+        }
+    }
+
+    /// <summary>Records a rename so it can be undone and redone.</summary>
+    private void PushRename(NodeViewModel vm, string oldTitle, string newTitle)
+    {
+        if (_historySuspended)
+        {
+            return;
+        }
+
+        string id = vm.Id;
+        _history.Push(new DelegateUndoCommand(
+            "Rename node",
+            undo: () =>
+            {
+                var node = FindNodeById(id);
+                if (node != null)
+                {
+                    ApplyNodeTitle(node, oldTitle);
+                }
+            },
+            redo: () =>
+            {
+                var node = FindNodeById(id);
+                if (node != null)
+                {
+                    ApplyNodeTitle(node, newTitle);
+                }
+            }));
     }
 
     /// <summary>Opens the gain prompt for a cable and applies the result to its route.</summary>
