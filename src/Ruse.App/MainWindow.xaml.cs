@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using NAudio.CoreAudioApi;
@@ -51,7 +52,7 @@ public partial class MainWindow : Window
         // Modifiers are fixed at build time from the processor catalog.
         ModifiersList.ItemsSource = AudioProcessorCatalog.All;
 
-        _meterTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+        _meterTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _meterTimer.Tick += (_, _) => UpdateMeters();
 
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(4) };
@@ -64,6 +65,11 @@ public partial class MainWindow : Window
         // Apply the saved appearance options.
         _history.Changed += UpdateHistoryButtons;
         UpdateHistoryButtons();
+
+        // The dotted canvas background is a cached bitmap rather than a live
+        // drawing brush: a brush re-renders its geometry for every tile on
+        // every repaint, which is expensive in software rendering.
+        GraphHost.Background = CreateDotTileBrush();
 
         Activated += (_, _) =>
         {
@@ -116,6 +122,38 @@ public partial class MainWindow : Window
     }
 
     private readonly AppSettings _settings;
+
+    /// <summary>
+    /// Builds the dotted canvas background once, as a frozen bitmap tile.
+    /// A <see cref="DrawingBrush"/> would re-render the dot geometry for every
+    /// tile on every repaint; a bitmap is blitted instead.
+    /// </summary>
+    private static ImageBrush CreateDotTileBrush()
+    {
+        const int TileSize = 24;
+
+        var visual = new DrawingVisual();
+        using (var dc = visual.RenderOpen())
+        {
+            dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(0x0E, 0x10, 0x15)), null, new Rect(0, 0, TileSize, TileSize));
+            dc.DrawEllipse(new SolidColorBrush(Color.FromRgb(0x1C, 0x22, 0x30)), null, new Point(0.75, 0.75), 0.75, 0.75);
+        }
+
+        var tile = new RenderTargetBitmap(TileSize, TileSize, 96, 96, PixelFormats.Pbgra32);
+        tile.Render(visual);
+        tile.Freeze();
+
+        var brush = new ImageBrush(tile)
+        {
+            TileMode = TileMode.Tile,
+            Viewport = new Rect(0, 0, TileSize, TileSize),
+            ViewportUnits = BrushMappingMode.Absolute,
+            Stretch = Stretch.None,
+        };
+
+        brush.Freeze();
+        return brush;
+    }
 
     private void RestoreWindowBounds()
     {
@@ -4398,7 +4436,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>Extra room around the nodes so the canvas can be panned.</summary>
-    private const double CanvasMargin = 1400;
+    private const double CanvasMargin = 600;
 
     /// <summary>Zoom limits for the canvas.</summary>
     private const double MinZoom = 0.25;
@@ -4904,10 +4942,12 @@ public partial class MainWindow : Window
 
             _meterSmoothed.TryGetValue(vm, out double current);
 
-            // Fast attack (rise quickly) / slow release (decay gently).
+            // Fast attack (rise quickly) / slow release (decay gently). The
+            // meters refresh ten times a second, so the smoothing is a little
+            // stronger to keep the bars from looking stepped.
             double smoothed = target > current
-                ? current + (target - current) * 0.55
-                : current + (target - current) * 0.12;
+                ? current + (target - current) * 0.6
+                : current + (target - current) * 0.2;
 
             _meterSmoothed[vm] = smoothed;
 
