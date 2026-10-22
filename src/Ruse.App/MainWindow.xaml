@@ -613,6 +613,9 @@
                                     ToolTip="Build a chain of effects and save it for reuse"/>
                             <ListBox x:Name="ChainsList" Style="{StaticResource DragListStyle}"
                                      MouseDoubleClick="OnChainDoubleClick"
+                                     PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
+                                     PreviewMouseMove="OnListPreviewMouseMove"
+                                     PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
                                      PreviewMouseWheel="OnSidebarListMouseWheel">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>

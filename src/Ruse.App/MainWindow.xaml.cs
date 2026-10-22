@@ -699,6 +699,7 @@ public partial class MainWindow : Window
             var lb when lb == AppsList && item is AudioSessionInfo ai => new DropPayload(DropKind.Application, App: ai),
             var lb when lb == VirtualList && item is VirtualOutputInfo vi => new DropPayload(DropKind.VirtualOutput, Virtual: vi),
             var lb when lb == ModifiersList && item is AudioProcessorCatalog.Descriptor md => new DropPayload(DropKind.Modifier, Modifier: md),
+            var lb when lb == ChainsList && item is SubgraphDefinition cd => new DropPayload(DropKind.Chain, Chain: cd),
             _ => item,
         };
 
@@ -739,6 +740,17 @@ public partial class MainWindow : Window
         double x = Math.Max(0, dropPos.X - 95);
         double y = Math.Max(0, dropPos.Y - 40);
 
+        HandleDropPayload(payload, x, y);
+
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Creates the node a drop payload asks for. Split out from the drag
+    /// handler so the same path can be exercised by the self-test.
+    /// </summary>
+    internal void HandleDropPayload(object? payload, double x, double y)
+    {
         switch (payload)
         {
             case DropPayload { Kind: DropKind.Application, App: { } info }:
@@ -756,9 +768,10 @@ public partial class MainWindow : Window
             case DropPayload { Kind: DropKind.Modifier, Modifier: { } md }:
                 AddModifierNode(md, x, y);
                 break;
+            case DropPayload { Kind: DropKind.Chain, Chain: { } chain }:
+                AddChainNode(chain, new Point(x, y));
+                break;
         }
-
-        e.Handled = true;
     }
 
     private enum DropKind
@@ -768,6 +781,7 @@ public partial class MainWindow : Window
         CaptureDevice,
         VirtualOutput,
         Modifier,
+        Chain,
     }
 
     private sealed record DropPayload(
@@ -775,7 +789,8 @@ public partial class MainWindow : Window
         AudioSessionInfo? App = null,
         DeviceItem? Device = null,
         VirtualOutputInfo? Virtual = null,
-        AudioProcessorCatalog.Descriptor? Modifier = null);
+        AudioProcessorCatalog.Descriptor? Modifier = null,
+        SubgraphDefinition? Chain = null);
 
     private NodeViewModel? AddDeviceSourceNode(DeviceItem item, double? x = null, double? y = null)
     {
@@ -4044,6 +4059,12 @@ public partial class MainWindow : Window
         NodeViewModel? chainVm = AddChainNode(chainDefinition, new Point(100, 700));
         bool chainOk = chainVm != null && chainVm.Kind == NodeKind.Modifier;
 
+        // The same chain, dropped from the sidebar list, must land too.
+        int beforeDrop = _nodes.Count;
+        HandleDropPayload(new DropPayload(DropKind.Chain, Chain: chainDefinition), 320, 860);
+        bool chainDropOk = _nodes.Count == beforeDrop + 1 &&
+                           _nodes[^1].Title == chainDefinition.Name;
+
         bool pass =
             connected &&
             linksAfterConnect == linksBefore + 1 &&
@@ -4056,7 +4077,8 @@ public partial class MainWindow : Window
             Math.Abs(volumeAfterRedo - 0.42f) < 0.001f &&
             titleAfterUndo == titleBefore &&
             titleAfterRedo == "Renamed source" &&
-            chainOk;
+            chainOk &&
+            chainDropOk;
 
         return $"undo: links {linksBefore}->{linksAfterConnect}->{linksAfterUndo}->{linksAfterRedo}, " +
                $"nodes {nodesBefore}->{nodesAfterUndos}->{nodesAfterRedos} ({depth}), " +
