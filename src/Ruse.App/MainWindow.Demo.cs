@@ -45,14 +45,17 @@ public partial class MainWindow
 
         var virtualVm = TryAddVirtual(1000, 60);
 
+        // The effect nodes are spaced far enough apart that a node with several
+        // parameters (the compressor has a drop-down and five sliders) does not
+        // overlap the one below it.
         var demoHighPass = AudioProcessorCatalog.Find(HighPassProcessor.Id) is { } highPassDescriptor
             ? AddModifierNode(highPassDescriptor, 340, 300)
             : null;
         var demoCompressor = AudioProcessorCatalog.Find("compressor") is { } compressorDescriptor
-            ? AddModifierNode(compressorDescriptor, 340, 480)
+            ? AddModifierNode(compressorDescriptor, 340, 560)
             : null;
         var demoGain = AudioProcessorCatalog.Find(GainProcessor.Id) is { } gainDescriptor
-            ? AddModifierNode(gainDescriptor, 340, 660)
+            ? AddModifierNode(gainDescriptor, 340, 1010)
             : null;
 
         var sources = new[] { discord, game, mic, browser };
