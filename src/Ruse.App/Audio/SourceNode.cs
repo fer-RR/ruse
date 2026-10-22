@@ -18,13 +18,18 @@ public enum SourceKind
 public sealed class SourceNode : IDisposable
 {
     private IDisposable? _capture;
-    private readonly FloatRingBuffer _ringBuffer;
     private volatile float _meterLevel;
     private int _sourceChannels;
     private int _sourceSampleRate;
 
+    // Every consumer of this source (each output route) takes its own copy of
+    // the audio. Sharing one queue would mean two outputs split the signal
+    // between them instead of both hearing it.
+    private readonly List<Subscription> _subscriptions = new();
+    private readonly object _subscriptionLock = new();
+
     // Everything is normalized to the mixer's 48 kHz stereo format before it
-    // reaches the ring buffer, so mixed sources never drift out of pitch/channel.
+    // reaches the subscribers, so mixed sources never drift out of pitch/channel.
     private FormatConverter? _converter;
     private readonly List<float> _convertScratch = new(8192);
 
@@ -75,7 +80,94 @@ public sealed class SourceNode : IDisposable
         DeviceId = deviceId;
         AsioDriver = asioDriver;
         AsioChannels = asioChannels ?? new[] { 0, 1 };
-        _ringBuffer = new FloatRingBuffer(1_000_000);
+    }
+
+    /// <summary>
+    /// One consumer's private copy of this source's audio.
+    /// </summary>
+    /// <remarks>
+    /// Every output that listens to this source reads from its own copy, so a
+    /// source can feed several outputs at once and each one hears the whole
+    /// signal. The copy also keeps the audio a route sees independent of how
+    /// fast the other routes consume theirs.
+    /// </remarks>
+    public sealed class Subscription : IDisposable
+    {
+        /// <summary>How much audio may pile up before the stale head is dropped.</summary>
+        private const double StaleLimitMs = 150;
+
+        /// <summary>How much audio is kept when the stale head is dropped.</summary>
+        private const double KeepMs = 50;
+
+        private readonly FloatRingBuffer _buffer = new(1_000_000);
+        private SourceNode? _owner;
+
+        internal Subscription(SourceNode owner) => _owner = owner;
+
+        /// <summary>Frames dropped because the consumer fell behind (diagnostics).</summary>
+        public long SkippedFrames { get; private set; }
+
+        /// <summary>How much audio is waiting, in ms.</summary>
+        public double BufferedMs => _buffer.AvailableToRead / 2.0 * 1000.0 / FormatConverter.TargetSampleRate;
+
+        internal void Write(ReadOnlySpan<float> samples) => _buffer.Write(samples);
+
+        /// <summary>Reads the next block of audio for this consumer.</summary>
+        public int Read(Span<float> destination)
+        {
+            // If the consumer fell behind (a stall, a starved render thread),
+            // the queue holds audio that is now in the past. Playing it would
+            // add that delay for good, so the stale head is dropped and the
+            // live edge is played instead.
+            int maxFrames = (int)(StaleLimitMs * FormatConverter.TargetSampleRate / 1000.0);
+            int keepFrames = (int)(KeepMs * FormatConverter.TargetSampleRate / 1000.0);
+            int available = _buffer.AvailableToRead / 2;
+            if (available > maxFrames)
+            {
+                SkippedFrames += _buffer.Skip((available - keepFrames) * 2) / 2;
+            }
+
+            return _buffer.Read(destination);
+        }
+
+        public void Dispose()
+        {
+            SourceNode? owner = _owner;
+            _owner = null;
+            owner?.RemoveSubscription(this);
+        }
+    }
+
+    /// <summary>Creates a private copy of this source for one consumer.</summary>
+    public Subscription Subscribe()
+    {
+        var subscription = new Subscription(this);
+        lock (_subscriptionLock)
+        {
+            _subscriptions.Add(subscription);
+        }
+
+        return subscription;
+    }
+
+    private void RemoveSubscription(Subscription subscription)
+    {
+        lock (_subscriptionLock)
+        {
+            _subscriptions.Remove(subscription);
+        }
+    }
+
+    /// <summary>Hands a block of converted audio to every consumer.</summary>
+    private void Publish(ReadOnlySpan<float> samples)
+    {
+        lock (_subscriptionLock)
+        {
+            for (int i = 0; i < _subscriptions.Count; i++)
+            {
+                _subscriptions[i].Write(samples);
+            }
+        }
     }
 
     public void Start()
@@ -343,9 +435,9 @@ public sealed class SourceNode : IDisposable
             return;
         }
 
-        _ringBuffer.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_convertScratch));
+        Publish(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_convertScratch));
 
-        // Interleaved stereo â†’ frames.
+        // Interleaved stereo -> frames.
         CapturedFrames += _convertScratch.Count / 2;
 
         // Meter on the converted (post-gain-managed) signal.
@@ -359,44 +451,50 @@ public sealed class SourceNode : IDisposable
         _meterLevel = Math.Min(1.0f, rms * 3f);
     }
 
-    /// <summary>Reads up to <paramref name="destination"/> stereo-compatible frames as floats.</summary>
-    public int Read(Span<float> destination)
+    /// <summary>
+    /// How much captured audio is waiting for the slowest consumer, in ms. A
+    /// large value means a consumer is behind the capture, which is heard as
+    /// delay.
+    /// </summary>
+    public double BufferedMs
     {
-        // If the render thread fell behind (a stall, a long GC, a starved
-        // pump), the ring holds audio that is now in the past. Playing it
-        // would add that delay permanently, so the stale head is dropped and
-        // the live edge is played instead.
-        int maxFrames = (int)(MaxBufferedMs * FormatConverter.TargetSampleRate / 1000.0);
-        int available = _ringBuffer.AvailableToRead / 2;
-        if (available > maxFrames)
+        get
         {
-            int skipped = _ringBuffer.Skip((available - maxFrames) * 2) / 2;
-            SkippedFrames += skipped;
-        }
+            double worst = 0;
+            lock (_subscriptionLock)
+            {
+                for (int i = 0; i < _subscriptions.Count; i++)
+                {
+                    worst = Math.Max(worst, _subscriptions[i].BufferedMs);
+                }
+            }
 
-        return _ringBuffer.Read(destination);
+            return worst;
+        }
     }
 
-    /// <summary>
-    /// How much captured audio is waiting in the ring, in ms. A large value
-    /// means the consumer is behind the capture, which is heard as delay.
-    /// </summary>
-    public double BufferedMs => _ringBuffer.AvailableToRead / 2.0 * 1000.0 / FormatConverter.TargetSampleRate;
-
-    /// <summary>
-    /// Most captured audio that may wait in the ring. Beyond this the oldest
-    /// audio is dropped, so a hiccup in the render thread can never turn into
-    /// a permanent delay.
-    /// </summary>
-    private const double MaxBufferedMs = 40;
-
     /// <summary>Frames dropped to catch up with the live edge (diagnostics).</summary>
-    public long SkippedFrames { get; private set; }
+    public long SkippedFrames
+    {
+        get
+        {
+            long total = 0;
+            lock (_subscriptionLock)
+            {
+                for (int i = 0; i < _subscriptions.Count; i++)
+                {
+                    total += _subscriptions[i].SkippedFrames;
+                }
+            }
 
-    /// <summary>Injects samples directly into the ring buffer (latency self-test).</summary>
+            return total;
+        }
+    }
+
+    /// <summary>Injects samples directly into every consumer (latency self-test).</summary>
     public void WriteTestSamples(ReadOnlySpan<float> samples)
     {
-        _ringBuffer.Write(samples);
+        Publish(samples);
     }
 
     public void Stop()
@@ -426,7 +524,6 @@ public sealed class SourceNode : IDisposable
         }
 
         _capture = null;
-        _ringBuffer.Clear();
         _meterLevel = 0;
         CapturedFrames = 0;
     }
@@ -434,5 +531,15 @@ public sealed class SourceNode : IDisposable
     public void Dispose()
     {
         Stop();
+
+        lock (_subscriptionLock)
+        {
+            for (int i = 0; i < _subscriptions.Count; i++)
+            {
+                _subscriptions[i].Dispose();
+            }
+
+            _subscriptions.Clear();
+        }
     }
 }

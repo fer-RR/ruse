@@ -183,6 +183,23 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--fanout-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string fanLine;
+            try
+            {
+                fanLine = $"Ruse fan-out test: {LatencySelfTest.TestFanOut()}";
+            }
+            catch (Exception ex)
+            {
+                fanLine = $"Ruse fan-out test FAILED: {ex}";
+            }
+
+            WriteResult("fanout-test.txt", fanLine);
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Contains("--chain-test", StringComparer.OrdinalIgnoreCase))
         {
             string chainLine;

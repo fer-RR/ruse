@@ -86,7 +86,25 @@ public sealed class OutputNode : IDisposable
     public void RefreshRoutes()
     {
         var routes = Inputs.ToArray();
+
+        // Routes that are gone release their copy of the source audio.
+        foreach (var old in _routeSnapshot)
+        {
+            if (!routes.Contains(old))
+            {
+                old.Dispose();
+            }
+        }
+
         _routeSnapshot = routes;
+
+        // Take each route's copy of its source straight away, so a route hears
+        // the source from the moment it is connected rather than from its
+        // first render.
+        for (int i = 0; i < routes.Length; i++)
+        {
+            _ = routes[i].Subscription;
+        }
 
         int maxFrames = 0;
         for (int i = 0; i < routes.Length; i++)
@@ -334,7 +352,7 @@ public sealed class OutputNode : IDisposable
                 continue;
             }
 
-            int read = route.Source.Read(temp);
+            int read = route.Subscription.Read(temp);
             if (read < temp.Length)
             {
                 // Pad a short/empty read with silence instead of stalling: the
@@ -460,9 +478,17 @@ public sealed class OutputNode : IDisposable
     {
         Stop();
         _device?.Dispose();
+
+        // Release every route's copy of the source audio.
+        foreach (var route in _routeSnapshot)
+        {
+            route.Dispose();
+        }
+
+        _routeSnapshot = Array.Empty<Route>();
     }
 
-    public sealed class Route
+    public sealed class Route : IDisposable
     {
         private IAudioProcessor[] _instances = Array.Empty<IAudioProcessor>();
         private ParameterBinding[] _bindings = Array.Empty<ParameterBinding>();
@@ -471,6 +497,18 @@ public sealed class OutputNode : IDisposable
         public required SourceNode Source { get; init; }
         public float Gain { get; set; } = 1.0f;
         public bool Muted { get; set; }
+
+        /// <summary>
+        /// This route's private copy of the source's audio. Taking a copy per
+        /// route is what lets one source feed several outputs: without it the
+        /// outputs would take turns pulling from the same queue and each would
+        /// hear only part of the signal.
+        /// </summary>
+        private SourceNode.Subscription? _subscription;
+
+        public SourceNode.Subscription Subscription => _subscription ??= Source.Subscribe();
+
+        public void Dispose() => _subscription?.Dispose();
 
         /// <summary>
         /// The chain's authoritative processors, owned by the modifiers. The UI

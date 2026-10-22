@@ -1510,6 +1510,94 @@ public static class LatencySelfTest
     }
 
     /// <summary>
+    /// Checks that one source feeding two outputs gives both outputs the same
+    /// signal. Each output renders on its own thread, so the source has to hand
+    /// every consumer its own copy of the audio.
+    /// </summary>
+    public static string TestFanOut()
+    {
+        const int channels = 2;
+        const int sampleRate = 48000;
+        const int chunkFrames = 240;
+
+        var source = new SourceNode("fanout", SourceKind.Application);
+
+        // Feed the source the way a capture would: a block every 5 ms, for
+        // as long as the test runs.
+        var feeding = true;
+        var feeder = new Thread(() =>
+        {
+            double phase = 0;
+            var block = new float[chunkFrames * channels];
+            while (feeding)
+            {
+                for (int i = 0; i < chunkFrames; i++)
+                {
+                    float v = (float)(0.5 * Math.Sin(phase));
+                    block[i * channels] = v;
+                    block[(i * channels) + 1] = v;
+                    phase += 2 * Math.PI * 440 / sampleRate;
+                }
+
+                source.WriteTestSamples(block);
+                Thread.Sleep(5);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "FanOutFeeder",
+        };
+
+        double levelA = 0;
+        double levelB = 0;
+
+        var outputA = OutputNode.CreateForTest((mix, length) =>
+        {
+            for (int i = 0; i < length; i++)
+            {
+                levelA += Math.Abs(mix[i]);
+            }
+        });
+
+        var outputB = OutputNode.CreateForTest((mix, length) =>
+        {
+            for (int i = 0; i < length; i++)
+            {
+                levelB += Math.Abs(mix[i]);
+            }
+        });
+
+        outputA.PaceRealTime = true;
+        outputB.PaceRealTime = true;
+        outputA.Inputs.Add(new OutputNode.Route { Source = source, Gain = 1f });
+        outputB.Inputs.Add(new OutputNode.Route { Source = source, Gain = 1f });
+        outputA.RefreshRoutes();
+        outputB.RefreshRoutes();
+
+        outputA.Start();
+        outputB.Start();
+        feeder.Start();
+        Thread.Sleep(1500);
+        feeding = false;
+        feeder.Join(1000);
+
+        double buffered = source.BufferedMs;
+        outputA.Stop();
+        outputB.Stop();
+        outputA.Dispose();
+        outputB.Dispose();
+        source.Dispose();
+
+        // Both outputs should have received roughly the same energy.
+        double balance = Math.Abs(levelA - levelB) / Math.Max(levelA, levelB);
+        bool pass = levelA > 1.0 && levelB > 1.0 && balance < 0.1;
+
+        return $"Fan-out: output A {levelA:0.0}, output B {levelB:0.0}, difference {balance * 100:0.0}%, " +
+               $"source backlog {buffered:0} ms, skipped {source.SkippedFrames} frames " +
+               $"-> {(pass ? "PASS" : "FAIL")}";
+    }
+
+    /// <summary>
     /// Checks that a saved chain (subgraph) builds the right processors, runs
     /// them in order, and survives a preset round-trip.
     /// </summary>
