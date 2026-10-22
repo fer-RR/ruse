@@ -198,10 +198,15 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Reports the graphics situation at startup. Windows renders WPF in software
-    /// on some machines, which makes the whole UI feel slow — worth saying out
-    /// loud instead of letting the user blame the app.
+    /// Notes the graphics situation in the log.
     /// </summary>
+    /// <remarks>
+    /// Windows renders WPF in software on some machines, which makes the
+    /// interface feel slower. It used to raise a banner at every start, but
+    /// there is nothing the user can do about it on this machine, so nagging
+    /// about it only trains people to ignore the banner. The tier is still
+    /// logged and shown in the settings dialog.
+    /// </remarks>
     private void CheckRenderingTier()
     {
         int tier = System.Windows.Media.RenderCapability.Tier;
@@ -215,14 +220,8 @@ public partial class MainWindow
             ? "Windows is rendering Ruse in software (no GPU acceleration)."
             : "Windows is rendering Ruse with partial GPU acceleration.";
 
-        AppLog.Warning(detail + " The interface will feel slower than usual. This is a system graphics " +
-            "issue, not a problem with Ruse. A clean driver reinstall does not always fix it: on " +
-            "Windows 11 24H2/25H2 the graphics stack can keep WPF in software mode. Things that do " +
-            "help: turning off hardware-accelerated GPU scheduling, or installing an older GPU driver.");
-
-        ShowAlert(detail + " The interface will feel slower than usual. This is a system graphics issue — " +
-                  "a known Windows 11 24H2/25H2 quirk. Turning off hardware-accelerated GPU scheduling " +
-                  "or installing an older GPU driver usually restores it. Details in the log.", isError: false);
+        AppLog.Info(detail + " The interface will feel slower than usual. This is a system graphics " +
+            "issue, not a problem with Ruse.");
     }
 
     private float UpstreamLevel(NodeViewModel node, int depth)

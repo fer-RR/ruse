@@ -205,6 +205,12 @@ public partial class MainWindow
     {
         seconds = Math.Clamp(seconds, 1.0, 60.0);
         var proc = System.Diagnostics.Process.GetCurrentProcess();
+
+        // CPU time is counted across every core the process uses, so a figure
+        // of 100% would be one core completely busy. The report gives both
+        // that and the share of the whole machine, so the number cannot be
+        // misread.
+        int cores = Environment.ProcessorCount;
         var report = new List<string>
         {
             $"startup to first paint {_startupMs:0} ms",
@@ -217,7 +223,7 @@ public partial class MainWindow
         double cpu1 = proc.TotalProcessorTime.TotalMilliseconds;
         long alloc1 = GC.GetTotalAllocatedBytes(precise: true);
         report.Add(
-            $"idle {seconds:0}s: CPU {cpu1 - cpu0:0} ms ({(cpu1 - cpu0) / (seconds * 10):0.0}% of a core), " +
+            $"idle {seconds:0}s: CPU {cpu1 - cpu0:0} ms ({(cpu1 - cpu0) / (seconds * 10):0.0}% of a core, {(cpu1 - cpu0) / (seconds * 10 * cores):0.00}% of the CPU), " +
             $"alloc {(alloc1 - alloc0) / 1024.0 / seconds:0.0} KiB/s");
 
         // --- Idle with the periodic session refresh stopped: the refresh walks
@@ -231,7 +237,7 @@ public partial class MainWindow
         long allocS = GC.GetTotalAllocatedBytes(precise: true);
         _refreshTimer.Start();
         report.Add(
-            $"idle, no session refresh {seconds:0}s: CPU {cpuS - cpuR:0} ms ({(cpuS - cpuR) / (seconds * 10):0.0}% of a core), " +
+            $"idle, no session refresh {seconds:0}s: CPU {cpuS - cpuR:0} ms ({(cpuS - cpuR) / (seconds * 10):0.0}% of a core, {(cpuS - cpuR) / (seconds * 10 * cores):0.00}% of the CPU), " +
             $"alloc {(allocS - allocR) / 1024.0 / seconds:0.0} KiB/s");
 
         // --- Routing: a graph carrying real audio ---
@@ -293,7 +299,7 @@ public partial class MainWindow
         var outNode = output != null && _nodeBacking.TryGetValue(output, out var o) ? o as OutputNode : null;
 
         report.Add(
-            $"routing {seconds:0}s: CPU {cpu3 - cpu2:0} ms ({(cpu3 - cpu2) / (seconds * 10):0.0}% of a core), " +
+            $"routing {seconds:0}s: CPU {cpu3 - cpu2:0} ms ({(cpu3 - cpu2) / (seconds * 10):0.0}% of a core, {(cpu3 - cpu2) / (seconds * 10 * cores):0.00}% of the CPU), " +
             $"alloc {(alloc3 - alloc2) / 1024.0 / seconds:0.0} KiB/s");
 
         report.Add(
@@ -318,7 +324,7 @@ public partial class MainWindow
         double cpuBgEnd = proc.TotalProcessorTime.TotalMilliseconds;
         GraphHost.Background = background;
         report.Add(
-            $"routing, no background {seconds:0}s: CPU {cpuBgEnd - cpuBg:0} ms ({(cpuBgEnd - cpuBg) / (seconds * 10):0.0}% of a core)");
+            $"routing, no background {seconds:0}s: CPU {cpuBgEnd - cpuBg:0} ms ({(cpuBgEnd - cpuBg) / (seconds * 10):0.0}% of a core, {(cpuBgEnd - cpuBg) / (seconds * 10 * cores):0.00}% of the CPU)");
 
         report.Add(
             $"render tier {System.Windows.Media.RenderCapability.Tier} (0=software, 1=partial, 2=hardware)");
