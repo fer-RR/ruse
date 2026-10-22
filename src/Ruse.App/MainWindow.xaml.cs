@@ -419,6 +419,21 @@ public partial class MainWindow : Window
                 .Select(d => new DeviceItem(d))
                 .ToList();
 
+            // ASIO drivers join the output list: they are the low-latency path
+            // for anyone with a pro interface. They are exclusive, so they are
+            // listed but never opened until the user adds one.
+            var asioDrivers = AsioCatalog.Discover();
+            foreach (var driver in asioDrivers)
+            {
+                _allOutputs.Add(new DeviceItem(driver));
+
+                // The same driver can also capture its input channels.
+                if (driver.InputChannelCount > 0)
+                {
+                    _allInputs.Add(new DeviceItem(driver, asioInput: true));
+                }
+            }
+
             var virtuals = VirtualDeviceCatalog.Discover();
             VirtualList.ItemsSource = virtuals;
             VirtualEmptyHint.Visibility = virtuals.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -569,8 +584,33 @@ public partial class MainWindow : Window
             FriendlyName = device.FriendlyName;
         }
 
+        public DeviceItem(AsioDriverInfo driver)
+        {
+            Id = driver.Id;
+            FriendlyName = driver.Name;
+            Asio = driver;
+        }
+
+        public DeviceItem(AsioDriverInfo driver, bool asioInput)
+            : this(driver)
+        {
+            IsAsioInput = asioInput;
+        }
+
         public string Id { get; }
         public string FriendlyName { get; }
+
+        /// <summary>Set when the entry is an ASIO driver rather than a WASAPI endpoint.</summary>
+        public AsioDriverInfo? Asio { get; }
+
+        /// <summary>True for ASIO entries, so the list can badge them.</summary>
+        public bool IsAsio => Asio != null;
+
+        /// <summary>True when this ASIO entry is listed as a capture device.</summary>
+        public bool IsAsioInput { get; }
+
+        /// <summary>Label shown in the device list.</summary>
+        public string DisplayName => Asio != null ? FriendlyName + "  (ASIO)" : FriendlyName;
     }
 
     // ---------- Sidebar interactions ----------
@@ -739,6 +779,20 @@ public partial class MainWindow : Window
 
     private NodeViewModel? AddDeviceSourceNode(DeviceItem item, double? x = null, double? y = null)
     {
+        if (item.Asio != null)
+        {
+            // An ASIO driver captures its first two input channels, which is
+            // what the stereo mix can carry.
+            var asioSource = new SourceNode(
+                item.FriendlyName,
+                SourceKind.Asio,
+                deviceId: item.Id,
+                asioDriver: item.Asio.Name,
+                asioChannels: new[] { 0, 1 });
+
+            return AddSourceNode(asioSource, x, y);
+        }
+
         var source = new SourceNode(item.FriendlyName, SourceKind.Device, deviceId: item.Id);
         return AddSourceNode(source, x, y);
     }
@@ -755,6 +809,7 @@ public partial class MainWindow : Window
             {
                 SourceKind.Application => "Application",
                 SourceKind.Device => "Input device",
+                SourceKind.Asio => "ASIO input",
                 _ => "System audio",
             },
             Accent = source.Kind == SourceKind.Application ? "#4C8DFF" : "#B06CFF",
@@ -865,15 +920,25 @@ public partial class MainWindow : Window
 
         try
         {
-            using var enumerator = new MMDeviceEnumerator();
-            var device = enumerator.GetDevice(item.Id);
-            var output = _graph.AddOutput(device);
+            OutputNode output;
+            if (item.Asio != null)
+            {
+                // ASIO drivers are exclusive: opening one takes it away from
+                // every other application until the node is stopped.
+                output = _graph.AddOutput(item.Asio);
+            }
+            else
+            {
+                using var enumerator = new MMDeviceEnumerator();
+                var device = enumerator.GetDevice(item.Id);
+                output = _graph.AddOutput(device);
+            }
 
         var vm = new NodeViewModel
         {
             Id = id ?? output.Id,
             Title = output.Title,
-            Subtitle = "Output device",
+            Subtitle = item.Asio != null ? "ASIO output" : "Output device",
                 Accent = "#39D98A",
                 Kind = NodeKind.Output,
                 CanBeSource = false,
@@ -1566,13 +1631,34 @@ public partial class MainWindow : Window
         {
             try
             {
-                using var enumerator = new MMDeviceEnumerator();
-                var device = enumerator.GetDevice(o.DeviceId);
+                NodeViewModel? vm;
+                if (AsioCatalog.IsAsioId(o.DeviceId))
+                {
+                    // ASIO outputs are restored from the driver name: the id
+                    // carries it, so no WASAPI lookup is needed.
+                    var driverName = AsioCatalog.NameFromId(o.DeviceId);
+                    var driver = AsioCatalog.Discover()
+                        .FirstOrDefault(d => string.Equals(d.Name, driverName, StringComparison.OrdinalIgnoreCase));
 
-                NodeViewModel? vm = o.IsVirtual
-                    ? AddVirtualOutputNode(
-                        VirtualDeviceCatalog.ResolveRender(o.DeviceId, o.Title, o.MicHint), o.X, o.Y)
-                    : AddOutputNode(new DeviceItem(device), o.X, o.Y);
+                    vm = driver != null
+                        ? AddOutputNode(new DeviceItem(driver), o.X, o.Y)
+                        : null;
+
+                    if (driver == null)
+                    {
+                        SetStatus($"ASIO driver '{driverName}' is not installed; skipped.");
+                    }
+                }
+                else
+                {
+                    using var enumerator = new MMDeviceEnumerator();
+                    var device = enumerator.GetDevice(o.DeviceId);
+
+                    vm = o.IsVirtual
+                        ? AddVirtualOutputNode(
+                            VirtualDeviceCatalog.ResolveRender(o.DeviceId, o.Title, o.MicHint), o.X, o.Y)
+                        : AddOutputNode(new DeviceItem(device), o.X, o.Y);
+                }
 
                 if (vm != null)
                 {

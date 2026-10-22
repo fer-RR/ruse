@@ -35,6 +35,14 @@ public sealed class AudioGraph : IDisposable
         return node;
     }
 
+    /// <summary>Adds an output that renders to an ASIO driver.</summary>
+    public OutputNode AddOutput(AsioDriverInfo driver)
+    {
+        var node = new OutputNode(driver);
+        Outputs.Add(node);
+        return node;
+    }
+
     /// <summary>Creates a device-less output that pushes mixed frames to a sink (tests/benchmarks).</summary>
     public OutputNode AddOutputForTest(Action<float[], int> sink)
     {

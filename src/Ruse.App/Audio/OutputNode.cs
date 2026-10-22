@@ -16,6 +16,11 @@ public sealed class OutputNode : IDisposable
     private volatile bool _running;
     private float _meterLevel;
 
+    // ASIO path: when set, the mix is rendered to an ASIO driver instead of a
+    // WASAPI endpoint. The driver owns its clock, so the rate can differ.
+    private AsioOutputEndpoint? _asioEndpoint;
+    private AsioDriverInfo? _asioDriver;
+
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public string DeviceId { get; }
     public string Title { get; set; }
@@ -67,6 +72,9 @@ public sealed class OutputNode : IDisposable
 
     private bool _lowLatency;
 
+    /// <summary>Rate the ASIO driver actually runs at (0 for WASAPI outputs).</summary>
+    private int _asioSampleRate;
+
     /// <summary>Routes (source + gain) feeding this output.</summary>
     public List<Route> Inputs { get; } = new();
 
@@ -97,6 +105,15 @@ public sealed class OutputNode : IDisposable
         _device = device;
         DeviceId = device.ID;
         Title = device.FriendlyName;
+    }
+
+    /// <summary>Creates an output that renders to an ASIO driver.</summary>
+    public OutputNode(AsioDriverInfo driver)
+    {
+        _device = null!;
+        DeviceId = AsioCatalog.IdFor(driver.Name);
+        Title = driver.Name;
+        _asioDriver = driver;
     }
 
     /// <summary>Creates a device-less output that pushes mixed frames to a sink.</summary>
@@ -141,25 +158,49 @@ public sealed class OutputNode : IDisposable
                 DiscardOnBufferOverflow = true,
             };
 
-            // Ask WASAPI for a low-latency shared-mode stream via IAudioClient3.
-            // If the device can't grant it, WasapiPlayer transparently falls back
-            // to standard shared mode and reports the period it actually got.
-            _wasapiOut = new WasapiPlayerBuilder()
-                .WithDevice(_device)
-                .WithSharedMode()
-                .WithEventSync()
-                .WithLowLatency(true)
-                .WithLatency(5)
-                .Build();
+            if (_asioDriver != null)
+            {
+                // ASIO pulls the mix straight out of the render buffer, so the
+                // pump below feeds the driver instead of a WASAPI endpoint.
+                // A restart needs a fresh handle: the driver is exclusive and
+                // the previous one was closed on stop.
+                _asioEndpoint = new AsioOutputEndpoint(_asioDriver);
+                _asioEndpoint.Start(_buffer);
+                _outputLatencyMs = _asioEndpoint.LatencyMs;
+                _lowLatency = true;
+                _asioSampleRate = _asioEndpoint.SampleRate;
 
-            _wasapiOut.PlaybackStopped += OnPlaybackStopped;
-            _wasapiOut.Init(_buffer);
-            _wasapiOut.Play();
+                if (!_asioEndpoint.Streaming)
+                {
+                    // No clock: the driver's host is not running, so the node
+                    // would be silent. Say so instead of failing quietly.
+                    Faulted?.Invoke(this,
+                        $"ASIO driver '{_asioDriver.Name}' is not streaming (state {_asioEndpoint.State}). " +
+                        "Its host application may not be running.");
+                }
+            }
+            else
+            {
+                // Ask WASAPI for a low-latency shared-mode stream via IAudioClient3.
+                // If the device can't grant it, WasapiPlayer transparently falls back
+                // to standard shared mode and reports the period it actually got.
+                _wasapiOut = new WasapiPlayerBuilder()
+                    .WithDevice(_device)
+                    .WithSharedMode()
+                    .WithEventSync()
+                    .WithLowLatency(true)
+                    .WithLatency(5)
+                    .Build();
 
-            // These reflect what the engine actually granted, so read them only
-            // after Init/Play â€” before that they report the requested defaults.
-            _lowLatency = _wasapiOut.LowLatencyActive;
-            _outputLatencyMs = _wasapiOut.LatencyMilliseconds > 0 ? _wasapiOut.LatencyMilliseconds : 5;
+                _wasapiOut.PlaybackStopped += OnPlaybackStopped;
+                _wasapiOut.Init(_buffer);
+                _wasapiOut.Play();
+
+                // These reflect what the engine actually granted, so read them only
+                // after Init/Play â€” before that they report the requested defaults.
+                _lowLatency = _wasapiOut.LowLatencyActive;
+                _outputLatencyMs = _wasapiOut.LatencyMilliseconds > 0 ? _wasapiOut.LatencyMilliseconds : 5;
+            }
         }
 
         RefreshRoutes();
@@ -358,7 +399,10 @@ public sealed class OutputNode : IDisposable
     public double BufferedMs => _buffer?.BufferedDuration.TotalMilliseconds ?? 0;
 
     /// <summary>Playback state of the underlying endpoint ("Playing", "Stopped", â€¦).</summary>
-    public string PlaybackState => _wasapiOut?.PlaybackState.ToString() ?? "none";
+    public string PlaybackState => _wasapiOut?.PlaybackState.ToString() ?? (_asioEndpoint?.State ?? "none");
+
+    /// <summary>Rate the endpoint renders at: 48 kHz for WASAPI, the driver's rate for ASIO.</summary>
+    public int EndpointSampleRate => _asioSampleRate > 0 ? _asioSampleRate : 48000;
 
     private void OnPlaybackStopped(object? sender, StoppedEventArgs e)
     {
@@ -393,6 +437,16 @@ public sealed class OutputNode : IDisposable
         }
 
         _wasapiOut = null;
+
+        try
+        {
+            _asioEndpoint?.Dispose();
+        }
+        catch
+        {
+        }
+
+        _asioEndpoint = null;
         _buffer = null;
         _meterLevel = 0;
     }

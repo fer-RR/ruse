@@ -342,6 +342,7 @@
                                                 <ColumnDefinition Width="Auto"/>
                                                 <ColumnDefinition Width="*"/>
                                                 <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
                                             <Border Grid.Column="0" Width="20" Height="20" CornerRadius="5"
                                                     Background="#123D2C" Margin="0,0,10,0">
@@ -352,7 +353,22 @@
                                             <TextBlock Grid.Column="1" Text="{Binding FriendlyName}"
                                                        Foreground="{StaticResource TextBrush}" FontSize="13"
                                                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Grid.Column="2" Text="⠿" FontSize="15" VerticalAlignment="Center"
+                                            <Border Grid.Column="2" Background="#1B3A5C" CornerRadius="4"
+                                                    Padding="6,1" Margin="6,0,0,0" VerticalAlignment="Center">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsAsio}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="ASIO" Foreground="#7FB4E8" FontSize="9"
+                                                           FontWeight="Bold"/>
+                                            </Border>
+                                            <TextBlock Grid.Column="3" Text="⠿" FontSize="15" VerticalAlignment="Center"
                                                        Foreground="#4A5266" Margin="8,0,0,0"/>
                                         </Grid>
                                     </Border>
@@ -398,6 +414,7 @@
                                                 <ColumnDefinition Width="Auto"/>
                                                 <ColumnDefinition Width="*"/>
                                                 <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
                                             <Border Grid.Column="0" Width="20" Height="20" CornerRadius="5"
                                                     Background="#2A2350" Margin="0,0,10,0">
@@ -407,7 +424,22 @@
                                             <TextBlock Grid.Column="1" Text="{Binding FriendlyName}"
                                                        Foreground="{StaticResource TextBrush}" FontSize="13"
                                                        VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Grid.Column="2" Text="⠿" FontSize="15" VerticalAlignment="Center"
+                                            <Border Grid.Column="2" Background="#1B3A5C" CornerRadius="4"
+                                                    Padding="6,1" Margin="6,0,0,0" VerticalAlignment="Center">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsAsio}" Value="True">
+                                                                <Setter Property="Visibility" Value="Visible"/>
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <TextBlock Text="ASIO" Foreground="#7FB4E8" FontSize="9"
+                                                           FontWeight="Bold"/>
+                                            </Border>
+                                            <TextBlock Grid.Column="3" Text="⠿" FontSize="15" VerticalAlignment="Center"
                                                        Foreground="#4A5266" Margin="8,0,0,0"/>
                                         </Grid>
                                     </Border>

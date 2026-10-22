@@ -9,6 +9,7 @@ public enum SourceKind
     Application,
     Device,
     SystemLoopback,
+    Asio,
 }
 
 /// <summary>
@@ -38,6 +39,12 @@ public sealed class SourceNode : IDisposable
     public string Title { get; set; }
     public uint? ProcessId { get; }
     public string? DeviceId { get; }
+
+    /// <summary>ASIO driver name when <see cref="Kind"/> is <see cref="SourceKind.Asio"/>.</summary>
+    public string? AsioDriver { get; }
+
+    /// <summary>ASIO input channels to capture (first two are used for the stereo mix).</summary>
+    public int[] AsioChannels { get; }
     public bool IsRunning => _capture != null && !_faulted;
 
     /// <summary>Raised when the capture stream stops by itself (device lost, error).</summary>
@@ -59,12 +66,15 @@ public sealed class SourceNode : IDisposable
     public int Channels => _sourceChannels;
     public int SampleRate => _sourceSampleRate;
 
-    public SourceNode(string title, SourceKind kind, uint? processId = null, string? deviceId = null)
+    public SourceNode(string title, SourceKind kind, uint? processId = null, string? deviceId = null,
+        string? asioDriver = null, int[]? asioChannels = null)
     {
         Title = title;
         Kind = kind;
         ProcessId = processId;
         DeviceId = deviceId;
+        AsioDriver = asioDriver;
+        AsioChannels = asioChannels ?? new[] { 0, 1 };
         _ringBuffer = new FloatRingBuffer(1_000_000);
     }
 
@@ -89,6 +99,9 @@ public sealed class SourceNode : IDisposable
             case SourceKind.SystemLoopback:
                 StartSystemLoopback();
                 break;
+            case SourceKind.Asio:
+                StartAsioCapture();
+                break;
         }
     }
 
@@ -105,7 +118,21 @@ public sealed class SourceNode : IDisposable
             case WasapiRecorder wlc:
                 wlc.RecordingStopped += OnCaptureStopped;
                 break;
+            case AsioCapture ac:
+                ac.Stopped += OnAsioStopped;
+                break;
         }
+    }
+
+    private void OnAsioStopped(AsioCapture capture, string reason)
+    {
+        if (_stopRequested)
+        {
+            return;
+        }
+
+        _faulted = true;
+        Faulted?.Invoke(this, reason);
     }
 
     private void OnCaptureStopped(object? sender, NAudio.Wave.StoppedEventArgs e)
@@ -150,6 +177,40 @@ public sealed class SourceNode : IDisposable
         capture.Start();
         WireStopEvents(capture);
         _capture = capture;
+    }
+
+    private void StartAsioCapture()
+    {
+        if (string.IsNullOrWhiteSpace(AsioDriver))
+        {
+            throw new InvalidOperationException("No ASIO driver was given for this source.");
+        }
+
+        var capture = new AsioCapture(AsioDriver, AsioChannels);
+        capture.DataAvailable += OnAsioData;
+
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            capture.DataAvailable -= OnAsioData;
+            capture.Dispose();
+            throw;
+        }
+
+        // ASIO delivers float at the driver's own rate; the converter brings it
+        // to the mixer's 48 kHz stereo format like every other source.
+        SetSourceFormat(capture.ChannelCount, capture.SampleRate);
+
+        _capture = capture;
+    }
+
+    private void OnAsioData(AsioCapture capture, byte[] data)
+    {
+        var args = new WaveInEventArgs(data, data.Length);
+        OnDataAvailable(this, args);
     }
 
     private void StartSystemLoopback()

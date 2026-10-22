@@ -201,6 +201,23 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--asio-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string asioLine;
+            try
+            {
+                asioLine = $"Ruse asio test: {LatencySelfTest.TestAsioDevices()}";
+            }
+            catch (Exception ex)
+            {
+                asioLine = $"Ruse asio test FAILED: {ex}";
+            }
+
+            WriteResult("asio-test.txt", asioLine);
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Contains("--live-demo", StringComparer.OrdinalIgnoreCase))
         {
             // Carries real audio so the UI (meters, cable waveforms) can be

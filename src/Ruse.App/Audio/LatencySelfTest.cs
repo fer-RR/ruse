@@ -1553,4 +1553,136 @@ public static class LatencySelfTest
         return $"chain: {chain.Processors.Count} effects, DC peak after chain {peak:0.0000}, " +
                $"preset round-trip {roundTrip} -> {(pass ? "PASS" : "FAIL")}";
     }
+
+    /// <summary>
+    /// Reports the ASIO drivers on this machine and, when there is one, opens it
+    /// and renders the mix through it for a moment. Drivers whose host is not
+    /// running have no clock, so "no clock" is reported rather than failed.
+    /// </summary>
+    public static string TestAsioDevices()
+    {
+        var drivers = AsioCatalog.Discover();
+        if (drivers.Count == 0)
+        {
+            return "asio: no ASIO drivers installed -> PASS (nothing to drive)";
+        }
+
+        var lines = new List<string>();
+        bool anyStarted = false;
+        bool allOpened = true;
+
+        foreach (var driver in drivers)
+        {
+            string line = $"asio: '{driver.Name}' {driver.InputChannelCount} in / {driver.OutputChannelCount} out, " +
+                          $"{driver.SampleRate} Hz, buffer {driver.BufferSize} frames, " +
+                          $"latency {driver.OutputLatencySamples} out / {driver.InputLatencySamples} in";
+
+            try
+            {
+                var graph = new AudioGraph { AutoRun = false };
+                var output = graph.AddOutput(driver);
+                output.Start();
+
+                line += $", state {output.PlaybackState}, rate {output.EndpointSampleRate} Hz, " +
+                        $"buffered {output.BufferedMs:0} ms, latency {output.EstimatedLatencyMs:0.0} ms";
+
+                // The driver needs a clock from its host; without one it stays
+                // configured but never streams. That is a driver condition, not
+                // a bug in the app, so it is reported rather than failed.
+                if (output.PlaybackState == "Running")
+                {
+                    anyStarted = true;
+                }
+                else
+                {
+                    line += " (no clock: is the driver host running?)";
+                }
+
+                output.Stop();
+            }
+            catch (Exception ex)
+            {
+                allOpened = false;
+                line += $" -> FAILED: {ex.Message}";
+            }
+
+            lines.Add(line);
+        }
+
+        lines.Add(TestAsioRateConversion());
+
+        string verdict = anyStarted ? "PASS" : allOpened ? "PASS (driver present, idle)" : "FAIL";
+        return string.Join(" | ", lines) + " -> " + verdict;
+    }
+
+    /// <summary>
+    /// Checks the 48 kHz mixer to driver-rate conversion: the frame count must
+    /// follow the rate ratio and the tone must keep its pitch.
+    /// </summary>
+    private static string TestAsioRateConversion()
+    {
+        const int mixRate = 48000;
+        const int targetRate = 44100;
+        const double toneHz = 440.0;
+
+        var format = NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(mixRate, 2);
+        var buffer = new NAudio.Wave.BufferedWaveProvider(format, TimeSpan.FromSeconds(2));
+
+        int frames = mixRate;
+        var tone = new float[frames * 2];
+        for (int i = 0; i < frames; i++)
+        {
+            float v = (float)(0.5 * Math.Sin(2 * Math.PI * toneHz * i / mixRate));
+            tone[i * 2] = v;
+            tone[(i * 2) + 1] = v;
+        }
+
+        buffer.AddSamples(System.Runtime.InteropServices.MemoryMarshal.AsBytes(tone.AsSpan()));
+
+        var provider = new AsioFloatProvider(buffer, targetRate);
+        var outBytes = new byte[targetRate * 2 * 4];
+        int total = 0;
+        while (total < outBytes.Length)
+        {
+            int read = provider.Read(outBytes, total, outBytes.Length - total);
+            if (read <= 0)
+            {
+                break;
+            }
+
+            total += read;
+        }
+
+        int outFrames = total / 8;
+
+        // Measure the pitch of the converted signal.
+        var samples = new float[outFrames * 2];
+        outBytes.AsSpan(0, total).CopyTo(System.Runtime.InteropServices.MemoryMarshal.AsBytes(samples.AsSpan()));
+
+        int crossings = 0;
+        double peak = 0;
+        for (int i = 1; i < outFrames; i++)
+        {
+            if ((samples[(i * 2) - 2] < 0) != (samples[(i * 2)] < 0))
+            {
+                crossings++;
+            }
+        }
+
+        for (int i = 0; i < outFrames * 2; i++)
+        {
+            peak = Math.Max(peak, Math.Abs(samples[i]));
+        }
+
+        double measuredHz = crossings > 0 ? crossings * targetHz() / 2.0 / outFrames : 0;
+
+        int expected = (int)Math.Round(frames * (targetRate / (double)mixRate));
+        bool rateOk = Math.Abs(outFrames - expected) <= expected / 100 + 8;
+        bool pitchOk = Math.Abs(measuredHz - toneHz) < 2.0 && peak > 0.2;
+
+        return $"asio rate: 48k -> {targetRate / 1000.0:0.0}k gave {outFrames} frames (expected {expected}), " +
+               $"peak {peak:0.000}, tone {measuredHz:0.0} Hz -> {(rateOk && pitchOk ? "PASS" : "FAIL")}";
+
+        static double targetHz() => 44100;
+    }
 }

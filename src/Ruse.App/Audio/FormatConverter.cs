@@ -22,6 +22,9 @@ public sealed class FormatConverter
     private readonly bool _needsResample;
     private readonly bool _needsRemap;
 
+    /// <summary>Rate the converter produces.</summary>
+    public int TargetRate { get; }
+
     // Fractional position into the source stream, in source frames.
     private double _srcPos;
 
@@ -30,11 +33,12 @@ public sealed class FormatConverter
     private float[] _prevFrame = new float[0];
     private bool _hasPrev;
 
-    public FormatConverter(int sourceChannels, int sourceSampleRate)
+    public FormatConverter(int sourceChannels, int sourceSampleRate, int targetSampleRate = TargetSampleRate)
     {
         _srcChannels = Math.Max(1, sourceChannels);
-        _ratio = (double)sourceSampleRate / TargetSampleRate;
-        _needsResample = sourceSampleRate != TargetSampleRate;
+        TargetRate = targetSampleRate > 0 ? targetSampleRate : TargetSampleRate;
+        _ratio = (double)sourceSampleRate / TargetRate;
+        _needsResample = sourceSampleRate != TargetRate;
         _needsRemap = _srcChannels != TargetChannels;
     }
 
