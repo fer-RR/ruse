@@ -1219,12 +1219,26 @@ public partial class MainWindow : Window
                     Margin = new Thickness(PortLabelGutter, 0, PortLabelGutter, 6),
                     Height = 20,
                 };
+
+                // Whole-number parameters step in units, so the slider snaps and
+                // the label shows the value the effect really holds.
+                if (parameter.IsInteger)
+                {
+                    slider.TickFrequency = 1;
+                    slider.IsSnapToTickEnabled = true;
+                }
+
                 float lastParam = parameter.Get();
                 slider.ValueChanged += (_, _) =>
                 {
                     float value = logarithmic ? (float)Math.Pow(10, slider.Value) : (float)slider.Value;
+                    if (parameter.IsInteger)
+                    {
+                        value = MathF.Round(value);
+                    }
+
                     parameter.Set(value);
-                    label.Text = Format(value);
+                    label.Text = Format(parameter.Get());
                     PushParameter(vm, parameter.Name, lastParam, value);
                     lastParam = value;
                 };

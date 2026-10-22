@@ -54,6 +54,11 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
                     continue;
                 }
 
+                // Some NAudio parameters are backed by an integer property
+                // (filter stages, for example). They are snapped so the value
+                // the UI shows is the value the effect really holds.
+                bool isInteger = IsIntegerBacked(source.Name);
+
                 mapped.Add(new AudioParameter
                 {
                     Name = source.Name,
@@ -62,8 +67,9 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
                     Default = source.DefaultValue,
                     Unit = source.Unit,
                     Logarithmic = source.Unit == "Hz",
+                    IsInteger = isInteger,
                     Get = () => source.Value,
-                    Set = v => source.Value = v,
+                    Set = v => source.Value = isInteger ? MathF.Round(v) : v,
                 });
             }
         }
@@ -86,6 +92,31 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
     public string TypeId { get; }
     public string DisplayName { get; }
     public IReadOnlyList<AudioParameter> Parameters => _parameters;
+
+    /// <summary>
+    /// True when the effect exposes a whole-number property with that name, so
+    /// the parameter counts in steps instead of a continuous range.
+    /// </summary>
+    private bool IsIntegerBacked(string parameterName)
+    {
+        if (_integerBacked.TryGetValue(parameterName, out bool known))
+        {
+            return known;
+        }
+
+        bool result = false;
+        var property = _effect.GetType().GetProperty(parameterName);
+        if (property != null && property.CanRead && property.CanWrite)
+        {
+            Type type = property.PropertyType;
+            result = type == typeof(int) || type == typeof(long) || type == typeof(short) || type == typeof(byte);
+        }
+
+        _integerBacked[parameterName] = result;
+        return result;
+    }
+
+    private readonly Dictionary<string, bool> _integerBacked = new(StringComparer.Ordinal);
 
     /// <summary>Look-ahead/block latency introduced by the effect, in samples.</summary>
     public int LatencySamples => _effect.LatencySamples;

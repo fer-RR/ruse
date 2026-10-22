@@ -66,6 +66,30 @@ public static class AudioProcessorCatalog
             "Removes low-frequency rumble below the cutoff.",
             () => new HighPassProcessor()));
 
+        Register(new Descriptor(
+            "lowpass",
+            "Low-pass",
+            "Removes high-frequency hiss above the cutoff.",
+            () => new BiquadProcessor(BiquadKind.LowPass, "lowpass", "Low-pass", 8000f, "Cutoff")));
+
+        Register(new Descriptor(
+            "eq-bell",
+            "EQ bell",
+            "Boosts or cuts a band of frequencies around the centre.",
+            () => new BiquadProcessor(BiquadKind.Peak, "eq-bell", "EQ bell", 1000f, "Frequency", hasGain: true, hasQ: true)));
+
+        Register(new Descriptor(
+            "eq-low-shelf",
+            "EQ low shelf",
+            "Shapes the low end below the corner frequency.",
+            () => new BiquadProcessor(BiquadKind.LowShelf, "eq-low-shelf", "EQ low shelf", 200f, "Frequency", hasGain: true)));
+
+        Register(new Descriptor(
+            "eq-high-shelf",
+            "EQ high shelf",
+            "Shapes the high end above the corner frequency.",
+            () => new BiquadProcessor(BiquadKind.HighShelf, "eq-high-shelf", "EQ high shelf", 4000f, "Frequency", hasGain: true)));
+
         NaudioEffects.RegisterAll();
     }
 

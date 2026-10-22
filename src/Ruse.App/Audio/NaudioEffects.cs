@@ -39,6 +39,51 @@ public static class NaudioEffects
 
         Register("agc", "AGC",
             "Automatic gain control that levels voice.", () => new AutomaticGainControlEffect());
+
+        // --- Routing and monitoring ---------------------------------------
+
+        Register("pan", "Pan",
+            "Places the signal in the stereo field.", () => new PanEffect());
+
+        Register("stereo-width", "Stereo width",
+            "Widens or narrows the stereo image.", () => new StereoWidthEffect());
+
+        Register("mono", "Mono",
+            "Folds the stereo image down to mono.", () => new MonoMakerEffect());
+
+        Register("dc-block", "DC blocker",
+            "Removes DC offset and low-frequency rumble.", () => new DcBlockerEffect());
+
+        Register("comfort-noise", "Comfort noise",
+            "Adds a low noise floor so a silent channel stays open.",
+            () => new ComfortNoiseEffect());
+
+        // --- Modulation and movement --------------------------------------
+
+        Register("flanger", "Flanger",
+            "Sweeping modulated delay for a jet-like tone.", () => new FlangerEffect());
+
+        Register("phaser", "Phaser",
+            "Sweeping comb-filter phase shift.", () => new PhaserEffect());
+
+        Register("tremolo", "Tremolo",
+            "Amplitude modulation with an optional auto-pan.",
+            () => new TremoloEffect());
+
+        // --- Colour and character -----------------------------------------
+
+        Register("bitcrusher", "Bitcrusher",
+            "Lo-fi reduction of bit depth and sample rate.", () => new BitCrusherEffect());
+
+        Register("pitch-shift", "Pitch shift",
+            "Shifts the pitch without changing the playback speed.",
+            () => new PitchShiftEffect());
+
+        Register("transient-shaper", "Transient shaper",
+            "Shapes the attack and sustain of the signal.", () => new TransientShaperEffect());
+
+        Register("room-reverb", "Room reverb",
+            "Larger, smoother room reverb (FDN).", () => new FdnReverbEffect());
     }
 
     private static void Register(string typeId, string displayName, string description, Func<AudioEffect> factory)

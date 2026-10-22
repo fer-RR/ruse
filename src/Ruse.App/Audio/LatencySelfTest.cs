@@ -995,8 +995,15 @@ public static class LatencySelfTest
                 }
 
                 float mid = parameter.Min + (parameter.Max - parameter.Min) / 2f;
+                if (parameter.IsInteger)
+                {
+                    mid = MathF.Round(mid);
+                }
+
                 parameter.Set(mid);
-                float tolerance = (parameter.Max - parameter.Min) * 0.02f + 1e-3f;
+                float tolerance = parameter.IsInteger
+                    ? 0.51f
+                    : (parameter.Max - parameter.Min) * 0.02f + 1e-3f;
                 if (Math.Abs(parameter.Get() - mid) > tolerance)
                 {
                     failures.Add(

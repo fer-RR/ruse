@@ -20,6 +20,12 @@ public sealed class AudioParameter
     /// <summary>Render as an on/off checkbox instead of a slider.</summary>
     public bool IsToggle { get; init; }
 
+    /// <summary>
+    /// The parameter counts in whole steps (e.g. filter stages). The UI snaps
+    /// the slider to integers and the value is rounded before it is written.
+    /// </summary>
+    public bool IsInteger { get; init; }
+
     /// <summary>Reads the current value (safe from any thread).</summary>
     public required Func<float> Get { get; init; }
 
