@@ -129,7 +129,7 @@ public static class SettingsDialog
         string tierText = tier == 0x80000
             ? "Graphics: hardware accelerated (tier 2)."
             : tier == 0x20000
-                ? "Graphics: software rendering (tier 0) — the interface will feel slower. A clean GPU driver reinstall usually fixes it."
+                ? "Graphics: software rendering (tier 0) — the interface will feel slower. A known Windows 11 24H2/25H2 quirk: try disabling hardware-accelerated GPU scheduling or an older GPU driver."
                 : "Graphics: partial acceleration (tier 1).";
 
         root.Children.Add(new TextBlock

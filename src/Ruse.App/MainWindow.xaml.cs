@@ -4162,10 +4162,13 @@ public partial class MainWindow : Window
             : "Windows is rendering Ruse with partial GPU acceleration.";
 
         AppLog.Warning(detail + " The interface will feel slower than usual. This is a system graphics " +
-            "issue, not a problem with Ruse: a clean GPU driver reinstall usually fixes it.");
+            "issue, not a problem with Ruse. A clean driver reinstall does not always fix it: on " +
+            "Windows 11 24H2/25H2 the graphics stack can keep WPF in software mode. Things that do " +
+            "help: turning off hardware-accelerated GPU scheduling, or installing an older GPU driver.");
 
         ShowAlert(detail + " The interface will feel slower than usual. This is a system graphics issue — " +
-                  "a clean GPU driver reinstall usually fixes it. Details in the log.", isError: false);
+                  "a known Windows 11 24H2/25H2 quirk. Turning off hardware-accelerated GPU scheduling " +
+                  "or installing an older GPU driver usually restores it. Details in the log.", isError: false);
     }
 
     private float UpstreamLevel(NodeViewModel node, int depth)
