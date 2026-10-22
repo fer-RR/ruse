@@ -102,9 +102,27 @@
             <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
         </Style>
 
-        <!-- Slim dark scrollbars so the graph viewport matches the app theme. -->
-        <Style TargetType="ScrollBar">
+        <!-- Sidebar section header: click to collapse or expand the list below. -->
+        <Style x:Key="SectionToggleStyle" TargetType="ToggleButton">
             <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="Margin" Value="0,16,0,8"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Left"/>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Slim dark scrollbars so the graph viewport matches the app theme. -->
+        <Style TargetType="ScrollBar">            <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Width" Value="11"/>
             <Setter Property="MinWidth" Value="11"/>
             <Setter Property="Template">
@@ -212,20 +230,43 @@
                                  TextChanged="OnSearchTextChanged"
                                  ToolTip="Filter apps, outputs and inputs"/>
                         <!-- APPLICATIONS -->
-                        <StackPanel Orientation="Horizontal" Margin="0,8,0,10">
-                            <TextBlock Text="APPLICATIONS" FontSize="11" FontWeight="Bold"
-                                       Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center"/>
-                            <Border Background="#232A38" CornerRadius="999" Padding="7,1" Margin="8,0,0,0">
-                                <TextBlock x:Name="AppsCount" Text="0" FontSize="10"
-                                           Foreground="{StaticResource SubtleTextBrush}"/>
-                            </Border>
-                        </StackPanel>
-                        <ListBox x:Name="AppsList" Style="{StaticResource DragListStyle}"
-                                 MouseDoubleClick="OnAppDoubleClick"
-                                 PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
-                                 PreviewMouseMove="OnListPreviewMouseMove"
-                                 PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
-                                 AllowDrop="False">
+                        <ToggleButton x:Name="AppsToggle" Style="{StaticResource SectionToggleStyle}"
+                                      Tag="AppsSection" IsChecked="True" Click="OnSectionToggle"
+                                      Margin="0,6,0,8">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="APPLICATIONS" FontSize="11" FontWeight="Bold"
+                                           Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center"/>
+                                <Border Background="#232A38" CornerRadius="999" Padding="7,1" Margin="8,0,0,0">
+                                    <TextBlock x:Name="AppsCount" Text="0" FontSize="10"
+                                               Foreground="{StaticResource SubtleTextBrush}"/>
+                                </Border>
+                                <TextBlock Text="▾" FontSize="10" Foreground="#5A6478" Margin="8,0,0,0"
+                                           VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="▾"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="False">
+                                                    <Setter Property="Text" Value="▸"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </ToggleButton>
+                        <StackPanel x:Name="AppsSection">
+                            <Button x:Name="AddSystemButton" Style="{StaticResource ToolButton}"
+                                    Content="＋  System audio" Click="OnAddSystemClick"
+                                    HorizontalAlignment="Stretch" Margin="0,0,0,8"
+                                    ToolTip="Capture everything the system is playing"/>
+                            <ListBox x:Name="AppsList" Style="{StaticResource DragListStyle}"
+                                     MouseDoubleClick="OnAppDoubleClick"
+                                     PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
+                                     PreviewMouseMove="OnListPreviewMouseMove"
+                                     PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
+                                     PreviewMouseWheel="OnSidebarListMouseWheel"
+                                     AllowDrop="False">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="{StaticResource CardBrush}" CornerRadius="8"
@@ -262,17 +303,36 @@
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
+                        </StackPanel>
 
                         <!-- OUTPUT DEVICES -->
-                        <StackPanel Orientation="Horizontal" Margin="0,18,0,10">
-                            <TextBlock Text="OUTPUT DEVICES" FontSize="11" FontWeight="Bold"
-                                       Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center"/>
-                        </StackPanel>
+                        <ToggleButton x:Name="OutputsToggle" Style="{StaticResource SectionToggleStyle}"
+                                      Tag="OutputsSection" IsChecked="True" Click="OnSectionToggle">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="OUTPUT DEVICES" FontSize="11" FontWeight="Bold"
+                                           Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center"/>
+                                <TextBlock Text="▾" FontSize="10" Foreground="#5A6478" Margin="8,0,0,0"
+                                           VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="▾"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="False">
+                                                    <Setter Property="Text" Value="▸"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </ToggleButton>
+                        <StackPanel x:Name="OutputsSection">
                         <ListBox x:Name="OutputsList" Style="{StaticResource DragListStyle}"
                                  MouseDoubleClick="OnOutputDoubleClick"
                                  PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                  PreviewMouseMove="OnListPreviewMouseMove"
-                                 PreviewMouseLeftButtonUp="OnListPreviewMouseUp">
+                                 PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
+                                 PreviewMouseWheel="OnSidebarListMouseWheel">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="{StaticResource CardBrush}" CornerRadius="8"
@@ -299,17 +359,36 @@
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
+                        </StackPanel>
 
                         <!-- CAPTURE DEVICES -->
-                        <StackPanel Orientation="Horizontal" Margin="0,18,0,10">
-                            <TextBlock Text="CAPTURE DEVICES" FontSize="11" FontWeight="Bold"
-                                       Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center"/>
-                        </StackPanel>
+                        <ToggleButton x:Name="InputsToggle" Style="{StaticResource SectionToggleStyle}"
+                                      Tag="InputsSection" IsChecked="True" Click="OnSectionToggle">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="CAPTURE DEVICES" FontSize="11" FontWeight="Bold"
+                                           Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center"/>
+                                <TextBlock Text="▾" FontSize="10" Foreground="#5A6478" Margin="8,0,0,0"
+                                           VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="▾"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="False">
+                                                    <Setter Property="Text" Value="▸"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </ToggleButton>
+                        <StackPanel x:Name="InputsSection">
                         <ListBox x:Name="InputsList" Style="{StaticResource DragListStyle}"
                                  MouseDoubleClick="OnInputDoubleClick"
                                  PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                  PreviewMouseMove="OnListPreviewMouseMove"
-                                 PreviewMouseLeftButtonUp="OnListPreviewMouseUp">
+                                 PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
+                                 PreviewMouseWheel="OnSidebarListMouseWheel">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="{StaticResource CardBrush}" CornerRadius="8"
@@ -335,12 +414,30 @@
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
+                        </StackPanel>
 
                         <!-- VIRTUAL OUTPUTS -->
-                        <StackPanel Orientation="Horizontal" Margin="0,18,0,4">
-                            <TextBlock Text="VIRTUAL OUTPUTS" FontSize="11" FontWeight="Bold"
-                                       Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center"/>
-                        </StackPanel>
+                        <ToggleButton x:Name="VirtualToggle" Style="{StaticResource SectionToggleStyle}"
+                                      Tag="VirtualSection" IsChecked="True" Click="OnSectionToggle">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="VIRTUAL OUTPUTS" FontSize="11" FontWeight="Bold"
+                                           Foreground="{StaticResource AccentBrush}" VerticalAlignment="Center"/>
+                                <TextBlock Text="▾" FontSize="10" Foreground="#5A6478" Margin="8,0,0,0"
+                                           VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="▾"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="False">
+                                                    <Setter Property="Text" Value="▸"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </ToggleButton>
+                        <StackPanel x:Name="VirtualSection">
                         <TextBlock Text="Routed mixes become a microphone apps can pick."
                                    FontSize="10" TextWrapping="Wrap"
                                    Foreground="{StaticResource SubtleTextBrush}" Margin="0,0,0,10"/>
@@ -348,7 +445,8 @@
                                  MouseDoubleClick="OnVirtualDoubleClick"
                                  PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                  PreviewMouseMove="OnListPreviewMouseMove"
-                                 PreviewMouseLeftButtonUp="OnListPreviewMouseUp">
+                                 PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
+                                 PreviewMouseWheel="OnSidebarListMouseWheel">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="#1A2740" BorderBrush="#2E4A73" BorderThickness="1"
@@ -384,12 +482,30 @@
                         <TextBlock x:Name="VirtualEmptyHint" FontSize="10" TextWrapping="Wrap" Visibility="Collapsed"
                                    Foreground="{StaticResource SubtleTextBrush}" Margin="0,0,0,0"
                                    Text="No virtual device found. Install Voicemeeter or VB-Cable to feed apps like Discord."/>
+                        </StackPanel>
 
                         <!-- MODIFIERS -->
-                        <StackPanel Orientation="Horizontal" Margin="0,18,0,4">
-                            <TextBlock Text="MODIFIERS" FontSize="11" FontWeight="Bold"
-                                       Foreground="#E0A63A" VerticalAlignment="Center"/>
-                        </StackPanel>
+                        <ToggleButton x:Name="ModifiersToggle" Style="{StaticResource SectionToggleStyle}"
+                                      Tag="ModifiersSection" IsChecked="True" Click="OnSectionToggle">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="MODIFIERS" FontSize="11" FontWeight="Bold"
+                                           Foreground="#E0A63A" VerticalAlignment="Center"/>
+                                <TextBlock Text="▾" FontSize="10" Foreground="#5A6478" Margin="8,0,0,0"
+                                           VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="▾"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="False">
+                                                    <Setter Property="Text" Value="▸"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </ToggleButton>
+                        <StackPanel x:Name="ModifiersSection">
                         <TextBlock Text="Drop between a source and an output to shape the signal."
                                    FontSize="10" TextWrapping="Wrap"
                                    Foreground="{StaticResource SubtleTextBrush}" Margin="0,0,0,10"/>
@@ -397,7 +513,8 @@
                                  MouseDoubleClick="OnModifierDoubleClick"
                                  PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                  PreviewMouseMove="OnListPreviewMouseMove"
-                                 PreviewMouseLeftButtonUp="OnListPreviewMouseUp">
+                                 PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
+                                 PreviewMouseWheel="OnSidebarListMouseWheel">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="#2A2418" BorderBrush="#5A4A22" BorderThickness="1"
@@ -428,6 +545,7 @@
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
+                        </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>
@@ -460,8 +578,6 @@
                     <Button x:Name="StopButton" Style="{StaticResource ToolButton}" Content="■  Stop"
                             Click="OnStopClick"/>
                     <Border Width="1" Background="{StaticResource PanelBorderBrush}" Margin="6,5,14,5"/>
-                    <Button x:Name="AddSystemButton" Style="{StaticResource ToolButton}" Content="+ System audio"
-                            Click="OnAddSystemClick"/>
                     <Button x:Name="RefreshButton" Style="{StaticResource ToolButton}" Content="⟳ Refresh"
                             Click="OnRefreshClick"/>
                     <Button x:Name="ClearButton" Style="{StaticResource ToolButton}" Content="✕ Clear graph"
@@ -475,9 +591,6 @@
                     <Button x:Name="MicMuteButton" Style="{StaticResource ToolButton}" Content="🎙 Mute mic"
                             Click="OnMicMuteClick"
                             ToolTip="Kill switch for every microphone source (device inputs)"/>
-                    <Button x:Name="WaveButton" Style="{StaticResource ToolButton}" Content="Wave on"
-                            Click="OnWaveToggleClick"
-                            ToolTip="Animate a waveform on the cables while audio flows"/>
                     <Button x:Name="SettingsButton" Style="{StaticResource ToolButton}" Content="⚙ Settings"
                             Click="OnSettingsClick"
                             ToolTip="Appearance, diagnostics and other options"/>
@@ -523,7 +636,10 @@
                           PreviewMouseMove="OnGraphPanMove"
                           PreviewMouseUp="OnGraphPanUp"
                           PreviewMouseWheel="OnGraphMouseWheel">
-                <Grid x:Name="GraphHost" ClipToBounds="False">
+                    <Grid x:Name="GraphHost" ClipToBounds="False" PreviewMouseRightButtonDown="OnCanvasRightButtonDown">
+                        <Grid.ContextMenu>
+                            <ContextMenu Opened="OnCanvasContextMenuOpening"/>
+                        </Grid.ContextMenu>
                     <Grid.Background>
                         <!-- A DrawingBrush is used instead of a VisualBrush on
                              purpose: a VisualBrush re-renders a visual tree for
