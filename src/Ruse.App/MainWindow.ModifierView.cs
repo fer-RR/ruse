@@ -105,7 +105,8 @@ public partial class MainWindow
             stack.Children.Add(chips);
         }
 
-        // A generic slider for every parameter the modifier's processors expose.
+        // One editor per parameter the modifier's processors expose. The
+        // shared editor picks the right widget for each kind of parameter.
         foreach (var processor in modifier.Processors)
         {
             if (processor is not IParameterizedProcessor parameterized)
@@ -115,122 +116,17 @@ public partial class MainWindow
 
             foreach (var parameter in parameterized.Parameters)
             {
-                if (parameter.IsToggle)
-                {
-                    var check = new CheckBox
-                    {
-                        Content = parameter.Name,
-                        IsChecked = parameter.Get() >= 0.5f,
-                        Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C9D1E1")),
-                        FontSize = 11,
-                        Margin = new Thickness(PortLabelGutter, 2, PortLabelGutter, 6),
-                    };
-                    check.Checked += (_, _) => parameter.Set(1f);
-                    check.Unchecked += (_, _) => parameter.Set(0f);
-                    stack.Children.Add(check);
-                    continue;
-                }
-
-                if (parameter.IsChoice)
-                {
-                    // A choice parameter shows its options in a drop-down; the
-                    // value is the index of the selected one.
-                    var choiceLabel = new TextBlock
-                    {
-                        Text = parameter.Name,
-                        Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#8A93A6")),
-                        FontSize = 10,
-                        Margin = new Thickness(PortLabelGutter, 2, PortLabelGutter, 0),
-                    };
-
-                    var combo = new ComboBox
-                    {
-                        Margin = new Thickness(PortLabelGutter, 0, PortLabelGutter, 6),
-                        Height = 22,
-                        FontSize = 11,
-                        Padding = new Thickness(4, 1, 4, 1),
-                    };
-
-                    foreach (string option in parameter.Options)
-                    {
-                        combo.Items.Add(option);
-                    }
-
-                    int selected = (int)Math.Round(parameter.Get());
-                    combo.SelectedIndex = selected >= 0 && selected < parameter.Options.Length ? selected : -1;
-
-                    float lastChoice = parameter.Get();
-                    combo.SelectionChanged += (_, _) =>
-                    {
-                        int index = combo.SelectedIndex;
-                        if (index < 0)
-                        {
-                            return;
-                        }
-
-                        parameter.Set(index);
-                        choiceLabel.Text = $"{parameter.Name}: {parameter.Options[index]}";
-                        PushParameter(vm, parameter.Name, lastChoice, index);
-                        lastChoice = index;
-                    };
-
-                    stack.Children.Add(choiceLabel);
-                    stack.Children.Add(combo);
-                    continue;
-                }
-
-                bool logarithmic = parameter.Logarithmic && parameter.Min > 0 && parameter.Max > parameter.Min;
-
-                string Format(float value) =>
-                    string.IsNullOrEmpty(parameter.Unit)
-                        ? $"{parameter.Name}: {value:0.##}"
-                        : $"{parameter.Name}: {value:0.#} {parameter.Unit}";
-
-                var label = new TextBlock
-                {
-                    Text = Format(parameter.Get()),
-                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#8A93A6")),
-                    FontSize = 10,
-                    TextTrimming = TextTrimming.CharacterEllipsis,
-                    Margin = new Thickness(PortLabelGutter, 2, PortLabelGutter, 0),
-                };
-
-                var slider = new Slider
-                {
-                    Minimum = logarithmic ? Math.Log10(parameter.Min) : parameter.Min,
-                    Maximum = logarithmic ? Math.Log10(parameter.Max) : parameter.Max,
-                    Value = logarithmic
-                        ? Math.Log10(Math.Clamp(parameter.Get(), parameter.Min, parameter.Max))
-                        : Math.Clamp(parameter.Get(), parameter.Min, parameter.Max),
-                    Margin = new Thickness(PortLabelGutter, 0, PortLabelGutter, 6),
-                    Height = 20,
-                };
-
-                // Whole-number parameters step in units, so the slider snaps and
-                // the label shows the value the effect really holds.
-                if (parameter.IsInteger)
-                {
-                    slider.TickFrequency = 1;
-                    slider.IsSnapToTickEnabled = true;
-                }
-
                 float lastParam = parameter.Get();
-                slider.ValueChanged += (_, _) =>
+
+                var editor = ParameterEditor.Create(parameter, v =>
                 {
-                    float value = logarithmic ? (float)Math.Pow(10, slider.Value) : (float)slider.Value;
-                    if (parameter.IsInteger)
-                    {
-                        value = MathF.Round(value);
-                    }
+                    parameter.Set(v);
+                    PushParameter(vm, parameter.Name, lastParam, v);
+                    lastParam = v;
+                });
 
-                    parameter.Set(value);
-                    label.Text = Format(parameter.Get());
-                    PushParameter(vm, parameter.Name, lastParam, value);
-                    lastParam = value;
-                };
-
-                stack.Children.Add(label);
-                stack.Children.Add(slider);
+                editor.Margin = new Thickness(PortLabelGutter, 0, PortLabelGutter, 2);
+                stack.Children.Add(editor);
             }
         }
 

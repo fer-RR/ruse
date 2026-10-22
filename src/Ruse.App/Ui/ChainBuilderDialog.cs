@@ -164,7 +164,9 @@ public static class ChainBuilderDialog
 
                 content.Children.Add(header);
 
-                // Parameters.
+                // Parameters: the same widgets the modifier node uses, so a
+                // choice is a drop-down and a switch is a checkbox in both
+                // places.
                 var live = AudioProcessorCatalog.Create(element.TypeId);
                 if (live is IParameterizedProcessor parameterized)
                 {
@@ -176,31 +178,12 @@ public static class ChainBuilderDialog
                             element.Parameters[parameter.Name] = value;
                         }
 
-                        var label = new TextBlock
+                        var editor = ParameterEditor.Create(parameter, v =>
                         {
-                            Text = $"{parameter.Name}: {value:0.##}{(!string.IsNullOrEmpty(parameter.Unit) ? " " + parameter.Unit : "")}",
-                            FontSize = 11,
-                            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#8892A6")),
-                            Margin = new Thickness(0, 6, 0, 0),
-                        };
-
-                        var slider = new Slider
-                        {
-                            Minimum = parameter.Min,
-                            Maximum = parameter.Max,
-                            Value = Math.Clamp(value, parameter.Min, parameter.Max),
-                            Height = 18,
-                        };
-
-                        slider.ValueChanged += (_, _) =>
-                        {
-                            float v = (float)slider.Value;
                             element.Parameters[parameter.Name] = v;
-                            label.Text = $"{parameter.Name}: {v:0.##}{(!string.IsNullOrEmpty(parameter.Unit) ? " " + parameter.Unit : "")}";
-                        };
+                        });
 
-                        content.Children.Add(label);
-                        content.Children.Add(slider);
+                        content.Children.Add(editor);
                     }
                 }
 
