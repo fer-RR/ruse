@@ -594,6 +594,9 @@
                     <Button x:Name="SettingsButton" Style="{StaticResource ToolButton}" Content="⚙ Settings"
                             Click="OnSettingsClick"
                             ToolTip="Appearance, diagnostics and other options"/>
+                    <Button x:Name="ShortcutsButton" Style="{StaticResource ToolButton}" Content="? Shortcuts"
+                            Click="OnShortcutsClick"
+                            ToolTip="Keyboard shortcuts (F1)"/>
                     <Border Width="1" Background="{StaticResource PanelBorderBrush}" Margin="6,5,14,5"/>
                     <Button x:Name="UndoButton" Style="{StaticResource ToolButton}" Content="↶ Undo"
                             Click="OnUndoClick" IsEnabled="False"

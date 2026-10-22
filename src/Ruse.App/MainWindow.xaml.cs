@@ -2538,6 +2538,15 @@ public partial class MainWindow : Window
 
         long frameStart = System.Diagnostics.Stopwatch.GetTimestamp();
 
+        _renderTicks++;
+        double tick = _waveClock.Elapsed.TotalSeconds;
+        if (tick - _renderLastSecond >= 1.0)
+        {
+            _renderFps = _renderTicks / (tick - _renderLastSecond);
+            _renderTicks = 0;
+            _renderLastSecond = tick;
+        }
+
         // Repainting the waveform invalidates the window's render surface, so
         // the animation is capped at 30 fps: the effect is subtle, and the
         // difference is not worth a third of a core.
@@ -2566,6 +2575,11 @@ public partial class MainWindow : Window
     private double _renderSeconds;
     private double _renderMaxSeconds;
     private double _startupMs;
+
+    // Frame-rate bookkeeping (also reported by the performance test).
+    private int _renderTicks;
+    private double _renderFps;
+    private double _renderLastSecond;
 
     // Cost of the periodic UI work, in milliseconds (accumulated).
     private double _refreshMs;
@@ -3095,9 +3109,10 @@ public partial class MainWindow : Window
         return null;
     }
 
+    private void OnShortcutsClick(object sender, RoutedEventArgs e) => ShortcutDialog.Show(this);
+
     private void OnSettingsClick(object sender, RoutedEventArgs e)
-    {
-        var result = SettingsDialog.Show(this, _settings.HighlightMutedNodes, _settings.AnimateCables, _settings.MinimapMode);
+    {        var result = SettingsDialog.Show(this, _settings.HighlightMutedNodes, _settings.AnimateCables, _settings.MinimapMode);
         if (result == null)
         {
             return;
@@ -3525,34 +3540,214 @@ public partial class MainWindow : Window
 
     private void OnWindowKeyDown(object sender, KeyEventArgs e)
     {
-        if ((Keyboard.Modifiers & ModifierKeys.Control) == 0)
+        // A text field gets the keyboard to itself - except F1, which should
+        // still open the shortcut list.
+        if (Keyboard.FocusedElement is TextBox && e.Key != Key.F1)
         {
             return;
         }
 
-        // Let the search box keep its own text undo.
-        if (Keyboard.FocusedElement is TextBox)
+        bool ctrl = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+        bool shift = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+
+        if (ctrl)
+        {
+            switch (e.Key)
+            {
+                case Key.Z:
+                    e.Handled = true;
+                    if (shift)
+                    {
+                        Redo();
+                    }
+                    else
+                    {
+                        Undo();
+                    }
+
+                    return;
+                case Key.Y:
+                    e.Handled = true;
+                    Redo();
+                    return;
+                case Key.S:
+                    e.Handled = true;
+                    OnSavePresetClick(this, new RoutedEventArgs());
+                    return;
+                case Key.O:
+                    e.Handled = true;
+                    OnLoadPresetClick(this, new RoutedEventArgs());
+                    return;
+                case Key.F:
+                    e.Handled = true;
+                    SearchBox.Focus();
+                    SearchBox.SelectAll();
+                    return;
+                case Key.D:
+                    e.Handled = true;
+                    DuplicateSelected();
+                    return;
+                case Key.D1:
+                case Key.D2:
+                case Key.D3:
+                case Key.D4:
+                case Key.D5:
+                    e.Handled = true;
+                    ToggleSidebarSection(e.Key - Key.D1);
+                    return;
+            }
+
+            return;
+        }
+
+        switch (e.Key)
+        {
+            case Key.Escape:
+                if (_dragLine != null)
+                {
+                    // Cancel a cable that is being dragged.
+                    NodeCanvas.ReleaseMouseCapture();
+                    ConnectionCanvas.Children.Remove(_dragLine);
+                    _dragLine = null;
+                    _dragFrom = null;
+                    SetDropHighlight(null);
+                    SetStatus("Connection cancelled.");
+                    e.Handled = true;
+                }
+
+                return;
+            case Key.Delete:
+            case Key.Back:
+                if (_selected != null)
+                {
+                    e.Handled = true;
+                    RemoveNode(_selected);
+                }
+
+                return;
+            case Key.M:
+                if (_selected != null)
+                {
+                    e.Handled = true;
+                    _selected.Muted = !_selected.Muted;
+                    SetStatus($"'{_selected.Title}' {( _selected.Muted ? "muted" : "unmuted")}.");
+                }
+
+                return;
+            case Key.F:
+                e.Handled = true;
+                FitGraphToView();
+                return;
+            case Key.D0:
+            case Key.NumPad0:
+                e.Handled = true;
+                ResetZoom();
+                return;
+            case Key.OemPlus:
+            case Key.Add:
+            case Key.OemMinus:
+            case Key.Subtract:
+                e.Handled = true;
+                ZoomAt(ZoomAnchorPoint(), e.Key == Key.OemPlus || e.Key == Key.Add ? 1.15 : 1 / 1.15);
+                return;
+            case Key.F1:
+                e.Handled = true;
+                ShortcutDialog.Show(this);
+                return;
+        }
+    }
+
+    /// <summary>The point in the viewport the zoom should keep in place.</summary>
+    private Point ZoomAnchorPoint()
+    {
+        double w = GraphScroll.ActualWidth > 0 ? GraphScroll.ActualWidth : 800;
+        double h = GraphScroll.ActualHeight > 0 ? GraphScroll.ActualHeight : 600;
+        return new Point(w / 2, h / 2);
+    }
+
+    /// <summary>Collapses or expands one of the sidebar sections.</summary>
+    private void ToggleSidebarSection(int index)
+    {
+        ToggleButton[] toggles = { AppsToggle, OutputsToggle, InputsToggle, VirtualToggle, ModifiersToggle };
+        if (index < 0 || index >= toggles.Length)
         {
             return;
         }
 
-        if (e.Key == Key.Z)
+        ToggleButton toggle = toggles[index];
+        toggle.IsChecked = toggle.IsChecked != true;
+        OnSectionToggle(toggle, new RoutedEventArgs());
+    }
+
+    /// <summary>Copies the selected node, a little to the right of the original.</summary>
+    private void DuplicateSelected()
+    {
+        if (_selected == null)
         {
-            e.Handled = true;
-            if ((Keyboard.Modifiers & ModifierKeys.Shift) == 0)
-            {
-                Undo();
-            }
-            else
-            {
-                Redo();
-            }
+            return;
         }
-        else if (e.Key == Key.Y)
+
+        var data = CaptureNodeData(_selected);
+        NodeViewModel? copy = RestoreNode(data with { X = data.X + 40, Y = data.Y + 40 });
+        if (copy != null)
         {
-            e.Handled = true;
-            Redo();
+            _selected = copy;
+            SetStatus($"Duplicated '{data.Title}'.");
         }
+    }
+
+    /// <summary>Zooms and scrolls so every node fits in the view.</summary>
+    private void FitGraphToView()
+    {
+        if (_nodes.Count == 0)
+        {
+            return;
+        }
+
+        double minX = double.MaxValue, minY = double.MaxValue;
+        double maxX = double.MinValue, maxY = double.MinValue;
+
+        foreach (var vm in _nodes)
+        {
+            double nodeHeight = vm.Height;
+            if (_nodeVisuals.TryGetValue(vm, out var body) && body.ActualHeight > 0)
+            {
+                nodeHeight = body.ActualHeight;
+            }
+
+            minX = Math.Min(minX, vm.X);
+            minY = Math.Min(minY, vm.Y);
+            maxX = Math.Max(maxX, vm.X + vm.Width);
+            maxY = Math.Max(maxY, vm.Y + nodeHeight);
+        }
+
+        double viewportW = GraphScroll.ViewportWidth > 0 ? GraphScroll.ViewportWidth : GraphScroll.ActualWidth;
+        double viewportH = GraphScroll.ViewportHeight > 0 ? GraphScroll.ViewportHeight : GraphScroll.ActualHeight;
+        if (viewportW <= 0 || viewportH <= 0)
+        {
+            return;
+        }
+
+        const double margin = 60;
+        double worldW = Math.Max(maxX - minX, 1);
+        double worldH = Math.Max(maxY - minY, 1);
+        double scale = Math.Clamp(
+            Math.Min((viewportW - margin) / worldW, (viewportH - margin) / worldH),
+            MinZoom,
+            MaxZoom);
+
+        _zoomTransform.ScaleX = scale;
+        _zoomTransform.ScaleY = scale;
+        UpdateGraphExtent();
+        UpdateLayout();
+
+        // Centre the content.
+        GraphScroll.ScrollToHorizontalOffset(((minX + (worldW / 2)) * scale) - (viewportW / 2));
+        GraphScroll.ScrollToVerticalOffset(((minY + (worldH / 2)) * scale) - (viewportH / 2));
+
+        UpdateCableThickness();
+        UpdateZoomIndicator();
+        SetStatus("Graph fitted to the view.");
     }
 
     // ---------- Problem reporting ----------
@@ -4901,6 +5096,10 @@ public partial class MainWindow : Window
         report.Add(
             $"wave animation: {frameCostUs:0.0} µs avg/frame, {maxCostUs:0} µs worst " +
             $"({frameCostUs / 16667 * 100:0.00}% of a 60 fps frame budget)");
+
+        report.Add(
+            $"render tick: {_renderFps:0} fps (WPF raises it once per display frame), " +
+            $"wave repaints capped at 30 fps");
 
         report.Add(
             $"periodic work over {seconds:0}s: refresh x{_refreshCount - refreshCount0} = {_refreshMs - refreshMs0:0} ms, " +
