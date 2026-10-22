@@ -59,6 +59,10 @@ public partial class MainWindow : Window
 
         GraphScroll.SizeChanged += OnGraphResized;
 
+        // Apply the saved appearance options.
+        _wavesEnabled = _settings.AnimateCables;
+        WaveButton.Content = _wavesEnabled ? "Wave on" : "Wave off";
+
         // The cable animation attaches its own render tick while audio flows
         // (see UpdateCableAnimation) — it is not attached permanently.
         _waveOverlay = new WaveOverlay(this);
@@ -1904,6 +1908,7 @@ public partial class MainWindow : Window
             else if (args.PropertyName == nameof(NodeViewModel.Muted))
             {
                 muteButton.Content = vm.Muted ? "Unmute" : "Mute";
+                UpdateNodeAppearance(vm);
             }
         };
 
@@ -2179,6 +2184,46 @@ public partial class MainWindow : Window
     private static readonly Brush NodeIdleBorder =
         new SolidColorBrush((Color)ColorConverter.ConvertFromString("#2A2F3D"));
 
+    private static readonly Brush NodeMutedBorder =
+        new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF5C5C"));
+
+    /// <summary>
+    /// Paints a node's border: the drop target wins, then a muted node gets a
+    /// red stroke, otherwise the normal idle border.
+    /// </summary>
+    private void UpdateNodeAppearance(NodeViewModel vm)
+    {
+        if (!_nodeVisuals.TryGetValue(vm, out var body))
+        {
+            return;
+        }
+
+        if (ReferenceEquals(vm, _dropHighlight))
+        {
+            body.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(vm.Accent));
+            body.BorderThickness = new Thickness(2);
+        }
+        else if (_settings.HighlightMutedNodes && vm.Muted)
+        {
+            body.BorderBrush = NodeMutedBorder;
+            body.BorderThickness = new Thickness(2);
+        }
+        else
+        {
+            body.BorderBrush = NodeIdleBorder;
+            body.BorderThickness = new Thickness(1);
+        }
+    }
+
+    /// <summary>Re-paints every node, e.g. after the muted-highlight setting changed.</summary>
+    private void RefreshNodeAppearance()
+    {
+        foreach (var vm in _nodes)
+        {
+            UpdateNodeAppearance(vm);
+        }
+    }
+
     /// <summary>Highlights the node a dragged cable would connect to.</summary>
     private void SetDropHighlight(NodeViewModel? vm)
     {
@@ -2187,18 +2232,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_dropHighlight != null && _nodeVisuals.TryGetValue(_dropHighlight, out var previous))
-        {
-            previous.BorderBrush = NodeIdleBorder;
-            previous.BorderThickness = new Thickness(1);
-        }
-
+        var previous = _dropHighlight;
         _dropHighlight = vm;
 
-        if (vm != null && _nodeVisuals.TryGetValue(vm, out var body))
+        if (previous != null)
         {
-            body.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(vm.Accent));
-            body.BorderThickness = new Thickness(2);
+            UpdateNodeAppearance(previous);
+        }
+
+        if (vm != null)
+        {
+            UpdateNodeAppearance(vm);
         }
     }
 
@@ -2532,11 +2576,34 @@ public partial class MainWindow : Window
     private void OnWaveToggleClick(object sender, RoutedEventArgs e)
     {
         _wavesEnabled = !_wavesEnabled;
+        _settings.AnimateCables = _wavesEnabled;
+        _settings.Save();
         WaveButton.Content = _wavesEnabled ? "Wave on" : "Wave off";
         UpdateCableAnimation();
         SetStatus(_wavesEnabled
             ? "Cable waveforms on."
             : "Cable waveforms off (saves CPU while the window is in software rendering).");
+    }
+
+    private void OnSettingsClick(object sender, RoutedEventArgs e)
+    {
+        var result = SettingsDialog.Show(this, _settings.HighlightMutedNodes, _settings.AnimateCables);
+        if (result == null)
+        {
+            return;
+        }
+
+        _settings.HighlightMutedNodes = result.HighlightMutedNodes;
+        _settings.AnimateCables = result.AnimateCables;
+        _settings.Save();
+
+        // Apply the appearance options right away.
+        _wavesEnabled = result.AnimateCables;
+        WaveButton.Content = _wavesEnabled ? "Wave on" : "Wave off";
+        UpdateCableAnimation();
+        RefreshNodeAppearance();
+
+        SetStatus("Settings saved.");
     }
 
     // ---------- Problem reporting ----------
@@ -2563,6 +2630,36 @@ public partial class MainWindow : Window
         int count = AppLog.ErrorCount;
         ErrorButton.Content = $"⚠ {count}";
         ErrorButton.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Self-test for the appearance options: a muted node must get a red
+    /// border while the option is on, and a normal border while it is off.
+    /// </summary>
+    public string RunAppearanceSelfTest()
+    {
+        var vm = AddModifierNodeCore(new ModifierNode("Appearance test"), "Appearance test", 420, 420);
+        if (vm == null || !_nodeVisuals.TryGetValue(vm, out var body))
+        {
+            return "appearance: could not create the test node -> FAIL";
+        }
+
+        vm.Muted = true;
+
+        _settings.HighlightMutedNodes = true;
+        UpdateNodeAppearance(vm);
+        bool redWhenOn = ReferenceEquals(body.BorderBrush, NodeMutedBorder);
+
+        _settings.HighlightMutedNodes = false;
+        UpdateNodeAppearance(vm);
+        bool plainWhenOff = ReferenceEquals(body.BorderBrush, NodeIdleBorder);
+
+        _settings.HighlightMutedNodes = true;
+        UpdateNodeAppearance(vm);
+
+        bool pass = redWhenOn && plainWhenOff;
+        return $"appearance: red border when on={redWhenOn}, plain when off={plainWhenOff} " +
+               $"-> {(pass ? "PASS" : "FAIL")}";
     }
 
     /// <summary>

@@ -17,6 +17,12 @@ public sealed class AppSettings
     public bool Maximized { get; set; }
     public bool AutoLoadSession { get; set; } = true;
 
+    /// <summary>Draw a red border around muted nodes so they stand out.</summary>
+    public bool HighlightMutedNodes { get; set; } = true;
+
+    /// <summary>Animate a waveform on the cables while audio flows.</summary>
+    public bool AnimateCables { get; set; } = true;
+
     /// <summary>
     /// Where settings and the last session live. Self-tests override this so they
     /// never read or overwrite the user's real data.

@@ -477,6 +477,9 @@
                     <Button x:Name="WaveButton" Style="{StaticResource ToolButton}" Content="Wave on"
                             Click="OnWaveToggleClick"
                             ToolTip="Animate a waveform on the cables while audio flows"/>
+                    <Button x:Name="SettingsButton" Style="{StaticResource ToolButton}" Content="⚙ Settings"
+                            Click="OnSettingsClick"
+                            ToolTip="Appearance, diagnostics and other options"/>
                 </WrapPanel>
             </Border>
 
