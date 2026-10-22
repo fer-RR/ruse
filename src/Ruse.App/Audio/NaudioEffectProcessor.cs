@@ -30,9 +30,8 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
         {
             foreach (var parameter in parameterized.Parameters)
             {
-                // Meters are display-only, and choice parameters need a combo box
-                // rather than the generic slider UI, so leave them out for now.
-                if (parameter.Kind is EffectParameterKind.Meter or EffectParameterKind.Choice)
+                // Meters are display-only, so they are left out.
+                if (parameter.Kind == EffectParameterKind.Meter)
                 {
                     continue;
                 }
@@ -50,6 +49,26 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
                         IsToggle = true,
                         Get = () => source.Value >= 0.5f ? 1f : 0f,
                         Set = v => source.Value = v >= 0.5f ? 1f : 0f,
+                    });
+                    continue;
+                }
+
+                if (source.Kind == EffectParameterKind.Choice)
+                {
+                    // A choice parameter carries the option names; the value is
+                    // the index of the selected one.
+                    var choices = source.Choices?.ToArray() ?? Array.Empty<string>();
+                    mapped.Add(new AudioParameter
+                    {
+                        Name = source.Name,
+                        Min = 0f,
+                        Max = Math.Max(0, choices.Length - 1),
+                        Default = source.DefaultValue,
+                        IsChoice = true,
+                        IsInteger = true,
+                        Options = choices,
+                        Get = () => source.Value,
+                        Set = v => source.Value = Math.Clamp(v, 0f, Math.Max(0, choices.Length - 1)),
                     });
                     continue;
                 }

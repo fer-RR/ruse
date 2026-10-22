@@ -1193,6 +1193,54 @@ public partial class MainWindow : Window
                     continue;
                 }
 
+                if (parameter.IsChoice)
+                {
+                    // A choice parameter shows its options in a drop-down; the
+                    // value is the index of the selected one.
+                    var choiceLabel = new TextBlock
+                    {
+                        Text = parameter.Name,
+                        Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#8A93A6")),
+                        FontSize = 10,
+                        Margin = new Thickness(PortLabelGutter, 2, PortLabelGutter, 0),
+                    };
+
+                    var combo = new ComboBox
+                    {
+                        Margin = new Thickness(PortLabelGutter, 0, PortLabelGutter, 6),
+                        Height = 22,
+                        FontSize = 11,
+                        Padding = new Thickness(4, 1, 4, 1),
+                    };
+
+                    foreach (string option in parameter.Options)
+                    {
+                        combo.Items.Add(option);
+                    }
+
+                    int selected = (int)Math.Round(parameter.Get());
+                    combo.SelectedIndex = selected >= 0 && selected < parameter.Options.Length ? selected : -1;
+
+                    float lastChoice = parameter.Get();
+                    combo.SelectionChanged += (_, _) =>
+                    {
+                        int index = combo.SelectedIndex;
+                        if (index < 0)
+                        {
+                            return;
+                        }
+
+                        parameter.Set(index);
+                        choiceLabel.Text = $"{parameter.Name}: {parameter.Options[index]}";
+                        PushParameter(vm, parameter.Name, lastChoice, index);
+                        lastChoice = index;
+                    };
+
+                    stack.Children.Add(choiceLabel);
+                    stack.Children.Add(combo);
+                    continue;
+                }
+
                 bool logarithmic = parameter.Logarithmic && parameter.Min > 0 && parameter.Max > parameter.Min;
 
                 string Format(float value) =>

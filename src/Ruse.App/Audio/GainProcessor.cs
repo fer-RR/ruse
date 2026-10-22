@@ -26,6 +26,15 @@ public sealed class AudioParameter
     /// </summary>
     public bool IsInteger { get; init; }
 
+    /// <summary>
+    /// The parameter is a choice between named options. <see cref="Options"/>
+    /// holds the names and the value is the index of the selected one.
+    /// </summary>
+    public bool IsChoice { get; init; }
+
+    /// <summary>Option names for a choice parameter.</summary>
+    public string[] Options { get; init; } = Array.Empty<string>();
+
     /// <summary>Reads the current value (safe from any thread).</summary>
     public required Func<float> Get { get; init; }
 
