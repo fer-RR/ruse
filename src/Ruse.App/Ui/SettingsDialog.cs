@@ -9,7 +9,6 @@ namespace Ruse.App.Ui;
 public sealed class SettingsResult
 {
     public bool HighlightMutedNodes { get; init; }
-    public bool AnimateCables { get; init; }
     public int MinimapMode { get; init; } = 2;
 }
 
@@ -19,7 +18,7 @@ public sealed class SettingsResult
 /// </summary>
 public static class SettingsDialog
 {
-    public static SettingsResult? Show(Window owner, bool highlightMutedNodes, bool animateCables, int minimapMode = 2)
+    public static SettingsResult? Show(Window owner, bool highlightMutedNodes, int minimapMode = 2)
     {
         var window = new Window
         {
@@ -46,16 +45,7 @@ public static class SettingsDialog
             Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C9D1E1")),
         };
 
-        var waveBox = new CheckBox
-        {
-            Content = "Animate a waveform on the cables while audio flows",
-            IsChecked = animateCables,
-            Margin = new Thickness(0, 4, 0, 12),
-            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C9D1E1")),
-        };
-
         root.Children.Add(mutedBox);
-        root.Children.Add(waveBox);
 
         // ---- Mini-map ----
         root.Children.Add(SectionHeader("Canvas"));
@@ -157,7 +147,6 @@ public static class SettingsDialog
             result = new SettingsResult
             {
                 HighlightMutedNodes = mutedBox.IsChecked == true,
-                AnimateCables = waveBox.IsChecked == true,
                 MinimapMode = minimapChanged,
             };
             window.DialogResult = true;

@@ -62,25 +62,14 @@ public partial class MainWindow : Window
         RefreshChains();
 
         // Apply the saved appearance options.
-        _wavesEnabled = _settings.AnimateCables;
-
         _history.Changed += UpdateHistoryButtons;
         UpdateHistoryButtons();
 
-        // The cable animation attaches its own render tick while audio flows
-        // (see UpdateCableAnimation) — it is not attached permanently.
-        _waveOverlay = new WaveOverlay(this);
-        Canvas.SetLeft(_waveOverlay, 0);
-        Canvas.SetTop(_waveOverlay, 0);
-        ConnectionCanvas.Children.Add(_waveOverlay);
-        GraphScroll.ScrollChanged += (_, _) => UpdateWaveOverlayBounds();
         Activated += (_, _) =>
         {
-            UpdateCableAnimation();
             _refreshOnActivate = true;
             RefreshApps();
         };
-        Deactivated += (_, _) => UpdateCableAnimation();
 
         // The whole graph world scales through this one transform, so the
         // cables and the nodes always stay aligned at any zoom level.
@@ -121,11 +110,6 @@ public partial class MainWindow : Window
 
         Closing += (_, _) =>
         {
-            if (_animationAttached)
-            {
-                CompositionTarget.Rendering -= OnRender;
-            }
-
             SaveWindowState();
             _sounds.Dispose();
         };
@@ -2516,210 +2500,13 @@ public partial class MainWindow : Window
         ConnectionCanvas.Children.Add(cable);
         ConnectionCanvas.Children.Add(hitPath);
 
-        // The waveform overlay paints on top of the cables.
-        if (_waveOverlay != null)
-        {
-            ConnectionCanvas.Children.Remove(_waveOverlay);
-            ConnectionCanvas.Children.Add(_waveOverlay);
-        }
-
         UpdateConnections();
     }
 
-    /// <summary>
-    /// Paints the travelling waveforms on the cables.
-    ///
-    /// The wave is drawn straight onto the drawing context instead of driving a
-    /// Path's geometry: a Path whose bounds change re-measures the whole
-    /// canvas, which cost a fifth of a core in full-window repaints. Painting
-    /// here keeps the change in the render pass, allocates nothing, and lets
-    /// WPF composite the rest of the window untouched.
-    /// </summary>
-    private sealed class WaveOverlay : FrameworkElement
-    {
-        private readonly MainWindow _owner;
-
-        public WaveOverlay(MainWindow owner)
-        {
-            _owner = owner;
-            IsHitTestVisible = false;
-        }
-
-        protected override Size MeasureOverride(Size availableSize)
-        {
-            // The overlay must not influence layout in any way.
-            return new Size(0, 0);
-        }
-
-        protected override void OnRender(DrawingContext dc)
-        {
-            _owner.DrawWaves(dc);
-        }
-    }
-
-    private WaveOverlay? _waveOverlay;
-
-    private void DrawWaves(DrawingContext dc)
-    {
-        if (_connections.Count == 0)
-        {
-            return;
-        }
-
-        var pen = new Pen(new SolidColorBrush((Color)ColorConverter.ConvertFromString("#BFD8FF")), 2)
-        {
-            StartLineCap = PenLineCap.Round,
-            EndLineCap = PenLineCap.Round,
-        };
-
-        double time = _waveClock.Elapsed.TotalSeconds;
-        double phase = time * 7.5;
-
-        // The overlay only covers the visible part of the world, so the repaint
-        // is limited to what the user can actually see.
-        Point origin = _waveOrigin;
-
-        foreach (var conn in _connections)
-        {
-            float level = conn.Level;
-            if (level <= 0.004f)
-            {
-                continue;
-            }
-
-            Point start = conn.Start;
-            Point end = conn.End;
-            var (c1, c2) = CableControls(start, end);
-
-            double amplitude = WaveAmplitude * Math.Clamp(level * 1.8, 0, 1);
-
-            Point previous = default;
-            for (int i = 0; i <= WaveSegments; i++)
-            {
-                double u = i / (double)WaveSegments;
-                Point p = CubicPoint(start, c1, c2, end, u);
-                var (dx, dy) = CubicTangent(start, c1, c2, end, u);
-                double len = Math.Sqrt((dx * dx) + (dy * dy));
-                if (len < 0.0001)
-                {
-                    len = 1;
-                }
-
-                // Normal of the curve, so the wave always crosses the cable.
-                double nx = -dy / len;
-                double ny = dx / len;
-
-                // Taper to zero at both ends so the wave stays inside the ports.
-                double taper = Math.Sin(Math.PI * u);
-                double offset = Math.Sin((u * Math.PI * 6) + phase) * amplitude * taper;
-                Point current = new Point(p.X + (nx * offset), p.Y + (ny * offset));
-
-                if (i > 0)
-                {
-                    dc.DrawLine(pen, new Point(previous.X - origin.X, previous.Y - origin.Y),
-                                    new Point(current.X - origin.X, current.Y - origin.Y));
-                }
-
-                previous = current;
-            }
-        }
-    }
-
-    private Point _waveOrigin;
-
-    /// <summary>
-    /// Keeps the waveform overlay exactly over the visible slice of the world,
-    /// so an animation frame only repaints what is on screen.
-    /// </summary>
-    private void UpdateWaveOverlayBounds()
-    {
-        if (_waveOverlay == null)
-        {
-            return;
-        }
-
-        double scale = Math.Max(_zoomTransform.ScaleX, 0.01);
-        double viewWidth = GraphScroll.ViewportWidth > 0 ? GraphScroll.ViewportWidth : GraphScroll.ActualWidth;
-        double viewHeight = GraphScroll.ViewportHeight > 0 ? GraphScroll.ViewportHeight : GraphScroll.ActualHeight;
-        if (viewWidth <= 0 || viewHeight <= 0)
-        {
-            return;
-        }
-
-        double originX = GraphScroll.HorizontalOffset / scale;
-        double originY = GraphScroll.VerticalOffset / scale;
-
-        Canvas.SetLeft(_waveOverlay, originX);
-        Canvas.SetTop(_waveOverlay, originY);
-        SetSize(_waveOverlay, viewWidth / scale, viewHeight / scale);
-        _waveOrigin = new Point(originX, originY);
-    }
-
-    /// <summary>Number of straight segments used to draw a cable's waveform.</summary>
-    private const int WaveSegments = 48;
-
-    /// <summary>How far the waveform can swing from the cable, in pixels.</summary>
-    private const double WaveAmplitude = 7;
-
-    private readonly System.Diagnostics.Stopwatch _waveClock = System.Diagnostics.Stopwatch.StartNew();
     private readonly System.Diagnostics.Stopwatch _startupClock = System.Diagnostics.Stopwatch.StartNew();
 
-    /// <summary>
-    /// Draws the travelling waveform on every cable that is carrying audio.
-    /// Runs on the render tick so the motion is smooth; the geometry is
-    /// updated in place, so nothing is allocated per frame.
-    /// </summary>
-    private void OnRender(object? sender, EventArgs e)
-    {
-        if (_connections.Count == 0)
-        {
-            return;
-        }
-
-        long frameStart = System.Diagnostics.Stopwatch.GetTimestamp();
-
-        _renderTicks++;
-        double tick = _waveClock.Elapsed.TotalSeconds;
-        if (tick - _renderLastSecond >= 1.0)
-        {
-            _renderFps = _renderTicks / (tick - _renderLastSecond);
-            _renderTicks = 0;
-            _renderLastSecond = tick;
-        }
-
-        // Repainting the waveform invalidates the window's render surface, so
-        // the animation is capped at 30 fps: the effect is subtle, and the
-        // difference is not worth a third of a core.
-        double now = _waveClock.Elapsed.TotalSeconds;
-        if (now - _lastWavePaint >= 1.0 / 30.0)
-        {
-            _lastWavePaint = now;
-            _waveOverlay?.InvalidateVisual();
-        }
-
-        // Frame cost bookkeeping (used by the performance self-test).
-        // Stopwatch.GetTimestamp() is in seconds, so this is already a duration.
-        double elapsedSeconds = (System.Diagnostics.Stopwatch.GetTimestamp() - frameStart)
-            / (double)System.Diagnostics.Stopwatch.Frequency;
-        _renderFrames++;
-        _renderSeconds += elapsedSeconds;
-        if (elapsedSeconds > _renderMaxSeconds)
-        {
-            _renderMaxSeconds = elapsedSeconds;
-        }
-    }
-
-    private double _lastWavePaint;
-
-    private long _renderFrames;
-    private double _renderSeconds;
-    private double _renderMaxSeconds;
+    /// <summary>Time from start-up to the first paint, in milliseconds.</summary>
     private double _startupMs;
-
-    // Frame-rate bookkeeping (also reported by the performance test).
-    private int _renderTicks;
-    private double _renderFps;
-    private double _renderLastSecond;
 
     // Cost of the periodic UI work, in milliseconds (accumulated).
     private double _refreshMs;
@@ -2728,70 +2515,6 @@ public partial class MainWindow : Window
     private int _refreshCount;
     private int _filterCount;
     private int _meterCount;
-
-    /// <summary>
-    /// Signal level on a cable: the source's own level, or — for a cable that
-    /// leaves a modifier — the level of the source feeding that chain.
-    /// </summary>
-    private float LevelForConnection(ConnectionViewModel conn)
-    {
-        if (_nodeBacking.TryGetValue(conn.From.Owner, out var fromObj) && fromObj is SourceNode source)
-        {
-            return source.MeterLevel;
-        }
-
-        return UpstreamLevel(conn.From.Owner, 0);
-    }
-
-    /// <summary>
-    /// Refreshes the cable levels and starts or stops the animation loop.
-    ///
-    /// The render tick forces WPF to repaint the window on every frame, and
-    /// this machine renders WPF in software (render tier 0), so the animation
-    /// is only attached while it is actually wanted: audio is flowing, the
-    /// wave is enabled and the window is in front.
-    /// </summary>
-    private void UpdateCableAnimation()
-    {
-        bool flowing = false;
-
-        foreach (var conn in _connections)
-        {
-            float level = LevelForConnection(conn);
-            conn.Level = level;
-            if (level > 0.004f)
-            {
-                flowing = true;
-            }
-        }
-
-        bool wanted = flowing && _wavesEnabled && IsActive;
-
-        if (wanted && !_animationAttached)
-        {
-            _animationAttached = true;
-            CompositionTarget.Rendering += OnRender;
-        }
-        else if (!wanted && _animationAttached)
-        {
-            _animationAttached = false;
-            CompositionTarget.Rendering -= OnRender;
-        }
-    }
-
-    private bool _animationAttached;
-    private bool _wavesEnabled = true;
-
-    private void OnWaveToggleClick(object sender, RoutedEventArgs e)
-    {
-        _wavesEnabled = !_wavesEnabled;
-        _settings.AnimateCables = _wavesEnabled;
-        _settings.Save();
-        UpdateCableAnimation();
-        SetStatus(_wavesEnabled
-            ? "Cable waveforms on."
-            : "Cable waveforms off (saves CPU while the window is in software rendering).");
-    }
 
     // ---------- Mini-map ----------
 
@@ -3328,20 +3051,18 @@ public partial class MainWindow : Window
     private void OnShortcutsClick(object sender, RoutedEventArgs e) => ShortcutDialog.Show(this);
 
     private void OnSettingsClick(object sender, RoutedEventArgs e)
-    {        var result = SettingsDialog.Show(this, _settings.HighlightMutedNodes, _settings.AnimateCables, _settings.MinimapMode);
+    {
+        var result = SettingsDialog.Show(this, _settings.HighlightMutedNodes, _settings.MinimapMode);
         if (result == null)
         {
             return;
         }
 
         _settings.HighlightMutedNodes = result.HighlightMutedNodes;
-        _settings.AnimateCables = result.AnimateCables;
         _settings.MinimapMode = result.MinimapMode;
         _settings.Save();
 
         // Apply the appearance options right away.
-        _wavesEnabled = result.AnimateCables;
-        UpdateCableAnimation();
         RefreshNodeAppearance();
         UpdateMinimapVisibility();
 
@@ -4599,10 +4320,6 @@ public partial class MainWindow : Window
 
         SetSize(GraphLayer, worldWidth, worldHeight);
         SetSize(GraphHost, worldWidth * scale, worldHeight * scale);
-
-        // The waveform overlay covers the visible slice of the world so it only
-        // repaints what is on screen.
-        UpdateWaveOverlayBounds();
     }
 
     private static void SetSize(FrameworkElement element, double width, double height)
@@ -4730,11 +4447,6 @@ public partial class MainWindow : Window
             {
                 conn.HitPath.StrokeThickness = hit;
             }
-
-            if (conn.Wave != null)
-            {
-                conn.Wave.StrokeThickness = WaveThickness / scale;
-            }
         }
 
         if (_dragLine != null)
@@ -4745,7 +4457,6 @@ public partial class MainWindow : Window
 
     private const double CableThickness = 2.5;
     private const double CableHitThickness = 16;
-    private const double WaveThickness = 2;
 
     private void OnGraphResized(object sender, SizeChangedEventArgs e) => UpdateGraphExtent();
 
@@ -5202,7 +4913,6 @@ public partial class MainWindow : Window
 
         SetRunState(anyRunning);
 
-        UpdateCableAnimation();
         UpdateMinimapVisibility();
         _minimap?.InvalidateVisual();
 
@@ -5216,12 +4926,11 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Measures what the app costs: CPU and allocations while idle, the same
-    /// while a graph is routing real audio, and the cost of the per-frame
-    /// cable animation. Used by --perf-test.
+    /// while a graph is routing real audio, and what the periodic UI work
+    /// (device refresh, filtering, meters) adds. Used by --perf-test.
     ///
     /// The waits are async on purpose: the UI thread must keep pumping so the
-    /// render tick (and therefore the cable animation) actually runs while we
-    /// measure it.
+    /// timers and the meters really run while we measure them.
     /// </summary>
     public async Task<string> RunPerformanceTest(uint processId, double seconds, bool useTestSink = false)
     {
@@ -5235,27 +4944,12 @@ public partial class MainWindow : Window
         // --- Idle: window open, no nodes ---
         double cpu0 = proc.TotalProcessorTime.TotalMilliseconds;
         long alloc0 = GC.GetTotalAllocatedBytes(precise: true);
-        long frames0 = _renderFrames;
         await Task.Delay((int)(seconds * 1000));
         double cpu1 = proc.TotalProcessorTime.TotalMilliseconds;
         long alloc1 = GC.GetTotalAllocatedBytes(precise: true);
-        long frames1 = _renderFrames;
         report.Add(
             $"idle {seconds:0}s: CPU {cpu1 - cpu0:0} ms ({(cpu1 - cpu0) / (seconds * 10):0.0}% of a core), " +
-            $"alloc {(alloc1 - alloc0) / 1024.0 / seconds:0.0} KiB/s, {frames1 - frames0} render frames");
-
-        // --- Idle with the animation loop detached: shows what the render
-        //     tick itself costs (it forces WPF to keep painting the window).
-        CompositionTarget.Rendering -= OnRender;
-        double cpuA = proc.TotalProcessorTime.TotalMilliseconds;
-        long allocA = GC.GetTotalAllocatedBytes(precise: true);
-        await Task.Delay((int)(seconds * 1000));
-        double cpuB = proc.TotalProcessorTime.TotalMilliseconds;
-        long allocB = GC.GetTotalAllocatedBytes(precise: true);
-        CompositionTarget.Rendering += OnRender;
-        report.Add(
-            $"idle, no animation {seconds:0}s: CPU {cpuB - cpuA:0} ms ({(cpuB - cpuA) / (seconds * 10):0.0}% of a core), " +
-            $"alloc {(allocB - allocA) / 1024.0 / seconds:0.0} KiB/s");
+            $"alloc {(alloc1 - alloc0) / 1024.0 / seconds:0.0} KiB/s");
 
         // --- Idle with the periodic session refresh stopped: the refresh walks
         //     every audio session on every render device, so it is the other
@@ -5314,8 +5008,6 @@ public partial class MainWindow : Window
         UpdateGraphExtent();
         await Task.Delay(1200);
 
-        long frames2 = _renderFrames;
-        double renderSeconds2 = _renderSeconds;
         double cpu2 = proc.TotalProcessorTime.TotalMilliseconds;
         long alloc2 = GC.GetTotalAllocatedBytes(precise: true);
         int refreshCount0 = _refreshCount;
@@ -5327,19 +5019,13 @@ public partial class MainWindow : Window
         await Task.Delay((int)(seconds * 1000));
         double cpu3 = proc.TotalProcessorTime.TotalMilliseconds;
         long alloc3 = GC.GetTotalAllocatedBytes(precise: true);
-        long frames3 = _renderFrames;
-
-        long frames = frames3 - frames2;
-        long ticks = frames3 - frames2;
-        double frameCostUs = frames > 0 ? ((_renderSeconds - renderSeconds2) / frames) * 1_000_000.0 : 0;
-        double maxCostUs = _renderMaxSeconds * 1_000_000.0;
 
         var src = source != null && _nodeBacking.TryGetValue(source, out var s) ? s as SourceNode : null;
         var outNode = output != null && _nodeBacking.TryGetValue(output, out var o) ? o as OutputNode : null;
 
         report.Add(
             $"routing {seconds:0}s: CPU {cpu3 - cpu2:0} ms ({(cpu3 - cpu2) / (seconds * 10):0.0}% of a core), " +
-            $"alloc {(alloc3 - alloc2) / 1024.0 / seconds:0.0} KiB/s, {frames / seconds:0} fps");
+            $"alloc {(alloc3 - alloc2) / 1024.0 / seconds:0.0} KiB/s");
 
         report.Add(
             $"graph: autorun {_graph.AutoRun}, source running {src?.IsRunning}, meter {src?.MeterLevel:0.000}, " +
@@ -5350,43 +5036,13 @@ public partial class MainWindow : Window
             (string.IsNullOrEmpty(outputFault) ? "" : $" | output fault: {outputFault}"));
 
         report.Add(
-            $"wave animation: {frameCostUs:0.0} µs avg/frame, {maxCostUs:0} µs worst " +
-            $"({frameCostUs / 16667 * 100:0.00}% of a 60 fps frame budget)");
-
-        report.Add(
-            $"render tick: {_renderFps:0} fps (WPF raises it once per display frame), " +
-            $"wave repaints capped at 30 fps");
-
-        report.Add(
             $"periodic work over {seconds:0}s: refresh x{_refreshCount - refreshCount0} = {_refreshMs - refreshMs0:0} ms, " +
             $"filter x{_filterCount - filterCount0} = {_filterMs - filterMs0:0} ms, " +
             $"meters x{_meterCount - meterCount0} = {_meterMs - meterMs0:0} ms");
 
-        // --- Routing with the animation stopped: separates the UI cost from
-        //     the audio engine's. ---
-        if (_animationAttached)
-        {
-            _animationAttached = false;
-            CompositionTarget.Rendering -= OnRender;
-        }
-
-        double cpuN = proc.TotalProcessorTime.TotalMilliseconds;
-        long allocN = GC.GetTotalAllocatedBytes(precise: true);
-        await Task.Delay((int)(seconds * 1000));
-        double cpuO = proc.TotalProcessorTime.TotalMilliseconds;
-        long allocO = GC.GetTotalAllocatedBytes(precise: true);
-        report.Add(
-            $"routing, no animation {seconds:0}s: CPU {cpuO - cpuN:0} ms ({(cpuO - cpuN) / (seconds * 10):0.0}% of a core), " +
-            $"alloc {(allocO - allocN) / 1024.0 / seconds:0.0} KiB/s");
-
-        // --- How much does the tiled background cost per repaint? ---
+        // --- How much does the tiled background cost? ---
         var background = GraphHost.Background;
         GraphHost.Background = null;
-        if (_animationAttached)
-        {
-            _animationAttached = true;
-            CompositionTarget.Rendering += OnRender;
-        }
 
         double cpuBg = proc.TotalProcessorTime.TotalMilliseconds;
         await Task.Delay((int)(seconds * 1000));

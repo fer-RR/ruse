@@ -128,15 +128,6 @@ public sealed class ConnectionViewModel : ObservableObject
     public System.Windows.Shapes.Path? Cable { get; set; }
     public System.Windows.Shapes.Path? HitPath { get; set; }
 
-    // The little travelling waveform drawn on top of the cable while audio
-    // flows. The geometry is updated in place, so no allocation per frame.
-    public System.Windows.Shapes.Path? Wave { get; set; }
-    public System.Windows.Media.PathFigure? WaveFigure { get; set; }
-    public System.Windows.Media.PolyLineSegment? WaveSegment { get; set; }
-
-    /// <summary>Signal level currently flowing through this cable (0..1).</summary>
-    public float Level { get; set; }
-
     private float _gain = 1.0f;
     public float Gain
     {
