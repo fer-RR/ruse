@@ -82,6 +82,12 @@ public sealed class PresetProcessor
 {
     public string TypeId { get; set; } = "";
     public Dictionary<string, float> Parameters { get; set; } = new();
+
+    /// <summary>For a saved chain: the effects it contains, in order.</summary>
+    public List<PresetProcessor>? Elements { get; set; }
+
+    /// <summary>For a saved chain: its name.</summary>
+    public string? Name { get; set; }
 }
 
 public sealed class PresetSourceModifierLink
@@ -111,6 +117,16 @@ public static class PresetSerializer
     /// <summary>Captures an effect and its current parameter values.</summary>
     public static PresetProcessor SerializeProcessor(IAudioProcessor processor)
     {
+        if (processor is ChainProcessor chain)
+        {
+            return new PresetProcessor
+            {
+                TypeId = chain.TypeId,
+                Name = chain.DisplayName,
+                Elements = chain.Processors.Select(SerializeProcessor).ToList(),
+            };
+        }
+
         var entry = new PresetProcessor { TypeId = processor.TypeId };
         if (processor is IParameterizedProcessor parameterized)
         {
@@ -129,8 +145,26 @@ public static class PresetSerializer
     /// </summary>
     public static IAudioProcessor? CreateProcessor(PresetProcessor entry)
     {
-        var processor = AudioProcessorCatalog.Create(entry.TypeId);
-        if (processor is IParameterizedProcessor parameterized)
+        if (entry.TypeId == "chain")
+        {
+            var chain = new ChainProcessor(entry.Name ?? "Chain");
+            if (entry.Elements != null)
+            {
+                foreach (var inner in entry.Elements)
+                {
+                    var processor = CreateProcessor(inner);
+                    if (processor != null)
+                    {
+                        chain.Add(processor);
+                    }
+                }
+            }
+
+            return chain;
+        }
+
+        var created = AudioProcessorCatalog.Create(entry.TypeId);
+        if (created is IParameterizedProcessor parameterized)
         {
             foreach (var (name, value) in entry.Parameters)
             {
@@ -139,6 +173,6 @@ public static class PresetSerializer
             }
         }
 
-        return processor;
+        return created;
     }
 }

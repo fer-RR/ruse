@@ -1501,4 +1501,56 @@ public static class LatencySelfTest
 
         return new ChainBreakResult(levelWithEffect, levelAfterRemoval, routesAfter, summary);
     }
+
+    /// <summary>
+    /// Checks that a saved chain (subgraph) builds the right processors, runs
+    /// them in order, and survives a preset round-trip.
+    /// </summary>
+    public static string TestChainProcessor()
+    {
+        var definition = new SubgraphDefinition { Name = "Test chain" };
+        definition.Elements.Add(new SubgraphElement
+        {
+            TypeId = GainProcessor.Id,
+            Parameters = { ["Gain"] = 0.5f },
+        });
+        definition.Elements.Add(new SubgraphElement
+        {
+            TypeId = HighPassProcessor.Id,
+            Parameters = { ["Cutoff"] = 200f },
+        });
+
+        var chain = definition.CreateProcessor();
+        if (chain.Processors.Count != 2)
+        {
+            return $"chain: built {chain.Processors.Count} effects, expected 2 -> FAIL";
+        }
+
+        // A constant signal has no high-frequency content, so the high-pass
+        // inside the chain must flatten it completely.
+        var buffer = new float[512];
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            buffer[i] = 1f;
+        }
+
+        chain.Process(buffer, 256);
+
+        // A high-pass needs a few samples to settle, so look at the tail of
+        // the block rather than the transient at the start.
+        double peak = 0;
+        for (int j = buffer.Length - 64; j < buffer.Length; j++)
+        {
+            peak = Math.Max(peak, Math.Abs(buffer[j]));
+        }
+
+        // The chain must survive being written to a preset and read back.
+        var entry = PresetSerializer.SerializeProcessor(chain);
+        var restored = PresetSerializer.CreateProcessor(entry) as ChainProcessor;
+        bool roundTrip = restored != null && restored.Processors.Count == 2;
+
+        bool pass = peak < 0.01 && roundTrip;
+        return $"chain: {chain.Processors.Count} effects, DC peak after chain {peak:0.0000}, " +
+               $"preset round-trip {roundTrip} -> {(pass ? "PASS" : "FAIL")}";
+    }
 }

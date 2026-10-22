@@ -546,6 +546,73 @@
                             </ListBox.ItemTemplate>
                         </ListBox>
                         </StackPanel>
+                        <!-- CHAINS -->
+                        <ToggleButton x:Name="ChainsToggle" Style="{StaticResource SectionToggleStyle}"
+                                      Tag="ChainsSection" IsChecked="True" Click="OnSectionToggle">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="CHAINS" FontSize="11" FontWeight="Bold"
+                                           Foreground="#B07AE0" VerticalAlignment="Center"/>
+                                <Border Background="#2A2350" CornerRadius="999" Padding="7,1" Margin="8,0,0,0">
+                                    <TextBlock x:Name="ChainsCount" Text="0" FontSize="10"
+                                               Foreground="#C9A8F0"/>
+                                </Border>
+                                <TextBlock Text="▾" FontSize="10" Foreground="#5A6478" Margin="8,0,0,0"
+                                           VerticalAlignment="Center">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Text" Value="▾"/>
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="False">
+                                                    <Setter Property="Text" Value="▸"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </StackPanel>
+                        </ToggleButton>
+                        <StackPanel x:Name="ChainsSection">
+                            <TextBlock Text="Save a chain of effects once and drop it anywhere."
+                                       FontSize="10" TextWrapping="Wrap"
+                                       Foreground="{StaticResource SubtleTextBrush}" Margin="0,0,0,8"/>
+                            <Button x:Name="NewChainButton" Style="{StaticResource ToolButton}"
+                                    Content="＋  New chain" Click="OnNewChainClick"
+                                    HorizontalAlignment="Stretch" Margin="0,0,0,8"
+                                    ToolTip="Build a chain of effects and save it for reuse"/>
+                            <ListBox x:Name="ChainsList" Style="{StaticResource DragListStyle}"
+                                     MouseDoubleClick="OnChainDoubleClick"
+                                     PreviewMouseWheel="OnSidebarListMouseWheel">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="#241C33" BorderBrush="#4A3A66" BorderThickness="1"
+                                                CornerRadius="8" Padding="11,9">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.Column="0" Width="20" Height="20" CornerRadius="5"
+                                                        Background="#2E2350" Margin="0,0,10,0">
+                                                    <TextBlock Text="⛓" Foreground="#C9A8F0" FontSize="11"
+                                                               HorizontalAlignment="Center"
+                                                               VerticalAlignment="Center"/>
+                                                </Border>
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="{Binding Name}" Foreground="{StaticResource TextBrush}"
+                                                               FontSize="13" TextTrimming="CharacterEllipsis"/>
+                                                    <TextBlock Text="{Binding Description}" FontSize="10" Margin="0,1,0,0"
+                                                               TextWrapping="Wrap"
+                                                               Foreground="{StaticResource SubtleTextBrush}"/>
+                                                </StackPanel>
+                                                <TextBlock Grid.Column="2" Text="⠿" FontSize="15" VerticalAlignment="Center"
+                                                           Foreground="#4A5266" Margin="8,0,0,0"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
             </Grid>

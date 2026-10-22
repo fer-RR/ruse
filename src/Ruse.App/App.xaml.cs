@@ -35,6 +35,22 @@ public partial class App : Application
             DemoMode = true;
         }
 
+        if (e.Args.Contains("--chain-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string chainLine;
+            try
+            {
+                chainLine = $"Voicemet chain test: {LatencySelfTest.TestChainProcessor()}";
+            }
+            catch (Exception ex)
+            {
+                chainLine = $"Voicemet chain test FAILED: {ex}";
+            }
+
+            WriteResult("chain-test.txt", chainLine);
+            Shutdown();
+            return;
+        }
         if (e.Args.Contains("--uitest", StringComparer.OrdinalIgnoreCase))
         {
             UiTestMode = true;
@@ -240,6 +256,22 @@ public partial class App : Application
         }
 
 
+        if (e.Args.Contains("--chain-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string chainLine;
+            try
+            {
+                chainLine = $"Voicemet chain test: {LatencySelfTest.TestChainProcessor()}";
+            }
+            catch (Exception ex)
+            {
+                chainLine = $"Voicemet chain test FAILED: {ex}";
+            }
+
+            WriteResult("chain-test.txt", chainLine);
+            Shutdown();
+            return;
+        }
         if (e.Args.Contains("--uitest", StringComparer.OrdinalIgnoreCase))
         {
             // Exercises the real window: layout, hit-testing and the drop

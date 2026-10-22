@@ -59,6 +59,7 @@ public partial class MainWindow : Window
         _refreshTimer.Start();
 
         GraphScroll.SizeChanged += OnGraphResized;
+        RefreshChains();
 
         // Apply the saved appearance options.
         _wavesEnabled = _settings.AnimateCables;
@@ -1047,7 +1048,16 @@ public partial class MainWindow : Window
         {
             if (e.ClickCount == 2)
             {
-                RenameNode(vm);
+                // A chain node opens its builder instead of the rename box.
+                if (modifier.Processors.OfType<ChainProcessor>().Any())
+                {
+                    EditChainNode(modifier);
+                }
+                else
+                {
+                    RenameNode(vm);
+                }
+
                 e.Handled = true;
             }
         };
@@ -1063,6 +1073,35 @@ public partial class MainWindow : Window
         var stack = new StackPanel();
         stack.Children.Add(header);
         stack.Children.Add(subtitle);
+
+        // A chain node shows the effects it contains as chips, the way a
+        // collapsed group looks.
+        var chain = modifier.Processors.OfType<ChainProcessor>().FirstOrDefault();
+        if (chain != null)
+        {
+            var chips = new WrapPanel { Margin = new Thickness(12, 2, 12, 6) };
+            foreach (var inner in chain.Processors)
+            {
+                var chip = new Border
+                {
+                    Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#3A2E14")),
+                    BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#5A4A22")),
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(6),
+                    Padding = new Thickness(8, 2, 8, 2),
+                    Margin = new Thickness(0, 0, 6, 6),
+                };
+                chip.Child = new TextBlock
+                {
+                    Text = AudioProcessorCatalog.Find(inner.TypeId)?.DisplayName ?? inner.TypeId,
+                    FontSize = 11,
+                    Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#E0A63A")),
+                };
+                chips.Children.Add(chip);
+            }
+
+            stack.Children.Add(chips);
+        }
 
         // A generic slider for every parameter the modifier's processors expose.
         foreach (var processor in modifier.Processors)
@@ -3047,6 +3086,82 @@ public partial class MainWindow : Window
         SetStatus("Nodes arranged.");
     }
 
+    // ---------- Chains (subgraphs) ----------
+
+    private void RefreshChains()
+    {
+        SubgraphLibrary.Load();
+        ChainsList.ItemsSource = SubgraphLibrary.Chains;
+        ChainsCount.Text = SubgraphLibrary.Chains.Count.ToString();
+    }
+
+    private void OnNewChainClick(object sender, RoutedEventArgs e)
+    {
+        var definition = ChainBuilderDialog.Show(this, null);
+        if (definition == null)
+        {
+            return;
+        }
+
+        SubgraphLibrary.Store(definition);
+        RefreshChains();
+        SetStatus($"Saved the chain '{definition.Name}'.");
+    }
+
+    private void OnChainDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ChainsList.SelectedItem is SubgraphDefinition definition)
+        {
+            AddChainNode(definition, null);
+        }
+    }
+
+    /// <summary>Places a saved chain on the canvas as a single node.</summary>
+    private NodeViewModel? AddChainNode(SubgraphDefinition definition, Point? at)
+    {
+        var processor = definition.CreateProcessor();
+        var modifier = new ModifierNode(definition.Name);
+        modifier.Add(processor);
+
+        double x = at?.X ?? (120 + (_nodes.Count * 30));
+        double y = at?.Y ?? (120 + (_nodes.Count * 30));
+
+        var vm = AddModifierNodeCore(modifier, definition.Name, x, y);
+        if (vm != null)
+        {
+            SetStatus($"Added the chain '{definition.Name}'.");
+        }
+
+        return vm;
+    }
+
+    /// <summary>Opens the builder for a chain that is already on the canvas.</summary>
+    private void EditChainNode(ModifierNode modifier)
+    {
+        var chain = modifier.Processors.OfType<ChainProcessor>().FirstOrDefault();
+        if (chain == null)
+        {
+            RenameNode(_nodeBacking.FirstOrDefault(kv => ReferenceEquals(kv.Value, modifier)).Key!);
+            return;
+        }
+
+        var definition = SubgraphDefinition.FromProcessor(chain);
+        var edited = ChainBuilderDialog.Show(this, definition);
+        if (edited == null)
+        {
+            return;
+        }
+
+        SubgraphLibrary.Store(edited);
+
+        // Replace the live chain with the edited one.
+        modifier.Clear();
+        modifier.Add(edited.CreateProcessor());
+        modifier.Title = edited.Name;
+        RefreshChains();
+        SetStatus($"Updated the chain '{edited.Name}'.");
+    }
+
     // ---------- Sidebar ----------
     /// <summary>
     /// Collapses or expands a sidebar section. The toggle carries the name of
@@ -3832,6 +3947,17 @@ public partial class MainWindow : Window
         Redo();
         string titleAfterRedo = liveSource.Title;
 
+        // A saved chain must land on the canvas as a single node.
+        var chainDefinition = new SubgraphDefinition { Name = "Perf chain" };
+        chainDefinition.Elements.Add(new SubgraphElement
+        {
+            TypeId = GainProcessor.Id,
+            Parameters = { ["Gain"] = 0.5f },
+        });
+
+        NodeViewModel? chainVm = AddChainNode(chainDefinition, new Point(100, 700));
+        bool chainOk = chainVm != null && chainVm.Kind == NodeKind.Modifier;
+
         bool pass =
             connected &&
             linksAfterConnect == linksBefore + 1 &&
@@ -3843,7 +3969,8 @@ public partial class MainWindow : Window
             Math.Abs(volumeAfterUndo - volumeBefore) < 0.001f &&
             Math.Abs(volumeAfterRedo - 0.42f) < 0.001f &&
             titleAfterUndo == titleBefore &&
-            titleAfterRedo == "Renamed source";
+            titleAfterRedo == "Renamed source" &&
+            chainOk;
 
         return $"undo: links {linksBefore}->{linksAfterConnect}->{linksAfterUndo}->{linksAfterRedo}, " +
                $"nodes {nodesBefore}->{nodesAfterUndos}->{nodesAfterRedos} ({depth}), " +
