@@ -257,6 +257,14 @@ public partial class MainWindow
         public string Id { get; }
         public string FriendlyName { get; }
 
+        /// <summary>What this entry is, shown in the tooltip.</summary>
+        public string Details => Asio != null
+            ? $"ASIO driver — {Asio.InputChannelCount} in / {Asio.OutputChannelCount} out, " +
+              $"{Asio.SampleRate} Hz, {Asio.BufferSize} frame buffer"
+            : IsAsioInput
+                ? "ASIO input — captures the first two channels of the driver"
+                : "Windows audio device — drag it onto the canvas to route to it";
+
         /// <summary>Set when the entry is an ASIO driver rather than a WASAPI endpoint.</summary>
         public AsioDriverInfo? Asio { get; }
 

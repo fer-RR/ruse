@@ -270,7 +270,7 @@
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="{StaticResource CardBrush}" CornerRadius="8"
-                                            Padding="11,9">
+                                            Padding="11,9" ToolTip="{Binding Details}">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/>
@@ -336,7 +336,7 @@
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="{StaticResource CardBrush}" CornerRadius="8"
-                                            Padding="11,9" BorderBrush="#1E6B48" BorderThickness="0,0,0,0">
+                                            Padding="11,9" BorderBrush="#1E6B48" BorderThickness="0,0,0,0" ToolTip="{Binding Details}">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/>
@@ -408,7 +408,7 @@
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="{StaticResource CardBrush}" CornerRadius="8"
-                                            Padding="11,9">
+                                            Padding="11,9" ToolTip="{Binding Details}">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/>
@@ -482,7 +482,7 @@
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="#1A2740" BorderBrush="#2E4A73" BorderThickness="1"
-                                            CornerRadius="8" Padding="11,9">
+                                            CornerRadius="8" Padding="11,9" ToolTip="{Binding Description}">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/>
@@ -550,7 +550,7 @@
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
                                     <Border Background="#2A2418" BorderBrush="#5A4A22" BorderThickness="1"
-                                            CornerRadius="8" Padding="11,9">
+                                            CornerRadius="8" Padding="11,9" ToolTip="{Binding Description}">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/>
@@ -620,7 +620,7 @@
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
                                         <Border Background="#241C33" BorderBrush="#4A3A66" BorderThickness="1"
-                                                CornerRadius="8" Padding="11,9">
+                                                CornerRadius="8" Padding="11,9" ToolTip="{Binding Description}">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="Auto"/>
@@ -807,8 +807,9 @@
                                 </Border>
                             </Grid>
                         </Border>
-                        <TextBlock x:Name="LatencyText" Text="" FontSize="12" Margin="0,0,12,0"
-                                   Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center"/>
+                <TextBlock x:Name="LatencyText" Text="" FontSize="12" Margin="0,0,12,0"
+                           FontFamily="Consolas, Cascadia Mono, Courier New, monospace"
+                           Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center"/>
                         <!-- Error indicator: shows how many problems were logged. -->
                         <Button x:Name="ErrorButton" Content="⚠ 0" FontSize="12" Padding="8,2"
                                 Margin="0,0,12,0" VerticalAlignment="Center" MinWidth="52"

@@ -12,8 +12,13 @@ public sealed class AudioSessionInfo
     public string DisplayName { get; init; } = string.Empty;
     public bool IsActive { get; init; }
 
-    public string Label => string.IsNullOrWhiteSpace(DisplayName) ? ProcessName : $"{DisplayName} ({ProcessName})";
-}
+        public string Label => string.IsNullOrWhiteSpace(DisplayName) ? ProcessName : $"{DisplayName} ({ProcessName})";
+
+        /// <summary>Extra information for the sidebar tooltip.</summary>
+        public string Details => IsActive
+            ? $"Captures the audio of {ProcessName} (process {ProcessId})"
+            : $"{ProcessName} (process {ProcessId}) — nothing is playing right now";
+        }
 
 public static class AudioSessionEnumerator
 {

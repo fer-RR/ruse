@@ -290,6 +290,28 @@ public partial class MainWindow
         }
     }
 
+    /// <summary>
+    /// The colour of a cable leaving a node: the node's own accent, so a route
+    /// can be read at a glance (blue = source, amber = effect, green = output).
+    /// </summary>
+    private static Brush CableBrushFor(NodeViewModel owner)
+    {
+        string accent = owner.Accent;
+        if (string.IsNullOrWhiteSpace(accent))
+        {
+            accent = "#4C8DFF";
+        }
+
+        try
+        {
+            return new SolidColorBrush((Color)ColorConverter.ConvertFromString(accent));
+        }
+        catch
+        {
+            return new SolidColorBrush((Color)ColorConverter.ConvertFromString("#4C8DFF"));
+        }
+    }
+
     private void AddConnectionVisual(NodeViewModel source, NodeViewModel output)
     {
         if (!_sourcePorts.TryGetValue(source, out var fromPort) ||
@@ -311,7 +333,10 @@ public partial class MainWindow
             End = toPort.Anchor,
         };
 
-        var cableColor = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#4C8DFF"));
+        // The cable takes the colour of the node it leaves, so the signal path
+        // can be read at a glance: blue leaves a source, amber leaves an
+        // effect, green leaves an output.
+        var cableColor = CableBrushFor(fromPort.Owner);
 
         var cable = new Path
         {
