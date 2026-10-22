@@ -53,6 +53,9 @@ public sealed class SourceNode : IDisposable
     /// <summary>Total stereo frames captured since <see cref="Start"/> (diagnostics).</summary>
     public long CapturedFrames { get; private set; }
 
+    /// <summary>Bytes allocated by the capture thread while decoding (diagnostics).</summary>
+    public long CaptureAllocatedBytes { get; private set; }
+
     public int Channels => _sourceChannels;
     public int SampleRate => _sourceSampleRate;
 
@@ -210,6 +213,19 @@ public sealed class SourceNode : IDisposable
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
+    {
+        long allocBefore = GC.GetAllocatedBytesForCurrentThread();
+        try
+        {
+            Decode(sender, e);
+        }
+        finally
+        {
+            CaptureAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocBefore;
+        }
+    }
+
+    private void Decode(object? sender, WaveInEventArgs e)
     {
         if (e.BytesRecorded <= 0)
         {

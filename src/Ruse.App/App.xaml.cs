@@ -22,6 +22,10 @@ public partial class App : Application
     /// real audio instead of restoring the saved session.</summary>
     public static bool LiveDemoMode { get; private set; }
 
+    /// <summary>True when launched with --perf-test; starts from an empty
+    /// canvas so the benchmark measures a known state.</summary>
+    public static bool PerfTestMode { get; private set; }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         if (e.Args.Contains("--demo", StringComparer.OrdinalIgnoreCase))
@@ -183,7 +187,7 @@ public partial class App : Application
         {
             // Carries real audio so the UI (meters, cable waveforms) can be
             // checked against a genuine signal. The window stays open.
-            uint pid = (uint)GetIntArg(e.Args, "--pid", 0);
+            uint livePid = (uint)GetIntArg(e.Args, "--pid", 0);
             LiveDemoMode = true;
             base.OnStartup(e);
             System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
@@ -191,7 +195,7 @@ public partial class App : Application
                 {
                     try
                     {
-                        (MainWindow as Ruse.App.MainWindow)?.BuildLiveGraph(pid);
+                        (MainWindow as Ruse.App.MainWindow)?.BuildLiveGraph(livePid);
                     }
                     catch (Exception ex)
                     {
@@ -201,6 +205,38 @@ public partial class App : Application
                 System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             return;
         }
+
+        if (e.Args.Contains("--perf-test", StringComparer.OrdinalIgnoreCase))
+        {
+            uint perfPid = (uint)GetIntArg(e.Args, "--pid", 0);
+            PerfTestMode = true;
+            double seconds = GetDoubleArg(e.Args, "--seconds", 4.0);
+            bool useSink = e.Args.Contains("--perf-sink", StringComparer.OrdinalIgnoreCase);
+            base.OnStartup(e);
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+                new Action(async () =>
+                {
+                    string result;
+                    try
+                    {
+                        var window = MainWindow as Ruse.App.MainWindow;
+                        result = window == null
+                            ? "no main window -> FAIL"
+                            : await window.RunPerformanceTest(perfPid, seconds, useSink);
+                    }
+                    catch (Exception ex)
+                    {
+                        result = $"FAILED: {ex}";
+                    }
+
+                    WriteResult("perf-test.txt", $"Voicemet perf test: {result}");
+                    (MainWindow as Ruse.App.MainWindow)?.Close();
+                    Shutdown();
+                }),
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            return;
+        }
+
 
         if (e.Args.Contains("--uitest", StringComparer.OrdinalIgnoreCase))
         {

@@ -473,6 +473,9 @@
                     <Button x:Name="MicMuteButton" Style="{StaticResource ToolButton}" Content="🎙 Mute mic"
                             Click="OnMicMuteClick"
                             ToolTip="Kill switch for every microphone source (device inputs)"/>
+                    <Button x:Name="WaveButton" Style="{StaticResource ToolButton}" Content="Wave on"
+                            Click="OnWaveToggleClick"
+                            ToolTip="Animate a waveform on the cables while audio flows"/>
                 </WrapPanel>
             </Border>
 
@@ -486,14 +489,27 @@
                           PreviewMouseWheel="OnGraphMouseWheel">
                 <Grid x:Name="GraphHost" ClipToBounds="False">
                     <Grid.Background>
-                        <VisualBrush TileMode="Tile" Viewport="0,0,24,24" ViewportUnits="Absolute">
-                            <VisualBrush.Visual>
-                                <Grid Width="24" Height="24" Background="#0E1015">
-                                    <Ellipse Width="1.5" Height="1.5" Fill="#1C2230"
-                                             HorizontalAlignment="Left" VerticalAlignment="Top" Margin="0,0,0,0"/>
-                                </Grid>
-                            </VisualBrush.Visual>
-                        </VisualBrush>
+                        <!-- A DrawingBrush is used instead of a VisualBrush on
+                             purpose: a VisualBrush re-renders a visual tree for
+                             every tile, which cost a quarter of a core on each
+                             animation frame. A cached geometry tile is far
+                             cheaper and looks identical. -->
+                        <DrawingBrush TileMode="Tile" Viewport="0,0,24,24" ViewportUnits="Absolute">
+                            <DrawingBrush.Drawing>
+                                <DrawingGroup>
+                                    <GeometryDrawing Brush="#0E1015">
+                                        <GeometryDrawing.Geometry>
+                                            <RectangleGeometry Rect="0,0,24,24"/>
+                                        </GeometryDrawing.Geometry>
+                                    </GeometryDrawing>
+                                    <GeometryDrawing Brush="#1C2230">
+                                        <GeometryDrawing.Geometry>
+                                            <EllipseGeometry Center="0.75,0.75" RadiusX="0.75" RadiusY="0.75"/>
+                                        </GeometryDrawing.Geometry>
+                                    </GeometryDrawing>
+                                </DrawingGroup>
+                            </DrawingBrush.Drawing>
+                        </DrawingBrush>
                     </Grid.Background>
                     <!-- GraphLayer is the zoomable world: both canvases live in it
                          so the cables and the nodes scale together. -->

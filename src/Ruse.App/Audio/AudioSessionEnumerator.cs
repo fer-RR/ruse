@@ -17,59 +17,73 @@ public sealed class AudioSessionInfo
 
 public static class AudioSessionEnumerator
 {
+    // Process names rarely change, but resolving one means opening a process
+    // handle. Caching them keeps the periodic refresh cheap.
+    private static readonly Dictionary<uint, string> ProcessNameCache = new();
+    private static readonly object ProcessNameLock = new();
+
     public static IReadOnlyList<AudioSessionInfo> GetRenderSessions()
     {
         var result = new Dictionary<uint, AudioSessionInfo>();
         using var enumerator = new MMDeviceEnumerator();
+
+        // Every COM object created here must be released explicitly: otherwise
+        // the finalizer thread has to clean them up, which showed up as a
+        // double-digit percentage of a core burning while the app was idle.
         foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
         {
-            SessionCollection? sessions = null;
-            try
+            using (device)
             {
-                sessions = device.AudioSessionManager.Sessions;
-            }
-            catch
-            {
-                continue;
-            }
-
-            if (sessions == null)
-            {
-                continue;
-            }
-
-            for (int i = 0; i < sessions.Count; i++)
-            {
-                var session = sessions[i];
-                uint pid = session.GetProcessID;
-                if (pid == 0 || pid == (uint)Environment.ProcessId)
+                try
                 {
-                    continue;
-                }
+                    // The manager has to stay alive while the sessions are
+                    // read: releasing it first leaves the collection dangling
+                    // and the enumeration comes back empty.
+                    using var manager = device.AudioSessionManager;
+                    using var sessions = manager.Sessions;
 
-                string name = TryGetProcessName(pid);
-                string display = TryGetDisplayName(session);
-                bool active = TryIsActive(session);
-
-                if (result.TryGetValue(pid, out var existing))
-                {
-                    result[pid] = new AudioSessionInfo
+                    for (int i = 0; i < sessions.Count; i++)
                     {
-                        ProcessId = pid,
-                        ProcessName = existing.ProcessName,
-                        DisplayName = string.IsNullOrWhiteSpace(existing.DisplayName) ? display : existing.DisplayName,
-                        IsActive = existing.IsActive || active,
-                    };
+                        // The session controls are owned by the collection and
+                        // must not be disposed individually: NAudio hands out
+                        // cached wrappers, and releasing one makes the rest of
+                        // the enumeration unreadable.
+                        var session = sessions[i];
+                        uint pid = session.GetProcessID;
+                        if (pid == 0 || pid == (uint)Environment.ProcessId)
+                        {
+                            continue;
+                        }
+
+                        string name = TryGetProcessName(pid);
+                        string display = TryGetDisplayName(session);
+                        bool active = TryIsActive(session);
+
+                        if (result.TryGetValue(pid, out var existing))
+                        {
+                            result[pid] = new AudioSessionInfo
+                            {
+                                ProcessId = pid,
+                                ProcessName = existing.ProcessName,
+                                DisplayName = string.IsNullOrWhiteSpace(existing.DisplayName) ? display : existing.DisplayName,
+                                IsActive = existing.IsActive || active,
+                            };
+                        }
+                        else
+                        {
+                            result[pid] = new AudioSessionInfo
+                            {
+                                ProcessId = pid,
+                                ProcessName = name,
+                                DisplayName = display,
+                                IsActive = active,
+                            };
+                        }
+                    }
                 }
-                else
+                catch
                 {
-                    result[pid] = new AudioSessionInfo
-                    {
-                        ProcessId = pid,
-                        ProcessName = name,
-                        DisplayName = display,
-                        IsActive = active,
-                    };
+                    // A device that cannot be queried is simply skipped.
                 }
             }
         }
@@ -82,15 +96,38 @@ public static class AudioSessionEnumerator
 
     private static string TryGetProcessName(uint pid)
     {
+        lock (ProcessNameLock)
+        {
+            if (ProcessNameCache.TryGetValue(pid, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        string name;
         try
         {
             using var process = System.Diagnostics.Process.GetProcessById((int)pid);
-            return process.ProcessName;
+            name = process.ProcessName;
         }
         catch
         {
-            return $"pid {pid}";
+            name = $"pid {pid}";
         }
+
+        lock (ProcessNameLock)
+        {
+            // Drop entries for processes that are gone so the cache cannot grow
+            // without bound.
+            if (ProcessNameCache.Count > 256)
+            {
+                ProcessNameCache.Clear();
+            }
+
+            ProcessNameCache[pid] = name;
+        }
+
+        return name;
     }
 
     private static string TryGetDisplayName(AudioSessionControl session)

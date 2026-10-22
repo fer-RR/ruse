@@ -249,6 +249,9 @@ public sealed class OutputNode : IDisposable
     /// <summary>Frames that had to be silence-padded because the source underran.</summary>
     public long ShortReadFrames { get; private set; }
 
+    /// <summary>Bytes allocated by the render thread while mixing (diagnostics).</summary>
+    public long RenderAllocatedBytes { get; private set; }
+
     [System.Runtime.InteropServices.DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
     private static extern uint TimeBeginPeriod(uint uPeriod);
 
@@ -260,6 +263,19 @@ public sealed class OutputNode : IDisposable
     /// latency self-test so both exercise exactly the same code path.
     /// </summary>
     internal void RenderChunk(float[] mix, float[] temp, byte[] byteBuffer, int channels)
+    {
+        long allocBefore = GC.GetAllocatedBytesForCurrentThread();
+        try
+        {
+            RenderChunkCore(mix, temp, byteBuffer, channels);
+        }
+        finally
+        {
+            RenderAllocatedBytes += GC.GetAllocatedBytesForCurrentThread() - allocBefore;
+        }
+    }
+
+    private void RenderChunkCore(float[] mix, float[] temp, byte[] byteBuffer, int channels)
     {
         Array.Clear(mix, 0, mix.Length);
 
