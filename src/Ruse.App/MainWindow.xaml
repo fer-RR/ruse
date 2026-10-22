@@ -442,6 +442,7 @@
         <Grid Grid.Column="2">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
@@ -479,8 +480,32 @@
                 </WrapPanel>
             </Border>
 
+            <!-- Critical message bar: shows the most recent problem and points
+                 at the log for the details. -->
+            <Border x:Name="AlertBar" Grid.Row="1" Visibility="Collapsed"
+                    Background="#2A1C1F" BorderBrush="#6E2A33" BorderThickness="0,0,0,1"
+                    Padding="14,8">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="AlertIcon" Grid.Column="0" Text="⚠" Foreground="#FF8A8A"
+                               FontSize="15" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <TextBlock x:Name="AlertText" Grid.Column="1" Text="" Foreground="#F3D4D4"
+                               FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                    <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Button x:Name="AlertLogButton" Style="{StaticResource ToolButton}"
+                                Content="Open log" Click="OnAlertLogClick" Margin="0,0,6,0"/>
+                        <Button x:Name="AlertDismissButton" Style="{StaticResource ToolButton}"
+                                Content="✕" Click="OnAlertDismissClick" ToolTip="Dismiss"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
             <!-- Canvas: scrollable/pannable viewport; GraphHost grows to fit the nodes. -->
-            <ScrollViewer x:Name="GraphScroll" Grid.Row="1" Background="#0E1015"
+            <ScrollViewer x:Name="GraphScroll" Grid.Row="2" Background="#0E1015"
                           HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
                           PanningMode="Both"
                           PreviewMouseDown="OnGraphPanDown"
@@ -536,7 +561,7 @@
             <!-- Status bar: status message plus the master / transport cluster.
                  The cluster is a right-docked WrapPanel so it wraps instead of
                  clipping when the window is narrow. -->
-            <Border Grid.Row="2" Background="{StaticResource PanelBrush}"
+            <Border Grid.Row="3" Background="{StaticResource PanelBrush}"
                     BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,1,0,0" Padding="16,9">
                 <DockPanel LastChildFill="True">
                     <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
@@ -566,6 +591,14 @@
                         </Border>
                         <TextBlock x:Name="LatencyText" Text="" FontSize="12" Margin="0,0,12,0"
                                    Foreground="{StaticResource SubtleTextBrush}" VerticalAlignment="Center"/>
+                        <!-- Error indicator: shows how many problems were logged. -->
+                        <Button x:Name="ErrorButton" Content="⚠ 0" FontSize="12" Padding="8,2"
+                                Margin="0,0,12,0" VerticalAlignment="Center" MinWidth="52"
+                                Visibility="Collapsed" Cursor="Hand"
+                                Background="Transparent" Foreground="#FF8A8A"
+                                BorderBrush="#6E2A33" BorderThickness="1"
+                                ToolTip="Problems were logged — click to open the log"
+                                Click="OnErrorButtonClick"/>
                         <!-- Canvas zoom: click to reset to 100%. -->
                         <Button x:Name="ZoomButton" Content="100%" FontSize="12" Padding="8,2"
                                 Margin="0,0,12,0" VerticalAlignment="Center" MinWidth="56"

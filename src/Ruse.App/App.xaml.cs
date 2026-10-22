@@ -28,6 +28,8 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        Ruse.App.Diagnostics.AppLog.Initialize();
+
         if (e.Args.Contains("--demo", StringComparer.OrdinalIgnoreCase))
         {
             DemoMode = true;
@@ -252,7 +254,7 @@ public partial class App : Application
                         var window = MainWindow as Ruse.App.MainWindow;
                         result = window == null
                             ? "no main window -> FAIL"
-                            : window.RunDropTargetSelfTest();
+                            : window.RunDropTargetSelfTest() + " | " + window.RunAlertSelfTest();
                     }
                     catch (Exception ex)
                     {

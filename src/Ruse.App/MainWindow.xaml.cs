@@ -7,6 +7,7 @@ using System.Windows.Shapes;
 using System.Windows.Threading;
 using NAudio.CoreAudioApi;
 using Ruse.App.Audio;
+using Ruse.App.Diagnostics;
 using Ruse.App.Ui;
 
 namespace Ruse.App;
@@ -85,6 +86,18 @@ public partial class MainWindow : Window
             RefreshAllDevices();
             RefreshApps();
             _meterTimer.Start();
+
+            // Anything that goes wrong on the UI thread is logged and shown,
+            // instead of vanishing into the debugger.
+            Dispatcher.UnhandledException += (_, e) =>
+            {
+                AppLog.Error("Unhandled exception on the UI thread.", e.Exception);
+                ShowAlert("Something went wrong: " + e.Exception.Message, isError: true);
+                UpdateErrorIndicator();
+                e.Handled = true;
+            };
+
+            CheckRenderingTier();
 
             if (App.DemoMode)
             {
@@ -185,7 +198,9 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            SetStatus($"Could not restore last session: {ex.Message}");
+            AppLog.Error("Could not restore the last session.", ex);
+            ShowAlert("Could not restore the last session: " + ex.Message, isError: true);
+            UpdateErrorIndicator();
         }
     }
 
@@ -406,6 +421,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus($"Device enumeration failed: {ex.Message}");
+            AppLog.Warning("Device enumeration failed: " + ex.Message);
         }
     }
 
@@ -445,6 +461,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            AppLog.Warning("Session enumeration failed: " + ex.Message);
             SetStatus($"Session enumeration failed: {ex.Message}");
         }
         finally
@@ -765,6 +782,9 @@ public partial class MainWindow : Window
                 vm.Subtitle = "Disconnected";
             }
 
+            AppLog.Error($"Capture source '{node.Title}' stopped: {reason}");
+            ShowAlert($"'{node.Title}' stopped: {reason}", isError: true);
+            UpdateErrorIndicator();
             SetStatus($"'{node.Title}' stopped: {reason}");
             StopRoutingIfNoOutputsRunning();
         });
@@ -775,6 +795,9 @@ public partial class MainWindow : Window
         output.Faulted += (node, reason) => Dispatcher.BeginInvoke(() =>
         {
             vm.Subtitle = "Disconnected";
+            AppLog.Error($"Output device '{node.Title}' stopped: {reason}");
+            ShowAlert($"Output '{node.Title}' stopped: {reason}", isError: true);
+            UpdateErrorIndicator();
             SetStatus($"Output '{node.Title}' stopped: {reason}");
             StopRoutingIfNoOutputsRunning();
         });
@@ -864,7 +887,9 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            SetStatus($"Could not add output: {ex.Message}");
+            AppLog.Error("Could not add the output device.", ex);
+            ShowAlert("Could not add the output device: " + ex.Message, isError: true);
+            UpdateErrorIndicator();
             return null;
         }
     }
@@ -944,6 +969,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus($"Could not add virtual output: {ex.Message}");
+            AppLog.Error("Could not add the virtual output.", ex);
             return null;
         }
     }
@@ -1295,6 +1321,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus($"Save failed: {ex.Message}");
+            AppLog.Error("Could not save the preset.", ex);
         }
     }
 
@@ -1436,6 +1463,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             SetStatus($"Load failed: {ex.Message}");
+            AppLog.Error("Could not load the preset.", ex);
         }
     }
 
@@ -1492,6 +1520,7 @@ public partial class MainWindow : Window
             catch (Exception ex)
             {
                 SetStatus($"Skipped output '{o.Title}': {ex.Message}");
+                AppLog.Warning($"Skipped output '{o.Title}': {ex.Message}");
             }
         }
 
@@ -2510,6 +2539,82 @@ public partial class MainWindow : Window
             : "Cable waveforms off (saves CPU while the window is in software rendering).");
     }
 
+    // ---------- Problem reporting ----------
+
+    /// <summary>Shows a message in the critical-message bar and logs it.</summary>
+    private void ShowAlert(string message, bool isError)
+    {
+        AlertText.Text = message;
+        AlertIcon.Text = isError ? "⚠" : "ⓘ";
+        AlertIcon.Foreground = isError
+            ? new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF8A8A"))
+            : new SolidColorBrush((Color)ColorConverter.ConvertFromString("#8AB4FF"));
+        AlertBar.Visibility = Visibility.Visible;
+    }
+
+    private void OnAlertDismissClick(object sender, RoutedEventArgs e) => AlertBar.Visibility = Visibility.Collapsed;
+
+    private void OnAlertLogClick(object sender, RoutedEventArgs e) => AppLog.OpenLog();
+
+    private void OnErrorButtonClick(object sender, RoutedEventArgs e) => AppLog.OpenLog();
+
+    private void UpdateErrorIndicator()
+    {
+        int count = AppLog.ErrorCount;
+        ErrorButton.Content = $"⚠ {count}";
+        ErrorButton.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    /// <summary>
+    /// Self-test for the problem-reporting path: an error must reach the log,
+    /// light up the critical-message bar and the status-bar counter, and the
+    /// bar must be dismissable.
+    /// </summary>
+    public string RunAlertSelfTest()
+    {
+        int before = AppLog.ErrorCount;
+
+        AppLog.Error("Self-test: synthetic problem.");
+        ShowAlert("Self-test: synthetic problem.", isError: true);
+        UpdateErrorIndicator();
+
+        bool shown = AlertBar.Visibility == Visibility.Visible;
+        bool counted = AppLog.ErrorCount == before + 1;
+        bool badgeVisible = ErrorButton.Visibility == Visibility.Visible;
+
+        OnAlertDismissClick(this, new RoutedEventArgs());
+        bool dismissed = AlertBar.Visibility == Visibility.Collapsed;
+
+        bool pass = shown && counted && badgeVisible && dismissed;
+        return $"alert path: shown={shown} counted={counted} badge={badgeVisible} dismissed={dismissed} " +
+               $"-> {(pass ? "PASS" : "FAIL")}";
+    }
+
+    /// <summary>
+    /// Reports the graphics situation at startup. Windows renders WPF in software
+    /// on some machines, which makes the whole UI feel slow — worth saying out
+    /// loud instead of letting the user blame the app.
+    /// </summary>
+    private void CheckRenderingTier()
+    {
+        int tier = System.Windows.Media.RenderCapability.Tier;
+        if (tier == 0x80000)
+        {
+            AppLog.Info("Windows is rendering Ruse with hardware acceleration (tier 2).");
+            return;
+        }
+
+        string detail = tier == 0x20000
+            ? "Windows is rendering Ruse in software (no GPU acceleration)."
+            : "Windows is rendering Ruse with partial GPU acceleration.";
+
+        AppLog.Warning(detail + " The interface will feel slower than usual. This is a system graphics " +
+            "issue, not a problem with Ruse: a clean GPU driver reinstall usually fixes it.");
+
+        ShowAlert(detail + " The interface will feel slower than usual. This is a system graphics issue — " +
+                  "a clean GPU driver reinstall usually fixes it. Details in the log.", isError: false);
+    }
+
     private float UpstreamLevel(NodeViewModel node, int depth)
     {
         if (depth > 8)
@@ -3208,6 +3313,7 @@ public partial class MainWindow : Window
             catch (Exception ex)
             {
                 SetStatus($"Start failed for '{vm.Title}': {ex.Message}");
+                AppLog.Error($"Could not start '{vm.Title}'.", ex);
                 return;
             }
         }
