@@ -10,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
+using System.Windows.Shell;
 using System.Windows.Threading;
 using NAudio.CoreAudioApi;
 using Ruse.App.Audio;
@@ -170,6 +171,229 @@ public partial class MainWindow
         bool pass = redWhenOn && plainWhenOff;
         return $"appearance: red border when on={redWhenOn}, plain when off={plainWhenOff} " +
                $"-> {(pass ? "PASS" : "FAIL")}";
+    }
+
+    /// <summary>
+    /// Self-test for the recorder node: the visual must expose a format picker,
+    /// file button and path, and changing format must retarget the extension
+    /// without creating a file while the recorder is idle.
+    /// </summary>
+    public string RunRecorderSelfTest()
+    {
+        string path = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"ruse-recorder-ui-{Guid.NewGuid():N}.wav");
+        NodeViewModel? vm = null;
+        OutputNode? recorder = null;
+        string detail = string.Empty;
+        bool pass = false;
+
+        try
+        {
+            vm = AddFileRecorderNode(
+                x: 40, y: 620, path: path, format: AudioFileFormat.Wav16, autoStart: false);
+            if (vm == null)
+            {
+                return "recorder node: could not create the test node -> FAIL";
+            }
+
+            bool outputOk = _nodeBacking.TryGetValue(vm, out var backing) &&
+                            backing is OutputNode { IsFileRecorder: true } output &&
+                            output.RecordingPath == path &&
+                            output.RecordingFormat == AudioFileFormat.Wav16 &&
+                            !output.AutoStart && !output.IsRecording;
+            bool controlsOk = _recorderFormats.TryGetValue(vm, out var formatBox) &&
+                              _recorderChooseButtons.TryGetValue(vm, out var button) &&
+                              _recorderPaths.TryGetValue(vm, out var pathText) &&
+                              _recorderStatus.ContainsKey(vm) &&
+                              ReferenceEquals(formatBox.SelectedItem,
+                                  AudioFileFormats.Get(AudioFileFormat.Wav16)) &&
+                              Equals(button.Content, "Change file...") &&
+                              pathText.Text == path;
+            bool badgeOk = _recorderBadges.TryGetValue(vm, out var badge) &&
+                           badge.Badge.Visibility == Visibility.Visible &&
+                           badge.Text.Text == "ARMED";
+            bool noFileYet = !System.IO.File.Exists(path);
+            bool globalIdle = GlobalRecordChip.Visibility == Visibility.Collapsed;
+
+            bool formatChanged = false;
+            bool pathUpdated = false;
+            bool liveOk = false;
+            bool savedOk = false;
+            if (outputOk && controlsOk && badgeOk)
+            {
+                recorder = (OutputNode)backing!;
+                _recorderFormats[vm].SelectedItem = AudioFileFormats.Get(AudioFileFormat.Mp3);
+                formatChanged = recorder.RecordingFormat == AudioFileFormat.Mp3 &&
+                                recorder.RecordingPath.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase);
+                pathUpdated = _recorderPaths[vm].Text == recorder.RecordingPath &&
+                              !System.IO.File.Exists(recorder.RecordingPath);
+
+                recorder.Start();
+                Thread.Sleep(250);
+                UpdateMeters();
+                liveOk = recorder.IsRecording &&
+                         badge!.Text.Text == "REC" &&
+                         GlobalRecordChip.Visibility == Visibility.Visible &&
+                         GlobalRecordText.Text.StartsWith("REC", StringComparison.Ordinal) &&
+                         ReferenceEquals(_nodeVisuals[vm].BorderBrush, NodeRecordingBorder) &&
+                         recorder.RecordedSeconds > 0.1;
+
+                recorder.Stop();
+                UpdateMeters();
+                savedOk = !recorder.IsRecording &&
+                          badge!.Text.Text == "SAVED" &&
+                          GlobalRecordChip.Visibility == Visibility.Collapsed &&
+                          string.IsNullOrEmpty(recorder.RecordingError) &&
+                          recorder.RecordedSeconds > 0.1 &&
+                          System.IO.File.Exists(recorder.RecordingPath);
+            }
+
+            pass = outputOk && controlsOk && badgeOk && noFileYet && globalIdle &&
+                   formatChanged && pathUpdated && liveOk && savedOk;
+            detail = $"output={outputOk} controls={controlsOk} badge={badgeOk} " +
+                     $"noFile={noFileYet} globalIdle={globalIdle} format={formatChanged} " +
+                     $"path={pathUpdated} live={liveOk} saved={savedOk}";
+        }
+        catch (Exception ex)
+        {
+            detail = ex.GetType().Name + ": " + ex.Message;
+        }
+        finally
+        {
+            try
+            {
+                recorder?.Stop();
+            }
+            catch
+            {
+            }
+
+            if (vm != null && _nodes.Contains(vm))
+            {
+                RemoveNode(vm);
+            }
+
+            try
+            {
+                System.IO.File.Delete(path);
+                System.IO.File.Delete(System.IO.Path.ChangeExtension(path, "mp3"));
+            }
+            catch
+            {
+            }
+        }
+
+        return $"recorder node: {detail} -> {(pass ? "PASS" : "FAIL")}";
+    }
+
+    /// <summary>
+    /// Measures the UI feedback path on a busy canvas: recorder status updates,
+    /// meter smoothing and the render pass. Used before/after adding visual
+    /// feedback so the cost is a number, not a guess.
+    /// </summary>
+    public string RunFeedbackBench()
+    {
+        string folder = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"Ruse-feedback-bench-{Guid.NewGuid():N}");
+
+        OnClearClick(this, new RoutedEventArgs());
+        _meterTimer.Stop();
+
+        try
+        {
+            System.IO.Directory.CreateDirectory(folder);
+
+            for (int i = 0; i < 3; i++)
+            {
+                string path = System.IO.Path.Combine(folder, $"take-{i}.wav");
+                var vm = AddFileRecorderNode(i * 250, 40, path: path,
+                    format: AudioFileFormat.Wav16, autoStart: false);
+                if (vm != null && _nodeBacking.TryGetValue(vm, out var obj) &&
+                    obj is OutputNode recorder)
+                {
+                    recorder.Start();
+                }
+            }
+
+            for (int i = 0; i < 8; i++)
+            {
+                AddTestSinkOutput(40 + (i % 4) * 260, 280 + (i / 4) * 190);
+            }
+
+            for (int i = 0; i < 8; i++)
+            {
+                var modifier = new ModifierNode($"Bench {i + 1}");
+                if (AudioProcessorCatalog.Create(GainProcessor.Id) is { } gain)
+                {
+                    modifier.Add(gain);
+                }
+
+                AddModifierNodeCore(modifier, $"Bench {i + 1}", 40 + (i % 4) * 260,
+                    660 + (i / 4) * 190);
+            }
+
+            UpdateLayout();
+
+            // Warm up JIT and the cached visuals before counting.
+            for (int i = 0; i < 20; i++)
+            {
+                UpdateMeters();
+            }
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            const int updates = 2000;
+            long alloc0 = GC.GetAllocatedBytesForCurrentThread();
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            for (int i = 0; i < updates; i++)
+            {
+                UpdateMeters();
+            }
+
+            watch.Stop();
+            long alloc1 = GC.GetAllocatedBytesForCurrentThread();
+            double updateMs = watch.Elapsed.TotalMilliseconds / updates;
+
+            int width = Math.Max(1, (int)ActualWidth);
+            int height = Math.Max(1, (int)ActualHeight);
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            const int frames = 20;
+            watch.Restart();
+            for (int i = 0; i < frames; i++)
+            {
+                UpdateMeters();
+                bitmap.Render(this);
+            }
+
+            watch.Stop();
+            double frameMs = watch.Elapsed.TotalMilliseconds / frames;
+
+            int recording = _nodeBacking.Values.OfType<OutputNode>().Count(o => o.IsRecording);
+            double allocKiB = (alloc1 - alloc0) / 1024.0 / updates;
+
+            return $"nodes={_nodes.Count} recording={recording} updates={updates}, " +
+                   $"update {updateMs:0.0000} ms/tick, alloc {allocKiB:0.000} KiB/tick; " +
+                   $"update+render {frameMs:0.00} ms/frame ({width}x{height}), " +
+                   $"10 Hz UI cost {updateMs * 10:0.000} ms/s -> " +
+                   $"{(updateMs * 10) / 10:0.000}% of a core";
+        }
+        catch (Exception ex)
+        {
+            return $"FAILED: {ex}";
+        }
+        finally
+        {
+            StopAllRouting();
+            try
+            {
+                System.IO.Directory.Delete(folder, recursive: true);
+            }
+            catch
+            {
+            }
+        }
     }
 
     /// <summary>
@@ -467,6 +691,14 @@ public partial class MainWindow
         }
 
         _nodeVisuals.Remove(vm);
+        _recorderStatus.Remove(vm);
+        _recorderStatusBorders.Remove(vm);
+        _recorderPaths.Remove(vm);
+        _recorderFormats.Remove(vm);
+        _recorderChooseButtons.Remove(vm);
+        _recorderBadges.Remove(vm);
+        _nodeClipBadges.Remove(vm);
+        _nodeClipHoldUntil.Remove(vm);
 
         if (_nodeBacking.TryGetValue(vm, out var backing))
         {
@@ -602,5 +834,175 @@ public partial class MainWindow
                        $"-> {(clickPass ? "PASS" : "FAIL")}";
 
         return $"{drop} | {zoom} | {click}";
+    }
+
+    /// <summary>
+    /// Self-test for the sidebar wheel forwarding: a wheel event raised over a
+    /// list must scroll the sidebar instead of being swallowed by the list.
+    /// </summary>
+    public string RunSidebarWheelSelfTest()
+    {
+        double oldHeight = SidebarScroll.Height;
+        SidebarScroll.Height = 120;
+        SidebarScroll.ScrollToTop();
+        UpdateLayout();
+
+        bool scrollable = SidebarScroll.ScrollableHeight > 0;
+
+        var down = new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -120)
+        {
+            RoutedEvent = UIElement.PreviewMouseWheelEvent,
+        };
+        AppsList.RaiseEvent(down);
+        UpdateLayout();
+        double afterDown = SidebarScroll.VerticalOffset;
+        bool handledDown = down.Handled;
+
+        var up = new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, 120)
+        {
+            RoutedEvent = UIElement.PreviewMouseWheelEvent,
+        };
+        AppsList.RaiseEvent(up);
+        UpdateLayout();
+        double afterUp = SidebarScroll.VerticalOffset;
+
+        if (double.IsNaN(oldHeight))
+        {
+            SidebarScroll.ClearValue(HeightProperty);
+        }
+        else
+        {
+            SidebarScroll.Height = oldHeight;
+        }
+
+        SidebarScroll.ScrollToTop();
+        UpdateLayout();
+
+        bool pass = scrollable && handledDown && afterDown > 0.5 && afterUp < afterDown - 0.5;
+        return $"sidebar wheel: scrollable={scrollable}, down {afterDown:0.0} (handled={handledDown}), " +
+               $"up {afterUp:0.0} -> {(pass ? "PASS" : "FAIL")}";
+    }
+
+    /// <summary>
+    /// A grabbed node must move ahead of every overlapping node. Checks both
+    /// the creation order (newest on top) and the explicit raise used on mouse
+    /// down, because a later-created node would otherwise hide the dragged one.
+    /// </summary>
+    public string RunNodeZOrderSelfTest()
+    {
+        var firstModifier = new ModifierNode("Z-order first");
+        if (AudioProcessorCatalog.Create(GainProcessor.Id) is { } firstGain)
+        {
+            firstModifier.Add(firstGain);
+        }
+
+        var secondModifier = new ModifierNode("Z-order second");
+        if (AudioProcessorCatalog.Create(GainProcessor.Id) is { } secondGain)
+        {
+            secondModifier.Add(secondGain);
+        }
+
+        var first = AddModifierNodeCore(firstModifier, "Z-order first", 40, 960);
+        var second = AddModifierNodeCore(secondModifier, "Z-order second", 260, 960);
+        if (first == null || second == null ||
+            !_nodeHosts.TryGetValue(first, out var firstHost) ||
+            !_nodeHosts.TryGetValue(second, out var secondHost))
+        {
+            return "z-order: setup failed -> FAIL";
+        }
+
+        bool createdOnTop = Panel.GetZIndex(secondHost) > Panel.GetZIndex(firstHost);
+
+        BringNodeToFront(first);
+        bool firstRaised = Panel.GetZIndex(firstHost) > Panel.GetZIndex(secondHost);
+
+        BringNodeToFront(second);
+        bool secondRaised = Panel.GetZIndex(secondHost) > Panel.GetZIndex(firstHost);
+
+        bool pass = createdOnTop && firstRaised && secondRaised;
+        return $"z-order: newest top={createdOnTop}, first raised={firstRaised}, " +
+               $"second raised={secondRaised} -> {(pass ? "PASS" : "FAIL")}";
+    }
+
+    /// <summary>
+    /// Releasing a dragged node over another must move it to the nearest clear
+    /// slot, and dropping it in a clear slot must leave it untouched.
+    /// </summary>
+    public string RunNodeOverlapSelfTest()
+    {
+        var firstModifier = new ModifierNode("Overlap first");
+        if (AudioProcessorCatalog.Create(GainProcessor.Id) is { } firstGain)
+        {
+            firstModifier.Add(firstGain);
+        }
+
+        var secondModifier = new ModifierNode("Overlap second");
+        if (AudioProcessorCatalog.Create(GainProcessor.Id) is { } secondGain)
+        {
+            secondModifier.Add(secondGain);
+        }
+
+        var first = AddModifierNodeCore(firstModifier, "Overlap first", 700, 960);
+        var second = AddModifierNodeCore(secondModifier, "Overlap second", 920, 960);
+        if (first == null || second == null)
+        {
+            return "overlap: setup failed -> FAIL";
+        }
+
+        var firstSize = GetNodeSize(first);
+        var secondSize = GetNodeSize(second);
+        var firstBounds = new Rect(first.X, first.Y, firstSize.Width, firstSize.Height);
+
+        var free = FindNearestFreeNodePosition(second, first.X, first.Y);
+        var freeBounds = new Rect(free.X, free.Y, secondSize.Width, secondSize.Height);
+        bool movedClear = !freeBounds.IntersectsWith(firstBounds) &&
+                          (Math.Abs(free.X - first.X) > 0.5 || Math.Abs(free.Y - first.Y) > 0.5);
+
+        var stable = FindNearestFreeNodePosition(second, free.X, free.Y);
+        bool stayedPut = Math.Abs(stable.X - free.X) < 0.5 && Math.Abs(stable.Y - free.Y) < 0.5;
+
+        bool pass = movedClear && stayedPut;
+        return $"overlap: moved clear={movedClear}, clear slot stable={stayedPut} -> " +
+               $"{(pass ? "PASS" : "FAIL")}";
+    }
+
+    /// <summary>
+    /// The custom frame has no native title bar to fall back on, so verify the
+    /// chrome is configured and the window keys still toggle the window.
+    /// </summary>
+    public string RunWindowFrameSelfTest()
+    {
+        var chrome = WindowChrome.GetWindowChrome(this);
+        double caption = chrome?.CaptionHeight ?? 0;
+        double resize = chrome?.ResizeBorderThickness.Left ?? 0;
+
+        bool configured = WindowStyle == System.Windows.WindowStyle.None
+            && chrome != null
+            && caption >= 40
+            && resize > 0
+            && MinButton.IsEnabled
+            && MaxButton.IsEnabled
+            && CloseButton.IsEnabled;
+
+        var before = WindowState;
+        var target = before == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+        WindowState = target;
+        UpdateLayout();
+        bool toggled = WindowState == target;
+        bool toggledGlyph = Glyph() == (target == WindowState.Maximized ? "\uE923" : "\uE922");
+
+        WindowState = before;
+        UpdateLayout();
+        bool restored = WindowState == before;
+        bool restoredGlyph = Glyph() == (before == WindowState.Maximized ? "\uE923" : "\uE922");
+
+        bool pass = configured && toggled && toggledGlyph && restored && restoredGlyph;
+        return $"window frame: chrome={chrome != null}, caption={caption:0}, resize={resize:0}, " +
+               $"keys={MinButton.IsEnabled}/{MaxButton.IsEnabled}/{CloseButton.IsEnabled}, " +
+               $"toggle={toggled}, glyph={(toggledGlyph && restoredGlyph ? "ok" : "wrong")} " +
+               $"-> {(pass ? "PASS" : "FAIL")}";
+
+        string Glyph() => MaxButton.Content as string ?? "";
     }
 }

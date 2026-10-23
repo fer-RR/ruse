@@ -41,7 +41,10 @@ public partial class MainWindow
         double Y,
         float Volume,
         bool Muted,
-        List<PresetProcessor> Processors);
+        List<PresetProcessor> Processors,
+        bool IsFile = false,
+        string? FilePath = null,
+        string? FileFormat = null);
 
     /// <summary>
     /// Finds a node by its stable id. Undo commands keep ids rather than node
@@ -78,7 +81,14 @@ public partial class MainWindow
                 data = data with { DeviceId = source.DeviceId, ProcessId = source.ProcessId, SourceKind = source.Kind };
                 break;
             case OutputNode output:
-                data = data with { DeviceId = output.DeviceId, IsVirtual = vm.MicHint != null };
+                data = data with
+                {
+                    DeviceId = output.DeviceId,
+                    IsVirtual = vm.MicHint != null,
+                    IsFile = output.IsFileRecorder,
+                    FilePath = output.IsFileRecorder ? output.RecordingPath : null,
+                    FileFormat = output.IsFileRecorder ? output.RecordingFormat.ToString() : null,
+                };
                 break;
             case ModifierNode modifier:
                 data = data with
@@ -114,6 +124,13 @@ public partial class MainWindow
 
     private NodeViewModel? RestoreOutputNode(NodeData data)
     {
+        if (data.IsFile)
+        {
+            return AddFileRecorderNode(
+                data.X, data.Y, data.Id, data.FilePath ?? string.Empty,
+                AudioFileFormats.Parse(data.FileFormat), autoStart: false);
+        }
+
         if (string.IsNullOrEmpty(data.DeviceId))
         {
             return null;

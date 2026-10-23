@@ -42,14 +42,6 @@ public partial class MainWindow
         SetStatus($"Saved the chain '{definition.Name}'.");
     }
 
-    private void OnChainDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (ChainsList.SelectedItem is SubgraphDefinition definition)
-        {
-            AddChainNode(definition, null);
-        }
-    }
-
     /// <summary>Places a saved chain on the canvas as a single node.</summary>
     private NodeViewModel? AddChainNode(SubgraphDefinition definition, Point? at)
     {

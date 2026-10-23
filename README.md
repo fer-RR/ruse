@@ -3,8 +3,6 @@
 A node-based audio router for Windows. Route any application, system sound or
 capture device to any output device, with an effect chain in between.
 
-![Ruse](docs/screenshot.png)
-
 ## What it does
 
 - **Per-application capture** — pick a process (Edge, Discord, a game…) in the
@@ -17,8 +15,18 @@ capture device to any output device, with an effect chain in between.
   bitcrusher, noise suppression, AGC, comfort noise…) with live parameters.
 - **Saved chains** — build a chain of effects once, save it to the library and
   drop it anywhere as a single node.
+- **File recording** — add a recorder output, choose WAV (16/24-bit or 32-bit
+  float), MP3 or FLAC, and save the routed mix to disk.
+- **Live recording feedback** — each recorder shows NO FILE / ARMED / REC /
+  SAVED / ERR, a global REC timer appears in the title bar, and an output that
+  clips gets its own CLIP badge.
 - **Presets** — the whole graph (nodes, cables, effect settings) saves to a
   `.ruse.json` file.
+- **Start with Windows** — an option in Settings adds or removes Ruse from the
+  per-user startup apps.
+- **Start routing on launch** — optionally start the restored graph after the
+  window is ready. The Start button stays muted while idle and lights up while
+  audio is flowing.
 - **Undo/redo** for everything, including node moves and effect tweaks.
 - **Low latency** — the whole path is about 20 ms on a modern machine.
 - **Diagnostics** — a built-in self-test suite (`--selftest` and friends) that
@@ -46,6 +54,8 @@ Needs the .NET 10 SDK. The app itself is `src\Ruse.App\bin\Debug\net10.0-windows
 | `--device-test --pid <pid>` | End-to-end run against a real output device |
 | `--perf-test --pid <pid>` | CPU and allocation profile of the whole app |
 | `--effects-test` | Checks every effect: parameters, output, preset round-trip |
+| `--record-test` | Writes/reads every recording format and a live route |
+| `--feedback-bench` | Measures the per-tick cost of the live UI feedback |
 | `--sessions` | Lists the audio sessions and the process that owns each |
 
 ## How it is put together
@@ -55,9 +65,9 @@ src/Ruse.App/
   Audio/          the engine
     AudioGraph.cs         owns sources, modifiers and outputs
     SourceNode.cs         a capture source (app, device, system, ASIO)
-    OutputNode.cs         a render endpoint (WASAPI or ASIO)
+    OutputNode.cs         a render endpoint (WASAPI, ASIO or file)
     ModifierNode.cs       an effect chain on a route
-    Audio/                effect processors and the preset model
+    (the effect processors and the preset model also live in Audio/)
   Ui/             small dialogs and view models
   MainWindow*.cs  the window, split by area (one file per feature)
   Diagnostics/    the log

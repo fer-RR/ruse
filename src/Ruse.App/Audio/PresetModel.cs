@@ -54,6 +54,9 @@ public sealed class PresetOutput
     public string Title { get; set; } = "";
     public bool IsVirtual { get; set; }
     public string? MicHint { get; set; }
+    public bool IsFile { get; set; }
+    public string? FilePath { get; set; }
+    public string? FileFormat { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
     public float Volume { get; set; } = 1.0f;

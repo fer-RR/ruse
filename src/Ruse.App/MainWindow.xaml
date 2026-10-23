@@ -9,7 +9,16 @@
         Title="Ruse — Audio Router" Height="800" Width="1360"
         MinHeight="600" MinWidth="1080"
         Background="#0E1015"
+        WindowStyle="None"
+        StateChanged="OnWindowStateChanged"
         WindowStartupLocation="CenterScreen">
+    <!-- WindowChrome keeps Aero snap, resize borders and the taskbar behaviour
+         that a plain WindowStyle=None window would lose. -->
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="48" ResizeBorderThickness="6"
+                      GlassFrameThickness="0" CornerRadius="0"
+                      UseAeroCaptionButtons="False"/>
+    </WindowChrome.WindowChrome>
     <Window.Resources>
         <SolidColorBrush x:Key="PanelBrush" Color="#161A22"/>
         <SolidColorBrush x:Key="PanelBorderBrush" Color="#242A36"/>
@@ -47,6 +56,63 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <!-- Window keys styled after the chunky square buttons of the 90s
+             hi-fi hardware the frame imitates. -->
+        <Style TargetType="Button" x:Key="CaptionButton">
+            <Setter Property="Width" Value="44"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#C7CEDA"/>
+            <Setter Property="FontFamily" Value="Segoe MDL2 Assets, Segoe UI Symbol"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Key" Background="{TemplateBinding Background}" CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Key" Property="Background" Value="#2B323E"/>
+                                <Setter Property="Foreground" Value="#FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Key" Property="Background" Value="#3A4250"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="Button" x:Key="CloseCaptionButton" BasedOn="{StaticResource CaptionButton}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Key" Background="{TemplateBinding Background}" CornerRadius="3">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Key" Property="Background" Value="#A63B2A"/>
+                                <Setter Property="Foreground" Value="#FFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Key" Property="Background" Value="#C24B35"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="Button" x:Key="StartIdleButton" BasedOn="{StaticResource ToolButton}">
+            <Setter Property="Background" Value="#1D222C"/>
+            <Setter Property="Foreground" Value="#6E7A90"/>
         </Style>
 
         <Style TargetType="Button" x:Key="PrimaryButton" BasedOn="{StaticResource ToolButton}">
@@ -187,14 +253,98 @@
     </Window.Resources>
 
     <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="312" MinWidth="230" MaxWidth="520"/>
             <ColumnDefinition Width="Auto"/>
             <ColumnDefinition Width="*" MinWidth="480"/>
         </Grid.ColumnDefinitions>
 
+        <!-- ================= TITLE BAR ================= -->
+        <!-- Brushed-panel chrome with a VFD readout, modelled on the 90s
+             hi-fi separates Posy collects and films. -->
+        <Border Grid.Row="0" Grid.ColumnSpan="3" BorderBrush="#2E3542" BorderThickness="0,0,0,1">
+            <Border.Background>
+                <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                    <GradientStop Color="#22272F" Offset="0"/>
+                    <GradientStop Color="#181C23" Offset="0.55"/>
+                    <GradientStop Color="#14181E" Offset="1"/>
+                </LinearGradientBrush>
+            </Border.Background>
+            <Grid Margin="12,0,8,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse Width="7" Height="7" Fill="#E8A33D" Stroke="#4A3313" StrokeThickness="1"
+                             Margin="0,0,11,0"/>
+                    <Border Background="#0A1714" BorderBrush="#245244" BorderThickness="1"
+                            CornerRadius="2" Padding="10,3,12,2">
+                        <StackPanel>
+                            <TextBlock Text="RUSE" FontFamily="Consolas" FontSize="15"
+                                       FontWeight="Bold" Foreground="#8BF3D4"/>
+                            <TextBlock Text="AUDIO ROUTER · AR-01" FontFamily="Consolas"
+                                       FontSize="8" Foreground="#4E8F7B"/>
+                        </StackPanel>
+                    </Border>
+                    <StackPanel Orientation="Horizontal" Height="20" Margin="14,0,0,0"
+                                VerticalAlignment="Center">
+                        <Rectangle Width="3" Height="5" Fill="#E8A33D" Margin="0,0,3,0" VerticalAlignment="Bottom"/>
+                        <Rectangle Width="3" Height="11" Fill="#6FE7C4" Margin="0,0,3,0" VerticalAlignment="Bottom" Opacity="0.85"/>
+                        <Rectangle Width="3" Height="7" Fill="#6FE7C4" Margin="0,0,3,0" VerticalAlignment="Bottom" Opacity="0.65"/>
+                        <Rectangle Width="3" Height="15" Fill="#E8A33D" Margin="0,0,3,0" VerticalAlignment="Bottom"/>
+                        <Rectangle Width="3" Height="9" Fill="#6FE7C4" Margin="0,0,3,0" VerticalAlignment="Bottom" Opacity="0.75"/>
+                        <Rectangle Width="3" Height="13" Fill="#6FE7C4" Margin="0,0,3,0" VerticalAlignment="Bottom" Opacity="0.9"/>
+                        <Rectangle Width="3" Height="6" Fill="#E8A33D" VerticalAlignment="Bottom" Opacity="0.8"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right"
+                            VerticalAlignment="Center" Margin="0,0,20,0">
+                    <!-- Global recording indicator: the per-node badge says which
+                         recorder, this says the app is capturing right now. -->
+                    <Border x:Name="GlobalRecordChip" Visibility="Collapsed"
+                            Background="#3A1720" BorderBrush="#7A2A35" BorderThickness="1"
+                            CornerRadius="3" Padding="7,2" Margin="0,0,12,0"
+                            ToolTip="Recording">
+                        <StackPanel Orientation="Horizontal">
+                            <Ellipse x:Name="GlobalRecordDot" Width="7" Height="7"
+                                     Fill="#FF6B6B" Margin="0,0,6,0" VerticalAlignment="Center"/>
+                            <TextBlock x:Name="GlobalRecordText" Text="REC 00:00"
+                                       FontFamily="Consolas" FontSize="10" FontWeight="Bold"
+                                       Foreground="#FFB0B0" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                    <TextBlock Text="STEREO ROUTING UNIT" FontFamily="Consolas"
+                               FontSize="9" Foreground="#5A6577" VerticalAlignment="Center"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Width="1" Height="18" Background="#2C333E" Margin="0,0,7,0"/>
+                    <Button x:Name="MinButton" Style="{StaticResource CaptionButton}" Content="&#xE921;"
+                            ToolTip="Minimize" Click="OnMinimizeClick"
+                            AutomationProperties.Name="Minimize"
+                            WindowChrome.IsHitTestVisibleInChrome="True"/>
+                    <Button x:Name="MaxButton" Style="{StaticResource CaptionButton}" Content="&#xE922;"
+                            ToolTip="Maximize" Click="OnMaximizeRestoreClick"
+                            AutomationProperties.Name="Maximize"
+                            WindowChrome.IsHitTestVisibleInChrome="True"/>
+                    <Button x:Name="CloseButton" Style="{StaticResource CloseCaptionButton}" Content="&#xE8BB;"
+                            ToolTip="Close" Click="OnCloseClick"
+                            AutomationProperties.Name="Close"
+                            WindowChrome.IsHitTestVisibleInChrome="True"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
         <!-- ================= SIDEBAR ================= -->
-        <Border Grid.Column="0" Background="{StaticResource PanelBrush}"
+        <Border Grid.Row="1" Grid.Column="0" Background="{StaticResource PanelBrush}"
                 BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,0,1,0">
             <Grid>
                 <Grid.RowDefinitions>
@@ -220,7 +370,7 @@
                     </StackPanel>
                 </Grid>
 
-                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto"
+                <ScrollViewer x:Name="SidebarScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto"
                               HorizontalScrollBarVisibility="Disabled" Padding="20,0,20,20">
                     <StackPanel>
                         <TextBox x:Name="SearchBox" Margin="0,8,0,10" Padding="8,6"
@@ -261,7 +411,7 @@
                                     HorizontalAlignment="Stretch" Margin="0,0,0,8"
                                     ToolTip="Capture everything the system is playing"/>
                             <ListBox x:Name="AppsList" Style="{StaticResource DragListStyle}"
-                                     MouseDoubleClick="OnAppDoubleClick"
+                                     MouseDoubleClick="OnSidebarItemDoubleClick"
                                      PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                      PreviewMouseMove="OnListPreviewMouseMove"
                                      PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
@@ -328,7 +478,7 @@
                         </ToggleButton>
                         <StackPanel x:Name="OutputsSection">
                         <ListBox x:Name="OutputsList" Style="{StaticResource DragListStyle}"
-                                 MouseDoubleClick="OnOutputDoubleClick"
+                                 MouseDoubleClick="OnSidebarItemDoubleClick"
                                  PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                  PreviewMouseMove="OnListPreviewMouseMove"
                                  PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
@@ -375,6 +525,9 @@
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
+                        <Button x:Name="AddRecorderButton" Style="{StaticResource ToolButton}"
+                                Content="Record to file" Margin="0,6,0,0"
+                                Click="OnAddRecorderClick"/>
                         </StackPanel>
 
                         <!-- CAPTURE DEVICES -->
@@ -400,7 +553,7 @@
                         </ToggleButton>
                         <StackPanel x:Name="InputsSection">
                         <ListBox x:Name="InputsList" Style="{StaticResource DragListStyle}"
-                                 MouseDoubleClick="OnInputDoubleClick"
+                                 MouseDoubleClick="OnSidebarItemDoubleClick"
                                  PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                  PreviewMouseMove="OnListPreviewMouseMove"
                                  PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
@@ -474,7 +627,7 @@
                                    FontSize="10" TextWrapping="Wrap"
                                    Foreground="{StaticResource SubtleTextBrush}" Margin="0,0,0,10"/>
                         <ListBox x:Name="VirtualList" Style="{StaticResource DragListStyle}"
-                                 MouseDoubleClick="OnVirtualDoubleClick"
+                                 MouseDoubleClick="OnSidebarItemDoubleClick"
                                  PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                  PreviewMouseMove="OnListPreviewMouseMove"
                                  PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
@@ -542,7 +695,7 @@
                                    FontSize="10" TextWrapping="Wrap"
                                    Foreground="{StaticResource SubtleTextBrush}" Margin="0,0,0,10"/>
                         <ListBox x:Name="ModifiersList" Style="{StaticResource DragListStyle}"
-                                 MouseDoubleClick="OnModifierDoubleClick"
+                                 MouseDoubleClick="OnSidebarItemDoubleClick"
                                  PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                  PreviewMouseMove="OnListPreviewMouseMove"
                                  PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
@@ -612,7 +765,7 @@
                                     HorizontalAlignment="Stretch" Margin="0,0,0,8"
                                     ToolTip="Build a chain of effects and save it for reuse"/>
                             <ListBox x:Name="ChainsList" Style="{StaticResource DragListStyle}"
-                                     MouseDoubleClick="OnChainDoubleClick"
+                                     MouseDoubleClick="OnSidebarItemDoubleClick"
                                      PreviewMouseLeftButtonDown="OnListPreviewMouseDown"
                                      PreviewMouseMove="OnListPreviewMouseMove"
                                      PreviewMouseLeftButtonUp="OnListPreviewMouseUp"
@@ -654,13 +807,13 @@
         </Border>
 
         <!-- ================= SIDEBAR SPLITTER ================= -->
-        <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
+        <GridSplitter Grid.Row="1" Grid.Column="1" Width="5" HorizontalAlignment="Stretch"
                       VerticalAlignment="Stretch" Background="#1B2130"
                       Cursor="SizeWE" ResizeBehavior="PreviousAndNext"
                       ResizeDirection="Columns"/>
 
         <!-- ================= GRAPH AREA ================= -->
-        <Grid Grid.Column="2">
+        <Grid Grid.Row="1" Grid.Column="2">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
@@ -672,7 +825,8 @@
             <Border Grid.Row="0" Background="{StaticResource PanelBrush}"
                     BorderBrush="{StaticResource PanelBorderBrush}" BorderThickness="0,0,0,1" Padding="16,8">
                 <WrapPanel x:Name="ToolbarActions" Orientation="Horizontal">
-                    <Button x:Name="StartButton" Style="{StaticResource PrimaryButton}" Click="OnStartClick">
+                    <Button x:Name="StartButton" Style="{StaticResource StartIdleButton}" Click="OnStartClick"
+                            ToolTip="Start routing">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="▶  Start routing"/>
                         </StackPanel>
@@ -750,10 +904,10 @@
                         </Grid.ContextMenu>
                     <!-- GraphLayer is the zoomable world: both canvases live in it
                          so the cables and the nodes scale together. -->
-                    <Grid x:Name="GraphLayer">
+                    <Grid x:Name="GraphLayer" HorizontalAlignment="Left" VerticalAlignment="Top">
                         <Canvas x:Name="ConnectionCanvas"/>
                         <Canvas x:Name="NodeCanvas" Background="Transparent" AllowDrop="True"
-                                Drop="OnCanvasDrop" DragEnter="OnCanvasDragEnter" DragOver="OnCanvasDragOver"
+                                Drop="OnCanvasDrop" DragEnter="OnCanvasDragEffect" DragOver="OnCanvasDragEffect"
                                 MouseMove="OnCanvasMouseMove" MouseLeftButtonUp="OnCanvasMouseUp"/>
                     </Grid>
                 </Grid>

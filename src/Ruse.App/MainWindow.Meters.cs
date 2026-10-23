@@ -23,6 +23,7 @@ public partial class MainWindow
     // ---------- Meters ----------
 
     private readonly Dictionary<NodeViewModel, double> _meterSmoothed = new();
+    private bool _clipWasActive;
 
     // Cached brushes — recolouring a bar must not allocate a new brush each tick.
     private static readonly SolidColorBrush MeterLowBrush = Freeze(Color.FromRgb(0x39, 0xD9, 0x8A));
@@ -75,6 +76,13 @@ public partial class MainWindow
                     level = o.MeterLevel;
                     anyRunning |= o.IsRunning;
                     anyClipping |= o.Clipping;
+                    if (o.Clipping)
+                    {
+                        // Per-node peak hold, so the badge names the output that
+                        // overloaded instead of only lighting the global CLIP.
+                        _nodeClipHoldUntil[vm] = Environment.TickCount64 + 1000;
+                    }
+
                     if (o.IsRunning)
                     {
                         anyLowLatency |= o.LowLatencyActive;
@@ -121,6 +129,17 @@ public partial class MainWindow
             if (double.IsNaN(smoothed) || smoothed < 0.001)
             {
                 smoothed = 0;
+            }
+
+            if (_nodeClipBadges.TryGetValue(vm, out var clipBadge))
+            {
+                bool clipVisible = _nodeClipHoldUntil.TryGetValue(vm, out long until) &&
+                                   Environment.TickCount64 < until;
+                var visibility = clipVisible ? Visibility.Visible : Visibility.Collapsed;
+                if (clipBadge.Visibility != visibility)
+                {
+                    clipBadge.Visibility = visibility;
+                }
             }
 
             if (_nodeVisuals.TryGetValue(vm, out var body) &&
@@ -180,6 +199,14 @@ public partial class MainWindow
             ? Visibility.Visible
             : Visibility.Collapsed;
 
+        if (anyClipping && !_clipWasActive)
+        {
+            SetStatus("Clipping - lower a gain or the master volume.");
+        }
+
+        _clipWasActive = anyClipping;
+
+        UpdateRecorderVisuals();
         SetRunState(anyRunning);
 
         UpdateMinimapVisibility();

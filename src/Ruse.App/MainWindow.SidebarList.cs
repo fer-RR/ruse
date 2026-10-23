@@ -28,43 +28,38 @@ public partial class MainWindow
         RefreshApps();
     }
 
-    private void OnAppDoubleClick(object sender, MouseButtonEventArgs e)
+    private void OnSidebarItemDoubleClick(object sender, MouseButtonEventArgs e)
     {
-        if (AppsList.SelectedItem is AudioSessionInfo info)
+        if (sender is not ListBox list || list.SelectedItem == null)
         {
-            AddSourceNode(new SourceNode(info.Label, SourceKind.Application, info.ProcessId));
+            return;
         }
-    }
 
-    private void OnOutputDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (OutputsList.SelectedItem is DeviceItem item)
+        switch (list.SelectedItem)
         {
-            AddOutputNode(item);
-        }
-    }
+            case AudioSessionInfo info:
+                AddSourceNode(new SourceNode(info.Label, SourceKind.Application, info.ProcessId));
+                break;
 
-    private void OnInputDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (InputsList.SelectedItem is DeviceItem item)
-        {
-            AddDeviceSourceNode(item);
-        }
-    }
+            case DeviceItem device when ReferenceEquals(list, InputsList):
+                AddDeviceSourceNode(device);
+                break;
 
-    private void OnVirtualDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (VirtualList.SelectedItem is VirtualOutputInfo info)
-        {
-            AddVirtualOutputNode(info);
-        }
-    }
+            case DeviceItem device:
+                AddOutputNode(device);
+                break;
 
-    private void OnModifierDoubleClick(object sender, MouseButtonEventArgs e)
-    {
-        if (ModifiersList.SelectedItem is AudioProcessorCatalog.Descriptor md)
-        {
-            AddModifierNode(md);
+            case VirtualOutputInfo info:
+                AddVirtualOutputNode(info);
+                break;
+
+            case AudioProcessorCatalog.Descriptor descriptor:
+                AddModifierNode(descriptor);
+                break;
+
+            case SubgraphDefinition definition:
+                AddChainNode(definition, null);
+                break;
         }
     }
 }

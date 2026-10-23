@@ -231,9 +231,25 @@ public partial class MainWindow
     private static readonly Brush NodeMutedBorder =
         new SolidColorBrush((Color)ColorConverter.ConvertFromString("#FF5C5C"));
 
+    private static readonly Brush NodeRecordingBorder = MakeBrush("#FF6B6B");
+    private static readonly Brush NodeRecordingErrorBorder = MakeBrush("#FF9A62");
+
+    private static void SetNodeBorder(Border body, Brush brush, double thickness)
+    {
+        if (!ReferenceEquals(body.BorderBrush, brush))
+        {
+            body.BorderBrush = brush;
+        }
+
+        if (Math.Abs(body.BorderThickness.Left - thickness) > 0.01)
+        {
+            body.BorderThickness = new Thickness(thickness);
+        }
+    }
+
     /// <summary>
-    /// Paints a node's border: the drop target wins, then a muted node gets a
-    /// red stroke, otherwise the normal idle border.
+    /// Paints a node's border: the drop target wins, then a live recorder, a
+    /// recorder error, a muted node, otherwise the normal idle border.
     /// </summary>
     private void UpdateNodeAppearance(NodeViewModel vm)
     {
@@ -242,20 +258,34 @@ public partial class MainWindow
             return;
         }
 
+        bool recording = false;
+        bool recordingError = false;
+        if (_nodeBacking.TryGetValue(vm, out var backing) &&
+            backing is OutputNode { IsFileRecorder: true } recorder)
+        {
+            recording = recorder.IsRecording;
+            recordingError = !string.IsNullOrEmpty(recorder.RecordingError);
+        }
+
         if (ReferenceEquals(vm, _dropHighlight))
         {
-            body.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString(vm.Accent));
-            body.BorderThickness = new Thickness(2);
+            SetNodeBorder(body, new SolidColorBrush((Color)ColorConverter.ConvertFromString(vm.Accent)), 2);
+        }
+        else if (recording)
+        {
+            SetNodeBorder(body, NodeRecordingBorder, 2);
+        }
+        else if (recordingError)
+        {
+            SetNodeBorder(body, NodeRecordingErrorBorder, 2);
         }
         else if (_settings.HighlightMutedNodes && vm.Muted)
         {
-            body.BorderBrush = NodeMutedBorder;
-            body.BorderThickness = new Thickness(2);
+            SetNodeBorder(body, NodeMutedBorder, 2);
         }
         else
         {
-            body.BorderBrush = NodeIdleBorder;
-            body.BorderThickness = new Thickness(1);
+            SetNodeBorder(body, NodeIdleBorder, 1);
         }
     }
 

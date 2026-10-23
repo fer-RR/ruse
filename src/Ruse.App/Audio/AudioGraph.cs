@@ -51,6 +51,14 @@ public sealed class AudioGraph : IDisposable
         return node;
     }
 
+    /// <summary>Adds an output that records the mix to an audio file.</summary>
+    public OutputNode AddOutputForFile(string path, AudioFileFormat format)
+    {
+        var node = OutputNode.CreateForFile(path, format);
+        Outputs.Add(node);
+        return node;
+    }
+
     public void RemoveOutput(OutputNode node)
     {
         Outputs.Remove(node);
@@ -102,7 +110,7 @@ public sealed class AudioGraph : IDisposable
     /// <summary>Starts an output's render thread if it is not already running.</summary>
     public void EnsureRunning(OutputNode output)
     {
-        if (!AutoRun || output.IsRunning)
+        if (!AutoRun || output.IsRunning || !output.AutoStart)
         {
             return;
         }

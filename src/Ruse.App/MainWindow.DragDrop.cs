@@ -26,7 +26,6 @@ public partial class MainWindow
     {
         _listDragSource = sender as ListBox;
         _listDragStart = e.GetPosition(this);
-        _listDragItem = null;
     }
 
     private void OnListPreviewMouseMove(object sender, MouseEventArgs e)
@@ -49,8 +48,6 @@ public partial class MainWindow
             return;
         }
 
-        _listDragItem = item;
-
         object payload = _listDragSource switch
         {
             var lb when lb == OutputsList && item is DeviceItem od => new DropPayload(DropKind.OutputDevice, Device: od),
@@ -64,7 +61,6 @@ public partial class MainWindow
 
         var data = new DataObject(NodeDragFormat, payload);
         DragDrop.DoDragDrop(_listDragSource, data, DragDropEffects.Copy);
-        _listDragItem = null;
     }
 
     private void OnListPreviewMouseUp(object sender, MouseButtonEventArgs e)
@@ -73,13 +69,7 @@ public partial class MainWindow
         _listDragStart = default;
     }
 
-    private void OnCanvasDragEnter(object sender, DragEventArgs e)
-    {
-        e.Effects = e.Data.GetDataPresent(NodeDragFormat) ? DragDropEffects.Copy : DragDropEffects.None;
-        e.Handled = true;
-    }
-
-    private void OnCanvasDragOver(object sender, DragEventArgs e)
+    private void OnCanvasDragEffect(object sender, DragEventArgs e)
     {
         e.Effects = e.Data.GetDataPresent(NodeDragFormat) ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;

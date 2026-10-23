@@ -17,6 +17,7 @@ internal sealed class AsioOutputEndpoint : IDisposable
     private const int MixerRate = 48000;
 
     private AsioDevice? _device;
+    private AsioFloatProvider? _provider;
     private bool _disposed;
 
     public string DriverName { get; }
@@ -28,6 +29,9 @@ internal sealed class AsioOutputEndpoint : IDisposable
 
     /// <summary>True when the driver picked up a clock and is really streaming.</summary>
     public bool Streaming { get; private set; }
+
+    /// <summary>Buffer callbacks the driver has delivered (diagnostics).</summary>
+    public long CallbackCount => _provider?.CallbackCount ?? 0;
 
     /// <summary>True when the driver came up and is streaming.</summary>
     public bool IsRunning => State == "Running" || State == "Configured";
@@ -76,14 +80,15 @@ internal sealed class AsioOutputEndpoint : IDisposable
         UsesResampler = targetRate != MixerRate;
         BufferSize = SafeReadInt(() => _device!.FramesPerBuffer);
 
-        // A driver only streams once its host provides a clock. Give it a
-        // moment, then report whether it is really running so the user is not
-        // left with a silent node and no explanation.
+        // A driver only streams once its host provides a clock, and NAudio
+        // marks the device Running as soon as ASIOStart succeeds. Wait for a
+        // real buffer callback instead, then report whether it is streaming so
+        // the user is not left with a silent node and no explanation.
         var deadline = Environment.TickCount64 + 600;
         while (Environment.TickCount64 < deadline)
         {
             State = _device.State.ToString();
-            if (State == "Running")
+            if (State == "Running" && CallbackCount > 0)
             {
                 break;
             }
@@ -91,7 +96,7 @@ internal sealed class AsioOutputEndpoint : IDisposable
             Thread.Sleep(25);
         }
 
-        Streaming = State == "Running";
+        Streaming = CallbackCount > 0;
 
         double latencySamples = SafeRead(() => (double)_device!.OutputLatencySamples);
         LatencyMs = SampleRate > 0 ? latencySamples * 1000.0 / SampleRate : 0;
@@ -100,6 +105,7 @@ internal sealed class AsioOutputEndpoint : IDisposable
     private void StartPlayback(BufferedWaveProvider mix, int targetRate)
     {
         var provider = new AsioFloatProvider(mix, targetRate);
+        _provider = provider;
         var options = new AsioPlaybackOptions
         {
             Source = provider,
@@ -108,6 +114,18 @@ internal sealed class AsioOutputEndpoint : IDisposable
         };
 
         _device!.InitPlayback(options);
+
+        try
+        {
+            _device.Start();
+        }
+        catch (Exception ex) when (IsClockError(ex))
+        {
+            // A virtual driver without its host running configures fine but
+            // has no clock to start. Leave it configured so the caller can
+            // report that instead of treating the route as broken.
+            AppLog.Info($"ASIO '{DriverName}' has no clock yet: {ex.Message}");
+        }
     }
 
     private bool SupportsRate(int rate)
@@ -161,6 +179,7 @@ internal sealed class AsioOutputEndpoint : IDisposable
         }
 
         _device = null;
+        _provider = null;
     }
 
     public void Dispose()
@@ -188,6 +207,7 @@ internal sealed class AsioFloatProvider : IWaveProvider
     private readonly byte[] _scratch;
     private readonly List<float> _converted = new();
     private readonly byte[] _out;
+    private long _callbackCount;
 
     public AsioFloatProvider(BufferedWaveProvider source, int targetRate)
     {
@@ -200,8 +220,13 @@ internal sealed class AsioFloatProvider : IWaveProvider
 
     public WaveFormat WaveFormat => _format;
 
+    /// <summary>How many times the driver has asked for a buffer.</summary>
+    public long CallbackCount => System.Threading.Interlocked.Read(ref _callbackCount);
+
     public int Read(byte[] buffer, int offset, int count)
     {
+        System.Threading.Interlocked.Increment(ref _callbackCount);
+
         int read = _source.Read(_scratch.AsSpan(0, Math.Min(count, _scratch.Length)));
         if (read <= 0)
         {

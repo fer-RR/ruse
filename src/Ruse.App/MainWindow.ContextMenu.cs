@@ -50,7 +50,6 @@ public partial class MainWindow
         if (_allApps.Count == 0 && _allInputs.Count == 0 && _allOutputs.Count == 0)
         {
             addSource.IsEnabled = false;
-            addOutput.IsEnabled = false;
         }
 
         foreach (var app in _allApps)
@@ -73,6 +72,15 @@ public partial class MainWindow
             item.Click += (_, _) => AddOutputAt(device, at);
             addOutput.Items.Add(item);
         }
+
+        if (addOutput.Items.Count > 0)
+        {
+            addOutput.Items.Add(new Separator());
+        }
+
+        var record = new MenuItem { Header = "Record mix to file..." };
+        record.Click += (_, _) => AddFileRecorderAt(at);
+        addOutput.Items.Add(record);
 
         foreach (var descriptor in AudioProcessorCatalog.All)
         {
@@ -131,6 +139,15 @@ public partial class MainWindow
         if (vm != null)
         {
             SetStatus($"Added '{device.FriendlyName}'.");
+        }
+    }
+
+    private void AddFileRecorderAt(Point at)
+    {
+        var vm = AddFileRecorderNode(at.X, at.Y);
+        if (vm != null)
+        {
+            SetStatus("Added file recorder. Choose a file to arm it.");
         }
     }
 

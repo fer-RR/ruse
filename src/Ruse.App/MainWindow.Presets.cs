@@ -82,6 +82,9 @@ public partial class MainWindow
                         Title = output.Title,
                         IsVirtual = vm.MicHint != null,
                         MicHint = vm.MicHint,
+                        IsFile = output.IsFileRecorder,
+                        FilePath = output.IsFileRecorder ? output.RecordingPath : null,
+                        FileFormat = output.IsFileRecorder ? output.RecordingFormat.ToString() : null,
                         X = vm.X,
                         Y = vm.Y,
                         Volume = vm.Volume,
@@ -191,7 +194,7 @@ public partial class MainWindow
         }
     }
 
-    private void ApplyPreset(Preset preset)
+    private void ApplyPreset(Preset preset, bool autoRun = true)
     {
         // Loading a preset replaces the whole graph, so the old history no
         // longer describes the canvas.
@@ -199,10 +202,10 @@ public partial class MainWindow
 
         OnClearClick(this, new RoutedEventArgs());
 
-        // Clearing the graph stops routing and turns auto-run off, so turn it
-        // back on before the routes are created: a restored preset should
-        // start routing on its own, exactly like a hand-built graph.
-        _graph.AutoRun = true;
+        // Clearing the graph stops routing and turns auto-run off. A preset
+        // loaded by hand should start on its own, but a session restored at
+        // launch waits for the Start button unless the option says otherwise.
+        _graph.AutoRun = autoRun;
 
         var sourceVms = new List<NodeViewModel>();
         var outputVms = new List<NodeViewModel>();
@@ -231,7 +234,15 @@ public partial class MainWindow
             try
             {
                 NodeViewModel? vm;
-                if (AsioCatalog.IsAsioId(o.DeviceId))
+                if (o.IsFile)
+                {
+                    // Never overwrite a take just because a preset or session
+                    // restored a recorder: re-arm it, but wait for Start.
+                    vm = AddFileRecorderNode(
+                        o.X, o.Y, path: o.FilePath ?? string.Empty,
+                        format: AudioFileFormats.Parse(o.FileFormat), autoStart: false);
+                }
+                else if (AsioCatalog.IsAsioId(o.DeviceId))
                 {
                     // ASIO outputs are restored from the driver name: the id
                     // carries it, so no WASAPI lookup is needed.

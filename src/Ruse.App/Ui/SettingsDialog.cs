@@ -10,6 +10,8 @@ public sealed class SettingsResult
 {
     public bool HighlightMutedNodes { get; init; }
     public int MinimapMode { get; init; } = 2;
+    public bool StartWithWindows { get; init; }
+    public bool StartRoutingOnLaunch { get; init; }
 }
 
 /// <summary>
@@ -18,7 +20,8 @@ public sealed class SettingsResult
 /// </summary>
 public static class SettingsDialog
 {
-    public static SettingsResult? Show(Window owner, bool highlightMutedNodes, int minimapMode = 2)
+    public static SettingsResult? Show(Window owner, bool highlightMutedNodes, int minimapMode = 2,
+        bool startWithWindows = false, bool startRoutingOnLaunch = false)
     {
         var window = new Window
         {
@@ -46,6 +49,50 @@ public static class SettingsDialog
         };
 
         root.Children.Add(mutedBox);
+
+        // ---- Routing ----------------------------------------------------
+        root.Children.Add(SectionHeader("Routing"));
+
+        var launchRoutingBox = new CheckBox
+        {
+            Content = "Start routing when Ruse finishes loading",
+            IsChecked = startRoutingOnLaunch,
+            Margin = new Thickness(0, 4, 0, 2),
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C9D1E1")),
+        };
+
+        root.Children.Add(launchRoutingBox);
+        root.Children.Add(new TextBlock
+        {
+            Text = "Starts the restored graph automatically after the window is ready.",
+            Margin = new Thickness(24, 0, 0, 12),
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 380,
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#8892A6")),
+        });
+
+        // ---- Startup ----------------------------------------------------
+        root.Children.Add(SectionHeader("Startup"));
+
+        var startupBox = new CheckBox
+        {
+            Content = "Start Ruse when I sign in to Windows",
+            IsChecked = startWithWindows,
+            Margin = new Thickness(0, 4, 0, 2),
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#C9D1E1")),
+        };
+
+        root.Children.Add(startupBox);
+        root.Children.Add(new TextBlock
+        {
+            Text = "Adds this copy of Ruse to the Windows startup apps.",
+            Margin = new Thickness(24, 0, 0, 12),
+            FontSize = 11,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 380,
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#8892A6")),
+        });
 
         // ---- Mini-map ----
         root.Children.Add(SectionHeader("Canvas"));
@@ -148,6 +195,8 @@ public static class SettingsDialog
             {
                 HighlightMutedNodes = mutedBox.IsChecked == true,
                 MinimapMode = minimapChanged,
+                StartWithWindows = startupBox.IsChecked == true,
+                StartRoutingOnLaunch = launchRoutingBox.IsChecked == true,
             };
             window.DialogResult = true;
         };

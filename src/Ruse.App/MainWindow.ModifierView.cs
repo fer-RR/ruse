@@ -251,9 +251,10 @@ public partial class MainWindow
         body.MouseLeftButtonDown += (_, e) =>
         {
             dragging = true;
-                dragStartX = vm.X;
-                dragStartY = vm.Y;
+            dragStartX = vm.X;
+            dragStartY = vm.Y;
             _selected = vm;
+            BringNodeToFront(vm);
             dragOffset = e.GetPosition(NodeCanvas);
             dragOffset.X -= vm.X;
             dragOffset.Y -= vm.Y;
@@ -277,6 +278,15 @@ public partial class MainWindow
             {
                 double newX = SnapToGrid(vm.X);
                 double newY = SnapToGrid(vm.Y);
+                bool moved = Math.Abs(newX - dragStartX) >= 0.5 ||
+                             Math.Abs(newY - dragStartY) >= 0.5;
+                if (moved)
+                {
+                    Point free = FindNearestFreeNodePosition(vm, newX, newY);
+                    newX = free.X;
+                    newY = free.Y;
+                }
+
                 vm.X = newX;
                 vm.Y = newY;
                 PushMoveNode(vm, dragStartX, dragStartY, newX, newY);
@@ -310,6 +320,7 @@ public partial class MainWindow
         _outputPorts[vm] = inPort;
 
         NodeCanvas.Children.Add(host);
+        BringNodeToFront(vm);
         AttachPortAnchor(outPort, host);
         AttachPortAnchor(inPort, host);
         UpdateEmptyHint();

@@ -101,8 +101,8 @@ public partial class MainWindow
     {
         output.Faulted += (node, reason) => Dispatcher.BeginInvoke(() =>
         {
-            vm.Subtitle = "Disconnected";
-            AppLog.Error($"Output device '{node.Title}' stopped: {reason}");
+            vm.Subtitle = node.IsFileRecorder ? "Recording stopped" : "Disconnected";
+            AppLog.Error($"Output '{node.Title}' stopped: {reason}");
             ShowAlert($"Output '{node.Title}' stopped: {reason}", isError: true);
             UpdateErrorIndicator();
             SetStatus($"Output '{node.Title}' stopped: {reason}");
@@ -241,6 +241,61 @@ public partial class MainWindow
     private void OnAddSystemClick(object sender, RoutedEventArgs e)
     {
         AddSourceNode(new SourceNode("System audio (everything)", SourceKind.SystemLoopback));
+    }
+
+    private void OnAddRecorderClick(object sender, RoutedEventArgs e) => AddFileRecorderNode();
+
+    /// <summary>Adds an output that writes the routed mix to an audio file.</summary>
+    private NodeViewModel? AddFileRecorderNode(
+        double? x = null,
+        double? y = null,
+        string? id = null,
+        string? path = null,
+        AudioFileFormat? format = null,
+        bool autoStart = true)
+    {
+        try
+        {
+            var output = _graph.AddOutputForFile(path ?? string.Empty, format ?? AudioFileFormat.Wav24);
+            output.AutoStart = autoStart;
+
+            var vm = new NodeViewModel
+            {
+                Id = id ?? output.Id,
+                Title = "File recorder",
+                Subtitle = "File output",
+                Accent = "#D96B4C",
+                Kind = NodeKind.Output,
+                CanBeSource = false,
+                X = x ?? (620 + (_nodes.Count * 20)),
+                Y = y ?? (80 + (_nodes.Count * 30)),
+            };
+
+            vm.VolumeChanged = () =>
+            {
+                output.Volume = vm.Volume;
+                output.Muted = vm.Muted;
+            };
+
+            _nodeBacking[vm] = output;
+            _nodes.Add(vm);
+            BuildNodeVisual(vm, isSource: false,
+                stack => AddRecorderControls(stack, vm, output),
+                () => CreateRecorderHeaderBadge(vm));
+            SubscribeOutputFaults(output, vm);
+            SetStatus(output.HasRecordingPath
+                ? $"Added file recorder: {output.RecordingPath}"
+                : "Added file recorder. Choose a file to arm it.");
+            PushAddNode(vm);
+            return vm;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("Could not add the file recorder.", ex);
+            ShowAlert("Could not add the file recorder: " + ex.Message, isError: true);
+            UpdateErrorIndicator();
+            return null;
+        }
     }
 
     private NodeViewModel? AddVirtualOutputNode(VirtualOutputInfo info, double? x = null, double? y = null, string? id = null)

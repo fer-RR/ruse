@@ -22,10 +22,14 @@ public partial class MainWindow
 {
     // ---------- Transport ----------
 
-    private void OnStartClick(object sender, RoutedEventArgs e)
+    private void OnStartClick(object sender, RoutedEventArgs e) => StartRouting();
+
+    private void StartRouting()
     {
         _graph.AutoRun = true;
         int started = 0;
+        int recordings = 0;
+        int unarmedRecorders = 0;
         foreach (var (vm, obj) in _nodeBacking)
         {
             try
@@ -38,6 +42,15 @@ public partial class MainWindow
                         break;
                     case OutputNode output when !output.IsRunning:
                         output.Start();
+                        if (output.IsRecording)
+                        {
+                            recordings++;
+                        }
+                        else if (output.IsFileRecorder && !output.HasRecordingPath)
+                        {
+                            unarmedRecorders++;
+                        }
+
                         break;
                 }
             }
@@ -49,15 +62,36 @@ public partial class MainWindow
             }
         }
 
-        SetStatus($"Routing started ({started} source(s), {_graph.Outputs.Count} output(s)).");
+        string recordingNote = recordings > 0
+            ? $", recording {recordings} file(s)"
+            : string.Empty;
+        string unarmedNote = unarmedRecorders > 0
+            ? $"; {unarmedRecorders} recorder(s) need a file"
+            : string.Empty;
+        SetStatus($"Routing started ({started} source(s), {_graph.Outputs.Count} output(s){recordingNote}){unarmedNote}.");
         SetRunState(true);
+        UpdateRecorderVisuals();
     }
 
     private void OnStopClick(object sender, RoutedEventArgs e)
     {
+        var stoppedRecorders = _nodeBacking.Values
+            .OfType<OutputNode>()
+            .Where(o => o.IsRecording)
+            .ToList();
+
         StopAllRouting();
-        SetStatus("Routing stopped.");
+        int saved = stoppedRecorders.Count(o => string.IsNullOrEmpty(o.RecordingError));
+        int failed = stoppedRecorders.Count - saved;
+
+        string message = stoppedRecorders.Count == 0
+            ? "Routing stopped."
+            : failed > 0
+                ? $"Routing stopped. {saved} recording(s) saved, {failed} failed."
+                : $"Routing stopped. {saved} recording(s) saved.";
+        SetStatus(message);
         SetRunState(false);
+        UpdateRecorderVisuals();
     }
 
     private void OnMicMuteClick(object sender, RoutedEventArgs e)
@@ -122,6 +156,15 @@ public partial class MainWindow
         _nodeHosts.Clear();
         _sourcePorts.Clear();
         _outputPorts.Clear();
+        _recorderStatus.Clear();
+        _recorderStatusBorders.Clear();
+        _recorderPaths.Clear();
+        _recorderFormats.Clear();
+        _recorderChooseButtons.Clear();
+        _recorderBadges.Clear();
+        _nodeClipBadges.Clear();
+        _nodeClipHoldUntil.Clear();
+        _clipWasActive = false;
         _meterSmoothed.Clear();
         _nodes.Clear();
         _connections.Clear();
@@ -133,6 +176,7 @@ public partial class MainWindow
         GraphScroll.ScrollToHome();
         UpdateGraphExtent();
         SetRunState(false);
+        UpdateGlobalRecordingIndicator(0, 0, null);
         SetStatus("Graph cleared.");
     }
 }

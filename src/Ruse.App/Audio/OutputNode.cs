@@ -21,11 +21,34 @@ public sealed class OutputNode : IDisposable
     private AsioOutputEndpoint? _asioEndpoint;
     private AsioDriverInfo? _asioDriver;
 
+    // File path: when set, the mix is written to disk instead of a device.
+    private AudioFileRecorder? _recorder;
+    private string? _recordingPath;
+    private AudioFileFormat _recordingFormat = AudioFileFormat.Wav24;
+    private double _lastRecordedSeconds;
+    private string? _lastRecordingError;
+
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public string DeviceId { get; }
     public string Title { get; set; }
     public float Volume { get; set; } = 1.0f;
     public bool Muted { get; set; }
+
+    /// <summary>True when this output records to a file rather than a device.</summary>
+    public bool IsFileRecorder { get; private set; }
+
+    /// <summary>
+    /// False for a recorder restored from a preset: reconnecting must not start
+    /// a new take (and overwrite the file) just because the session loaded.
+    /// </summary>
+    public bool AutoStart { get; set; } = true;
+
+    public string RecordingPath => _recordingPath ?? string.Empty;
+    public bool HasRecordingPath => !string.IsNullOrWhiteSpace(_recordingPath);
+    public AudioFileFormat RecordingFormat => _recordingFormat;
+    public bool IsRecording => _recorder != null;
+    public double RecordedSeconds => _recorder?.Duration ?? _lastRecordedSeconds;
+    public string? RecordingError => _recorder?.LastError ?? _lastRecordingError;
 
     /// <summary>Global output gain applied on top of per-node volume.</summary>
     public static volatile float MasterGain = 1.0f;
@@ -142,11 +165,41 @@ public sealed class OutputNode : IDisposable
         return node;
     }
 
+    /// <summary>Creates an output that records the mix to an audio file.</summary>
+    public static OutputNode CreateForFile(string path, AudioFileFormat format)
+    {
+        var node = new OutputNode("file:" + Guid.NewGuid().ToString("N"), "File recorder");
+        node.IsFileRecorder = true;
+        node._recordingPath = path;
+        node._recordingFormat = format;
+        return node;
+    }
+
     private OutputNode()
+        : this("test", "Test sink")
+    {
+    }
+
+    private OutputNode(string deviceId, string title)
     {
         _device = null!;
-        DeviceId = "test";
-        Title = "Test sink";
+        DeviceId = deviceId;
+        Title = title;
+    }
+
+    /// <summary>Changes the destination while the recorder is stopped.</summary>
+    public void SetRecordingDestination(string path, AudioFileFormat format)
+    {
+        if (IsRecording)
+        {
+            throw new InvalidOperationException("Stop recording before changing the destination.");
+        }
+
+        _recordingPath = path;
+        _recordingFormat = format;
+        _lastRecordedSeconds = 0;
+        _lastRecordingError = null;
+        Title = System.IO.Path.GetFileName(path);
     }
 
     public void Start()
@@ -156,13 +209,36 @@ public sealed class OutputNode : IDisposable
             return;
         }
 
+        if (IsFileRecorder && !HasRecordingPath)
+        {
+            // An unarmed recorder stays idle; the node UI says to choose a file.
+            return;
+        }
+
         _stopRequested = false;
         _running = true;
 
         int sampleRate = 48000;
         int channels = 2;
 
-        if (_testSink == null)
+        if (IsFileRecorder)
+        {
+            _lastRecordedSeconds = 0;
+            _lastRecordingError = null;
+            try
+            {
+                _recorder = new AudioFileRecorder(_recordingPath!, _recordingFormat);
+                Title = System.IO.Path.GetFileName(_recordingPath!);
+            }
+            catch (Exception ex)
+            {
+                _running = false;
+                _lastRecordingError = $"Could not open the recording file: {ex.Message}";
+                Faulted?.Invoke(this, _lastRecordingError);
+                return;
+            }
+        }
+        else if (_testSink == null)
         {
             // The mix is interleaved IEEE float, so the provider must advertise
             // float too â€” a PCM32 format would reinterpret the float bit patterns
@@ -237,6 +313,30 @@ public sealed class OutputNode : IDisposable
         var mix = new float[framesPerChunk * channels];
         var temp = new float[framesPerChunk * channels];
         var byteBuffer = new byte[mix.Length * 4];
+
+        if (_recorder != null)
+        {
+            // A file has no clock of its own, so produce exactly one block per
+            // elapsed 5 ms. Writing faster would only run the graph ahead of
+            // the live sources.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            long produced = 0;
+            while (_running)
+            {
+                long due = (long)(clock.Elapsed.TotalSeconds * sampleRate);
+                if (produced < due)
+                {
+                    RenderChunk(mix, temp, byteBuffer, channels);
+                    produced += framesPerChunk;
+                }
+                else
+                {
+                    Thread.Sleep(1);
+                }
+            }
+
+            return;
+        }
 
         if (_testSink != null)
         {
@@ -403,7 +503,11 @@ public sealed class OutputNode : IDisposable
 
         _meterLevel = Math.Min(1.0f, MathF.Sqrt(sum / mix.Length) * 3f);
 
-        if (_testSink != null)
+        if (_recorder != null)
+        {
+            _recorder.Write(mix, mix.Length);
+        }
+        else if (_testSink != null)
         {
             _testSink(mix, mix.Length);
         }
@@ -422,7 +526,15 @@ public sealed class OutputNode : IDisposable
     public double BufferedMs => _buffer?.BufferedDuration.TotalMilliseconds ?? 0;
 
     /// <summary>Playback state of the underlying endpoint ("Playing", "Stopped", â€¦).</summary>
-    public string PlaybackState => _wasapiOut?.PlaybackState.ToString() ?? (_asioEndpoint?.State ?? "none");
+    public string PlaybackState => _recorder != null
+        ? "Recording"
+        : _wasapiOut?.PlaybackState.ToString() ?? (_asioEndpoint?.State ?? "none");
+
+    /// <summary>True when the ASIO driver has delivered at least one buffer.</summary>
+    public bool AsioStreaming => _asioEndpoint?.Streaming ?? false;
+
+    /// <summary>Buffer callbacks delivered by the ASIO driver (diagnostics).</summary>
+    public long AsioCallbackCount => _asioEndpoint?.CallbackCount ?? 0;
 
     /// <summary>Rate the endpoint renders at: 48 kHz for WASAPI, the driver's rate for ASIO.</summary>
     public int EndpointSampleRate => _asioSampleRate > 0 ? _asioSampleRate : 48000;
@@ -441,7 +553,7 @@ public sealed class OutputNode : IDisposable
 
     public void Stop()
     {
-        if (!_running && _wasapiOut == null)
+        if (!_running && _wasapiOut == null && _recorder == null)
         {
             return;
         }
@@ -470,6 +582,27 @@ public sealed class OutputNode : IDisposable
         }
 
         _asioEndpoint = null;
+
+        if (_recorder != null)
+        {
+            try
+            {
+                _recorder.Stop();
+            }
+            catch (Exception ex)
+            {
+                _lastRecordingError = $"Could not finish the recording: {ex.Message}";
+            }
+
+            // Read these after Stop: encoders can still fail while flushing
+            // their final blocks.
+            _lastRecordedSeconds = _recorder.Duration;
+            _lastRecordingError = _recorder.LastError ?? _lastRecordingError;
+
+            _recorder.Dispose();
+            _recorder = null;
+        }
+
         _buffer = null;
         _meterLevel = 0;
     }

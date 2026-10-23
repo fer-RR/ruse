@@ -113,7 +113,7 @@ public partial class MainWindow
     /// <summary>
     /// Builds a graph that carries real audio from a running process through a
     /// modifier into the first output, so the UI can be checked end to end
-    /// (meters, cable waveforms) with genuine signal. Used by --live-demo.
+    /// (meters) with genuine signal. Used by --live-demo.
     /// </summary>
     public void BuildLiveGraph(uint processId)
     {

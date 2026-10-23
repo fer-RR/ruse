@@ -176,7 +176,7 @@ public partial class MainWindow
 
     /// <summary>
     /// Keeps the cables the same thickness on screen whatever the zoom is,
-    /// because the world is scaled by a layout transform.
+    /// because the world is scaled at render time.
     /// </summary>
     private void UpdateCableThickness()
     {
@@ -284,6 +284,11 @@ public partial class MainWindow
         RunDot.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString(running ? "#39D98A" : "#4A5266"));
         RunLabel.Text = running ? "Routing" : "Idle";
         RunLabel.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(running ? "#39D98A" : "#8892A6"));
+
+        // The start button doubles as the transport state: muted while idle and
+        // accented while audio is actually flowing. It stays clickable so it can
+        // always be used to start (or restart) the graph.
+        StartButton.Style = (Style)FindResource(running ? "PrimaryButton" : "StartIdleButton");
     }
 
     /// <summary>Briefly pulses a node's border to draw attention to it.</summary>
@@ -302,8 +307,7 @@ public partial class MainWindow
         timer.Tick += (_, _) =>
         {
             timer.Stop();
-            body.BorderBrush = new SolidColorBrush((Color)ColorConverter.ConvertFromString("#2A2F3D"));
-            body.BorderThickness = new Thickness(1);
+            UpdateNodeAppearance(vm);
         };
         timer.Start();
     }

@@ -35,25 +35,32 @@ public partial class MainWindow
     }
 
     /// <summary>
-    /// Keeps the sidebar scrolling when the wheel is over a list that has
-    /// already reached its end - a WPF ListBox swallows the wheel even when
-    /// it cannot scroll any further, which used to stop the sidebar dead.
+    /// The sidebar lists live inside the sidebar's own ScrollViewer, but a WPF
+    /// ListBox still swallows the wheel when the pointer is over one of its
+    /// items - even when the list itself has nothing to scroll. When the list
+    /// cannot move in the wheel's direction, scroll the sidebar directly and
+    /// mark the event handled so the list cannot stop it.
     /// </summary>
     private void OnSidebarListMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (FindScrollViewer(sender as DependencyObject) is not ScrollViewer inner)
+        var inner = FindScrollViewer(sender as DependencyObject);
+
+        // If the list itself can scroll this way, leave the event alone so it
+        // scrolls normally instead of moving the whole sidebar.
+        if (inner != null)
         {
-            return;
+            bool canScrollDown = e.Delta < 0 && inner.VerticalOffset < inner.ScrollableHeight - 0.01;
+            bool canScrollUp = e.Delta > 0 && inner.VerticalOffset > 0.01;
+            if (canScrollDown || canScrollUp)
+            {
+                return;
+            }
         }
 
-        bool atTop = inner.VerticalOffset <= 0.01;
-        bool atBottom = inner.VerticalOffset >= inner.ScrollableHeight - 0.01;
-
-        if ((e.Delta < 0 && atTop) || (e.Delta > 0 && atBottom))
-        {
-            // Let the event bubble so the surrounding ScrollViewer takes over.
-            e.Handled = false;
-        }
+        // Three 16 px lines per wheel notch, the usual Windows step.
+        double step = e.Delta / 120.0 * 48.0;
+        SidebarScroll.ScrollToVerticalOffset(SidebarScroll.VerticalOffset - step);
+        e.Handled = true;
     }
 
     /// <summary>Finds the ScrollViewer inside a control.</summary>
@@ -86,20 +93,57 @@ public partial class MainWindow
 
     private void OnSettingsClick(object sender, RoutedEventArgs e)
     {
-        var result = SettingsDialog.Show(this, _settings.HighlightMutedNodes, _settings.MinimapMode);
+        var result = SettingsDialog.Show(
+            this,
+            _settings.HighlightMutedNodes,
+            _settings.MinimapMode,
+            StartupRegistration.IsEnabled(),
+            _settings.StartRoutingOnLaunch);
         if (result == null)
         {
             return;
         }
 
+        string? startupError = null;
+        try
+        {
+            StartupRegistration.SetEnabled(result.StartWithWindows);
+        }
+        catch (Exception ex)
+        {
+            startupError = ex.Message;
+            AppLog.Error("Could not update the Windows startup entry.", ex);
+        }
+
         _settings.HighlightMutedNodes = result.HighlightMutedNodes;
         _settings.MinimapMode = result.MinimapMode;
+        _settings.StartRoutingOnLaunch = result.StartRoutingOnLaunch;
         _settings.Save();
 
         // Apply the appearance options right away.
         RefreshNodeAppearance();
         UpdateMinimapVisibility();
 
-        SetStatus("Settings saved.");
+        if (startupError != null)
+        {
+            ShowAlert("Settings saved, but Windows startup could not be changed: " + startupError,
+                isError: true);
+            SetStatus("Settings saved; the startup change failed.");
+        }
+        else
+        {
+            string status = "Settings saved.";
+            if (result.StartRoutingOnLaunch)
+            {
+                status += " Routing will start on the next launch.";
+            }
+
+            if (result.StartWithWindows)
+            {
+                status += " Ruse will start with Windows.";
+            }
+
+            SetStatus(status);
+        }
     }
 }

@@ -40,11 +40,11 @@ public partial class App : Application
             string chainLine;
             try
             {
-                chainLine = $"Voicemet chain test: {LatencySelfTest.TestChainProcessor()}";
+                chainLine = $"Ruse chain test: {LatencySelfTest.TestChainProcessor()}";
             }
             catch (Exception ex)
             {
-                chainLine = $"Voicemet chain test FAILED: {ex}";
+                chainLine = $"Ruse chain test FAILED: {ex}";
             }
 
             WriteResult("chain-test.txt", chainLine);
@@ -59,6 +59,39 @@ public partial class App : Application
             // and saved session.
             AppSettings.OverrideDirectory = System.IO.Path.Combine(
                 System.IO.Path.GetTempPath(), "Ruse-uitest");
+        }
+
+        if (e.Args.Contains("--feedback-bench", StringComparer.OrdinalIgnoreCase))
+        {
+            // Same isolation as the UI test: no saved session, no real settings.
+            UiTestMode = true;
+            PerfTestMode = true;
+            AppSettings.OverrideDirectory = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(), "Ruse-feedback-bench");
+
+            base.OnStartup(e);
+            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
+                new Action(() =>
+                {
+                    string result;
+                    try
+                    {
+                        var window = MainWindow as Ruse.App.MainWindow;
+                        result = window == null
+                            ? "no main window -> FAIL"
+                            : window.RunFeedbackBench();
+                    }
+                    catch (Exception ex)
+                    {
+                        result = $"FAILED: {ex}";
+                    }
+
+                    WriteResult("feedback-bench.txt", $"Ruse feedback bench: {result}");
+                    (MainWindow as Ruse.App.MainWindow)?.Close();
+                    Shutdown();
+                }),
+                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            return;
         }
 
         if (e.Args.Contains("--selftest", StringComparer.OrdinalIgnoreCase))
@@ -292,10 +325,27 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--record-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string recordLine;
+            try
+            {
+                recordLine = $"Ruse recorder test: {LatencySelfTest.TestFileRecorder()}";
+            }
+            catch (Exception ex)
+            {
+                recordLine = $"Ruse recorder test FAILED: {ex}";
+            }
+
+            WriteResult("record-test.txt", recordLine);
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Contains("--live-demo", StringComparer.OrdinalIgnoreCase))
         {
-            // Carries real audio so the UI (meters, cable waveforms) can be
-            // checked against a genuine signal. The window stays open.
+            // Carries real audio so the UI (meters) can be checked against a
+            // genuine signal. The window stays open.
             uint livePid = (uint)GetIntArg(e.Args, "--pid", 0);
             LiveDemoMode = true;
             base.OnStartup(e);
@@ -338,7 +388,7 @@ public partial class App : Application
                         result = $"FAILED: {ex}";
                     }
 
-                    WriteResult("perf-test.txt", $"Voicemet perf test: {result}");
+                    WriteResult("perf-test.txt", $"Ruse perf test: {result}");
                     (MainWindow as Ruse.App.MainWindow)?.Close();
                     Shutdown();
                 }),
@@ -346,23 +396,6 @@ public partial class App : Application
             return;
         }
 
-
-        if (e.Args.Contains("--chain-test", StringComparer.OrdinalIgnoreCase))
-        {
-            string chainLine;
-            try
-            {
-                chainLine = $"Voicemet chain test: {LatencySelfTest.TestChainProcessor()}";
-            }
-            catch (Exception ex)
-            {
-                chainLine = $"Voicemet chain test FAILED: {ex}";
-            }
-
-            WriteResult("chain-test.txt", chainLine);
-            Shutdown();
-            return;
-        }
         if (e.Args.Contains("--uitest", StringComparer.OrdinalIgnoreCase))
         {
             // Exercises the real window: layout, hit-testing and the drop
@@ -377,9 +410,15 @@ public partial class App : Application
                         var window = MainWindow as Ruse.App.MainWindow;
                         result = window == null
                             ? "no main window -> FAIL"
-                            : window.RunDropTargetSelfTest() + " | " + window.RunUndoSelfTest() +
-                              " | " + window.RunAppearanceSelfTest() +
-                              " | " + window.RunAlertSelfTest();
+                            : window.RunWindowFrameSelfTest() + " | " +
+                              window.RunDropTargetSelfTest() + " | " +
+                              window.RunUndoSelfTest() + " | " +
+                              window.RunAppearanceSelfTest() + " | " +
+                              window.RunRecorderSelfTest() + " | " +
+                              window.RunAlertSelfTest() + " | " +
+                              window.RunSidebarWheelSelfTest() + " | " +
+                              window.RunNodeZOrderSelfTest() + " | " +
+                              window.RunNodeOverlapSelfTest();
                     }
                     catch (Exception ex)
                     {

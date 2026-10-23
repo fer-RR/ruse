@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -39,7 +40,6 @@ public partial class MainWindow : Window
     private readonly UiSoundPlayer _sounds = new();
 
     private Point _listDragStart;
-    private object? _listDragItem;
     private ListBox? _listDragSource;
     private const string NodeDragFormat = "RuseNode";
 
@@ -78,8 +78,11 @@ public partial class MainWindow : Window
         };
 
         // The whole graph world scales through this one transform, so the
-        // cables and the nodes always stay aligned at any zoom level.
-        GraphLayer.LayoutTransform = _zoomTransform;
+        // cables and the nodes always stay aligned at any zoom level. It is a
+        // RenderTransform, not a LayoutTransform: layout changes (meter bars,
+        // status text) inside the layer no longer force WPF to re-measure and
+        // re-render the entire graph.
+        GraphLayer.RenderTransform = _zoomTransform;
         UpdateZoomIndicator();
 
         Loaded += (_, _) =>
@@ -112,6 +115,29 @@ public partial class MainWindow : Window
             }
 
             UpdateGraphExtent();
+
+            // Restoring a session deliberately leaves the graph stopped, so the
+            // option decides whether audio starts now or waits for Start. The
+            // dispatcher pass makes this happen after the window has rendered,
+            // not while the graph is still being rebuilt.
+            if (_settings.StartRoutingOnLaunch &&
+                !App.DemoMode && !App.LiveDemoMode && !App.PerfTestMode && !App.UiTestMode &&
+                _nodeBacking.Count > 0)
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (IsLoaded)
+                    {
+                        StartRouting();
+                    }
+                }), DispatcherPriority.ApplicationIdle);
+            }
+            else
+            {
+                // New routes still start as they are connected, as before. The
+                // restored graph itself stays idle until Start is pressed.
+                _graph.AutoRun = true;
+            }
         };
 
         Closing += (_, _) =>
@@ -119,6 +145,22 @@ public partial class MainWindow : Window
             SaveWindowState();
             _sounds.Dispose();
         };
+    }
+
+    private void OnMinimizeClick(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState.Minimized;
+
+    private void OnMaximizeRestoreClick(object sender, RoutedEventArgs e) =>
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+
+    private void OnCloseClick(object sender, RoutedEventArgs e) => Close();
+
+    private void OnWindowStateChanged(object sender, EventArgs e)
+    {
+        bool maximized = WindowState == WindowState.Maximized;
+        MaxButton.Content = maximized ? "\uE923" : "\uE922";
+        MaxButton.ToolTip = maximized ? "Restore" : "Maximize";
+        AutomationProperties.SetName(MaxButton, maximized ? "Restore" : "Maximize");
     }
 
     private readonly AppSettings _settings;
@@ -223,7 +265,7 @@ public partial class MainWindow : Window
         try
         {
             var preset = Preset.FromJson(System.IO.File.ReadAllText(AppSettings.SessionPath));
-            ApplyPreset(preset);
+            ApplyPreset(preset, autoRun: false);
             SetStatus("Restored last session.");
         }
         catch (Exception ex)

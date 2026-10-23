@@ -1,3 +1,5 @@
+using NAudio.Wave;
+
 namespace Ruse.App.Audio;
 
 /// <summary>
@@ -615,6 +617,16 @@ public static class LatencySelfTest
             Y = 60,
             Volume = 0.9f,
         });
+        preset.Outputs.Add(new PresetOutput
+        {
+            DeviceId = "file:take-1",
+            Title = "take.flac",
+            IsFile = true,
+            FilePath = @"C:\Music\take.flac",
+            FileFormat = "Flac",
+            X = 700,
+            Y = 80,
+        });
 
         preset.Modifiers.Add(new PresetModifier
         {
@@ -669,7 +681,7 @@ public static class LatencySelfTest
 
         if (back.Name != "round-trip" ||
             back.Sources.Count != 1 ||
-            back.Outputs.Count != 1 ||
+            back.Outputs.Count != 2 ||
             back.Modifiers.Count != 3 ||
             back.SourceModifiers.Count != 1 ||
             back.ModifierLinks.Count != 1 ||
@@ -688,6 +700,13 @@ public static class LatencySelfTest
             if (back.Outputs[0].MicHint != "Voicemeeter Out B1" || !back.Outputs[0].IsVirtual)
             {
                 failures.Add("output fields changed across save/load");
+            }
+
+            if (!back.Outputs[1].IsFile ||
+                back.Outputs[1].FilePath != @"C:\Music\take.flac" ||
+                back.Outputs[1].FileFormat != "Flac")
+            {
+                failures.Add("file recorder fields changed across save/load");
             }
 
             if (back.Modifiers[1].Processors.Count != 1 ||
@@ -1974,13 +1993,22 @@ public static class LatencySelfTest
                 var output = graph.AddOutput(driver);
                 output.Start();
 
+                // Start() waits for the first buffer; let a few more flow so
+                // the callback count and FlexASIO's log prove sustained
+                // streaming rather than a single kick from ASIOStart.
+                if (output.AsioStreaming)
+                {
+                    Thread.Sleep(150);
+                }
+
                 line += $", state {output.PlaybackState}, rate {output.EndpointSampleRate} Hz, " +
-                        $"buffered {output.BufferedMs:0} ms, latency {output.EstimatedLatencyMs:0.0} ms";
+                        $"callbacks {output.AsioCallbackCount}, buffered {output.BufferedMs:0} ms, " +
+                        $"latency {output.EstimatedLatencyMs:0.0} ms";
 
                 // The driver needs a clock from its host; without one it stays
                 // configured but never streams. That is a driver condition, not
                 // a bug in the app, so it is reported rather than failed.
-                if (output.PlaybackState == "Running")
+                if (output.AsioStreaming)
                 {
                     anyStarted = true;
                 }
@@ -2075,5 +2103,226 @@ public static class LatencySelfTest
                $"peak {peak:0.000}, tone {measuredHz:0.0} Hz -> {(rateOk && pitchOk ? "PASS" : "FAIL")}";
 
         static double targetHz() => 44100;
+    }
+
+    /// <summary>
+    /// Writes the same short tone in every supported format, then reads each
+    /// file back through the matching decoder. Proves the file writer and the
+    /// Media Foundation encoders, not just that a file appeared.
+    /// </summary>
+    public static string TestFileRecorder()
+    {
+        string folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Ruse-record-test");
+        var results = new List<string>();
+        bool allPassed = true;
+
+        try
+        {
+            if (System.IO.Directory.Exists(folder))
+            {
+                System.IO.Directory.Delete(folder, recursive: true);
+            }
+
+            System.IO.Directory.CreateDirectory(folder);
+
+            const int totalFrames = 14400; // 0.3 s
+            const int chunkFrames = 240;
+
+            foreach (var info in AudioFileFormats.All)
+            {
+                string path = System.IO.Path.Combine(folder, "tone." + info.Extension);
+                bool passed = false;
+                double seconds = 0;
+                float peak = 0;
+                string detail = string.Empty;
+
+                try
+                {
+                    using (var recorder = new AudioFileRecorder(path, info.Format))
+                    {
+                        var block = new float[chunkFrames * 2];
+                        for (int start = 0; start < totalFrames; start += chunkFrames)
+                        {
+                            for (int frame = 0; frame < chunkFrames; frame++)
+                            {
+                                float value = (float)(0.5 * Math.Sin(
+                                    2 * Math.PI * 440 * (start + frame) / 48000.0));
+                                block[frame * 2] = value;
+                                block[frame * 2 + 1] = value;
+                            }
+
+                            recorder.Write(block, block.Length);
+                        }
+
+                        recorder.Stop();
+                        if (recorder.LastError != null)
+                        {
+                            detail = recorder.LastError;
+                        }
+                    }
+
+                    if (string.IsNullOrEmpty(detail) && System.IO.File.Exists(path))
+                    {
+                        using WaveStream reader = info.Format is AudioFileFormat.Mp3 or AudioFileFormat.Flac
+                            ? new MediaFoundationReader(path)
+                            : new WaveFileReader(path);
+
+                        int expectedBits = info.Format switch
+                        {
+                            AudioFileFormat.Wav16 => 16,
+                            AudioFileFormat.Wav24 => 24,
+                            AudioFileFormat.Wav32Float => 32,
+                            _ => 0,
+                        };
+
+                        bool formatOk = expectedBits == 0 ||
+                            (reader is WaveFileReader wav && wav.WaveFormat.BitsPerSample == expectedBits);
+                        bool encodingOk = info.Format != AudioFileFormat.Wav32Float ||
+                            (reader is WaveFileReader floatWav &&
+                             floatWav.WaveFormat.Encoding == WaveFormatEncoding.IeeeFloat);
+
+                        var samples = new float[reader.WaveFormat.SampleRate * reader.WaveFormat.Channels];
+                        int read = reader.ToSampleProvider().Read(samples.AsSpan());
+                        for (int i = 0; i < read; i++)
+                        {
+                            peak = Math.Max(peak, Math.Abs(samples[i]));
+                        }
+
+                        // Very short FLAC files report TotalTime=0 in Media
+                        // Foundation even though the decoded samples are there.
+                        seconds = read / (double)(reader.WaveFormat.SampleRate * reader.WaveFormat.Channels);
+                        passed = formatOk && encodingOk && read > 0 &&
+                                 seconds > 0.2 && seconds < 0.8 && peak > 0.1;
+                    }
+                    else if (string.IsNullOrEmpty(detail))
+                    {
+                        detail = "file was not created";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    detail = ex.GetType().Name + ": " + ex.Message;
+                }
+
+                allPassed &= passed;
+                results.Add($"{info.DisplayName}: {seconds:0.00}s peak {peak:0.00}" +
+                            (passed ? string.Empty : $" ({detail})"));
+            }
+
+            // The writer test above is direct. This one runs the real output
+            // pump for a moment, so the node path (open, pace, write, finalize)
+            // is covered too. With no routes it records silence.
+            string nodePath = System.IO.Path.Combine(folder, "node.wav");
+            bool nodePassed = false;
+            string nodeDetail = string.Empty;
+            double nodeSeconds = 0;
+            long nodeFrames = 0;
+            try
+            {
+                using (var output = OutputNode.CreateForFile(nodePath, AudioFileFormat.Wav16))
+                {
+                    output.Start();
+                    Thread.Sleep(350);
+                    output.Stop();
+                    nodeSeconds = output.RecordedSeconds;
+                    nodeDetail = output.RecordingError ?? string.Empty;
+                }
+
+                if (string.IsNullOrEmpty(nodeDetail) && System.IO.File.Exists(nodePath))
+                {
+                    using var reader = new WaveFileReader(nodePath);
+                    nodeFrames = reader.Length / reader.WaveFormat.BlockAlign;
+                }
+
+                nodePassed = string.IsNullOrEmpty(nodeDetail) && nodeSeconds > 0.2 && nodeFrames > 0;
+            }
+            catch (Exception ex)
+            {
+                nodeDetail = ex.GetType().Name + ": " + ex.Message;
+            }
+
+            allPassed &= nodePassed;
+            results.Add($"node pump: {nodeSeconds:0.00}s {nodeFrames} frames" +
+                        (nodePassed ? string.Empty : $" ({nodeDetail})"));
+
+            // Finally, feed a route while the pump is running. This is the
+            // path a real source takes: subscription -> mix -> recorder.
+            string routePath = System.IO.Path.Combine(folder, "route.wav");
+            bool routePassed = false;
+            string routeDetail = string.Empty;
+            double routeSeconds = 0;
+            float routePeak = 0;
+            try
+            {
+                using var graph = new AudioGraph { AutoRun = false };
+                var source = new SourceNode("Recorder test tone", SourceKind.Application);
+                var output = graph.AddOutputForFile(routePath, AudioFileFormat.Wav16);
+                graph.AddSource(source);
+                graph.Connect(source, output);
+                output.Start();
+
+                var subscription = output.Inputs[0].Subscription;
+                var block = new float[960 * 2]; // 20 ms
+                for (int part = 0; part < 14; part++)
+                {
+                    for (int frame = 0; frame < 960; frame++)
+                    {
+                        float value = (float)(0.5 * Math.Sin(
+                            2 * Math.PI * 440 * ((part * 960) + frame) / 48000.0));
+                        block[frame * 2] = value;
+                        block[frame * 2 + 1] = value;
+                    }
+
+                    subscription.Write(block);
+                    Thread.Sleep(20);
+                }
+
+                output.Stop();
+                routeSeconds = output.RecordedSeconds;
+                routeDetail = output.RecordingError ?? string.Empty;
+
+                if (string.IsNullOrEmpty(routeDetail) && System.IO.File.Exists(routePath))
+                {
+                    using var reader = new WaveFileReader(routePath);
+                    var samples = new float[reader.WaveFormat.SampleRate * reader.WaveFormat.Channels];
+                    int read = reader.ToSampleProvider().Read(samples.AsSpan());
+                    for (int i = 0; i < read; i++)
+                    {
+                        routePeak = Math.Max(routePeak, Math.Abs(samples[i]));
+                    }
+                }
+
+                routePassed = string.IsNullOrEmpty(routeDetail) &&
+                              routeSeconds > 0.15 && routePeak > 0.1;
+            }
+            catch (Exception ex)
+            {
+                routeDetail = ex.GetType().Name + ": " + ex.Message;
+            }
+
+            allPassed &= routePassed;
+            results.Add($"route to file: {routeSeconds:0.00}s peak {routePeak:0.00}" +
+                        (routePassed ? string.Empty : $" ({routeDetail})"));
+        }
+        catch (Exception ex)
+        {
+            allPassed = false;
+            results.Add("setup failed: " + ex.Message);
+        }
+        finally
+        {
+            try
+            {
+                if (System.IO.Directory.Exists(folder))
+                {
+                    System.IO.Directory.Delete(folder, recursive: true);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return string.Join(" | ", results) + " -> " + (allPassed ? "PASS" : "FAIL");
     }
 }

@@ -23,25 +23,21 @@ available), but there is no cmake and no VST3 SDK on the machine.
 pitch shifter, a transient shaper and comfort noise, which covers most of what
 people reach for a plugin for.
 
-## Replacing the layout transform
+## Replacing the layout transform — done
 
-The canvas is zoomed with a `LayoutTransform`, which forces WPF to re-render
-the whole world layer whenever anything inside it changes — that is why the
-meters used to cost about 15 % of a core. The meters now refresh ten times a
-second and the world is smaller, but the underlying issue remains.
+The canvas world used a `LayoutTransform`, which forced WPF to re-layout and
+re-render the whole world layer whenever anything inside changed (meter bars,
+status text). It now uses a `RenderTransform` on `GraphLayer`, with the world
+and host sizes kept separately in `UpdateGraphExtent`. No further work needed.
 
-The fix is to scale the canvas contents by hand (positions, sizes, cable
-geometry and the zoom anchor all become scale-aware) and use a plain
-`RenderTransform` or no transform at all. That is a broad change across
-`MainWindow.NodeVisual.cs`, `MainWindow.Connections.cs` and
-`MainWindow.View.cs`.
+## A custom window frame — done
 
-## A custom window frame
-
-The app still uses the standard Windows title bar. A custom chrome (drag to
-move, snap layouts, a compact transport strip) would make it look like a
-proper audio tool — Reaper, Voicemeeter and Ableton all do this. It is a
-visible change, so it should be a deliberate decision.
+The standard title bar is replaced with a brushed-panel chrome modelled on the
+90s hi-fi separates Posy films: a VFD-style "RUSE / AR-01" plate, a seven-bar
+level display and square window keys. It uses `WindowChrome`, so Aero snap,
+resize borders and taskbar behaviour still work; a `WM_GETMINMAXINFO` hook
+keeps a maximised window inside the monitor work area. Covered by `--uitest`
+and by screenshots at normal and maximised size.
 
 ## Other things worth doing
 
@@ -50,11 +46,6 @@ visible change, so it should be a deliberate decision.
 - **VST-style sidechain / MIDI-trigger** on the effects.
 - **A real mixer view** beside the node graph (channel strips with faders,
   pan and mute per output).
-- **Recording the routed output** to a file (the engine already has every
-  sample; it only needs a sink).
-- **The `Voicemeeter Virtual ASIO` driver needs Voicemeeter running** to have a
-  clock. FlexASIO works standalone and would let the ASIO path be verified
-  end to end.
 - **The WPF render tier is still 0** on this machine: the graphics stack keeps
   WPF in software mode (D3D9, D3D11 and DXGI all work; the driver is clean;
   the October 2026 cumulative update and the .NET 10.0.11/12/13 runtimes were
