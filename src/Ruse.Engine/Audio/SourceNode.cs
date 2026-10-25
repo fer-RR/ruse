@@ -19,6 +19,7 @@ public sealed class SourceNode : IDisposable
 {
     private IDisposable? _capture;
     private volatile float _meterLevel;
+    private volatile bool _clipping;
     private int _sourceChannels;
     private int _sourceSampleRate;
 
@@ -61,6 +62,7 @@ public sealed class SourceNode : IDisposable
     public float Gain { get; set; } = 1.0f;
     public bool Muted { get; set; }
     public float MeterLevel => _meterLevel;
+    public bool Clipping => _clipping;
 
     /// <summary>Total stereo frames captured since <see cref="Start"/> (diagnostics).</summary>
     public long CapturedFrames { get; private set; }
@@ -440,15 +442,20 @@ public sealed class SourceNode : IDisposable
         // Interleaved stereo -> frames.
         CapturedFrames += _convertScratch.Count / 2;
 
-        // Meter on the converted (post-gain-managed) signal.
+        // Meter and clip flag on the converted signal.
         float sum = 0;
+        float peak = 0;
         for (int i = 0; i < _convertScratch.Count; i++)
         {
-            sum += _convertScratch[i] * _convertScratch[i];
+            float sample = _convertScratch[i];
+            sum += sample * sample;
+            peak = Math.Max(peak, Math.Abs(sample));
         }
 
         float rms = MathF.Sqrt(sum / _convertScratch.Count);
-        _meterLevel = Math.Min(1.0f, rms * 3f);
+        float meter = Math.Min(1.0f, rms * 3f);
+        _meterLevel = float.IsFinite(meter) ? meter : 0f;
+        _clipping = float.IsFinite(peak) && peak > 1f;
     }
 
     /// <summary>
@@ -521,10 +528,15 @@ public sealed class SourceNode : IDisposable
                 wlc.StopRecording();
                 wlc.Dispose();
                 break;
+            case AsioCapture ac:
+                ac.DataAvailable -= OnAsioData;
+                ac.Dispose();
+                break;
         }
 
         _capture = null;
         _meterLevel = 0;
+        _clipping = false;
         CapturedFrames = 0;
     }
 

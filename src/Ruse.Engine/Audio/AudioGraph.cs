@@ -454,9 +454,12 @@ public sealed class AudioGraph : IDisposable
             return;
         }
 
-        foreach (var processor in modifier.Processors)
+        if (modifier.Enabled)
         {
-            chain.Add(processor);
+            foreach (var processor in modifier.Processors)
+            {
+                chain.Add(processor);
+            }
         }
 
         foreach (var next in modifier.Next)

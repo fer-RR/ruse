@@ -11,8 +11,24 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="NAudio" Version="3.3.0" />
-    <PackageReference Include="NAudio.Asio" Version="3.3.0" />
+    <ProjectReference Include="..\Ruse.Engine\Ruse.Engine.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+    <PackageReference Include="Vosk" Version="0.3.38" />
+  </ItemGroup>
+
+  <Target Name="BuildWebUi" BeforeTargets="Build" Condition="'$(SkipWebUiBuild)' != 'true' And Exists('WebUi\package.json')">
+    <Exec Command="npm.cmd install" WorkingDirectory="WebUi" Condition="!Exists('WebUi\node_modules')" />
+    <Exec Command="npm.cmd run build" WorkingDirectory="WebUi" />
+  </Target>
+
+  <Target Name="CopyWebUiAssets" AfterTargets="Build" Condition="Exists('WebUi\dist\index.html')">
+    <ItemGroup>
+      <WebUiAsset Include="WebUi\dist\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(WebUiAsset)" DestinationFiles="@(WebUiAsset->'$(OutDir)WebUi\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
 
 </Project>

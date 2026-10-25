@@ -945,10 +945,38 @@ public static class LatencySelfTest
             }
         }
 
+        // --- low shelf must stay stable at every gain setting ---
+        foreach (float gainDb in new[] { -24f, -12f, 0f, 12f, 24f })
+        {
+            var shelf = new BiquadProcessor(
+                BiquadKind.LowShelf, "eq-low-shelf", "Low shelf", 200f, "Frequency", hasGain: true)
+            {
+                GainDb = gainDb,
+            };
+            var data = MakeSine(100f, 0.05f);
+            ProcessChunks(shelf, data);
+            float peak = 0;
+            for (int i = 0; i < data.Length; i++)
+            {
+                if (!float.IsFinite(data[i]) || MathF.Abs(data[i]) > 1f)
+                {
+                    failures.Add($"Low shelf at {gainDb:0} dB produced an invalid sample");
+                    break;
+                }
+
+                peak = Math.Max(peak, MathF.Abs(data[i]));
+            }
+
+            if (gainDb > 0 && peak < 0.06f)
+            {
+                failures.Add($"Low shelf at {gainDb:0} dB did not boost");
+            }
+        }
+
         bool passed = failures.Count == 0;
         string summary = passed
-            ? "High-pass: 100 Hz rejected by 1 kHz cutoff, 5 kHz passed by 100 Hz cutoff, state continuous across 240-frame blocks, DC removed, Reset clean."
-            : "High-pass FAILED: " + string.Join("; ", failures);
+            ? "Filters: high-pass stop/pass/DC/reset checks pass; low-shelf finite and stable at -24..+24 dB."
+            : "Filters FAILED: " + string.Join("; ", failures);
         return new FilterTestResult(passed, summary);
     }
 

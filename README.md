@@ -5,18 +5,23 @@ capture device to any output device, with an effect chain in between.
 
 ## What it does
 
+- **Offline transcription** — a pass-through node streams the route to Vosk.
+  The small English model downloads on first use and then runs without a network.
 - **Per-application capture** — pick a process (Edge, Discord, a game…) in the
   sidebar and drag it onto the canvas. Ruse captures it through the Windows
   process-loopback API, so nothing has to be reconfigured in the app.
 - **Any output device** — WASAPI endpoints (speakers, headphones, Voicemeeter
   inputs) and **ASIO** drivers, including multichannel interfaces.
-- **Effect chains** — 28 built-in effects (gain, EQ shapes, compressor, limiter,
+- **Effect chains** — 28 built-in audio effects plus a waveform visualizer (gain, EQ shapes, compressor, limiter,
   gate, reverb, delay, chorus, flanger, phaser, tremolo, pitch shift,
   bitcrusher, noise suppression, AGC, comfort noise…) with live parameters.
 - **Saved chains** — build a chain of effects once, save it to the library and
   drop it anywhere as a single node.
 - **File recording** — add a recorder output, choose WAV (16/24-bit or 32-bit
   float), MP3 or FLAC, and save the routed mix to disk.
+- **Live signal feedback** — source and output meters, modifier activity,
+  glowing nodes and matching library items, and small marching packets along
+  active cables. The glow can be disabled in Settings.
 - **Live recording feedback** — each recorder shows NO FILE / ARMED / REC /
   SAVED / ERR, a global REC timer appears in the title bar, and an output that
   clips gets its own CLIP badge.
@@ -25,8 +30,8 @@ capture device to any output device, with an effect chain in between.
 - **Start with Windows** — an option in Settings adds or removes Ruse from the
   per-user startup apps.
 - **Start routing on launch** — optionally start the restored graph after the
-  window is ready. The Start button stays muted while idle and lights up while
-  audio is flowing.
+  window is ready. The Routing switch stays off while idle and glows green
+  while audio is flowing; turning it off stops the graph.
 - **Undo/redo** for everything, including node moves and effect tweaks.
 - **Low latency** — the whole path is about 20 ms on a modern machine.
 - **Diagnostics** — a built-in self-test suite (`--selftest` and friends) that
@@ -38,13 +43,17 @@ capture device to any output device, with an effect chain in between.
 dotnet build src\Ruse.App\Ruse.App.csproj
 ```
 
-Needs the .NET 10 SDK. The app itself is `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`.
+Needs the .NET 10 SDK and Node.js 20+. The build installs the Web UI packages on
+first use and compiles the React assets into the app output. The app itself is
+`src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`.
 
 ## Running
 
 | Flag | What it does |
 |---|---|
-| *(none)* | The normal window |
+| *(none)* | The normal WebView2 workspace |
+| `--legacy-ui` | The previous WPF workspace |
+| `--web-test` | Tests the web bridge, undo/redo and chain persistence |
 | `--demo` | A pre-built graph, handy for screenshots |
 | `--live-demo --pid <pid>` | A graph wired to a running process |
 | `--selftest` | The full self-test suite (writes `selftest.txt`) |
@@ -61,16 +70,20 @@ Needs the .NET 10 SDK. The app itself is `src\Ruse.App\bin\Debug\net10.0-windows
 ## How it is put together
 
 ```
-src/Ruse.App/
-  Audio/          the engine
+src/Ruse.Engine/
+  Audio/          UI-independent engine
     AudioGraph.cs         owns sources, modifiers and outputs
     SourceNode.cs         a capture source (app, device, system, ASIO)
     OutputNode.cs         a render endpoint (WASAPI, ASIO or file)
     ModifierNode.cs       an effect chain on a route
     (the effect processors and the preset model also live in Audio/)
-  Ui/             small dialogs and view models
-  MainWindow*.cs  the window, split by area (one file per feature)
   Diagnostics/    the log
+src/Ruse.App/
+  WebMainWindow     native WebView2 host
+  WebShellController  serialized command/state bridge
+  WebUi/            React + TypeScript workspace
+  MainWindow*.cs    legacy WPF workspace (--legacy-ui and UI tests)
+  Ui/               legacy dialogs
 ```
 
 The engine always mixes at **48 kHz, stereo, 32-bit float**. Sources are

@@ -22,7 +22,28 @@ public partial class MainWindow
 {
     // ---------- Transport ----------
 
-    private void OnStartClick(object sender, RoutedEventArgs e) => StartRouting();
+    /// <summary>
+    /// True while SetRunState updates the switch to match the audio engine, so
+    /// that a programmatic change cannot start or stop routing a second time.
+    /// </summary>
+    private bool _syncingRouteSwitch;
+
+    private void OnRouteSwitchChanged(object sender, RoutedEventArgs e)
+    {
+        if (_syncingRouteSwitch)
+        {
+            return;
+        }
+
+        if (RouteSwitch.IsChecked == true)
+        {
+            StartRouting();
+        }
+        else
+        {
+            StopRouting();
+        }
+    }
 
     private void StartRouting()
     {
@@ -58,6 +79,7 @@ public partial class MainWindow
             {
                 SetStatus($"Start failed for '{vm.Title}': {ex.Message}");
                 AppLog.Error($"Could not start '{vm.Title}'.", ex);
+                SetRunState(_graph.Outputs.Any(o => o.IsRunning));
                 return;
             }
         }
@@ -73,7 +95,7 @@ public partial class MainWindow
         UpdateRecorderVisuals();
     }
 
-    private void OnStopClick(object sender, RoutedEventArgs e)
+    private void StopRouting()
     {
         var stoppedRecorders = _nodeBacking.Values
             .OfType<OutputNode>()

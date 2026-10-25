@@ -20,6 +20,15 @@ public sealed class AppSettings
     /// <summary>Draw a red border around muted nodes so they stand out.</summary>
     public bool HighlightMutedNodes { get; set; } = true;
 
+    /// <summary>Glow nodes and library items while signal is flowing.</summary>
+    public bool SignalGlow { get; set; } = true;
+
+    /// <summary>Highlight a cable when the pointer is over it.</summary>
+    public bool HighlightCableOnHover { get; set; } = true;
+
+    /// <summary>Default Vosk model id for new transcriber nodes.</summary>
+    public string TranscriberModel { get; set; } = "vosk-model-small-en-us-0.15";
+
     /// <summary>When the mini-map is shown (0 = always, 1 = never, 2 = when zoomed in).</summary>
     public int MinimapMode { get; set; } = 2;
 

@@ -275,6 +275,20 @@ public partial class MainWindow
 
     private void SetRunState(bool running)
     {
+        // Keep the switch in sync even when the displayed state has not changed;
+        // a failed start must not leave the knob on after routing stayed idle.
+        _syncingRouteSwitch = true;
+        try
+        {
+            RouteSwitch.IsChecked = running;
+        }
+        finally
+        {
+            _syncingRouteSwitch = false;
+        }
+
+        RouteSwitch.ToolTip = running ? "Stop routing" : "Start routing";
+
         if (_runStateShown == running)
         {
             return;
@@ -284,11 +298,6 @@ public partial class MainWindow
         RunDot.Fill = new SolidColorBrush((Color)ColorConverter.ConvertFromString(running ? "#39D98A" : "#4A5266"));
         RunLabel.Text = running ? "Routing" : "Idle";
         RunLabel.Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(running ? "#39D98A" : "#8892A6"));
-
-        // The start button doubles as the transport state: muted while idle and
-        // accented while audio is actually flowing. It stays clickable so it can
-        // always be used to start (or restart) the graph.
-        StartButton.Style = (Style)FindResource(running ? "PrimaryButton" : "StartIdleButton");
     }
 
     /// <summary>Briefly pulses a node's border to draw attention to it.</summary>

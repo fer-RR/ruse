@@ -16,6 +16,9 @@ public sealed class ModifierNode
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public string Title { get; set; }
 
+    /// <summary>False bypasses this modifier's effects while keeping its routes.</summary>
+    public bool Enabled { get; set; } = true;
+
     private readonly List<IAudioProcessor> _processors = new();
 
     /// <summary>Sources feeding this modifier.</summary>

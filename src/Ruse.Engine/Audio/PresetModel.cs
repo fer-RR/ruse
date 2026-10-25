@@ -75,6 +75,8 @@ public sealed class PresetRoute
 public sealed class PresetModifier
 {
     public string Title { get; set; } = "Modifier";
+    public bool Enabled { get; set; } = true;
+    public string? TranscriberModel { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
     public List<PresetProcessor> Processors { get; set; } = new();

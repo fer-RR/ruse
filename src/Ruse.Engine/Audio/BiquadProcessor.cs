@@ -181,7 +181,7 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
                 b1 = 2.0 * amp * ((amp - 1.0) - ((amp + 1.0) * cosW));
                 b2 = amp * ((amp + 1.0) - ((amp - 1.0) * cosW) - beta);
                 a1 = -2.0 * ((amp - 1.0) + ((amp + 1.0) * cosW));
-                a2 = (amp + 1.0) - ((amp - 1.0) * cosW) - beta;
+                a2 = (amp + 1.0) + ((amp - 1.0) * cosW) - beta;
                 break;
             }
 
@@ -249,6 +249,14 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
                 _y1R = yR;
                 samples[i + 1] = (float)yR;
             }
+        }
+
+        if (!double.IsFinite(_y1L) || !double.IsFinite(_y2L) ||
+            !double.IsFinite(_y1R) || !double.IsFinite(_y2R))
+        {
+            // Never let a bad block poison the filter forever. The output stage
+            // has already replaced the non-finite samples with silence.
+            Reset();
         }
     }
 

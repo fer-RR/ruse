@@ -1,53 +1,38 @@
-# Backlog — ideas that need a decision, a licence or a bigger machine
+# Backlog - ideas and decisions
 
-Written during the overnight work session. Nothing here is started; it is the
-list of things that are worth doing but that need the owner to choose.
+Nothing here is started unless noted. Keep this list short and current.
 
-## Plugins (VST3 / CLAP)
+## Before new feature work
 
-NAudio 3.3 dropped VST support entirely (the packages are now only
-`NAudio.Core`, `NAudio.Wasapi`, `NAudio.WinMM`, `NAudio.Midi` and
-`NAudio.Asio`), so hosting a VST3 plugin needs a **native C++ component**:
+- Commit the uncommitted WebView2/engine/transcriber migration. The worktree is
+  far ahead of `9269ff1`; do not reset or clean it.
+- Run the full regression and `--web-test` after committing.
 
-- the VST3 SDK from Steinberg (free, but the licence has to be accepted, and
-  the SDK may not be redistributed — a product built on it may need the signed
-  agreement),
-- a small host process that loads the plugin, negotiates buses and exchanges
-  audio with Ruse over a pipe,
-- plugin-window embedding (`IPlugView` → an HWND parented to a WPF host window).
+## Transcriber
 
-Toolchain check: Visual Studio Build Tools 2026 are installed (so MSVC is
-available), but there is no cmake and no VST3 SDK on the machine.
+- End-to-end test the Settings model Download button.
+- Add model download progress, cancel, delete, and checksum validation.
+- Share one Vosk `Model` across sessions instead of loading it per node.
+- Add a retry action when a model download or load fails.
+- Decide how multiple routes feeding one transcriber tap should behave.
+- Add punctuation/capitalization and transcript export (.txt/.srt).
+- Test real microphone and non-English speech, not only synthesized English.
 
-**Interim, already done:** 28 built-in effects, including a biquad EQ, a
-pitch shifter, a transient shaper and comfort noise, which covers most of what
-people reach for a plugin for.
+## Audio engine
 
-## Replacing the layout transform — done
+- Per-node output device switching without deleting/re-adding the node.
+- VST3/CLAP hosting. Needs a native C++ host, Steinberg SDK acceptance, IPC,
+  and an HWND plugin editor. Not started.
+- Sidechain and MIDI-trigger support.
+- A mixer view beside the node graph (channel strips with fader/pan/mute).
+- Optional GPU inference for Whisper if a chunked, higher-accuracy mode is
+  added later. Current real-time node uses Vosk.
 
-The canvas world used a `LayoutTransform`, which forced WPF to re-layout and
-re-render the whole world layer whenever anything inside changed (meter bars,
-status text). It now uses a `RenderTransform` on `GraphLayer`, with the world
-and host sizes kept separately in `UpdateGraphExtent`. No further work needed.
+## UI / platform
 
-## A custom window frame — done
-
-The standard title bar is replaced with a brushed-panel chrome modelled on the
-90s hi-fi separates Posy films: a VFD-style "RUSE / AR-01" plate, a seven-bar
-level display and square window keys. It uses `WindowChrome`, so Aero snap,
-resize borders and taskbar behaviour still work; a `WM_GETMINMAXINFO` hook
-keeps a maximised window inside the monitor work area. Covered by `--uitest`
-and by screenshots at normal and maximised size.
-
-## Other things worth doing
-
-- **Per-node output device switching** — change a node's device without
-  deleting and re-adding it.
-- **VST-style sidechain / MIDI-trigger** on the effects.
-- **A real mixer view** beside the node graph (channel strips with faders,
-  pan and mute per output).
-- **The WPF render tier is still 0** on this machine: the graphics stack keeps
-  WPF in software mode (D3D9, D3D11 and DXGI all work; the driver is clean;
-  the October 2026 cumulative update and the .NET 10.0.11/12/13 runtimes were
-  all ruled out). The remaining suspects are the NVIDIA driver rollback and the
-  cumulative update itself.
+- Investigate why WPF renders at software tier 0 on this machine. D3D9, D3D11
+  and DXGI work; driver and October 2026 update are suspects.
+- Decide whether to keep the legacy WPF shell long-term or reduce it to a
+  fallback/test harness.
+- Add a model-management summary to diagnostics (disk use, installed languages).
+- Add a compact "what changed" or release note surface for presets/models.

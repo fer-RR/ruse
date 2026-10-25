@@ -22,6 +22,9 @@ public partial class App : Application
     /// real audio instead of restoring the saved session.</summary>
     public static bool LiveDemoMode { get; private set; }
 
+    /// <summary>The process whose audio --live-demo captures.</summary>
+    public static uint LiveDemoProcessId { get; private set; }
+
     /// <summary>True when launched with --perf-test; starts from an empty
     /// canvas so the benchmark measures a known state.</summary>
     public static bool PerfTestMode { get; private set; }
@@ -70,6 +73,7 @@ public partial class App : Application
                 System.IO.Path.GetTempPath(), "Ruse-feedback-bench");
 
             base.OnStartup(e);
+            OpenLegacyWindow();
             System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
                 new Action(() =>
                 {
@@ -348,7 +352,17 @@ public partial class App : Application
             // genuine signal. The window stays open.
             uint livePid = (uint)GetIntArg(e.Args, "--pid", 0);
             LiveDemoMode = true;
+            LiveDemoProcessId = livePid;
             base.OnStartup(e);
+            if (!e.Args.Contains("--legacy-ui", StringComparer.OrdinalIgnoreCase))
+            {
+                var webWindow = new WebMainWindow();
+                MainWindow = webWindow;
+                webWindow.Show();
+                return;
+            }
+
+            OpenLegacyWindow();
             System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
                 new Action(() =>
                 {
@@ -372,6 +386,7 @@ public partial class App : Application
             double seconds = GetDoubleArg(e.Args, "--seconds", 4.0);
             bool useSink = e.Args.Contains("--perf-sink", StringComparer.OrdinalIgnoreCase);
             base.OnStartup(e);
+            OpenLegacyWindow();
             System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
                 new Action(async () =>
                 {
@@ -401,6 +416,7 @@ public partial class App : Application
             // Exercises the real window: layout, hit-testing and the drop
             // target logic all need a live visual tree.
             base.OnStartup(e);
+            OpenLegacyWindow();
             System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
                 new Action(() =>
                 {
@@ -433,7 +449,57 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--web-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string testDirectory = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(), "Ruse-webtest");
+            try
+            {
+                if (System.IO.Directory.Exists(testDirectory))
+                {
+                    System.IO.Directory.Delete(testDirectory, recursive: true);
+                }
+            }
+            catch
+            {
+            }
+
+            AppSettings.OverrideDirectory = testDirectory;
+            string result;
+            try
+            {
+                var window = new WebMainWindow();
+                result = window.RunParitySelfTest();
+                window.Close();
+            }
+            catch (Exception ex)
+            {
+                result = "FAILED: " + ex;
+            }
+
+            WriteResult("web-test.txt", $"Ruse web test: {result}");
+            Shutdown();
+            return;
+        }
+
         base.OnStartup(e);
+        if (!e.Args.Contains("--legacy-ui", StringComparer.OrdinalIgnoreCase) &&
+            !UiTestMode && !PerfTestMode && !LiveDemoMode)
+        {
+            var webWindow = new WebMainWindow();
+            MainWindow = webWindow;
+            webWindow.Show();
+            return;
+        }
+
+        OpenLegacyWindow();
+    }
+
+    private static void OpenLegacyWindow()
+    {
+        var window = new MainWindow();
+        Current.MainWindow = window;
+        window.Show();
     }
 
     private static void RunSelfTest(string[] args)

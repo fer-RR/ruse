@@ -67,6 +67,18 @@ public static class AudioProcessorCatalog
             () => new HighPassProcessor()));
 
         Register(new Descriptor(
+            WaveformProcessor.Id,
+            "Waveform",
+            "Shows the signal passing through this route.",
+            () => new WaveformProcessor()));
+
+        Register(new Descriptor(
+            TranscriptionProcessor.Id,
+            "Transcriber",
+            "Transcribes speech from this route offline.",
+            () => new TranscriptionProcessor()));
+
+        Register(new Descriptor(
             "lowpass",
             "Low-pass",
             "Removes high-frequency hiss above the cutoff.",

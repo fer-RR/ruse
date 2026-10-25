@@ -479,7 +479,14 @@ public sealed class OutputNode : IDisposable
         bool clipped = false;
         for (int i = 0; i < mix.Length; i++)
         {
-            if (mix[i] > 1f) { mix[i] = 1f; clipped = true; }
+            if (!float.IsFinite(mix[i]))
+            {
+                // A broken effect must never send NaN/Infinity to the device or
+                // poison the meter (which feeds the UI).
+                mix[i] = 0f;
+                clipped = true;
+            }
+            else if (mix[i] > 1f) { mix[i] = 1f; clipped = true; }
             else if (mix[i] < -1f) { mix[i] = -1f; clipped = true; }
         }
 
@@ -501,7 +508,8 @@ public sealed class OutputNode : IDisposable
             sum += mix[i] * mix[i];
         }
 
-        _meterLevel = Math.Min(1.0f, MathF.Sqrt(sum / mix.Length) * 3f);
+        float meter = Math.Min(1.0f, MathF.Sqrt(sum / mix.Length) * 3f);
+        _meterLevel = float.IsFinite(meter) ? meter : 0f;
 
         if (_recorder != null)
         {
