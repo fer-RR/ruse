@@ -139,7 +139,7 @@ export function DuplicateAudioDialog({ warning, onClose }: {
         <div className="audio-help-options">
           <div>
             <span className="audio-help-icon"><Headphones size={16} /></span>
-            <span><strong>{t('Use a different output')}</strong><small>{t('Send Ruse to headphones or a second device. Windows keeps playing the original elsewhere.')}</small></span>
+            <span><strong>{t('Use a different output')}</strong><small>{t("Send Windows' sounds to another device.")}</small></span>
           </div>
           <div>
             <span className="audio-help-icon"><Cable size={16} /></span>
@@ -313,6 +313,8 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <ToggleSetting label={t('Restore last session on launch')} description={t('Reopen the graph that was saved when Ruse last closed.')} checked={settings.autoLoadSession} onChange={value => onChange({ ...settings, autoLoadSession: value })} />
               <ToggleSetting label={t('Start routing on launch')} description={t('Start the restored graph after the workspace finishes loading.')} checked={settings.startRoutingOnLaunch} onChange={value => onChange({ ...settings, startRoutingOnLaunch: value })} />
               <ToggleSetting label={t('Start with Windows')} description={t('Add Ruse to your per-user Windows startup apps.')} checked={settings.startWithWindows} onChange={value => onChange({ ...settings, startWithWindows: value })} />
+              <ToggleSetting label={t('Show welcome screen on launch')} description={t('Open the welcome screen with a guided setup shortcut when Ruse starts.')} checked={settings.showWelcomeScreen} onChange={value => onChange({ ...settings, showWelcomeScreen: value })} />
+              <ToggleSetting label={t('Minimize to tray')} description={t('Hide Ruse in the notification area when minimized; audio keeps routing.')} checked={settings.minimizeToTray} onChange={value => onChange({ ...settings, minimizeToTray: value })} />
               <ToggleSetting label={t('Reattach apps when they play')} description={t('When an app source restarts, reconnect it to its existing route automatically.')} checked={settings.followPlayingApps} onChange={value => onChange({ ...settings, followPlayingApps: value })} />
               <label className="setting-row"><span><strong>{t('Auto-add new apps to')}</strong><small>{t('Add a source and connect it to this output when an app starts playing.')}</small></span><select disabled={!settings.followPlayingApps} value={settings.followOutputId} onChange={event => onChange({ ...settings, followOutputId: event.target.value })}><option value="">{t('Do not auto-add')}</option>{outputs.map(output => <option key={output.id} value={output.id}>{output.name}</option>)}</select></label>
             </div>
@@ -323,6 +325,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
             <div className="settings-section">
               <span className="eyebrow">{t('Help')}</span>
               <div className="settings-actions">
+                <button className="tool-button" onClick={() => send('show-splash')}>{t('Show welcome screen')}</button>
                 <button className="tool-button" onClick={() => send('show-welcome')}>{t('Show welcome guide')}</button>
                 <button className="tool-button" onClick={() => send('open-sound-settings')}>{t('Open Windows sound settings')}</button>
               </div>

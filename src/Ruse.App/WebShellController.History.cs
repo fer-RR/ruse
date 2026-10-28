@@ -46,7 +46,8 @@ internal sealed partial class WebShellController
         float Volume,
         bool Muted,
         bool Enabled,
-        string? TranscriberModel);
+        string? TranscriberModel,
+        bool FileLoop);
 
     private void PushAction(string label, Action undo, Action redo, string? coalesceKey = null)
     {
@@ -131,7 +132,7 @@ internal sealed partial class WebShellController
             entry.Id, entry.Kind, entry.Flavor, entry.Title, entry.Subtitle, entry.Accent,
             entry.X, entry.Y, entry.Width, entry.Height, entry.MicHint, SourceKind.Application, null, null, null, null,
             Array.Empty<int>(), false, false, null, AudioFileFormat.Wav24, RecorderMode.Off.ToString(), false,
-            new List<PresetProcessor>(), 1, false, true, null);
+            new List<PresetProcessor>(), 1, false, true, null, false);
 
         if (entry.Source != null)
         {
@@ -141,6 +142,8 @@ internal sealed partial class WebShellController
                 ProcessId = entry.Source.ProcessId,
                 ProcessName = entry.Source.ProcessName,
                 DeviceId = entry.Source.DeviceId,
+                FilePath = entry.Source.FilePath,
+                FileLoop = entry.Source.FileLoop,
                 AsioDriver = entry.Source.AsioDriver,
                 AsioChannels = entry.Source.AsioChannels.ToArray(),
                 Volume = entry.Source.Gain,
@@ -190,7 +193,9 @@ internal sealed partial class WebShellController
                     snapshot.DeviceId,
                     snapshot.AsioDriver,
                     snapshot.AsioChannels,
-                    processName: snapshot.ProcessName);
+                    processName: snapshot.ProcessName,
+                    filePath: snapshot.FilePath,
+                    fileLoop: snapshot.FileLoop);
                 source.Gain = snapshot.Volume;
                 source.Muted = snapshot.Muted;
                 var sourceEntry = RegisterSource(source, snapshot.X, snapshot.Y, snapshot.Id);

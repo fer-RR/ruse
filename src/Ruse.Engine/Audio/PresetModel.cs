@@ -46,6 +46,8 @@ public sealed class PresetSource
     public uint? ProcessId { get; set; }
     public string? ProcessName { get; set; }
     public string? DeviceId { get; set; }
+    public string? FilePath { get; set; }
+    public bool FileLoop { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
     public double? Width { get; set; }

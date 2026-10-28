@@ -90,6 +90,9 @@ internal sealed class NodeDto
     public string RecorderMode { get; set; } = "Off";
     public bool RecorderAutoSave { get; set; }
     public bool IsWaveform { get; set; }
+    public bool IsFilePlayer { get; set; }
+    public string? FilePath { get; set; }
+    public bool FileLoop { get; set; }
     public bool IsDbMeter { get; set; }
     public bool IsTranscriber { get; set; }
     public string? TranscriberModel { get; set; }
@@ -223,6 +226,8 @@ internal sealed class SettingsDto
     public bool CableAnimation { get; set; } = true;
     public int MinimapMode { get; set; } = 2;
     public bool StartWithWindows { get; set; }
+    public bool ShowWelcomeScreen { get; set; } = true;
+    public bool MinimizeToTray { get; set; } = true;
     public bool ShowDiagnostics { get; set; }
     public string TranscriberModel { get; set; } = "";
     public List<TranscriberModelDto> TranscriberModels { get; set; } = new();

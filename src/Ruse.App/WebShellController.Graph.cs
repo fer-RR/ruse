@@ -42,6 +42,9 @@ internal sealed partial class WebShellController
             case "virtual": entry = AddVirtualOutput(id, x, y); break;
             case "effect": entry = AddEffect(id, x, y); break;
             case "chain": entry = AddChain(id, x, y); break;
+            case "file-player":
+                AddFilePlayer(x, y);
+                return;
             case "recorder":
                 entry = RegisterOutput(OutputNode.CreateForFile(string.Empty, AudioFileFormat.Wav24), x, y);
                 SetStatus("Added a file recorder. Choose a destination to arm it.");
@@ -68,6 +71,88 @@ internal sealed partial class WebShellController
         PublishGraph();
     }
 
+    private void AddFilePlayer(double x = 80, double y = 120)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose an audio file",
+            Filter = "Audio files|*.wav;*.mp3;*.flac;*.aiff;*.aif;*.m4a;*.wma;*.ogg|All files|*.*",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(_window) != true)
+        {
+            return;
+        }
+
+        string path = dialog.FileName;
+        var source = new SourceNode(
+            Path.GetFileNameWithoutExtension(path), SourceKind.File, filePath: path);
+        var entry = RegisterSource(source, x, y);
+        PushAddNode(entry);
+        PublishGraph();
+        PublishTelemetry(force: true);
+        SetStatus($"Added file player: {Path.GetFileName(path)}");
+    }
+
+    private void ChooseFilePlayerFile(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose an audio file",
+            Filter = "Audio files|*.wav;*.mp3;*.flac;*.aiff;*.aif;*.m4a;*.wma;*.ogg|All files|*.*",
+            CheckFileExists = true,
+            FileName = source.FilePath ?? "",
+        };
+        if (dialog.ShowDialog(_window) != true)
+        {
+            return;
+        }
+
+        string path = dialog.FileName;
+        source.SetFile(path, source.FileLoop);
+        _graph.EnsureRunning(source);
+        entry.Title = Path.GetFileNameWithoutExtension(path);
+        source.Title = entry.Title;
+        PublishGraph();
+        PublishTelemetry(force: true);
+        SetStatus($"File player loaded: {Path.GetFileName(path)}");
+    }
+
+    private void SetFilePlayerLoop(string id, bool loop)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        source.SetFileLoop(loop);
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private void RestartFilePlayer(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        if (!_graph.AutoRun)
+        {
+            SetStatus("Start routing before restarting the file player.");
+            return;
+        }
+
+        source.RestartFile();
+        PublishTelemetry(force: true);
+        SetStatus($"{entry.Title}: restarting from the beginning.");
+    }
+
     /// <summary>Creates the guided first route and returns its ids.</summary>
     private void CreateFirstRoute(BridgeMessage message)
     {
@@ -77,11 +162,18 @@ internal sealed partial class WebShellController
         string outputKind = String(message, "outputKind");
         string outputId = String(message, "outputId");
 
-        NodeEntry? source;
+        NodeEntry? source = null;
+        bool sourceCreated = false;
         switch (sourceKind)
         {
             case "system":
-                source = RegisterSource(new SourceNode("System audio", SourceKind.SystemLoopback), 80, 160);
+                source = _nodes.Values.FirstOrDefault(entry =>
+                    entry.Source is { Kind: SourceKind.SystemLoopback });
+                if (source == null)
+                {
+                    source = RegisterSource(new SourceNode("System audio", SourceKind.SystemLoopback), 80, 160);
+                    sourceCreated = true;
+                }
                 break;
             case "app":
             {
@@ -93,44 +185,92 @@ internal sealed partial class WebShellController
                     return;
                 }
 
-                source = RegisterSource(new SourceNode(app.Name, SourceKind.Application, app.ProcessId,
-                    processName: app.ProcessName), 80, 160);
+                source = _nodes.Values.FirstOrDefault(entry =>
+                    entry.Source is { Kind: SourceKind.Application } existing &&
+                    (existing.ProcessId == app.ProcessId ||
+                     (!string.IsNullOrEmpty(app.ProcessName) &&
+                      string.Equals(existing.ProcessName, app.ProcessName, StringComparison.OrdinalIgnoreCase))));
+                if (source == null)
+                {
+                    source = RegisterSource(
+                        new SourceNode(app.Name, SourceKind.Application, app.ProcessId,
+                            processName: app.ProcessName),
+                        80, 160);
+                    sourceCreated = true;
+                }
                 break;
             }
             case "input":
-                source = AddDeviceInput(sourceId, 80, 160);
+                source = _nodes.Values.FirstOrDefault(entry =>
+                    entry.Source is { } existing &&
+                    string.Equals(existing.DeviceId, sourceId, StringComparison.OrdinalIgnoreCase));
+                if (source == null)
+                {
+                    source = AddDeviceInput(sourceId, 80, 160);
+                    sourceCreated = true;
+                }
                 break;
             default:
                 ShowError("Choose a source for the first route.");
                 return;
         }
 
-        NodeEntry? output;
+        NodeEntry? output = FindOutputByDevice(outputId);
+        bool outputCreated = false;
         try
         {
-            output = outputKind == "virtual"
-                ? AddVirtualOutput(outputId, 660, 160)
-                : AddDeviceOutput(outputId, 660, 160);
+            if (output == null)
+            {
+                output = outputKind == "virtual"
+                    ? AddVirtualOutput(outputId, 660, 160)
+                    : AddDeviceOutput(outputId, 660, 160);
+                outputCreated = output != null;
+            }
         }
         catch
         {
-            RemoveEntryInternal(source.Id);
-            PublishGraph();
+            if (sourceCreated)
+            {
+                RemoveEntryInternal(source.Id);
+                PublishGraph();
+            }
+
             throw;
         }
 
         if (output == null)
         {
-            RemoveEntryInternal(source.Id);
-            PublishGraph();
-            SetStatus("That output is already on the canvas. Choose another one.", isError: true);
+            if (sourceCreated)
+            {
+                RemoveEntryInternal(source.Id);
+                PublishGraph();
+            }
+
+            ShowError("That output is not available. Refresh and try again.");
             return;
         }
 
-        var link = ConnectEntries(source, output, publish: false);
-        PushAddNode(source);
-        PushAddNode(output);
-        PushConnect(link);
+        var link = _links.FirstOrDefault(item => item.From == source.Id && item.To == output.Id);
+        bool linkCreated = link == null;
+        if (link == null)
+        {
+            link = ConnectEntries(source, output, publish: false);
+        }
+
+        if (sourceCreated)
+        {
+            PushAddNode(source);
+        }
+
+        if (outputCreated)
+        {
+            PushAddNode(output);
+        }
+
+        if (linkCreated)
+        {
+            PushConnect(link);
+        }
 
         _settings.OnboardingCompleted = true;
         _settings.Save();
@@ -336,6 +476,7 @@ internal sealed partial class WebShellController
                 SourceKind.Application => "app",
                 SourceKind.Device => "mic",
                 SourceKind.Asio => "asio",
+                SourceKind.File => "file",
                 _ => "system",
             },
             Title = source.Title,
@@ -344,6 +485,7 @@ internal sealed partial class WebShellController
                 SourceKind.Application => "Application",
                 SourceKind.Device => "Input device",
                 SourceKind.Asio => "ASIO input",
+                SourceKind.File => "Audio file",
                 _ => "System audio",
             },
             Accent = source.Kind switch
@@ -351,6 +493,7 @@ internal sealed partial class WebShellController
                 SourceKind.Application => "#5B8DEF",
                 SourceKind.SystemLoopback => "#65D6D0",
                 SourceKind.Asio => "#F0DC5A",
+                SourceKind.File => "#F08CB8",
                 _ => IsVirtualCapture(source.Title) ? "#7D5BD6" : "#F0DC5A",
             },
             X = x,
@@ -533,6 +676,9 @@ internal sealed partial class WebShellController
             dto.Volume = entry.Source.Gain;
             dto.Muted = entry.Source.Muted;
             dto.DeviceId = entry.Source.DeviceId;
+            dto.IsFilePlayer = entry.Source.Kind == SourceKind.File;
+            dto.FilePath = entry.Source.FilePath;
+            dto.FileLoop = entry.Source.FileLoop;
         }
         else if (entry.Output != null)
         {

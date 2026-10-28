@@ -33,6 +33,7 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'asio': return <Radio {...props} />;
     case 'output': return <MonitorSpeaker {...props} />;
     case 'virtual': return <Radio {...props} />;
+    case 'file': return <FileAudio {...props} />;
     case 'recorder': return <FileAudio {...props} />;
     default: return <SlidersHorizontal {...props} />;
   }
@@ -68,6 +69,28 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
       >
         {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
       </button>
+    </div>
+  );
+}
+
+function FilePlayerControls({ node }: { node: RuseFlowNode['data'] }) {
+  const { t } = useI18n();
+  const fileName = node.filePath ? node.filePath.split(/[\\/]/).pop() : t('No file selected');
+  return (
+    <div className="file-player-controls nodrag">
+      <div className="file-player-name" title={node.filePath ?? ''}>{fileName}</div>
+      <div className="file-player-actions">
+        <button className="small-button" onClick={() => send('file-player-file', { id: node.id })}>{t('Choose file')}</button>
+        <button className="small-button" onClick={() => send('file-player-restart', { id: node.id })}>{t('Restart')}</button>
+        <label className="file-player-loop">
+          <input
+            type="checkbox"
+            checked={node.fileLoop === true}
+            onChange={event => send('file-player-loop', { id: node.id, value: event.target.checked })}
+          />
+          <span>{t('Loop')}</span>
+        </label>
+      </div>
     </div>
   );
 }
@@ -297,6 +320,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         </div>
       ) : (
         <>
+          {data.isFilePlayer && <FilePlayerControls node={data} />}
           <VolumeControl id={data.id} value={data.volume} muted={data.muted} />
           {data.isRecorder && <RecorderControls node={data} telemetry={telemetry} />}
         </>

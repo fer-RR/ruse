@@ -1,6 +1,6 @@
 export type NodeKind = 'source' | 'output' | 'modifier';
 export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output';
-export type CatalogKind = 'app' | 'system' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'recorder';
+export type CatalogKind = 'app' | 'system' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'recorder';
 
 export interface ChainElement {
   typeId: string;
@@ -71,6 +71,9 @@ export interface NodeModel {
   parameters: ParameterModel[];
   enabled?: boolean;
   isWaveform?: boolean;
+  isFilePlayer?: boolean;
+  filePath?: string;
+  fileLoop?: boolean;
   isDbMeter?: boolean;
   isTranscriber?: boolean;
   transcriberModel?: string;
@@ -213,6 +216,8 @@ export interface SettingsModel {
   cableAnimation: boolean;
   minimapMode: number;
   startWithWindows: boolean;
+  showWelcomeScreen: boolean;
+  minimizeToTray: boolean;
   showDiagnostics: boolean;
   transcriberModel: string;
   transcriberModels: TranscriberModelInfo[];

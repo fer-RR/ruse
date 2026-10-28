@@ -70,6 +70,8 @@ export const demoSettings: SettingsModel = {
   cableAnimation: true,
   minimapMode: 2,
   startWithWindows: false,
+  showWelcomeScreen: true,
+  minimizeToTray: true,
   showDiagnostics: false,
   transcriberModel: '',
   transcriberModels: [],

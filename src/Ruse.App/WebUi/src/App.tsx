@@ -23,6 +23,7 @@ import { StatusBar, TitleBar, Toolbar } from './components/Chrome';
 import { ConfirmDialog, DeviceHelpDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog } from './components/Dialogs';
 import type { SettingsTab } from './components/Dialogs';
 import ChainEditorDialog from './components/ChainEditorDialog';
+import WelcomeSplash from './components/WelcomeSplash';
 import WelcomeWizard from './components/WelcomeWizard';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
@@ -111,6 +112,7 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('behavior');
   const [showAudioHelp, setShowAudioHelp] = useState(false);
   const [showDeviceHelp, setShowDeviceHelp] = useState(false);
+  const [splashOpen, setSplashOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [showClear, setShowClear] = useState(false);
   const [renamePrompt, setRenamePrompt] = useState<RenamePrompt | null>(null);
@@ -141,10 +143,12 @@ export default function App() {
 
   const nodesRef = useRef(nodes);
   const settingsRef = useRef(settings);
+  const sidebarCollapsedRef = useRef(sidebarCollapsed);
   const zCounter = useRef(1);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { framesRef.current = frames; }, [frames]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => { sidebarCollapsedRef.current = sidebarCollapsed; }, [sidebarCollapsed]);
   useEffect(() => { localStorage.setItem('ruse.sidebarWidth', String(sidebarWidth)); }, [sidebarWidth]);
   useEffect(() => { localStorage.setItem('ruse.sidebarCollapsed', sidebarCollapsed ? '1' : '0'); }, [sidebarCollapsed]);
   useLayoutEffect(() => {
@@ -328,6 +332,7 @@ export default function App() {
       case 'chain-edit': setChainEditor(payload as ChainEditorRequest); break;
       case 'status': setStatus(payload as StatusMessage); break;
       case 'alert': setAlert(payload as StatusMessage); break;
+      case 'splash': setSplashOpen(true); break;
       case 'welcome': setWelcomeOpen(true); break;
     }
   }), []);
@@ -705,7 +710,12 @@ export default function App() {
         duplicateSelected();
       } else if (modifier && event.key.toLowerCase() === 'f') {
         event.preventDefault();
-        searchRef.current?.focus();
+        if (sidebarCollapsedRef.current) {
+          setSidebarCollapsed(false);
+          window.setTimeout(() => window.dispatchEvent(new CustomEvent('ruse-focus-search')), 60);
+        } else {
+          window.dispatchEvent(new CustomEvent('ruse-focus-search'));
+        }
       } else if (modifier && event.key.toLowerCase() === 's') {
         event.preventDefault();
         send('save-preset');
@@ -1107,6 +1117,12 @@ export default function App() {
           </>}
         </div>
       </div>}
+      {splashOpen && <WelcomeSplash
+        settings={settings}
+        onChange={next => { setSettings(next); send('settings', { ...next }); }}
+        onStartSetup={() => { setSplashOpen(false); setWelcomeOpen(true); }}
+        onClose={() => setSplashOpen(false)}
+      />}
       {welcomeOpen && <WelcomeWizard
         catalog={catalog}
         onClose={() => { setWelcomeOpen(false); send('onboarding-complete'); }}

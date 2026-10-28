@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
-  AlertTriangle, AppWindow, AudioLines, Check, ChevronLeft, Info, Mic,
-  MonitorSpeaker, Radio, RefreshCw,
+  AlertTriangle, AppWindow, AudioLines, Cable, Check, ChevronLeft, CircleHelp,
+  Mic, MonitorSpeaker, Power, Radio, RefreshCw, SlidersHorizontal, Volume2,
 } from 'lucide-react';
 import { send, subscribe } from '../bridge';
 import { useI18n } from '../i18n';
@@ -11,7 +11,7 @@ import type { CatalogItem, CatalogSnapshot, FirstRouteResult } from '../types';
 import { Modal } from './Dialogs';
 
 type SourceKind = 'system' | 'app' | 'input';
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | 4;
 
 const SYSTEM_SOURCE: CatalogItem = {
   id: 'system',
@@ -38,19 +38,20 @@ function OutputIcon({ item }: { item: CatalogItem }) {
   return item.kind === 'virtual' ? <Radio size={18} /> : <MonitorSpeaker size={18} />;
 }
 
-function Choice({ item, selected, onSelect, subtitle, icon }: {
+function Choice({ item, selected, onSelect, subtitle, icon, badge }: {
   item: CatalogItem;
   selected: boolean;
   onSelect: () => void;
   subtitle?: string;
   icon: ReactNode;
+  badge?: string;
 }) {
   const { t } = useI18n();
   return (
     <button type="button" className={`wizard-choice ${selected ? 'selected' : ''}`} onClick={onSelect}>
       <span className="wizard-choice-icon">{icon}</span>
       <span className="wizard-choice-copy">
-        <strong>{t(item.name)}{item.active && <span className="wizard-active-dot" title={t('Playing now')} />}</strong>
+        <strong>{t(item.name)}{badge && <span className="wizard-badge">{badge}</span>}{item.active && <span className="wizard-active-dot" title={t('Playing now')} />}</strong>
         <small>{subtitle ?? t(item.subtitle)}</small>
       </span>
       {selected && <Check size={15} className="wizard-choice-check" />}
@@ -122,10 +123,6 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
       : '';
   const duplicateRisk = Boolean(sourceEndpoint && outputItem &&
     sourceEndpoint.toLowerCase() === outputItem.id.toLowerCase());
-  const copyRisk = Boolean(sourceEndpoint && outputItem && !duplicateRisk);
-  const sourceEndpointName = sourceKind === 'system'
-    ? catalog.defaultOutputName
-    : sourceItem?.deviceName ?? '';
   const canCreate = Boolean(sourceItem && outputItem && (!duplicateRisk || acknowledged));
 
   const selectCategory = (kind: SourceKind) => {
@@ -163,9 +160,9 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
 
   const renderSourceStep = () => (
     <>
-      <p className="wizard-kicker">{t("Let's make your first route")}</p>
-      <h3>{t('What do you want to route?')}</h3>
-      <p className="wizard-lead">{t('Pick a source. Ruse captures it and sends it wherever you want — the original app keeps working normally.')}</p>
+      <p className="wizard-kicker">{t("Let's send your first sound")}</p>
+      <h3>{t('What do you want to hear?')}</h3>
+      <p className="wizard-lead">{t('Ruse sends sound from one place to another. Pick an app, the whole PC, or a microphone; the original app keeps working.')}</p>
       <div className="wizard-categories" role="tablist" aria-label={t('Source')}>
         {CATEGORIES.map(({ id, label, Icon }) => (
           <button
@@ -183,7 +180,7 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
 
       {sourceKind === 'system' && (
         <div className="wizard-list">
-          <Choice item={SYSTEM_SOURCE} selected={sourceItem?.id === SYSTEM_SOURCE.id} onSelect={() => selectSource(SYSTEM_SOURCE)} icon={<AudioLines size={18} />} />
+          <Choice item={SYSTEM_SOURCE} selected={sourceItem?.id === SYSTEM_SOURCE.id} onSelect={() => selectSource(SYSTEM_SOURCE)} icon={<AudioLines size={18} />} badge={t('Easiest')} />
         </div>
       )}
 
@@ -230,8 +227,8 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
 
   const renderOutputStep = () => (
     <>
-      <h3>{t('Where should it go?')}</h3>
-      <p className="wizard-lead">{t('Choose the device you want to hear the routed audio on.')}</p>
+      <h3>{t('Where do you want to hear it?')}</h3>
+      <p className="wizard-lead">{t('Choose your speakers, headphones, or a virtual device. This is where the copied sound comes out.')}</p>
       <div className="wizard-list">
         {outputs.map(item => (
           <Choice
@@ -241,6 +238,7 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
             onSelect={() => selectOutput(item)}
             icon={<OutputIcon item={item} />}
             subtitle={item.id === catalog.defaultOutputId ? `${t(item.subtitle)} / ${t('Windows default')}` : t(item.subtitle)}
+            badge={item.id === catalog.defaultOutputId ? t('Recommended') : undefined}
           />
         ))}
         {outputs.length === 0 && <p className="wizard-empty">{t('No output devices found. Connect one, then refresh.')}</p>}
@@ -261,7 +259,7 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
 
   const renderReviewStep = () => (
     <>
-      <h3>{result ? t('Your first route is live') : t('Ready to connect')}</h3>
+      <h3>{result ? t('Your first connection is live') : t('Ready to connect')}</h3>
       <p className="wizard-lead">
         {result
           ? t('You can keep this guide open while you test the route.')
@@ -284,17 +282,6 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
         </div>
       )}
 
-      {!result && copyRisk && (
-        <div className="wizard-copy-note">
-          <Info size={16} />
-          <div>
-            <strong>{t('The original still plays on {device}', { device: sourceEndpointName || t('its current device') })}</strong>
-            <p>{t('Ruse will send a copy to {output}. If both devices are audible, you will hear it twice. Use a virtual cable if Ruse should be the only copy.', { output: outputItem?.name ?? '' })}</p>
-            <button className="wizard-link" onClick={onOpenHelp}>{t('How to fix')}</button>
-          </div>
-        </div>
-      )}
-
       {result && (
         <>
           <div className={`wizard-signal ${hasSignal ? 'active' : ''}`}>
@@ -306,9 +293,12 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
             <div className="wizard-level"><span style={{ width: `${meterWidth}%` }} /></div>
             <p>{hasSignal ? t('The source is reaching Ruse. You should hear it on the output.') : t('Play something in {source}, then watch this meter.', { source: t(result.sourceTitle) })}</p>
           </div>
-          <button className="tool-button" onClick={() => setShowTroubleshooting(value => !value)}>
-            {showTroubleshooting ? t('Hide troubleshooting') : t("I can't hear it")}
-          </button>
+          <div className="wizard-test-actions">
+            <button className="tool-button" onClick={() => setShowTroubleshooting(value => !value)}>
+              {showTroubleshooting ? t('Hide troubleshooting') : t("I can't hear it")}
+            </button>
+            <button className="tool-button" onClick={onOpenHelp}>{t('I can hear it twice')}</button>
+          </div>
           {showTroubleshooting && (
             <ul className="wizard-troubleshoot">
               <li>{t('Turn the Routing switch on at the top of the window.')}</li>
@@ -317,17 +307,7 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
               <li>{t('Open Windows sound settings and confirm the output device.')}</li>
             </ul>
           )}
-          {result.warning && result.severity === 'info' && (
-            <div className="wizard-copy-note">
-              <Info size={16} />
-              <div>
-                <strong>{t('A copy is also playing elsewhere')}</strong>
-                <p>{result.warning}</p>
-                <button className="wizard-link" onClick={onOpenHelp}>{t('How to fix')}</button>
-              </div>
-            </div>
-          )}
-          {result.warning && result.severity !== 'info' && (
+          {result.warning && (
             <div className="wizard-warning">
               <AlertTriangle size={16} />
               <div>
@@ -337,12 +317,6 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
               </div>
             </div>
           )}
-          <div className="wizard-next-steps">
-            <span>{t('Add an effect')}</span>
-            <span>{t('Record to a file')}</span>
-            <span>{t('Transcribe speech')}</span>
-          </div>
-          <p className="wizard-muted">{t('Open the library on the left to add any of these to your route.')}</p>
         </>
       )}
 
@@ -353,14 +327,63 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
     </>
   );
 
+  const renderBasicsStep = () => (
+    <>
+      <p className="wizard-kicker">{t("You're ready")}</p>
+      <h3>{t('Four things to remember')}</h3>
+      <p className="wizard-lead">{t('Your route is already running. Play something in the source and you should hear it on the output.')}</p>
+      <div className="wizard-basics">
+        <div className="wizard-basic">
+          <span className="wizard-basic-icon"><AppWindow size={17} /></span>
+          <div>
+            <strong>{t('Build with the Library')}</strong>
+            <p>{t('Drag apps, devices, effects and recorders from the left side onto the canvas.')}</p>
+          </div>
+        </div>
+        <div className="wizard-basic">
+          <span className="wizard-basic-icon"><Cable size={17} /></span>
+          <div>
+            <strong>{t('Join nodes with cables')}</strong>
+            <p>{t('Drag from the OUT dot on a node to the IN dot on another node. The cable carries the sound.')}</p>
+          </div>
+        </div>
+        <div className="wizard-basic">
+          <span className="wizard-basic-icon"><Power size={17} /></span>
+          <div>
+            <strong>{t('Start and stop with ON/OFF')}</strong>
+            <p>{t('The switch at the top left controls the whole graph. Green ON means sound is being routed.')}</p>
+          </div>
+        </div>
+        <div className="wizard-basic">
+          <span className="wizard-basic-icon"><Volume2 size={17} /></span>
+          <div>
+            <strong>{t('Use the volume faders')}</strong>
+            <p>{t('Each source and output has its own fader. Master volume is at the bottom right of the window.')}</p>
+          </div>
+        </div>
+      </div>
+      <div className="wizard-basic-tip">
+        <SlidersHorizontal size={16} />
+        <div>
+          <strong>{t('More options are one right-click away')}</strong>
+          <p>{t('Right-click a node or cable to rename, disconnect, bypass or remove it.')}</p>
+        </div>
+      </div>
+      <div className="wizard-actions-inline">
+        <button className="tool-button" onClick={onOpenHelp}><CircleHelp size={14} /> {t('Audio device guide')}</button>
+      </div>
+      <p className="wizard-muted">{t('Reopen this guide any time from Settings > Behavior > Show welcome guide.')}</p>
+    </>
+  );
+
   return (
     <Modal title={t('Welcome to Ruse')} onClose={onClose} className="wizard-modal">
       <div className="wizard-body">
         <div className="wizard-steps" aria-label={t('Progress')}>
-          {[1, 2, 3].map(value => (
+          {[1, 2, 3, 4].map(value => (
             <div key={value} className={`wizard-step ${step === value ? 'active' : ''} ${step > value ? 'done' : ''}`}>
               <span className="wizard-step-number">{step > value ? <Check size={12} /> : value}</span>
-              <span>{value === 1 ? t('Source') : value === 2 ? t('Output') : t('Test')}</span>
+              <span>{value === 1 ? t('Source') : value === 2 ? t('Output') : value === 3 ? t('Test') : t('Basics')}</span>
             </div>
           ))}
         </div>
@@ -369,23 +392,25 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
           {step === 1 && renderSourceStep()}
           {step === 2 && renderOutputStep()}
           {step === 3 && renderReviewStep()}
+          {step === 4 && renderBasicsStep()}
         </div>
 
         <div className="wizard-footer">
           <div>
-            {!result && <button className="wizard-skip" onClick={onClose}>{t('Skip the tour')}</button>}
-            {result && <span className="wizard-muted">{t('Reopen this guide any time from Settings.')}</span>}
+            {!result && <button className="wizard-skip" onClick={onClose}>{t('Skip for now')}</button>}
+            {result && step < 4 && <span className="wizard-muted">{t('You can reopen this guide any time from Settings.')}</span>}
           </div>
           <div className="wizard-footer-actions">
-            {step > 1 && !result && <button className="tool-button" onClick={() => setStep((step - 1) as Step)}><ChevronLeft size={14} /> {t('Back')}</button>}
+            {step > 1 && step < 4 && !result && <button className="tool-button" onClick={() => setStep((step - 1) as Step)}><ChevronLeft size={14} /> {t('Back')}</button>}
             {step === 1 && <button className="primary-button" disabled={!sourceItem} onClick={() => setStep(2)}>{t('Continue')}</button>}
             {step === 2 && <button className="primary-button" disabled={!outputItem} onClick={() => setStep(3)}>{t('Continue')}</button>}
             {step === 3 && !result && (
               <button className={duplicateRisk ? 'warning-button' : 'primary-button'} disabled={!canCreate || creating} onClick={create}>
-                {creating ? t('Creating route…') : duplicateRisk ? t('Create route anyway') : t('Create route')}
+                {creating ? t('Creating route…') : duplicateRisk ? t('Create and start anyway') : t('Create and start')}
               </button>
             )}
-            {step === 3 && result && <button className="primary-button" onClick={onClose}>{t('Done')}</button>}
+            {step === 3 && result && <button className="primary-button" onClick={() => setStep(4)}>{t('Continue')}</button>}
+            {step === 4 && result && <button className="primary-button" onClick={onClose}>{t('Done')}</button>}
           </div>
         </div>
       </div>

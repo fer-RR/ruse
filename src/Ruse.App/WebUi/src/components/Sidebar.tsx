@@ -19,6 +19,11 @@ const recorderItem: CatalogItem = {
   details: 'Add a file destination for a routed mix',
 };
 
+const filePlayerItem: CatalogItem = {
+  id: 'file-player', kind: 'file-player', name: 'File player', subtitle: 'WAV, MP3, FLAC',
+  details: 'Play an audio file into a route',
+};
+
 function ItemIcon({ item }: { item: CatalogItem }) {
   const props = { size: 15, strokeWidth: 1.7, 'aria-hidden': true } as const;
   if (item.iconDataUrl) return <img className="library-app-icon" src={item.iconDataUrl} alt="" />;
@@ -35,6 +40,7 @@ function ItemIcon({ item }: { item: CatalogItem }) {
     case 'virtual': return <Radio {...props} />;
     case 'effect': return <SlidersHorizontal {...props} />;
     case 'chain': return <Layers3 {...props} />;
+    case 'file-player': return <FileAudio {...props} />;
     case 'recorder': return <FileAudio {...props} />;
   }
 }
@@ -132,6 +138,23 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
   const [query, setQuery] = useState('');
   const [view, setView] = useState<View>('all');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [searching, setSearching] = useState(false);
+
+  const openSearch = () => {
+    setSearching(true);
+    requestAnimationFrame(() => requestAnimationFrame(() => searchRef.current?.focus()));
+  };
+
+  const stopSearch = () => {
+    setQuery('');
+    setSearching(false);
+  };
+
+  useEffect(() => {
+    const focusSearch = () => openSearch();
+    window.addEventListener('ruse-focus-search', focusSearch);
+    return () => window.removeEventListener('ruse-focus-search', focusSearch);
+  }, []);
 
   const catalogSections = useMemo(() => {
     const physicalInputs = catalog.inputs.filter(item => !item.virtual && item.provider !== 'ASIO');
@@ -140,7 +163,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     const physicalOutputs = catalog.outputs.filter(item => item.provider !== 'ASIO');
     const asioOutputs = catalog.outputs.filter(item => item.provider === 'ASIO');
     return {
-      applications: { label: 'Applications', items: [systemItem, ...catalog.apps] },
+      applications: { label: 'Applications', items: [systemItem, filePlayerItem, ...catalog.apps] },
       physicalOutputs: { label: 'Speakers & headphones', items: physicalOutputs },
       physicalInputs: { label: 'Microphones & inputs', items: physicalInputs },
       recording: { label: 'Recording', items: [recorderItem] },
@@ -240,31 +263,55 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
   return (
     <aside className="sidebar" aria-label={t('Routing library')}>
       <div className="sidebar-heading">
-        <div>
-          <span className="eyebrow">{t('Library')}</span>
-          <h1>{t('Build a route')}</h1>
-        </div>
+        <span className="eyebrow">{t('Library')}</span>
       </div>
-      <label className="search-box">
-        <Search size={15} aria-hidden="true" />
-        <input ref={searchRef} value={query} onChange={event => setQuery(event.target.value)} placeholder={t('Search sources, outputs, effects…')} aria-label={t('Search library')} />
-        {query && <button className="icon-button compact" aria-label={t('Clear search')} onClick={() => setQuery('')}><X size={13} /></button>}
-        <kbd>Ctrl F</kbd>
-      </label>
-      <div className="library-views" role="tablist" aria-label={t('Library sections')}>
-        {VIEWS.map(entry => (
-          <button
-            key={entry.id}
-            type="button"
-            role="tab"
-            aria-selected={view === entry.id}
-            className={`library-view ${view === entry.id ? 'active' : ''}`}
-            onClick={() => setView(entry.id)}
+      {searching ? (
+        <label className="search-box sidebar-search-active">
+          <Search size={15} aria-hidden="true" />
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Escape') {
+                event.stopPropagation();
+                stopSearch();
+              }
+            }}
+            placeholder={t('Search sources, outputs, effects…')}
+            aria-label={t('Search library')}
+          />
+          <button className="icon-button compact" title={t('Stop search')} aria-label={t('Stop search')} onClick={stopSearch}><X size={13} /></button>
+        </label>
+      ) : (
+        <div className="library-filter-row">
+          <select
+            className="library-view-select"
+            value={view}
+            aria-label={t('Library sections')}
+            onChange={event => setView(event.target.value as View)}
           >
-            {t(entry.label)}
+            {VIEWS.map(entry => <option key={entry.id} value={entry.id}>{t(entry.label)}</option>)}
+          </select>
+          <div className="library-views" role="tablist" aria-label={t('Library sections')}>
+            {VIEWS.map(entry => (
+              <button
+                key={entry.id}
+                type="button"
+                role="tab"
+                aria-selected={view === entry.id}
+                className={`library-view ${view === entry.id ? 'active' : ''}`}
+                onClick={() => setView(entry.id)}
+              >
+                {t(entry.label)}
+              </button>
+            ))}
+          </div>
+          <button className="library-search-button" title={t('Search library (Ctrl F)')} aria-label={t('Search library')} onClick={openSearch}>
+            <Search size={15} />
           </button>
-        ))}
-      </div>
+        </div>
+      )}
       <div className="library-scroll">
         {visible.map(group => (
           <section className="library-group" key={group.title || 'all'}>

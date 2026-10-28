@@ -129,23 +129,25 @@ export function Toolbar({ running, micMuted, canUndo, canRedo, undoLabel, redoLa
 }
 
 function MasterVolume({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+  const { t } = useI18n();
   const [local, setLocal] = useState(value);
   useEffect(() => setLocal(value), [value]);
   return (
-    <label className="master-volume"><span>Master</span><input type="range" min={0} max={1.5} step={0.01} value={local} onChange={event => { const next = Number(event.target.value); setLocal(next); onChange(next); }} /><strong>{Math.round(local * 100)}%</strong></label>
+    <label className="master-volume"><span>{t('Master')}</span><input type="range" min={0} max={1.5} step={0.01} value={local} onChange={event => { const next = Number(event.target.value); setLocal(next); onChange(next); }} /><strong>{Math.round(local * 100)}%</strong></label>
   );
 }
 
 export function StatusBar({ status }: {
   status: StatusMessage;
 }) {
+  const { t } = useI18n();
   const telemetry = useGlobalTelemetry();
   return (
     <footer className="statusbar">
-      <div className="status-message"><span className={`run-dot ${telemetry.running ? 'running' : ''}`} /><strong>{telemetry.running ? 'Routing' : 'Idle'}</strong><span className={status.isError ? 'error-text' : ''}>{status.text}</span></div>
+      <div className="status-message"><span className={`run-dot ${telemetry.running ? 'running' : ''}`} /><strong>{telemetry.running ? t('Routing') : t('Idle')}</strong><span className={status.isError ? 'error-text' : ''}>{status.text}</span></div>
       <div className="status-controls">
         {telemetry.clipping && <span className="clip-chip">CLIP</span>}
-        <button className={`icon-button ${telemetry.masterMuted ? 'danger-text' : ''}`} title={telemetry.masterMuted ? 'Unmute all outputs' : 'Mute all outputs'} onClick={() => send('master-mute', { value: !telemetry.masterMuted })}>{telemetry.masterMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}</button>
+        <button className={`icon-button ${telemetry.masterMuted ? 'danger-text' : ''}`} title={telemetry.masterMuted ? t('Unmute all outputs') : t('Mute all outputs')} onClick={() => send('master-mute', { value: !telemetry.masterMuted })}>{telemetry.masterMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}</button>
         <MasterVolume value={telemetry.masterGain} onChange={value => send('master-gain', { value })} />
       </div>
     </footer>

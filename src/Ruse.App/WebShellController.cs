@@ -14,6 +14,8 @@ internal sealed partial class WebShellController : IDisposable
 {
     private readonly WebMainWindow _window;
     private readonly AppSettings _settings;
+
+    internal AppSettings UserSettings => _settings;
     private readonly JsonSerializerOptions _json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -150,10 +152,12 @@ internal sealed partial class WebShellController : IDisposable
         {
             case "ready":
                 PublishAll();
-                if (!_settings.OnboardingCompleted && _nodes.Count == 0 &&
-                    !App.DemoMode && !App.UiTestMode && !App.LiveDemoMode)
+                if (!App.DemoMode && !App.UiTestMode && !App.LiveDemoMode && _settings.ShowWelcomeScreen)
                 {
-                    Post("welcome", new { manual = false });
+                    Post("splash", new
+                    {
+                        firstRun = !_settings.OnboardingCompleted && _nodes.Count == 0,
+                    });
                 }
 
                 if (!_autoStartDone && _settings.StartRoutingOnLaunch && _nodes.Count > 0 && !App.DemoMode)
@@ -164,9 +168,14 @@ internal sealed partial class WebShellController : IDisposable
                 break;
             case "refresh": RefreshCatalog(); break;
             case "add": AddFromMessage(message); break;
+            case "add-file-player": AddFilePlayer(); break;
+            case "file-player-file": ChooseFilePlayerFile(String(message, "id")); break;
+            case "file-player-loop": SetFilePlayerLoop(String(message, "id"), Bool(message, "value")); break;
+            case "file-player-restart": RestartFilePlayer(String(message, "id")); break;
             case "first-route": CreateFirstRoute(message); break;
             case "onboarding-complete": CompleteOnboarding(); break;
             case "show-welcome": Post("welcome", new { manual = true }); break;
+            case "show-splash": Post("splash", new { manual = true }); break;
             case "open-sound-settings": OpenSoundSettings(); break;
             case "move": MoveNode(String(message, "id"), Number(message, "x"), Number(message, "y")); break;
             case "move-many": MoveNodes(message); break;
@@ -448,6 +457,8 @@ internal sealed partial class WebShellController : IDisposable
             CableAnimation = _settings.CableAnimation,
             MinimapMode = _settings.MinimapMode,
             StartWithWindows = StartupRegistration.IsEnabled(),
+            ShowWelcomeScreen = _settings.ShowWelcomeScreen,
+            MinimizeToTray = _settings.MinimizeToTray,
             ShowDiagnostics = _settings.ShowDiagnostics,
             TranscriberModel = _settings.TranscriberModel,
             TranscriberModels = models,

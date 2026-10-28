@@ -10,6 +10,8 @@ capture device to any output device, with an effect chain in between.
 - **Per-application capture** — pick a process (Edge, Discord, a game…) in the
   sidebar and drag it onto the canvas. Ruse captures it through the Windows
   process-loopback API, so nothing has to be reconfigured in the app.
+- **File player** — add an audio file as a source node, with optional looping,
+  and route it through the same effects and outputs.
 - **Any output device** — WASAPI endpoints (speakers, headphones, Voicemeeter
   inputs) and **ASIO** drivers, including multichannel interfaces.
 - **Effect chains** — 29 built-in audio effects plus waveform, dB meter and
@@ -31,6 +33,8 @@ capture device to any output device, with an effect chain in between.
   `.ruse.json` file.
 - **Start with Windows** — an option in Settings adds or removes Ruse from the
   per-user startup apps.
+- **Minimize to tray** — minimizing hides Ruse in the notification area while
+  audio keeps routing; click the tray icon to restore it or use its menu to exit.
 - **Start routing on launch** — optionally start the restored graph after the
   window is ready. The compact Routing switch shows ON/OFF and glows green
   while running; turning it off stops the graph.
@@ -40,6 +44,8 @@ capture device to any output device, with an effect chain in between.
   buffers/delays, CPU/GPU use, memory, FPS and JS heap. It is draggable,
   scalable and closable. A built-in self-test suite (`--selftest` and friends)
   exercises the engine without hardware.
+- **Languages** — English, Portuguese (Brazil), Spanish, French, German,
+  Italian, Japanese, Korean and Simplified Chinese; switchable live.
 
 ## Building
 

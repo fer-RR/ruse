@@ -14,6 +14,11 @@ public sealed class AppSettings
     public bool Maximized { get; set; }
     public bool AutoLoadSession { get; set; } = true;
     public bool OnboardingCompleted { get; set; }
+    public bool ShowWelcomeScreen { get; set; } = true;
+
+    /// <summary>Hide the window to the notification area when minimized.</summary>
+    public bool MinimizeToTray { get; set; } = true;
+
     public bool FollowPlayingApps { get; set; }
 
     /// <summary>Output device used when auto-adding a newly playing app.</summary>

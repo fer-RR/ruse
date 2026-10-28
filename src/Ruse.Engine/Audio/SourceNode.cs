@@ -10,6 +10,7 @@ public enum SourceKind
     Device,
     SystemLoopback,
     Asio,
+    File,
 }
 
 /// <summary>A capture source with per-consumer audio copies.</summary>
@@ -44,13 +45,15 @@ public sealed class SourceNode : IDisposable
     public uint? ProcessId { get; private set; }
     public string? ProcessName { get; set; }
     public string? DeviceId { get; }
+    public string? FilePath { get; private set; }
 
     /// <summary>ASIO driver name when <see cref="Kind"/> is <see cref="SourceKind.Asio"/>.</summary>
     public string? AsioDriver { get; }
 
     /// <summary>ASIO input channels to capture (first two are used for the stereo mix).</summary>
     public int[] AsioChannels { get; }
-    public bool IsRunning => _capture != null && !_faulted;
+    public bool IsRunning => _capture != null && !_faulted &&
+        (_capture is not AudioFileCapture file || file.IsRunning);
 
     /// <summary>Raised when the capture stream stops by itself (device lost, error).</summary>
     public event Action<SourceNode, string>? Faulted;
@@ -73,15 +76,55 @@ public sealed class SourceNode : IDisposable
     public int SampleRate => _sourceSampleRate;
 
     public SourceNode(string title, SourceKind kind, uint? processId = null, string? deviceId = null,
-        string? asioDriver = null, int[]? asioChannels = null, string? processName = null)
+        string? asioDriver = null, int[]? asioChannels = null, string? processName = null,
+        string? filePath = null, bool fileLoop = false)
     {
         Title = title;
         Kind = kind;
         ProcessId = processId;
         ProcessName = processName;
         DeviceId = deviceId;
+        FilePath = filePath;
+        FileLoop = fileLoop;
         AsioDriver = asioDriver;
         AsioChannels = asioChannels ?? new[] { 0, 1 };
+    }
+
+    public bool FileLoop { get; private set; }
+
+    public void SetFile(string path, bool loop)
+    {
+        bool wasRunning = IsRunning;
+        Stop();
+        FilePath = path;
+        FileLoop = loop;
+        if (wasRunning)
+        {
+            Start();
+        }
+    }
+
+    public void SetFileLoop(bool loop)
+    {
+        FileLoop = loop;
+        if (_capture is AudioFileCapture file)
+        {
+            file.Loop = loop;
+        }
+    }
+
+    public void RestartFile()
+    {
+        if (_capture is AudioFileCapture file)
+        {
+            file.Restart();
+            return;
+        }
+
+        if (Kind == SourceKind.File)
+        {
+            Start();
+        }
     }
 
     /// <summary>Points an app source at a new process instance.</summary>
@@ -187,6 +230,12 @@ public sealed class SourceNode : IDisposable
 
     public void Start()
     {
+        if (_capture is AudioFileCapture ended && !ended.IsRunning)
+        {
+            ended.Dispose();
+            _capture = null;
+        }
+
         if (_capture != null)
         {
             return;
@@ -208,6 +257,9 @@ public sealed class SourceNode : IDisposable
                 break;
             case SourceKind.Asio:
                 StartAsioCapture();
+                break;
+            case SourceKind.File:
+                StartFileCapture();
                 break;
         }
     }
@@ -283,6 +335,20 @@ public sealed class SourceNode : IDisposable
         capture.DataAvailable += OnDataAvailable;
         capture.Start();
         WireStopEvents(capture);
+        _capture = capture;
+    }
+
+    private void StartFileCapture()
+    {
+        if (string.IsNullOrWhiteSpace(FilePath) || !File.Exists(FilePath))
+        {
+            throw new FileNotFoundException("Choose an audio file for this player.", FilePath);
+        }
+
+        var capture = new AudioFileCapture(FilePath, FileLoop);
+        SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate);
+        capture.DataAvailable += OnDataAvailable;
+        capture.Start();
         _capture = capture;
     }
 
@@ -540,6 +606,10 @@ public sealed class SourceNode : IDisposable
             case AsioCapture ac:
                 ac.DataAvailable -= OnAsioData;
                 ac.Dispose();
+                break;
+            case AudioFileCapture file:
+                file.DataAvailable -= OnDataAvailable;
+                file.Dispose();
                 break;
         }
 

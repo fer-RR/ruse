@@ -26,6 +26,8 @@ internal sealed partial class WebShellController
                     ProcessId = entry.Source.ProcessId,
                     ProcessName = entry.Source.ProcessName,
                     DeviceId = entry.Source.DeviceId,
+                    FilePath = entry.Source.FilePath,
+                    FileLoop = entry.Source.FileLoop,
                     X = entry.X,
                     Y = entry.Y,
                     Width = entry.Width,
@@ -157,7 +159,7 @@ internal sealed partial class WebShellController
             {
                 var kind = Enum.TryParse<SourceKind>(saved.Kind, out var parsed) ? parsed : SourceKind.Application;
                 var source = new SourceNode(saved.Title, kind, saved.ProcessId, saved.DeviceId,
-                    processName: saved.ProcessName);
+                    processName: saved.ProcessName, filePath: saved.FilePath, fileLoop: saved.FileLoop);
                 source.Gain = saved.Volume;
                 source.Muted = saved.Muted;
                 var sourceEntry = RegisterSource(source, saved.X, saved.Y);
@@ -377,7 +379,9 @@ internal sealed partial class WebShellController
         _settings.AutoLoadSession = settings.AutoLoadSession;
         _settings.FollowPlayingApps = settings.FollowPlayingApps;
         _settings.FollowOutputId = settings.FollowOutputId ?? "";
-        _settings.UiLanguage = settings.UiLanguage == "pt-BR" ? "pt-BR" : "en";
+        _settings.UiLanguage = settings.UiLanguage is "pt-BR" or "es" or "fr" or "de" or "it" or "ja" or "ko" or "zh-CN"
+            ? settings.UiLanguage
+            : "en";
         _settings.StartRoutingOnLaunch = settings.StartRoutingOnLaunch;
         _settings.HighlightMutedNodes = settings.HighlightMutedNodes;
         _settings.SignalGlow = settings.SignalGlow;
@@ -385,6 +389,8 @@ internal sealed partial class WebShellController
         _settings.HighlightCableOnHover = settings.HighlightCableOnHover;
         _settings.CableAnimation = settings.CableAnimation;
         _settings.MinimapMode = Math.Clamp(settings.MinimapMode, 0, 2);
+        _settings.ShowWelcomeScreen = settings.ShowWelcomeScreen;
+        _settings.MinimizeToTray = settings.MinimizeToTray;
         _settings.ShowDiagnostics = settings.ShowDiagnostics;
         _settings.TranscriberModel = TranscriptionModels.Find(settings.TranscriberModel)?.Id ?? TranscriptionModels.DefaultId;
         StartupRegistration.SetEnabled(settings.StartWithWindows);

@@ -2,12 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Position, getBezierPath, useReactFlow } from '@xyflow/react';
 import type { ConnectionLineComponentProps } from '@xyflow/react';
 
-/**
- * Drives the cable preview from pointer events directly. React Flow still owns
- * connection detection, but its store-driven line can arrive in coarse steps
- * while the canvas is busy; this keeps the line attached to the pointer at the
- * display refresh rate.
- */
+// Draws the cable preview from pointer events so it stays smooth on a busy canvas.
 export default function RuseConnectionLine({
   fromX, fromY, fromPosition, toX, toY, toPosition,
   connectionLineStyle, connectionStatus,
