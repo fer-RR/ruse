@@ -14,7 +14,7 @@ function intersects(a: NodeRect, b: NodeRect): boolean {
 }
 
 function snap(value: number): number {
-  return Math.max(0, Math.round(value / GRID) * GRID);
+  return Math.round(value / GRID) * GRID;
 }
 
 /** Finds the closest grid slot that does not cover another node. */

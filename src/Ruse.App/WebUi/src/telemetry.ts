@@ -13,6 +13,8 @@ const globalListeners = new Set<() => void>();
 const uiListeners = new Set<() => void>();
 const recordingListeners = new Set<() => void>();
 const nodeListeners = new Map<string, Set<() => void>>();
+const activeListeners = new Map<string, Set<() => void>>();
+const nodeActive = new Map<string, boolean>();
 const titleListeners = new Map<string, Set<() => void>>();
 const titleLevels = new Map<string, number>();
 const titleActive = new Map<string, boolean>();
@@ -26,9 +28,16 @@ function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefined): b
     a.recordingStatus === b.recordingStatus &&
     a.recordingSeconds === b.recordingSeconds &&
     a.recordingError === b.recordingError &&
+    a.db === b.db &&
+    a.peakDb === b.peakDb &&
+    a.dbMeterVertical === b.dbMeterVertical &&
     a.transcriptionStatus === b.transcriptionStatus &&
     a.transcript === b.transcript &&
     a.partialTranscript === b.partialTranscript &&
+    a.transcriptionError === b.transcriptionError &&
+    a.transcriptionLevel === b.transcriptionLevel &&
+    a.transcriptionHasAudio === b.transcriptionHasAudio &&
+    a.transcriptionElapsed === b.transcriptionElapsed &&
     sameWaveform(a.waveform, b.waveform);
 }
 
@@ -49,6 +58,19 @@ export function publishTelemetry(next: TelemetrySnapshot): void {
   for (const id of ids) {
     if (!sameNode(previous.meters[id], next.meters[id])) {
       for (const listener of nodeListeners.get(id) ?? []) listener();
+    }
+  }
+
+  const activeIds = new Set<string>();
+  for (const [id, meter] of Object.entries(next.meters)) {
+    if (meter.level > 0.01) activeIds.add(id);
+  }
+
+  for (const id of new Set([...nodeActive.keys(), ...activeIds])) {
+    const active = activeIds.has(id);
+    if (active !== (nodeActive.get(id) ?? false)) {
+      nodeActive.set(id, active);
+      for (const listener of activeListeners.get(id) ?? []) listener();
     }
   }
 
@@ -156,6 +178,10 @@ export function useRecordingSummary() {
   );
 }
 
+export function getNodeTelemetry(id: string): NodeTelemetry | undefined {
+  return snapshot.meters[id];
+}
+
 export function useNodeTelemetry(id: string): NodeTelemetry | undefined {
   return useSyncExternalStore(
     listener => {
@@ -172,5 +198,24 @@ export function useNodeTelemetry(id: string): NodeTelemetry | undefined {
     },
     () => snapshot.meters[id],
     () => undefined,
+  );
+}
+
+export function useNodeActive(id: string): boolean {
+  return useSyncExternalStore(
+    listener => {
+      let listeners = activeListeners.get(id);
+      if (!listeners) {
+        listeners = new Set();
+        activeListeners.set(id, listeners);
+      }
+      listeners.add(listener);
+      return () => {
+        listeners?.delete(listener);
+        if (listeners?.size === 0) activeListeners.delete(id);
+      };
+    },
+    () => nodeActive.get(id) ?? false,
+    () => false,
   );
 }

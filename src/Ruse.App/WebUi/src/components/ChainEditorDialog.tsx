@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Plus, Trash2, X } from 'lucide-react';
+import { useI18n } from '../i18n';
 import ParameterControl from './ParameterControl';
 import type { CatalogItem, ChainEditorRequest, ChainElement, ParameterModel } from '../types';
 
@@ -9,6 +10,7 @@ function ModalFrame({ title, onClose, children, className = '' }: {
   children: React.ReactNode;
   className?: string;
 }) {
+  const { t } = useI18n();
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     const dialog = ref.current;
@@ -19,7 +21,7 @@ function ModalFrame({ title, onClose, children, className = '' }: {
   return (
     <dialog ref={ref} className={`modal wide-modal ${className}`} onCancel={event => { event.preventDefault(); onClose(); }} onClick={event => { if (event.target === ref.current) onClose(); }}>
       <div className="modal-frame">
-        <header className="modal-header"><h2>{title}</h2><button className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={16} /></button></header>
+        <header className="modal-header"><h2>{title}</h2><button className="icon-button" aria-label={t('Close dialog')} onClick={onClose}><X size={16} /></button></header>
         {children}
       </div>
     </dialog>
@@ -41,6 +43,7 @@ export default function ChainEditorDialog({ request, effects, onSave, onDelete, 
   onDelete?: (name: string) => void;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const [name, setName] = useState(request.name);
   const [elements, setElements] = useState<ChainElement[]>(() => request.elements.map(element => ({
     typeId: element.typeId,
@@ -69,12 +72,12 @@ export default function ChainEditorDialog({ request, effects, onSave, onDelete, 
   };
 
   return (
-    <ModalFrame title={request.previousName ? 'Edit saved chain' : 'New saved chain'} onClose={onClose}>
+    <ModalFrame title={request.previousName ? t('Edit saved chain') : t('New saved chain')} onClose={onClose}>
       <div className="chain-editor">
-        <label className="field-label chain-name">Chain name<input autoFocus maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
-        <div className="chain-editor-heading"><span className="eyebrow">Effects, in order</span><span className="chain-count">{elements.length} effect{elements.length === 1 ? '' : 's'}</span></div>
+        <label className="field-label chain-name">{t('Chain name')}<input autoFocus maxLength={80} value={name} onChange={event => setName(event.target.value)} /></label>
+        <div className="chain-editor-heading"><span className="eyebrow">{t('Effects, in order')}</span><span className="chain-count">{elements.length === 1 ? t('{count} effect', { count: elements.length }) : t('{count} effects', { count: elements.length })}</span></div>
         <div className="chain-elements">
-          {elements.length === 0 && <div className="chain-empty">No effects yet. Add one below, then dial in its parameters.</div>}
+          {elements.length === 0 && <div className="chain-empty">{t('No effects yet. Add one below, then dial in its parameters.')}</div>}
           {elements.map((element, index) => {
             const effect = effectById.get(element.typeId);
             const parameters: ParameterModel[] = effect?.parameters ?? [];
@@ -83,9 +86,9 @@ export default function ChainEditorDialog({ request, effects, onSave, onDelete, 
                 <header>
                   <span className="chain-element-index">{index + 1}</span>
                   <strong>{effect?.name ?? element.typeId}</strong>
-                  <button className="icon-button compact" title="Move up" aria-label="Move effect up" disabled={index === 0} onClick={() => move(index, -1)}><ChevronUp size={14} /></button>
-                  <button className="icon-button compact" title="Move down" aria-label="Move effect down" disabled={index === elements.length - 1} onClick={() => move(index, 1)}><ChevronDown size={14} /></button>
-                  <button className="icon-button compact danger-text" title="Remove effect" aria-label="Remove effect" onClick={() => setElements(current => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={14} /></button>
+                  <button className="icon-button compact" title={t('Move up')} aria-label={t('Move up')} disabled={index === 0} onClick={() => move(index, -1)}><ChevronUp size={14} /></button>
+                  <button className="icon-button compact" title={t('Move down')} aria-label={t('Move down')} disabled={index === elements.length - 1} onClick={() => move(index, 1)}><ChevronDown size={14} /></button>
+                  <button className="icon-button compact danger-text" title={t('Remove effect')} aria-label={t('Remove effect')} onClick={() => setElements(current => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={14} /></button>
                 </header>
                 <div className="chain-parameters">
                   {parameters.map(parameter => (
@@ -105,21 +108,21 @@ export default function ChainEditorDialog({ request, effects, onSave, onDelete, 
           })}
         </div>
         <div className="chain-add-row">
-          <select value={effectToAdd} onChange={event => setEffectToAdd(event.target.value)} aria-label="Effect to add">
+          <select value={effectToAdd} onChange={event => setEffectToAdd(event.target.value)} aria-label={t('Effect to add')}>
             {effects.map(effect => <option key={effect.id} value={effect.id}>{effect.name}</option>)}
           </select>
           <button className="tool-button" disabled={!effectToAdd} onClick={() => {
             const effect = effectById.get(effectToAdd);
             if (!effect) return;
             setElements(current => [...current, { typeId: effect.id, parameters: defaultParameters(effect) }]);
-          }}><Plus size={14} /> Add effect</button>
+          }}><Plus size={14} /> {t('Add effect')}</button>
         </div>
       </div>
       <div className="modal-actions">
-        {request.previousName && onDelete && <button className="danger-button" onClick={() => onDelete(request.previousName!)}>Delete chain</button>}
+        {request.previousName && onDelete && <button className="danger-button" onClick={() => onDelete(request.previousName!)}>{t('Delete chain')}</button>}
         <span className="modal-action-spacer" />
-        <button className="tool-button" onClick={onClose}>Cancel</button>
-        <button className="primary-button" disabled={!name.trim()} onClick={save}>Save chain</button>
+        <button className="tool-button" onClick={onClose}>{t('Cancel')}</button>
+        <button className="primary-button" disabled={!name.trim()} onClick={save}>{t('Save chain')}</button>
       </div>
     </ModalFrame>
   );

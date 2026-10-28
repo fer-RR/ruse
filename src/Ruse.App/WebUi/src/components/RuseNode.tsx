@@ -1,24 +1,27 @@
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
   AppWindow, AudioLines, FileAudio, Layers3, Mic, MonitorSpeaker, Power, Radio,
-  Settings, SlidersHorizontal, Square, Unlink, Volume2, VolumeX, X,
+  Settings, SlidersHorizontal, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
 import type { RuseFlowNode } from '../flow';
+import { useI18n } from '../i18n';
 import { useNodeTelemetry } from '../telemetry';
 import type { NodeTelemetry } from '../types';
+import DiagnosticsNode from './DiagnosticsNode';
 import ParameterControl from './ParameterControl';
 import TranscriptionView from './TranscriptionView';
 import WaveformView from './WaveformView';
 
 const RECORD_FORMATS = [
-  ['Wav24', 'WAV · 24-bit'],
-  ['Wav16', 'WAV · 16-bit'],
-  ['Wav32Float', 'WAV · 32-bit float'],
-  ['Mp3', 'MP3 · 192 kbps'],
-  ['Flac', 'FLAC · lossless'],
+  ['Wav24', 'WAV \u00B7 24-bit'],
+  ['Wav16', 'WAV \u00B7 16-bit'],
+  ['Wav32Float', 'WAV \u00B7 32-bit float'],
+  ['Mp3', 'MP3 \u00B7 192 kbps'],
+  ['Flac', 'FLAC \u00B7 lossless'],
 ] as const;
 
 function FlavorIcon({ flavor }: { flavor: string }) {
@@ -35,34 +38,16 @@ function FlavorIcon({ flavor }: { flavor: string }) {
   }
 }
 
-function LevelMeter({ level, clipping }: { level: number; clipping: boolean }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const context = canvas.getContext('2d');
-    if (!context) return;
-    const width = canvas.width;
-    const height = canvas.height;
-    context.clearRect(0, 0, width, height);
-    context.fillStyle = 'rgba(255,255,255,0.065)';
-    context.fillRect(0, 0, width, height);
-    const normalized = Math.min(1, Math.max(0, Math.pow(level, 0.65)));
-    context.fillStyle = clipping || normalized > 0.9 ? '#FF6B6B' : normalized > 0.7 ? '#E0C23A' : '#43E39A';
-    context.fillRect(0, 0, Math.round(width * normalized), height);
-  }, [level, clipping]);
-
-  return <canvas ref={canvasRef} className="node-meter" width={184} height={5} aria-label={`Signal level ${Math.round(level * 100)}%`} />;
-}
 
 function VolumeControl({ id, value, muted }: { id: string; value: number; muted: boolean }) {
+  const { t } = useI18n();
   const [local, setLocal] = useState(value);
   useEffect(() => setLocal(value), [value]);
 
   return (
     <div className="node-volume nodrag">
       <input
-        aria-label="Node volume"
+        aria-label={t('Node volume')}
         type="range"
         min={0}
         max={1.5}
@@ -77,8 +62,8 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
       <span>{Math.round(local * 100)}%</span>
       <button
         className={`icon-button compact ${muted ? 'danger-text' : ''}`}
-        title={muted ? 'Unmute node' : 'Mute node'}
-        aria-label={muted ? 'Unmute node' : 'Mute node'}
+        title={muted ? t('Unmute node') : t('Mute node')}
+        aria-label={muted ? t('Unmute node') : t('Mute node')}
         onClick={() => send('mute', { id, value: !muted })}
       >
         {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
@@ -88,30 +73,53 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
 }
 
 function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; telemetry?: NodeTelemetry }) {
+  const { t } = useI18n();
+  const mode = node.recorderMode ?? 'Off';
+  const autoSave = node.recorderAutoSave === true;
   const recording = telemetry?.recordingStatus === 'REC';
-  const fileName = node.recordingPath ? node.recordingPath.split(/[\\/]/).pop() : 'No file selected';
+  const fileName = node.recordingPath ? node.recordingPath.split(/[\\/]/).pop() : t('No file selected');
   return (
     <div className="recorder-controls nodrag">
+      <div className="recorder-mode" role="group" aria-label={t('Recorder mode')}>
+        {(['Off', 'Armed', 'On'] as const).map(value => (
+          <button
+            key={value}
+            type="button"
+            className={mode === value ? 'active' : ''}
+            onClick={() => send('recorder-mode', { id: node.id, mode: value })}
+          >{t(value)}</button>
+        ))}
+      </div>
+      <label className="recorder-auto">
+        <input
+          type="checkbox"
+          checked={autoSave}
+          disabled={recording}
+          onChange={event => send('recorder-autosave', { id: node.id, value: event.target.checked })}
+        />
+        <span>{t('Auto save (date and time in filename)')}</span>
+      </label>
       <div className="recorder-format">
         <select
-          aria-label="Recording format"
+          aria-label={t('Recording format')}
           value={node.recordingFormat}
           disabled={recording}
           onChange={event => send('recorder-format', { id: node.id, format: event.target.value })}
         >
           {RECORD_FORMATS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
-        <button className="small-button" disabled={recording} onClick={() => send('recorder-file', { id: node.id, format: node.recordingFormat })}>
-          {node.recordingPath ? 'Change' : 'Choose file'}
+        <button className="small-button" disabled={recording || autoSave} onClick={() => send('recorder-file', { id: node.id, format: node.recordingFormat })}>
+          {node.recordingPath ? t('Change') : t('Choose file')}
         </button>
       </div>
-      <div className="recorder-path" title={node.recordingPath}>{fileName}</div>
+      <div className="recorder-path" title={node.recordingPath}>
+        {autoSave && !node.recordingPath ? t('Auto save · Music/Ruse Recordings') : fileName}
+      </div>
       <div className={`recorder-state ${recording ? 'recording' : ''} ${telemetry?.recordingError ? 'error' : ''}`}>
         <span className="status-dot" />
-        <span>{telemetry?.recordingStatus ?? (node.recordingPath ? 'ARMED' : 'NO FILE')}</span>
+        <span>{telemetry?.recordingStatus ?? mode.toUpperCase()}</span>
         {recording && <span>{formatTime(telemetry?.recordingSeconds ?? 0)}</span>}
       </div>
-      {recording && <button className="recorder-stop nodrag" onClick={() => send('recorder-stop', { id: node.id })}><Square size={11} /> Stop recording</button>}
       {telemetry?.recordingError && <div className="node-error">{telemetry.recordingError}</div>}
     </div>
   );
@@ -123,15 +131,60 @@ function formatTime(seconds: number): string {
   return `${minutes}:${String(whole % 60).padStart(2, '0')}`;
 }
 
-function RuseNode({ data, selected }: NodeProps<RuseFlowNode>) {
+function DbMeterView({ db, peakDb, vertical }: { db?: number; peakDb?: number; vertical: boolean }) {
+  const value = Number.isFinite(db) ? Math.max(-60, Math.min(0, db!)) : -60;
+  const peak = Number.isFinite(peakDb) ? Math.max(-60, Math.min(0, peakDb!)) : -60;
+  const label = value <= -59.9 ? '-∞' : value.toFixed(1);
+  const fill = (value + 60) / 60 * 100;
+  const peakFill = (peak + 60) / 60 * 100;
+  if (vertical) {
+    return (
+      <div className="db-meter-view vertical">
+        <div className="db-meter-readout vertical"><strong>{label}</strong><span>dBFS</span></div>
+        <div className="db-meter-vertical-body">
+          <div className="db-meter-column">
+            <span style={{ height: `${fill}%` }} />
+            <i style={{ bottom: `${peakFill}%` }} />
+          </div>
+          <div className="db-meter-scale vertical">
+            <span>0</span><span>-6</span><span>-12</span><span>-18</span><span>-24</span>
+            <span>-30</span><span>-36</span><span>-42</span><span>-48</span><span>-54</span><span>-60</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="db-meter-view horizontal">
+      <div className="db-meter-readout"><strong>{label}</strong><span>dBFS</span></div>
+      <div className="db-meter-track">
+        <span style={{ width: `${fill}%` }} />
+        <i style={{ left: `${peakFill}%` }} />
+      </div>
+      <div className="db-meter-scale"><span>-60</span><span>-48</span><span>-36</span><span>-24</span><span>-12</span><span>0</span></div>
+    </div>
+  );
+}
+function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
+  const { t } = useI18n();
   const telemetry = useNodeTelemetry(data.id);
+  if (data.diagnostics) {
+    return <DiagnosticsNode nodeId={id} />;
+  }
+
   const isModifier = data.kind === 'modifier';
+  const isDbMeter = data.isDbMeter === true;
+  const dbVertical = isDbMeter && (telemetry?.dbMeterVertical ?? true);
   const enabled = data.enabled !== false;
   const recording = telemetry?.recordingStatus === 'REC';
   const installedModels = data.transcriberModels?.filter(model => model.installed) ?? [];
   const selectedModel = installedModels.some(model => model.id === data.transcriberModel)
     ? data.transcriberModel
     : installedModels[0]?.id ?? '';
+  const waveformAmplitude = data.isWaveform
+    ? data.parameters.find(parameter => parameter.name === 'Gain')
+    : undefined;
   const flowing = enabled && (telemetry?.level ?? 0) > 0.01;
   const classes = [
     'ruse-node',
@@ -139,54 +192,93 @@ function RuseNode({ data, selected }: NodeProps<RuseFlowNode>) {
     selected ? 'selected' : '',
     data.muted && data.highlightMuted ? 'muted' : '',
     telemetry?.clipping ? 'clipping' : '',
+    data.duplicateRisk ? (data.warningSeverity === 'info' ? 'copy' : 'duplicate') : '',
     recording ? 'recording' : '',
     flowing ? 'flowing' : '',
+    isDbMeter ? (dbVertical ? 'db-meter-node db-meter-vertical' : 'db-meter-node db-meter-horizontal') : '',
     enabled ? '' : 'disabled',
   ].filter(Boolean).join(' ');
 
   return (
-    <div className={classes} style={{ '--accent': data.accent } as React.CSSProperties}>
+    <div className={classes} style={{ '--accent': data.accent } as CSSProperties}>
       {data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className="ruse-handle" />}
       <header className="node-header">
         <span className="node-icon"><FlavorIcon flavor={data.flavor} /></span>
-        <strong title={data.title}>{data.title}</strong>
+        <strong
+          title={data.title}
+          onDoubleClick={event => {
+            event.stopPropagation();
+            window.dispatchEvent(new CustomEvent('ruse-rename-node', { detail: { id: data.id, title: data.title, chain: data.flavor === 'chain' } }));
+          }}
+        >{data.title}</strong>
         {!enabled && <span className="node-badge bypass-badge">BYPASS</span>}
         {recording && <span className="node-badge rec-badge">REC</span>}
+        {data.duplicateRisk && <span className={`node-badge ${data.warningSeverity === 'info' ? 'copy-badge' : 'warn-badge'}`} title={data.duplicateWarning}>{data.warningSeverity === 'info' ? 'COPY' : 'DUP'}</span>}
         {telemetry?.clipping && <span className="node-badge clip-badge">CLIP</span>}
-        {isModifier && <button className={`node-power nodrag ${enabled ? '' : 'off'}`} title={enabled ? 'Bypass effect' : 'Enable effect'} aria-label={enabled ? 'Bypass effect' : 'Enable effect'} onClick={() => send('effect-enabled', { id: data.id, value: !enabled })}>
+        {isModifier && <button className={`node-power nodrag ${enabled ? '' : 'off'}`} title={enabled ? t('Bypass effect') : t('Enable effect')} aria-label={enabled ? t('Bypass effect') : t('Enable effect')} onClick={() => send('effect-enabled', { id: data.id, value: !enabled })}>
           <Power size={13} />
         </button>}
-        <button className="node-remove nodrag" title="Remove node" aria-label={`Remove ${data.title}`} onClick={() => send('remove', { id: data.id })}>
+        <button className="node-remove nodrag" title={t('Remove node')} aria-label={t('Remove {name}', { name: data.title })} onClick={() => {
+          if (data.isRecorder && telemetry?.recordingStatus === 'REC') {
+            window.dispatchEvent(new CustomEvent('ruse-remove-recorder', { detail: { id: data.id, title: data.title } }));
+          } else {
+            send('remove', { id: data.id });
+          }
+        }}>
           <X size={13} />
         </button>
       </header>
-      <div className="node-subtitle">{data.subtitle}</div>
-      {data.micHint && <div className="node-hint" title={data.micHint}>Use “{data.micHint}” as the microphone</div>}
-      <LevelMeter level={telemetry?.level ?? 0} clipping={telemetry?.clipping ?? false} />
-      {isModifier ? (
+      {!isDbMeter && <div className="node-subtitle">{t(data.subtitle)}</div>}
+      {!isDbMeter && data.micHint && <div className="node-hint" title={data.micHint}>{t('Use {name} as the microphone', { name: data.micHint })}</div>}
+      {isDbMeter ? (
+        <div className="db-meter-body">
+          <DbMeterView db={telemetry?.db} peakDb={telemetry?.peakDb} vertical={dbVertical} />
+        </div>
+      ) : isModifier ? (
         <div className="parameter-list">
-          {data.isWaveform && <WaveformView samples={telemetry?.waveform} color={data.accent} />}
+          {data.isWaveform && <WaveformView
+            samples={telemetry?.waveform}
+            color={data.accent}
+            amplitude={waveformAmplitude?.value}
+            min={waveformAmplitude?.min}
+            max={waveformAmplitude?.max}
+            onAmplitudeChange={waveformAmplitude
+              ? value => send('param', {
+                  id: data.id,
+                  processor: waveformAmplitude.processorIndex,
+                  parameter: waveformAmplitude.parameterIndex,
+                  value,
+                })
+              : undefined}
+          />}
           {data.isTranscriber && (installedModels.length > 0
             ? <div className="transcriber-model-picker nodrag">
-                <span>Model</span>
+                <span>{t('Model')}</span>
                 <select value={selectedModel} onChange={event => send('transcriber-model', { id: data.id, model: event.target.value })}>
-                  {installedModels.map(model => <option key={model.id} value={model.id}>{model.language} · {model.name}</option>)}
+                  {installedModels.map(model => <option key={model.id} value={model.id} title={model.name}>{t(model.language)} / {t(model.tier)}</option>)}
                 </select>
-                <button className="icon-button compact" title="Manage speech models" aria-label="Manage speech models" onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-settings'))}><Settings size={13} /></button>
+                <button className="icon-button compact" title={t('Manage speech models')} aria-label={t('Manage speech models')} onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-settings', { detail: { tab: 'speech' } }))}><Settings size={13} /></button>
               </div>
             : <div className="transcriber-model-empty">
-                <span>No speech models installed.</span>
-                <button className="small-button" onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-settings'))}>Open Settings</button>
+                <span>{t('No speech models installed.')}</span>
+                <button className="small-button" onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-settings', { detail: { tab: 'speech' } }))}>{t('Open Settings')}</button>
               </div>)}
           {data.isTranscriber && <TranscriptionView
+            id={data.id}
             status={telemetry?.transcriptionStatus}
             transcript={telemetry?.transcript}
             partial={telemetry?.partialTranscript}
+            error={telemetry?.transcriptionError}
+            level={telemetry?.transcriptionLevel}
+            hasAudio={telemetry?.transcriptionHasAudio}
+            elapsed={telemetry?.transcriptionElapsed}
           />}
           {data.flavor === 'chain' && !!(data.chainElements?.length) && <div className="chain-chips">
             {data.chainElements.map((name, index) => <span className="chain-chip" key={`${name}-${index}`}>{name}</span>)}
           </div>}
-          {data.parameters.map(parameter => (
+          {data.parameters
+            .filter(parameter => !(data.isWaveform && parameter.name === 'Gain'))
+            .map(parameter => (
             <ParameterControl
               key={`${parameter.processorIndex}-${parameter.parameterIndex}`}
               parameter={parameter}
@@ -200,11 +292,8 @@ function RuseNode({ data, selected }: NodeProps<RuseFlowNode>) {
             />
           ))}
           {data.flavor === 'chain' && <button className="disconnect-button nodrag" onClick={() => send('chain-open', { id: data.id })}>
-            <Layers3 size={12} /> Edit chain
+            <Layers3 size={12} /> {t('Edit chain')}
           </button>}
-          <button className="disconnect-button nodrag" onClick={() => send('disconnect-node', { id: data.id })}>
-            <Unlink size={12} /> Disconnect routes
-          </button>
         </div>
       ) : (
         <>

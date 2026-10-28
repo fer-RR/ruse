@@ -4,6 +4,7 @@ import type { NodeModel, TranscriberModelInfo } from './types';
 export type RuseNodeData = Record<string, unknown> & NodeModel & {
   highlightMuted: boolean;
   transcriberModels?: TranscriberModelInfo[];
+  diagnostics?: boolean;
 };
 
 export type RuseFlowNode = Node<RuseNodeData, 'ruseNode'>;

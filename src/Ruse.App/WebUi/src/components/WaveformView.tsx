@@ -1,7 +1,27 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useI18n } from '../i18n';
 
-export default function WaveformView({ samples, color }: { samples?: number[]; color: string }) {
+export default function WaveformView({
+  samples,
+  color,
+  amplitude = 1,
+  min = 0.1,
+  max = 4,
+  onAmplitudeChange,
+}: {
+  samples?: number[];
+  color: string;
+  amplitude?: number;
+  min?: number;
+  max?: number;
+  onAmplitudeChange?: (value: number) => void;
+}) {
+  const { t } = useI18n();
   const ref = useRef<HTMLCanvasElement>(null);
+  const [localAmplitude, setLocalAmplitude] = useState(amplitude);
+
+  useEffect(() => setLocalAmplitude(amplitude), [amplitude]);
+
   useEffect(() => {
     const canvas = ref.current;
     const context = canvas?.getContext('2d');
@@ -27,5 +47,28 @@ export default function WaveformView({ samples, color }: { samples?: number[]; c
     context.stroke();
   }, [samples, color]);
 
-  return <div className="waveform-view"><canvas ref={ref} width={184} height={52} aria-label="Live waveform" /></div>;
+  return (
+    <div className="waveform-view">
+      <canvas ref={ref} width={184} height={52} aria-label={t('Live waveform')} />
+      {onAmplitudeChange && (
+        <label className="waveform-amplitude nodrag">
+          <span>{t('Amplitude')}</span>
+          <input
+            type="range"
+            min={min}
+            max={max}
+            step={0.01}
+            value={localAmplitude}
+            aria-label={t('Waveform amplitude')}
+            onChange={event => {
+              const next = Number(event.target.value);
+              setLocalAmplitude(next);
+              onAmplitudeChange(next);
+            }}
+          />
+          <strong>{localAmplitude.toFixed(2)}×</strong>
+        </label>
+      )}
+    </div>
+  );
 }

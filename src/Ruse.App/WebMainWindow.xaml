@@ -3,9 +3,11 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="Ruse — Audio Router"
-        Width="1360" Height="800" MinWidth="1080" MinHeight="600"
+        Icon="pack://application:,,,/Assets/ruse.ico"
+        Width="1360" Height="800" MinWidth="900" MinHeight="560"
         Background="#0C1016"
         WindowStyle="None"
+        ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True"
         SnapsToDevicePixels="True">
@@ -14,7 +16,9 @@
                       GlassFrameThickness="0" CornerRadius="0"
                       UseAeroCaptionButtons="False"/>
     </WindowChrome.WindowChrome>
-    <Grid>
+    <!-- Keep a WPF-owned strip around the WebView2 child HWND so the resize
+         border is reachable even when the page fills the client area. -->
+    <Grid Margin="6">
         <wv2:WebView2 x:Name="WebView"/>
     </Grid>
 </Window>

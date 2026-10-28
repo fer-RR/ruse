@@ -25,22 +25,25 @@ export const demoCatalog: CatalogSnapshot = {
   chains: [
     { id: 'demo-chain', kind: 'chain', name: 'Broadcast voice', subtitle: 'High-pass → Compressor', details: 'Saved voice processing chain' },
   ],
+  defaultOutputId: 'demo-headphones',
+  defaultOutputName: 'Headphones',
 };
 
 export const demoGraph: GraphSnapshot = {
   version: 1,
   running: true,
+  warnings: [],
   nodes: [
     { id: 'discord', kind: 'source', flavor: 'app', title: 'Discord', subtitle: 'Application', accent: '#5B8DEF', x: 40, y: 60, volume: 1, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'game', kind: 'source', flavor: 'app', title: 'Game (Counter-Strike)', subtitle: 'Application', accent: '#5B8DEF', x: 40, y: 330, volume: 0.85, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
-    { id: 'mic', kind: 'source', flavor: 'mic', title: 'Microphone', subtitle: 'Input device', accent: '#B18CFF', x: 40, y: 620, volume: 1, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
+    { id: 'mic', kind: 'source', flavor: 'mic', title: 'Microphone', subtitle: 'Input device', accent: '#F0DC5A', x: 40, y: 620, volume: 1, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'hp', kind: 'modifier', flavor: 'effect', title: 'High-pass', subtitle: 'Filter', accent: '#E5AD51', x: 390, y: 270, volume: 1, muted: false, parameters: [{ processorIndex: 0, parameterIndex: 0, name: 'Cutoff', min: 20, max: 1000, value: 80, unit: 'Hz', logarithmic: true, isToggle: false, isInteger: false, isChoice: false, options: [] }], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'comp', kind: 'modifier', flavor: 'effect', title: 'Compressor', subtitle: 'Dynamics', accent: '#E5AD51', x: 680, y: 510, volume: 1, muted: false, parameters: [
       { processorIndex: 0, parameterIndex: 0, name: 'Threshold', min: -60, max: 0, value: -18, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] },
       { processorIndex: 0, parameterIndex: 1, name: 'Ratio', min: 1, max: 20, value: 4, unit: ':1', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] },
     ], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'headphones', kind: 'output', flavor: 'output', title: 'Headphones', subtitle: 'Output device', accent: '#43E39A', x: 940, y: 80, volume: 1, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
-    { id: 'virtual', kind: 'output', flavor: 'virtual', title: 'Voicemeeter Input', subtitle: 'Virtual output', accent: '#E5AD51', x: 970, y: 580, volume: 1, muted: false, micHint: 'Voicemeeter Out B1', parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
+    { id: 'virtual', kind: 'output', flavor: 'virtual', title: 'Voicemeeter Input', subtitle: 'Virtual output', accent: '#D9A8FF', x: 970, y: 580, volume: 1, muted: false, micHint: 'Voicemeeter Out B1', parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'recorder', kind: 'output', flavor: 'recorder', title: 'Session recorder', subtitle: 'File output', accent: '#FF8B72', x: 970, y: 870, volume: 1, muted: false, parameters: [], isRecorder: true, recordingPath: 'C:\\Recordings\\ruse-session.wav', recordingFormat: 'Wav24' },
   ],
   links: [
@@ -55,14 +58,29 @@ export const demoGraph: GraphSnapshot = {
 };
 
 export const demoSettings: SettingsModel = {
+  autoLoadSession: true,
+  followPlayingApps: false,
+  followOutputId: '',
+  uiLanguage: 'en',
   startRoutingOnLaunch: false,
   highlightMutedNodes: true,
   signalGlow: true,
+  snapToGrid: true,
   highlightCableOnHover: true,
+  cableAnimation: true,
   minimapMode: 2,
   startWithWindows: false,
+  showDiagnostics: false,
   transcriberModel: '',
   transcriberModels: [],
+  installedModelsSize: '0 MB',
+  installedModelsCount: 0,
+  appVersion: 'preview',
+  dotNetVersion: 'preview',
+  webView2Version: 'preview',
+  renderTier: 0,
+  dataFolder: '',
+  modelsFolder: '',
 };
 
 export function createDemoTelemetry(time: number): TelemetrySnapshot {

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { RefObject } from 'react';
 import {
-  AppWindow, AudioLines, ChevronDown, FileAudio, Headphones, Layers3, Mic,
-  Pencil, Plus, Radio, Search, SlidersHorizontal, Speaker, X,
+  AppWindow, AudioLines, Check, ChevronDown, FileAudio, Headphones,
+  Layers3, Mic, Pencil, Plus, Radio, Search, SlidersHorizontal, Speaker, X,
 } from 'lucide-react';
+import { useI18n } from '../i18n';
 import { catalogKey } from '../library';
 import { useTitleActive } from '../telemetry';
 import type { CatalogItem, CatalogSnapshot } from '../types';
@@ -24,10 +25,10 @@ function ItemIcon({ item }: { item: CatalogItem }) {
   switch (item.kind) {
     case 'app': return <AppWindow {...props} />;
     case 'system': return <AudioLines {...props} />;
-    case 'input': return <Mic {...props} />;
+    case 'input': return item.virtual ? <Radio {...props} /> : <Mic {...props} />;
     case 'output': {
       const name = item.name.toLowerCase();
-      return name.includes('headphone') || name.includes('headset')
+      return name.includes('headphone') || name.includes('headset') || name.includes('fone')
         ? <Headphones {...props} />
         : <Speaker {...props} />;
     }
@@ -38,28 +39,38 @@ function ItemIcon({ item }: { item: CatalogItem }) {
   }
 }
 
-function LibraryItem({ item, name, onAdd, onEdit, onRename }: {
+function LibraryItem({ item, name, onAdd, onEdit, onRename, onCanvas }: {
   item: CatalogItem;
   name: string;
   onAdd: (item: CatalogItem) => void;
   onEdit?: (item: CatalogItem) => void;
   onRename?: (item: CatalogItem) => void;
+  onCanvas?: boolean;
 }) {
+  const { t } = useI18n();
   const active = useTitleActive(name) || item.active === true;
   return (
     <div
-      className={`library-item item-${item.kind} ${active ? 'flowing' : ''}`}
+      className={`library-item item-${item.kind} ${item.kind === 'input' && item.virtual ? 'item-virtual-bus' : ''} ${active ? 'flowing' : ''}`}
       role="button"
       tabIndex={0}
-      title={`${item.details}. Drag onto the canvas or double-click to add.`}
-      draggable
+      title={onCanvas
+        ? t('Already on the canvas')
+        : `${t(item.details)}. ${t('Drag onto the canvas or double-click to add.')}`}
+      draggable={!onCanvas}
       onDragStart={event => {
+        if (onCanvas) {
+          event.preventDefault();
+          return;
+        }
+
         event.dataTransfer.setData('application/ruse-item', JSON.stringify(item));
         event.dataTransfer.effectAllowed = 'copy';
       }}
-      onDoubleClick={() => onAdd(item)}
+      onDoubleClick={event => { if (event.target === event.currentTarget && !onCanvas) onAdd(item); }}
       onKeyDown={event => {
-        if (event.key === 'Enter' || event.key === ' ') {
+        if (event.target !== event.currentTarget) return;
+        if (!onCanvas && (event.key === 'Enter' || event.key === ' ')) {
           event.preventDefault();
           onAdd(item);
         }
@@ -67,18 +78,23 @@ function LibraryItem({ item, name, onAdd, onEdit, onRename }: {
     >
       <span className="library-icon"><ItemIcon item={item} /></span>
       <span className="library-copy">
-        <span className="library-name">{name}{item.badge && <span className="item-badge">{item.badge}</span>}</span>
-        <span className="library-subtitle">{item.subtitle}</span>
+        <span className="library-name">{name}</span>
+        <span className="library-subtitle">
+          {item.badge && <span className="item-badge">{item.badge}</span>}
+          {t(item.subtitle)}
+        </span>
       </span>
-      {onEdit && <button className="library-add" title={`Edit ${name}`} aria-label={`Edit ${name}`} onClick={event => { event.stopPropagation(); onEdit(item); }}>
+      {onEdit && <button className="library-add" title={t('Edit {name}', { name })} aria-label={t('Edit {name}', { name })} onClick={event => { event.stopPropagation(); onEdit(item); }}>
         <Layers3 size={13} />
       </button>}
-      {onRename && <button className="library-add" title={`Rename ${name}`} aria-label={`Rename ${name}`} onClick={event => { event.stopPropagation(); onRename(item); }}>
+      {onRename && <button className="library-add" title={t('Rename {name}', { name })} aria-label={t('Rename {name}', { name })} onClick={event => { event.stopPropagation(); onRename(item); }}>
         <Pencil size={13} />
       </button>}
-      <button className="library-add" title={`Add ${name}`} aria-label={`Add ${name}`} onClick={event => { event.stopPropagation(); onAdd(item); }}>
-        <Plus size={14} />
-      </button>
+      {onCanvas
+        ? <span className="library-add library-added" title={t('Already on the canvas')}><Check size={14} /></span>
+        : <button className="library-add" title={t('Add {name}', { name })} aria-label={t('Add {name}', { name })} onClick={event => { event.stopPropagation(); onAdd(item); }}>
+            <Plus size={14} />
+          </button>}
     </div>
   );
 }
@@ -93,41 +109,87 @@ interface Group {
   sections: Section[];
 }
 
-export default function Sidebar({ catalog, searchRef, aliases, onAdd, onRename, onNewChain, onEditChain }: {
+type View = 'all' | 'sources' | 'destinations' | 'processing';
+
+const VIEWS: ReadonlyArray<{ id: View; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'sources', label: 'Sources' },
+  { id: 'destinations', label: 'Destinations' },
+  { id: 'processing', label: 'Processing' },
+];
+
+export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onNewChain, onEditChain }: {
   catalog: CatalogSnapshot;
   searchRef: RefObject<HTMLInputElement | null>;
   aliases: Record<string, string>;
+  usedDeviceIds: Set<string>;
   onAdd: (item: CatalogItem) => void;
   onRename: (item: CatalogItem) => void;
   onNewChain: () => void;
   onEditChain: (item: CatalogItem) => void;
 }) {
+  const { t } = useI18n();
   const [query, setQuery] = useState('');
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [view, setView] = useState<View>('all');
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  const catalogSections = useMemo(() => {
+    const physicalInputs = catalog.inputs.filter(item => !item.virtual && item.provider !== 'ASIO');
+    const asioInputs = catalog.inputs.filter(item => item.provider === 'ASIO');
+    const virtualInputs = catalog.inputs.filter(item => item.virtual);
+    const physicalOutputs = catalog.outputs.filter(item => item.provider !== 'ASIO');
+    const asioOutputs = catalog.outputs.filter(item => item.provider === 'ASIO');
+    return {
+      applications: { label: 'Applications', items: [systemItem, ...catalog.apps] },
+      physicalOutputs: { label: 'Speakers & headphones', items: physicalOutputs },
+      physicalInputs: { label: 'Microphones & inputs', items: physicalInputs },
+      recording: { label: 'Recording', items: [recorderItem] },
+      virtualBuses: { label: 'Virtual buses', items: virtualInputs },
+      virtualInputs: { label: 'Virtual inputs', items: catalog.virtuals },
+      asioOutputs: { label: 'ASIO outputs', items: asioOutputs },
+      asioInputs: { label: 'ASIO inputs', items: asioInputs },
+      effects: { label: 'Effects', items: catalog.effects },
+      chains: { label: 'Saved chains', items: catalog.chains },
+    };
+  }, [catalog]);
+
   const groups = useMemo<Group[]>(() => [
     {
       title: 'Sources',
       sections: [
-        { label: 'Applications', items: [systemItem, ...catalog.apps] },
-        { label: 'Capture devices', items: catalog.inputs },
+        catalogSections.applications,
+        catalogSections.physicalInputs,
+        catalogSections.virtualBuses,
+        catalogSections.asioInputs,
       ],
     },
     {
       title: 'Destinations',
       sections: [
-        { label: 'Output devices', items: catalog.outputs },
-        { label: 'Virtual outputs', items: catalog.virtuals },
-        { label: 'Recording', items: [recorderItem] },
+        catalogSections.physicalOutputs,
+        catalogSections.recording,
+        catalogSections.virtualInputs,
+        catalogSections.asioOutputs,
       ],
     },
     {
       title: 'Processing',
-      sections: [
-        { label: 'Effects', items: catalog.effects },
-        { label: 'Saved chains', items: catalog.chains },
-      ],
+      sections: [catalogSections.effects, catalogSections.chains],
     },
-  ], [catalog]);
+  ], [catalogSections]);
+
+  const allSections = useMemo(() => [
+    catalogSections.applications,
+    catalogSections.physicalOutputs,
+    catalogSections.physicalInputs,
+    catalogSections.recording,
+    catalogSections.virtualBuses,
+    catalogSections.virtualInputs,
+    catalogSections.asioOutputs,
+    catalogSections.asioInputs,
+    catalogSections.effects,
+    catalogSections.chains,
+  ].filter(section => section.items.length > 0), [catalogSections]);
 
   useEffect(() => {
     const focusSection = (event: Event) => {
@@ -137,7 +199,8 @@ export default function Sidebar({ catalog, searchRef, aliases, onAdd, onRename, 
         .find(section => section.label === label);
       if (!target) return;
       setQuery('');
-      setCollapsed(current => ({ ...current, [`${target.group}-${target.label}`]: false }));
+      setView('all');
+      setExpanded(current => ({ ...current, [`${target.group}-${target.label}`]: true }));
       requestAnimationFrame(() => requestAnimationFrame(() => {
         document.querySelector(`[data-section-label="${target.label}"]`)
           ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -148,7 +211,7 @@ export default function Sidebar({ catalog, searchRef, aliases, onAdd, onRename, 
     return () => window.removeEventListener('ruse-focus-section', focusSection);
   }, [groups]);
 
-  const displayName = (item: CatalogItem) => aliases[catalogKey(item)]?.trim() || item.name;
+  const displayName = (item: CatalogItem) => aliases[catalogKey(item)]?.trim() || t(item.name);
   const normalized = query.trim().toLowerCase();
   const filtered = groups.map(group => ({
     ...group,
@@ -156,37 +219,63 @@ export default function Sidebar({ catalog, searchRef, aliases, onAdd, onRename, 
       ...section,
       items: normalized
         ? section.items.filter(item =>
-            `${displayName(item)} ${item.name} ${item.subtitle} ${item.details}`.toLowerCase().includes(normalized))
+            `${displayName(item)} ${t(item.name)} ${t(item.subtitle)} ${t(item.details)}`.toLowerCase().includes(normalized))
         : section.items,
     })).filter(section => section.items.length > 0),
-  })).filter(group => group.sections.length > 0);
+  }));
+
+  const visible = normalized
+    ? filtered.filter(group => group.sections.length > 0)
+    : view === 'all'
+      ? [{ title: '', sections: allSections }]
+      : filtered.filter(group =>
+          group.sections.length > 0 &&
+          ((view === 'sources' && group.title === 'Sources') ||
+            (view === 'destinations' && group.title === 'Destinations') ||
+            (view === 'processing' && group.title === 'Processing')));
+
+  const isOnCanvas = (item: CatalogItem) =>
+    (item.kind === 'output' || item.kind === 'virtual') && usedDeviceIds.has(item.id);
 
   return (
-    <aside className="sidebar" aria-label="Routing library">
+    <aside className="sidebar" aria-label={t('Routing library')}>
       <div className="sidebar-heading">
         <div>
-          <span className="eyebrow">Library</span>
-          <h1>Build a route</h1>
+          <span className="eyebrow">{t('Library')}</span>
+          <h1>{t('Build a route')}</h1>
         </div>
-        <span className="library-hint">Drag or double-click</span>
       </div>
       <label className="search-box">
         <Search size={15} aria-hidden="true" />
-        <input ref={searchRef} value={query} onChange={event => setQuery(event.target.value)} placeholder="Search sources, outputs, effects…" aria-label="Search library" />
-        {query && <button className="icon-button compact" aria-label="Clear search" onClick={() => setQuery('')}><X size={13} /></button>}
+        <input ref={searchRef} value={query} onChange={event => setQuery(event.target.value)} placeholder={t('Search sources, outputs, effects…')} aria-label={t('Search library')} />
+        {query && <button className="icon-button compact" aria-label={t('Clear search')} onClick={() => setQuery('')}><X size={13} /></button>}
         <kbd>Ctrl F</kbd>
       </label>
+      <div className="library-views" role="tablist" aria-label={t('Library sections')}>
+        {VIEWS.map(entry => (
+          <button
+            key={entry.id}
+            type="button"
+            role="tab"
+            aria-selected={view === entry.id}
+            className={`library-view ${view === entry.id ? 'active' : ''}`}
+            onClick={() => setView(entry.id)}
+          >
+            {t(entry.label)}
+          </button>
+        ))}
+      </div>
       <div className="library-scroll">
-        {filtered.map(group => (
-          <section className="library-group" key={group.title}>
-            <div className="group-title">{group.title}</div>
+        {visible.map(group => (
+          <section className="library-group" key={group.title || 'all'}>
+            {group.title && <div className="group-title">{t(group.title)}</div>}
             {group.sections.map(section => {
               const key = `${group.title}-${section.label}`;
-              const isCollapsed = collapsed[key] && !normalized;
+              const isCollapsed = !expanded[key] && !normalized;
               return (
                 <div className="library-section" key={key} data-section-label={section.label}>
-                  <button className="section-toggle" onClick={() => setCollapsed(current => ({ ...current, [key]: !current[key] }))} aria-expanded={!isCollapsed}>
-                    <span>{section.label}</span><span className="section-count">{section.items.length}</span><ChevronDown size={13} className={isCollapsed ? 'collapsed' : ''} />
+                  <button className="section-toggle" onClick={() => setExpanded(current => ({ ...current, [key]: !current[key] }))} aria-expanded={!isCollapsed}>
+                    <span>{t(section.label)}</span><span className="section-count">{section.items.length}</span><ChevronDown size={13} className={isCollapsed ? 'collapsed' : ''} />
                   </button>
                   {!isCollapsed && <div className="section-items">
                     {section.items.map(item => <LibraryItem
@@ -196,15 +285,16 @@ export default function Sidebar({ catalog, searchRef, aliases, onAdd, onRename, 
                       onAdd={onAdd}
                       onRename={onRename}
                       onEdit={item.kind === 'chain' ? onEditChain : undefined}
+                      onCanvas={isOnCanvas(item)}
                     />)}
-                    {section.label === 'Saved chains' && <button className="new-chain-button" onClick={onNewChain}><Plus size={13} /> New chain</button>}
+                    {section.label === 'Saved chains' && <button className="new-chain-button" onClick={onNewChain}><Plus size={13} /> {t('New chain')}</button>}
                   </div>}
                 </div>
               );
             })}
           </section>
         ))}
-        {filtered.length === 0 && <div className="library-empty">Nothing matches “{query}”. Try a device, app, or effect name.</div>}
+        {visible.length === 0 && <div className="library-empty">{normalized ? t('Nothing matches “{query}”. Try a device, app, or effect name.', { query }) : t('Nothing here yet.')}</div>}
       </div>
     </aside>
   );

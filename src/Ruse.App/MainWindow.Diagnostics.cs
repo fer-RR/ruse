@@ -608,43 +608,6 @@ public partial class MainWindow
             }));
     }
 
-    /// <summary>Opens the gain prompt for a cable and applies the result to its route.</summary>
-    private void PromptRouteGain(ConnectionViewModel conn)
-    {
-        float? gain = Ui.GainDialog.Show(this, $"Gain: {conn.From.Owner.Title} → {conn.To.Owner.Title}", conn.Gain);
-        if (gain == null)
-        {
-            return;
-        }
-
-        ApplyRouteGain(conn, gain.Value);
-        SetStatus($"Route gain set to {(int)Math.Round(gain.Value * 100)}%.");
-    }
-
-    private void ApplyRouteGain(ConnectionViewModel conn, float gain)
-    {
-        conn.Gain = gain;
-
-        if (_nodeBacking.TryGetValue(conn.From.Owner, out var fromObj) &&
-            _nodeBacking.TryGetValue(conn.To.Owner, out var toObj) &&
-            fromObj is SourceNode source && toObj is OutputNode output)
-        {
-            var route = output.Inputs.FirstOrDefault(r => ReferenceEquals(r.Source, source));
-            if (route != null)
-            {
-                route.Gain = gain;
-                output.RefreshRoutes();
-            }
-        }
-
-        // Thicker/dimmer cable hints at a boosted/cut route.
-        if (conn.Cable != null)
-        {
-            conn.Cable.StrokeThickness = 1.5 + (gain * 2.5);
-            conn.Cable.Opacity = 0.5 + (Math.Min(gain, 1f) * 0.4);
-        }
-    }
-
     /// <summary>Removes every route attached to the given node.</summary>
     private void DisconnectNode(NodeViewModel vm)
     {

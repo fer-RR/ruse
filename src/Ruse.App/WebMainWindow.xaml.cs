@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Windows;
 using Ruse.App.Diagnostics;
 
@@ -8,13 +9,14 @@ public partial class WebMainWindow : Window
 {
     private readonly WebShellController _controller;
     private bool _closed;
+    private bool _closeConfirmed;
 
     public WebMainWindow()
     {
         InitializeComponent();
         _controller = new WebShellController(this);
         Loaded += OnLoaded;
-        Closing += (_, _) => _controller.Shutdown();
+        Closing += OnClosing;
         Closed += (_, _) =>
         {
             _closed = true;
@@ -23,6 +25,27 @@ public partial class WebMainWindow : Window
     }
 
     internal string RunParitySelfTest() => _controller.RunParitySelfTest();
+
+    private void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (_closeConfirmed || !_controller.HasActiveRecording)
+        {
+            _controller.Shutdown();
+            return;
+        }
+
+        MessageBoxResult answer = MessageBox.Show(
+            "A recording is still in progress. Closing Ruse will stop and save it. Close anyway?",
+            "Ruse", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.Yes)
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        _closeConfirmed = true;
+        _controller.Shutdown();
+    }
 
     protected override void OnSourceInitialized(EventArgs e)
     {

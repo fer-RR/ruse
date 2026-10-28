@@ -1,26 +1,27 @@
 import { BaseEdge, EdgeLabelRenderer, getBezierPath } from '@xyflow/react';
 import type { EdgeProps } from '@xyflow/react';
-import { useNodeTelemetry } from '../telemetry';
+import { useNodeActive } from '../telemetry';
 
 export default function RuseEdge({
   id, source, sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition, style, label, markerEnd,
 }: EdgeProps) {
-  const telemetry = useNodeTelemetry(source);
-  const level = Math.min(1, Math.max(0, telemetry?.level ?? 0));
-  const active = level > 0.01;
+  const active = useNodeActive(source);
   const [path, labelX, labelY] = getBezierPath({
     sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, curvature: 0.28,
   });
   const color = typeof style?.stroke === 'string' ? style.stroke : '#5B8DEF';
+  const baseStyle = active
+    ? style
+    : { ...style, filter: 'saturate(0.18)', opacity: 0.48 };
 
   return (
     <>
-      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} interactionWidth={22} />
+      <BaseEdge id={id} path={path} style={baseStyle} markerEnd={markerEnd} interactionWidth={22} />
       <path
         d={path}
         className={`ruse-edge-flow ${active ? 'active' : ''}`}
-        style={{ stroke: color, opacity: active ? 0.35 + level * 0.5 : 0 }}
+        style={{ stroke: color, opacity: active ? 0.72 : 0 }}
       />
       {label && (
         <EdgeLabelRenderer>

@@ -14,7 +14,14 @@ export interface CatalogItem {
   subtitle: string;
   details: string;
   processId?: number;
+  processName?: string;
   active?: boolean;
+  deviceId?: string;
+  deviceName?: string;
+  direction?: string;
+  provider?: string;
+  virtual?: boolean;
+  isDefault?: boolean;
   badge?: string;
   micHint?: string;
   iconDataUrl?: string;
@@ -29,6 +36,8 @@ export interface CatalogSnapshot {
   virtuals: CatalogItem[];
   effects: CatalogItem[];
   chains: CatalogItem[];
+  defaultOutputId: string;
+  defaultOutputName: string;
 }
 
 export interface ParameterModel {
@@ -58,16 +67,23 @@ export interface NodeModel {
   volume: number;
   muted: boolean;
   micHint?: string;
+  deviceId?: string;
   parameters: ParameterModel[];
   enabled?: boolean;
   isWaveform?: boolean;
+  isDbMeter?: boolean;
   isTranscriber?: boolean;
   transcriberModel?: string;
   isRecorder: boolean;
   recordingPath: string;
   recordingFormat: string;
+  recorderMode?: string;
+  recorderAutoSave?: boolean;
   chainName?: string;
   chainElements?: string[];
+  duplicateRisk?: boolean;
+  duplicateWarning?: string;
+  warningSeverity?: 'warning' | 'info' | string;
 }
 
 export interface LinkModel {
@@ -78,11 +94,38 @@ export interface LinkModel {
   gain: number;
 }
 
+export interface GraphWarning {
+  sourceId: string;
+  outputId: string;
+  deviceName: string;
+  message: string;
+  severity: 'warning' | 'info' | string;
+}
+
 export interface GraphSnapshot {
   version: number;
   nodes: NodeModel[];
   links: LinkModel[];
+  frames?: FrameModel[];
+  warnings?: GraphWarning[];
   running: boolean;
+}
+
+export interface FrameModel {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface FirstRouteResult {
+  sourceId: string;
+  sourceTitle: string;
+  outputTitle: string;
+  warning?: string;
+  severity?: 'warning' | 'info' | string;
 }
 
 export interface NodeTelemetry {
@@ -92,9 +135,41 @@ export interface NodeTelemetry {
   recordingSeconds?: number;
   recordingError?: string;
   waveform?: number[];
+  db?: number;
+  peakDb?: number;
+  dbMeterVertical?: boolean;
   transcriptionStatus?: string;
   transcript?: string;
   partialTranscript?: string;
+  transcriptionError?: string;
+  transcriptionLevel?: number;
+  transcriptionHasAudio?: boolean;
+  transcriptionElapsed?: number;
+}
+
+export interface DiagnosticInfo {
+  cpuPercent: number;
+  cpuShare: number;
+  gpuPercent?: number | null;
+  renderTier: number;
+  workingSetMb: number;
+  managedMb: number;
+  threads: number;
+  processUptimeSeconds: number;
+  nodeCount: number;
+  linkCount: number;
+  sourceCount: number;
+  sourcesRunning: number;
+  worstBacklogMs: number;
+  skippedFrames: number;
+  outputCount: number;
+  outputsRunning: number;
+  worstLatencyMs: number;
+  chainLatencyMs: number;
+  shortReadFrames: number;
+  lowLatency: boolean;
+  telemetryMs: number;
+  audioFormat: string;
 }
 
 export interface TelemetrySnapshot {
@@ -104,25 +179,52 @@ export interface TelemetrySnapshot {
   masterGain: number;
   masterMuted: boolean;
   micMuted: boolean;
+  diagnostics?: DiagnosticInfo | null;
 }
 
 export interface TranscriberModelInfo {
   id: string;
   language: string;
   name: string;
+  tier: string;
   sizeMb: number;
   installed: boolean;
+  installedSize?: string;
+  note?: string;
+}
+
+export interface TranscriberDownload {
+  id: string;
+  phase: string;
+  percent: number;
+  message: string;
 }
 
 export interface SettingsModel {
+  autoLoadSession: boolean;
+  followPlayingApps: boolean;
+  followOutputId: string;
+  uiLanguage: string;
   startRoutingOnLaunch: boolean;
   highlightMutedNodes: boolean;
   signalGlow: boolean;
+  snapToGrid: boolean;
   highlightCableOnHover: boolean;
+  cableAnimation: boolean;
   minimapMode: number;
   startWithWindows: boolean;
+  showDiagnostics: boolean;
   transcriberModel: string;
   transcriberModels: TranscriberModelInfo[];
+  transcriberDownload?: TranscriberDownload | null;
+  installedModelsSize?: string;
+  installedModelsCount?: number;
+  appVersion?: string;
+  dotNetVersion?: string;
+  webView2Version?: string;
+  renderTier?: number;
+  dataFolder?: string;
+  modelsFolder?: string;
 }
 
 export interface StatusMessage {

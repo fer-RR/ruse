@@ -390,24 +390,12 @@ public partial class MainWindow
         hitPath.Tag = conn;
         hitPath.MouseLeftButtonDown += (_, e) =>
         {
-            if (e.ClickCount == 2)
-            {
-                PromptRouteGain(conn);
-            }
-            else
-            {
-                RemoveConnection(conn);
-                SetStatus("Connection removed.");
-            }
-
+            RemoveConnection(conn);
+            SetStatus("Connection removed.");
             e.Handled = true;
         };
 
         var menu = new ContextMenu();
-        var gainItem = new MenuItem { Header = "Set gain…" };
-        gainItem.Click += (_, _) => PromptRouteGain(conn);
-        menu.Items.Add(gainItem);
-        menu.Items.Add(new Separator());
         var disconnectItem = new MenuItem { Header = "Disconnect" };
         disconnectItem.Click += (_, _) => RemoveConnection(conn);
         menu.Items.Add(disconnectItem);
