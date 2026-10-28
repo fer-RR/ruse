@@ -16,6 +16,9 @@ public sealed class Preset
     /// <summary>Effect-chain nodes placed on the canvas.</summary>
     public List<PresetModifier> Modifiers { get; set; } = new();
 
+    /// <summary>Background group frames used to organize the canvas.</summary>
+    public List<PresetFrame> Frames { get; set; } = new();
+
     /// <summary>source â†’ modifier links, by index.</summary>
     public List<PresetSourceModifierLink> SourceModifiers { get; set; } = new();
 
@@ -41,9 +44,12 @@ public sealed class PresetSource
     public string Title { get; set; } = "";
     public string Kind { get; set; } = "Application";
     public uint? ProcessId { get; set; }
+    public string? ProcessName { get; set; }
     public string? DeviceId { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
+    public double? Width { get; set; }
+    public double? Height { get; set; }
     public float Volume { get; set; } = 1.0f;
     public bool Muted { get; set; }
 }
@@ -57,8 +63,12 @@ public sealed class PresetOutput
     public bool IsFile { get; set; }
     public string? FilePath { get; set; }
     public string? FileFormat { get; set; }
+    public string RecordingMode { get; set; } = "Off";
+    public bool AutoSave { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
+    public double? Width { get; set; }
+    public double? Height { get; set; }
     public float Volume { get; set; } = 1.0f;
     public bool Muted { get; set; }
 }
@@ -79,7 +89,20 @@ public sealed class PresetModifier
     public string? TranscriberModel { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
+    public double? Width { get; set; }
+    public double? Height { get; set; }
     public List<PresetProcessor> Processors { get; set; } = new();
+}
+
+/// <summary>A named background frame used to group canvas nodes.</summary>
+public sealed class PresetFrame
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "Group";
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double Width { get; set; }
+    public double Height { get; set; }
 }
 
 /// <summary>One effect in a modifier's chain.</summary>
@@ -158,7 +181,7 @@ public static class PresetSerializer
                 foreach (var inner in entry.Elements)
                 {
                     var processor = CreateProcessor(inner);
-                    if (processor != null)
+                    if (processor != null && processor is not ITapProcessor)
                     {
                         chain.Add(processor);
                     }

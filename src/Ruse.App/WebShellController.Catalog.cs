@@ -34,24 +34,59 @@ internal sealed partial class WebShellController
     {
         using var enumerator = new MMDeviceEnumerator();
         _catalog.Outputs = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+            .OrderBy(device => device.FriendlyName)
             .Select(device => new CatalogItemDto
             {
                 Id = device.ID,
                 Kind = "output",
                 Name = device.FriendlyName,
-                Subtitle = "WASAPI output",
-                Details = "Windows audio output device",
+                Subtitle = "Speaker / headphones - playback",
+                Details = "Send routed audio to this device.",
+                Direction = "playback",
+                Provider = ProviderFromName(device.FriendlyName),
             }).ToList();
 
         _catalog.Inputs = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active)
-            .Select(device => new CatalogItemDto
+            .OrderBy(device => device.FriendlyName)
+            .Select(device =>
             {
-                Id = device.ID,
-                Kind = "input",
-                Name = device.FriendlyName,
-                Subtitle = "WASAPI input",
-                Details = "Windows capture device",
+                string provider = ProviderFromName(device.FriendlyName) ?? "";
+                bool virtualCapture = IsVirtualCapture(device.FriendlyName);
+                return new CatalogItemDto
+                {
+                    Id = device.ID,
+                    Kind = "input",
+                    Name = device.FriendlyName,
+                    Subtitle = virtualCapture ? "Virtual bus - capture" : "Microphone - capture",
+                    Details = virtualCapture
+                        ? $"Capture audio leaving {provider} on this bus."
+                        : "Capture audio from this input device.",
+                    Direction = "capture",
+                    Virtual = virtualCapture,
+                    Provider = provider,
+                    Badge = virtualCapture ? "VIRTUAL" : null,
+                };
             }).ToList();
+
+        try
+        {
+            using var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            _catalog.DefaultOutputId = defaultDevice.ID;
+            _catalog.DefaultOutputName = defaultDevice.FriendlyName;
+        }
+        catch
+        {
+            _catalog.DefaultOutputId = "";
+            _catalog.DefaultOutputName = "";
+        }
+
+        if (!string.IsNullOrEmpty(_catalog.DefaultOutputId))
+        {
+            _catalog.Outputs = _catalog.Outputs
+                .OrderByDescending(item => string.Equals(
+                    item.Id, _catalog.DefaultOutputId, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
 
         try
         {
@@ -67,6 +102,8 @@ internal sealed partial class WebShellController
                     Name = driver.Name,
                     Subtitle = "ASIO output",
                     Details = details,
+                    Direction = "playback",
+                    Provider = "ASIO",
                     Badge = "ASIO",
                 });
 
@@ -77,8 +114,10 @@ internal sealed partial class WebShellController
                         Id = driver.Id,
                         Kind = "input",
                         Name = driver.Name,
-                        Subtitle = "ASIO input · first two channels",
+                        Subtitle = "ASIO input - first two channels",
                         Details = details,
+                        Direction = "capture",
+                        Provider = "ASIO",
                         Badge = "ASIO",
                     });
                 }
@@ -95,16 +134,54 @@ internal sealed partial class WebShellController
                 Id = info.RenderDeviceId,
                 Kind = "virtual",
                 Name = info.RenderFriendlyName,
-                Subtitle = info.Provider,
+                Subtitle = "Virtual input - playback",
                 Details = info.Description,
                 MicHint = info.CaptureFriendlyName,
+                Direction = "playback",
+                Virtual = true,
+                Provider = info.Provider,
+                Badge = "VIRTUAL",
             }).ToList();
+
+        // A virtual render device is already represented in Virtuals. Keeping it
+        // in Outputs too made every Voicemeeter input appear twice.
+        var virtualIds = new HashSet<string>(
+            _catalog.Virtuals.Select(item => item.Id), StringComparer.OrdinalIgnoreCase);
+        _catalog.Outputs = _catalog.Outputs
+            .Where(item => !virtualIds.Contains(item.Id))
+            .ToList();
+
+        foreach (var item in _catalog.Outputs.Concat(_catalog.Virtuals))
+        {
+            item.IsDefault = string.Equals(
+                item.Id, _catalog.DefaultOutputId, StringComparison.OrdinalIgnoreCase);
+            if (item.IsDefault) item.Badge = "DEFAULT";
+        }
     }
+
+    private static string? ProviderFromName(string name)
+    {
+        if (name.Contains("Virtual Audio Cable", StringComparison.OrdinalIgnoreCase)) return "Virtual Audio Cable";
+        if (name.Contains("CABLE", StringComparison.OrdinalIgnoreCase)) return "VB-Cable";
+        if (name.Contains("Voicemeeter", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("VB-Audio", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Voicemeeter";
+        }
+
+        return null;
+    }
+
+    private static bool IsVirtualCapture(string name) =>
+        name.Contains("Voicemeeter Out", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("CABLE Output", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("Virtual Audio Cable", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("VB-Audio", StringComparison.OrdinalIgnoreCase);
 
     private void RefreshApps(bool publish = true, bool force = false)
     {
-        // Skip periodic session scans while the workspace is inactive.
-        if (!force && !_window.IsActive)
+        // Background scans are only needed when following playing apps.
+        if (!force && !_window.IsActive && !_settings.FollowPlayingApps)
         {
             return;
         }
@@ -120,9 +197,19 @@ internal sealed partial class WebShellController
                     Subtitle = session.IsActive ? "Active audio session" : "Application",
                     Details = session.Details,
                     ProcessId = session.ProcessId,
+                    ProcessName = session.ProcessName,
                     Active = session.IsActive,
+                    DeviceId = session.DeviceId,
+                    DeviceName = session.DeviceName,
                     IconDataUrl = GetProcessIcon(session.ProcessId),
                 }).ToList();
+
+            bool reattached = _settings.FollowPlayingApps && ReattachPlayingApps();
+            bool autoAdded = _settings.FollowPlayingApps && AutoAddPlayingApps();
+            if (RefreshSourceEndpoints() || reattached || autoAdded)
+            {
+                PublishGraph();
+            }
 
             if (publish)
             {
@@ -133,6 +220,203 @@ internal sealed partial class WebShellController
         {
             AppLog.Warning("Session enumeration failed: " + ex.Message);
         }
+    }
+
+    private bool ReattachPlayingApps()
+    {
+        bool changed = false;
+        var active = _catalog.Apps
+            .Where(app => app.Active && app.ProcessId.HasValue && !string.IsNullOrEmpty(app.ProcessName))
+            .GroupBy(app => app.ProcessName!, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in active)
+        {
+            var processIds = group.Select(app => app.ProcessId!.Value).ToHashSet();
+            string appName = group.First().Name;
+            var entry = _nodes.Values.FirstOrDefault(entry =>
+                entry.Source is { Kind: SourceKind.Application } source &&
+                (string.Equals(source.ProcessName, group.Key, StringComparison.OrdinalIgnoreCase) ||
+                 (string.IsNullOrEmpty(source.ProcessName) &&
+                  string.Equals(source.Title, appName, StringComparison.OrdinalIgnoreCase))));
+            if (entry?.Source == null ||
+                (entry.Source.ProcessId is uint current && processIds.Contains(current)))
+            {
+                continue;
+            }
+
+            uint processId = processIds.First();
+            entry.Source.RetargetApplication(processId, group.Key);
+            _graph.EnsureRunning(entry.Source);
+            AppLog.Info($"Reattached '{entry.Title}' to process {processId}.");
+            SetStatus($"{entry.Title}: reconnected to the playing app.");
+            changed = true;
+        }
+
+        return changed;
+    }
+
+    private bool AutoAddPlayingApps()
+    {
+        if (string.IsNullOrWhiteSpace(_settings.FollowOutputId))
+        {
+            return false;
+        }
+
+        var target = _catalog.Outputs
+            .Concat(_catalog.Virtuals)
+            .FirstOrDefault(item => string.Equals(item.Id, _settings.FollowOutputId, StringComparison.OrdinalIgnoreCase));
+        if (target == null)
+        {
+            return false;
+        }
+
+        var outputEntry = FindOutputByDevice(target.Id);
+        if (outputEntry == null)
+        {
+            double y = 120 + _nodes.Values.Count(entry => entry.Source != null) * 160;
+            outputEntry = _catalog.Virtuals.Any(item =>
+                string.Equals(item.Id, target.Id, StringComparison.OrdinalIgnoreCase))
+                ? AddVirtualOutput(target.Id, 640, y)
+                : AddDeviceOutput(target.Id, 640, y);
+            if (outputEntry == null)
+            {
+                return false;
+            }
+        }
+
+        bool changed = false;
+        int index = 0;
+        var active = _catalog.Apps
+            .Where(app => app.Active && app.ProcessId.HasValue && !string.IsNullOrEmpty(app.ProcessName))
+            .GroupBy(app => app.ProcessName!, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in active)
+        {
+            var app = group.First();
+            uint processId = app.ProcessId!.Value;
+            bool known = _nodes.Values.Any(entry =>
+                entry.Source is { Kind: SourceKind.Application } source &&
+                (source.ProcessId == processId ||
+                 string.Equals(source.ProcessName, group.Key, StringComparison.OrdinalIgnoreCase)));
+            if (known)
+            {
+                continue;
+            }
+
+            try
+            {
+                var source = new SourceNode(app.Name, SourceKind.Application, processId,
+                    processName: app.ProcessName);
+                var entry = RegisterSource(source, 60, 120 + index * 160);
+                ConnectEntries(entry, outputEntry, publish: false);
+                index++;
+                changed = true;
+                SetStatus($"{app.Name}: added and connected to {outputEntry.Title}.");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning($"Could not auto-add '{app.Name}': {ex.Message}");
+            }
+        }
+
+        return changed;
+    }
+    private (string Id, string Name) DefaultRenderEndpoint()
+    {
+        try
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            using var device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            return (device.ID, device.FriendlyName);
+        }
+        catch
+        {
+            return ("", "");
+        }
+    }
+
+    /// <summary>Records the device a source is currently playing through.</summary>
+    private void UpdateSourceEndpoint(NodeEntry entry)
+    {
+        if (entry.Source == null)
+        {
+            entry.SourceEndpointId = null;
+            entry.SourceEndpointName = null;
+            return;
+        }
+
+        switch (entry.Source.Kind)
+        {
+            case SourceKind.SystemLoopback:
+            {
+                var endpoint = DefaultRenderEndpoint();
+                entry.SourceEndpointId = string.IsNullOrEmpty(endpoint.Id) ? null : endpoint.Id;
+                entry.SourceEndpointName = string.IsNullOrEmpty(endpoint.Name) ? null : endpoint.Name;
+                break;
+            }
+            case SourceKind.Application:
+            {
+                var app = _catalog.Apps.FirstOrDefault(item => item.ProcessId == entry.Source.ProcessId);
+                entry.SourceEndpointId = string.IsNullOrEmpty(app?.DeviceId) ? null : app.DeviceId;
+                entry.SourceEndpointName = string.IsNullOrEmpty(app?.DeviceName) ? null : app.DeviceName;
+                break;
+            }
+            default:
+                entry.SourceEndpointId = null;
+                entry.SourceEndpointName = null;
+                break;
+        }
+    }
+
+    private bool RefreshSourceEndpoints()
+    {
+        var defaultEndpoint = DefaultRenderEndpoint();
+        bool changed = false;
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Source == null)
+            {
+                continue;
+            }
+
+            string? id = null;
+            string? name = null;
+            switch (entry.Source.Kind)
+            {
+                case SourceKind.SystemLoopback:
+                    id = string.IsNullOrEmpty(defaultEndpoint.Id) ? null : defaultEndpoint.Id;
+                    name = string.IsNullOrEmpty(defaultEndpoint.Name) ? null : defaultEndpoint.Name;
+                    break;
+                case SourceKind.Application:
+                {
+                    var app = _catalog.Apps.FirstOrDefault(item => item.ProcessId == entry.Source.ProcessId);
+                    if (app != null)
+                    {
+                        id = string.IsNullOrEmpty(app.DeviceId) ? null : app.DeviceId;
+                        name = string.IsNullOrEmpty(app.DeviceName) ? null : app.DeviceName;
+                    }
+                    else
+                    {
+                        // Keep the last endpoint while the app is silent.
+                        id = entry.SourceEndpointId;
+                        name = entry.SourceEndpointName;
+                    }
+
+                    break;
+                }
+            }
+
+            if (entry.SourceEndpointId == id && entry.SourceEndpointName == name)
+            {
+                continue;
+            }
+
+            entry.SourceEndpointId = id;
+            entry.SourceEndpointName = name;
+            changed = true;
+        }
+
+        return changed;
     }
 
     private const uint ShgfiIcon = 0x100;
@@ -244,7 +528,8 @@ internal sealed partial class WebShellController
         for (int index = 0; index < parameterized.Parameters.Count; index++)
         {
             var parameter = parameterized.Parameters[index];
-            if (parameter.Name is WaveformProcessor.TapParameterName or TranscriptionProcessor.TapParameterName) continue;
+            if (parameter.Name is WaveformProcessor.TapParameterName or TranscriptionProcessor.TapParameterName or DbMeterProcessor.TapParameterName) continue;
+            if (parameterized is DbMeterProcessor && parameter.Name == "Orientation") continue;
             result.Add(new ParameterDto
             {
                 ProcessorIndex = 0,

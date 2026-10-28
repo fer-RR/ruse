@@ -1,5 +1,4 @@
 using System.IO;
-using System.IO.Compression;
 using System.Net.Http;
 using Ruse.App.Diagnostics;
 
@@ -9,8 +8,16 @@ internal sealed record TranscriberModel(
     string Id,
     string Language,
     string Name,
+    string Tier,
     int SizeMb,
-    string Url);
+    string Url,
+    string? Note = null);
+
+internal sealed record TranscriberModelProgress(
+    string ModelId,
+    string Phase,
+    int Percent,
+    string Message);
 
 internal static class TranscriptionModels
 {
@@ -19,28 +26,26 @@ internal static class TranscriptionModels
 
     public static IReadOnlyList<TranscriberModel> All { get; } = new[]
     {
-        new TranscriberModel("vosk-model-small-en-us-0.15", "English (US)", "Small English", 39, UrlFor("vosk-model-small-en-us-0.15")),
-        new TranscriberModel("vosk-model-small-en-in-0.4", "English (India)", "Small English India", 36, UrlFor("vosk-model-small-en-in-0.4")),
-        new TranscriberModel("vosk-model-small-es-0.42", "Spanish", "Small Spanish", 38, UrlFor("vosk-model-small-es-0.42")),
-        new TranscriberModel("vosk-model-small-fr-0.22", "French", "Small French", 40, UrlFor("vosk-model-small-fr-0.22")),
-        new TranscriberModel("vosk-model-small-de-0.15", "German", "Small German", 44, UrlFor("vosk-model-small-de-0.15")),
-        new TranscriberModel("vosk-model-small-pt-0.3", "Portuguese", "Small Portuguese", 31, UrlFor("vosk-model-small-pt-0.3")),
-        new TranscriberModel("vosk-model-small-it-0.22", "Italian", "Small Italian", 47, UrlFor("vosk-model-small-it-0.22")),
-        new TranscriberModel("vosk-model-small-ru-0.22", "Russian", "Small Russian", 44, UrlFor("vosk-model-small-ru-0.22")),
-        new TranscriberModel("vosk-model-small-cn-0.22", "Chinese", "Small Chinese", 42, UrlFor("vosk-model-small-cn-0.22")),
-        new TranscriberModel("vosk-model-small-ja-0.22", "Japanese", "Small Japanese", 47, UrlFor("vosk-model-small-ja-0.22")),
-        new TranscriberModel("vosk-model-small-ko-0.22", "Korean", "Small Korean", 83, UrlFor("vosk-model-small-ko-0.22")),
-        new TranscriberModel("vosk-model-small-nl-0.22", "Dutch", "Small Dutch", 39, UrlFor("vosk-model-small-nl-0.22")),
-        new TranscriberModel("vosk-model-small-pl-0.22", "Polish", "Small Polish", 51, UrlFor("vosk-model-small-pl-0.22")),
-        new TranscriberModel("vosk-model-small-tr-0.3", "Turkish", "Small Turkish", 35, UrlFor("vosk-model-small-tr-0.3")),
+        Model("whisper-tiny.en", "English", "Whisper Tiny English", "Tiny", 75, "ggml-tiny.en.bin", "OpenAI weights · MIT"),
+        Model("whisper-base.en", "English", "Whisper Base English", "Base", 142, "ggml-base.en.bin", "OpenAI weights · MIT"),
+        Model("whisper-small.en", "English", "Whisper Small English", "Small", 466, "ggml-small.en.bin", "OpenAI weights · MIT"),
+        Model("whisper-medium.en", "English", "Whisper Medium English", "Medium", 1500, "ggml-medium.en.bin", "OpenAI weights · MIT"),
+        Model("whisper-tiny", "Multilingual", "Whisper Tiny", "Tiny", 75, "ggml-tiny.bin", "OpenAI weights · MIT"),
+        Model("whisper-base", "Multilingual", "Whisper Base", "Base", 142, "ggml-base.bin", "OpenAI weights · MIT"),
+        Model("whisper-small", "Multilingual", "Whisper Small", "Small", 466, "ggml-small.bin", "OpenAI weights · MIT"),
+        Model("whisper-medium", "Multilingual", "Whisper Medium", "Medium", 1500, "ggml-medium.bin", "OpenAI weights · MIT"),
+        Model("whisper-large-v3-turbo", "Multilingual", "Whisper Large v3 Turbo", "Large", 1620, "ggml-large-v3-turbo.bin", "OpenAI weights · MIT"),
+        Model("whisper-large-v3", "Multilingual", "Whisper Large v3", "Large", 3090, "ggml-large-v3.bin", "OpenAI weights · MIT"),
     };
 
-    public static string DefaultId => All[0].Id;
+    public static string DefaultId => "whisper-small.en";
 
-    private static string Root => Path.Combine(AppSettings.Directory, "models");
+    public static string Root => Path.Combine(AppSettings.Directory, "models");
 
     public static TranscriberModel? Find(string? id) =>
         All.FirstOrDefault(model => string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase));
+
+    public static string PathFor(string id) => Path.Combine(Root, id + ".bin");
 
     public static bool IsInstalled(string? id) => GetInstalledPath(id) != null;
 
@@ -48,65 +53,137 @@ internal static class TranscriptionModels
     {
         var model = Find(id);
         if (model == null) return null;
-        string path = Path.Combine(Root, model.Id);
-        return Directory.Exists(path) ? path : null;
+        string path = PathFor(model.Id);
+        return IsValidModelFile(path) ? path : null;
+    }
+
+    public static long GetInstalledSizeBytes(string? id)
+    {
+        string? path = GetInstalledPath(id);
+        if (path == null) return 0;
+        try { return new FileInfo(path).Length; }
+        catch { return 0; }
     }
 
     public static string Resolve(string? requested)
     {
         if (IsInstalled(requested)) return requested!;
+        if (IsInstalled(DefaultId)) return DefaultId;
         return All.FirstOrDefault(model => IsInstalled(model.Id))?.Id ?? "";
     }
 
-    public static async Task DownloadAsync(string id, Action<string> status, CancellationToken token)
+    public static async Task DownloadAsync(
+        string id,
+        IProgress<TranscriberModelProgress>? progress,
+        CancellationToken token)
     {
         var model = Find(id) ?? throw new InvalidOperationException("Unknown speech model.");
         if (IsInstalled(id)) return;
 
         await Gate.WaitAsync(token);
+        string temp = PathFor(id) + ".part";
         try
         {
             if (IsInstalled(id)) return;
             Directory.CreateDirectory(Root);
-            string zip = Path.Combine(Path.GetTempPath(), "ruse-" + model.Id + ".zip");
 
-            status($"Downloading {model.Name}");
+            progress?.Report(new TranscriberModelProgress(id, "downloading", 0, $"Downloading {model.Name}"));
+            long total = 0;
+            long copied = 0;
             using (var response = await Http.GetAsync(model.Url, HttpCompletionOption.ResponseHeadersRead, token))
             {
                 response.EnsureSuccessStatusCode();
-                long total = response.Content.Headers.ContentLength ?? 0;
+                total = response.Content.Headers.ContentLength ?? 0;
                 await using var input = await response.Content.ReadAsStreamAsync(token);
-                await using var output = File.Create(zip);
+                await using var output = File.Create(temp);
                 var buffer = new byte[81920];
-                long copied = 0;
                 int read;
+                int lastPercent = -1;
                 while ((read = await input.ReadAsync(buffer, token)) > 0)
                 {
                     await output.WriteAsync(buffer.AsMemory(0, read), token);
                     copied += read;
-                    if (total > 0) status($"Downloading {model.Name} {copied * 100 / total}%");
+                    if (total > 0)
+                    {
+                        int percent = (int)Math.Clamp(copied * 100 / total, 0, 99);
+                        if (percent != lastPercent)
+                        {
+                            lastPercent = percent;
+                            progress?.Report(new TranscriberModelProgress(
+                                id, "downloading", percent,
+                                $"Downloading {model.Name} · {percent}%"));
+                        }
+                    }
                 }
             }
 
-            status($"Installing {model.Name}");
-            string path = Path.Combine(Root, model.Id);
-            if (Directory.Exists(path)) Directory.Delete(path, recursive: true);
-            ZipFile.ExtractToDirectory(zip, Root);
-            File.Delete(zip);
-            status($"{model.Name} ready");
+            if (total > 0 && copied != total)
+            {
+                throw new InvalidDataException("The download was incomplete. Try again.");
+            }
+
+            if (!IsValidModelFile(temp))
+            {
+                throw new InvalidDataException("The downloaded file is not a valid Whisper model.");
+            }
+
+            progress?.Report(new TranscriberModelProgress(id, "installing", 100, $"Installing {model.Name}"));
+            File.Move(temp, PathFor(id), overwrite: true);
+            progress?.Report(new TranscriberModelProgress(id, "done", 100, $"{model.Name} ready"));
+        }
+        catch (OperationCanceledException)
+        {
+            progress?.Report(new TranscriberModelProgress(id, "cancelled", 0, $"{model.Name} download cancelled"));
+            throw;
         }
         catch (Exception ex)
         {
-            status($"{model.Name} failed: {ex.Message}");
-            AppLog.Error($"Could not install speech model '{model.Id}'.", ex);
+            progress?.Report(new TranscriberModelProgress(id, "error", 0, $"{model.Name} failed: {ex.Message}"));
+            AppLog.Error($"Could not install speech model '{id}'.", ex);
             throw;
         }
         finally
         {
+            TryDelete(temp);
             Gate.Release();
         }
     }
 
-    private static string UrlFor(string id) =>
-        "https://alphacephei.com/vosk/models/" + id + ".zip";
+    public static void Delete(string id) => TryDelete(PathFor(id));
+
+    public static string FormatSize(long bytes)
+    {
+        if (bytes <= 0) return "0 MB";
+        double megabytes = bytes / (1024.0 * 1024.0);
+        return megabytes >= 1024
+            ? $"{megabytes / 1024.0:0.0} GB"
+            : $"{megabytes:0} MB";
+    }
+
+    internal static bool IsValidModelFile(string path)
+    {
+        try
+        {
+            return File.Exists(path) && new FileInfo(path).Length > 1_000_000;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static TranscriberModel Model(string id, string language, string name, string tier, int sizeMb, string file, string note) =>
+        new(id, language, name, tier, sizeMb,
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + file, note);
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch
+        {
+        }
+    }
 }

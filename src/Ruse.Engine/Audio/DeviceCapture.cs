@@ -83,7 +83,7 @@ public sealed class DeviceCapture : IDisposable
             .WithDevice(device)
             .WithSharedMode()
             .WithEventSync()
-            .WithLowLatency(true)
+            .WithLowLatency()
             .Build();
     }
 

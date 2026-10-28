@@ -18,7 +18,7 @@ public sealed class HighPassProcessor : IAudioProcessor, IParameterizedProcessor
             Id,
             "High-pass",
             defaultFrequency: 80f,
-            frequencyParameterName: "Cutoff");
+            frequencyParameterName: "Cutoff", hasQ: true);
     }
 
     public string TypeId => Id;

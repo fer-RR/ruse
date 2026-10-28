@@ -3,6 +3,13 @@ using NAudio.Wave;
 namespace Ruse.App.Audio;
 
 /// <summary>Container and encoding for a recorded mix.</summary>
+public enum RecorderMode
+{
+    Off,
+    Armed,
+    On,
+}
+
 public enum AudioFileFormat
 {
     Wav16,
@@ -71,11 +78,7 @@ public static class AudioFileFormats
         Enum.TryParse<AudioFileFormat>(name, ignoreCase: true, out var format) ? format : AudioFileFormat.Wav24;
 }
 
-/// <summary>
-/// Writes an interleaved 48 kHz stereo float mix to a file. WAV is written as
-/// it arrives; MP3 and FLAC are fed to a Media Foundation encoder on a separate
-/// thread so the render thread never blocks on the codec.
-/// </summary>
+/// <summary>Writes the 48 kHz stereo mix to WAV, MP3 or FLAC.</summary>
 public sealed class AudioFileRecorder : IDisposable
 {
     private const int SampleRate = 48000;
@@ -211,11 +214,7 @@ public sealed class AudioFileRecorder : IDisposable
         _ => throw new ArgumentOutOfRangeException(nameof(format)),
     };
 
-    /// <summary>
-    /// A blocking PCM queue for Media Foundation. The batch encoders read until
-    /// the provider returns zero; a normal buffered provider would look like
-    /// end-of-stream every time it momentarily ran dry.
-    /// </summary>
+    /// <summary>Blocking PCM queue for the Media Foundation encoders.</summary>
     private sealed class Pcm16BlockingProvider : IWaveProvider
     {
         private readonly object _lock = new();

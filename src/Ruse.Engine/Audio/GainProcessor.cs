@@ -52,6 +52,7 @@ public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor
     // Written from the UI thread, read on the audio thread: volatile keeps the
     // float from being cached in a register across calls.
     private volatile float _gain = 1.0f;
+    private volatile float _pan;
 
     public string TypeId => Id;
     public string DisplayName => "Gain";
@@ -60,6 +61,12 @@ public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor
     {
         get => _gain;
         set => _gain = value;
+    }
+
+    public float Pan
+    {
+        get => _pan;
+        set => _pan = Math.Clamp(value, -1f, 1f);
     }
 
     public IReadOnlyList<AudioParameter> Parameters { get; }
@@ -77,20 +84,41 @@ public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor
                 Get = () => _gain,
                 Set = v => _gain = v,
             },
+            new AudioParameter
+            {
+                Name = "Pan",
+                Min = -1f,
+                Max = 1f,
+                Default = 0f,
+                Get = () => _pan,
+                Set = v => _pan = Math.Clamp(v, -1f, 1f),
+            },
         };
     }
 
     public void Process(Span<float> samples, int frames)
     {
         float g = _gain;
-        if (g == 1.0f)
+        float pan = _pan;
+        if (g == 1.0f && pan == 0f)
         {
             return;
         }
 
-        for (int i = 0; i < samples.Length; i++)
+        int channels = frames > 0 ? Math.Max(1, samples.Length / frames) : 1;
+        if (channels < 2)
         {
-            samples[i] *= g;
+            for (int i = 0; i < samples.Length; i++) samples[i] *= g;
+            return;
+        }
+
+        float left = g * Math.Min(1f, 1f - pan);
+        float right = g * Math.Min(1f, 1f + pan);
+        for (int frame = 0; frame < frames; frame++)
+        {
+            int index = frame * channels;
+            samples[index] *= left;
+            samples[index + 1] *= right;
         }
     }
 

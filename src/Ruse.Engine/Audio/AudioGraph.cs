@@ -2,21 +2,10 @@ using NAudio.CoreAudioApi;
 
 namespace Ruse.App.Audio;
 
-/// <summary>
-/// Holds the full routing graph and manages device enumeration.
-/// </summary>
-/// <remarks>
-/// The graph is source â†’ (modifiers) â†’ output. Modifiers form an ordered chain
-/// along a route; <see cref="RebuildRouteProcessors"/> flattens every modifier
-/// on each sourceâ†’output path into one immutable array that the render thread
-/// reads without locking (see <see cref="OutputNode.Route.Processors"/>).
-/// </remarks>
+/// <summary>Owns the routing graph and rebuilds route processor chains.</summary>
 public sealed class AudioGraph : IDisposable
 {
-    /// <summary>
-    /// When true, capture and render threads start as soon as a node joins an
-    /// active route, so the user never has to press "Start" manually.
-    /// </summary>
+    /// <summary>Start capture/render threads as soon as a route exists.</summary>
     public bool AutoRun { get; set; } = true;
 
     public List<SourceNode> Sources { get; } = new();
@@ -27,6 +16,10 @@ public sealed class AudioGraph : IDisposable
     // chain reaches the output are derived from the modifier graph instead, so
     // removing a modifier really does remove the audio it carried.
     private readonly Dictionary<OutputNode, HashSet<SourceNode>> _directLinks = new();
+
+    // Hidden real-time sinks for node-level taps.
+    private readonly Dictionary<ModifierNode, OutputNode> _tapMonitors = new();
+    private bool _refreshingTapMonitors;
 
     public OutputNode AddOutput(MMDevice device)
     {
@@ -63,7 +56,13 @@ public sealed class AudioGraph : IDisposable
     {
         Outputs.Remove(node);
         _directLinks.Remove(node);
+        foreach (var modifier in Modifiers)
+        {
+            modifier.Outputs.Remove(node);
+        }
+
         node.Dispose();
+        RefreshTapMonitors();
     }
 
     public void AddSource(SourceNode source)
@@ -94,6 +93,8 @@ public sealed class AudioGraph : IDisposable
         {
             SyncOutputRoutes(output);
         }
+
+        RefreshTapMonitors();
     }
 
     /// <summary>Starts a source's capture thread if it is not already running.</summary>
@@ -111,6 +112,11 @@ public sealed class AudioGraph : IDisposable
     public void EnsureRunning(OutputNode output)
     {
         if (!AutoRun || output.IsRunning || !output.AutoStart)
+        {
+            return;
+        }
+
+        if (output.IsFileRecorder && output.RecorderMode != RecorderMode.On)
         {
             return;
         }
@@ -245,6 +251,7 @@ public sealed class AudioGraph : IDisposable
         }
 
         EnsureRunning(source);
+        RefreshTapMonitors();
     }
 
     /// <summary>Sends a modifier's output to an output node (modifier â†’ output).</summary>
@@ -264,6 +271,7 @@ public sealed class AudioGraph : IDisposable
 
         SyncOutputRoutes(output);
         EnsureRunning(output);
+        RefreshTapMonitors();
     }
 
     /// <summary>Chains two modifiers together (modifier â†’ modifier).</summary>
@@ -278,6 +286,8 @@ public sealed class AudioGraph : IDisposable
         {
             SyncOutputRoutes(output);
         }
+
+        RefreshTapMonitors();
     }
 
     public void DisconnectModifierFromModifier(ModifierNode from, ModifierNode to)
@@ -288,6 +298,8 @@ public sealed class AudioGraph : IDisposable
         {
             SyncOutputRoutes(output);
         }
+
+        RefreshTapMonitors();
     }
 
     /// <summary>Every output reachable from a modifier by following Outputs and Next links.</summary>
@@ -374,6 +386,7 @@ public sealed class AudioGraph : IDisposable
     {
         modifier.Outputs.Remove(output);
         SyncOutputRoutes(output);
+        RefreshTapMonitors();
     }
 
     public void DisconnectSourceFromModifier(SourceNode source, ModifierNode modifier)
@@ -384,14 +397,121 @@ public sealed class AudioGraph : IDisposable
         {
             SyncOutputRoutes(output);
         }
+
+        RefreshTapMonitors();
     }
 
-    /// <summary>
-    /// Recomputes the effect chain for every route on an output by walking the
-    /// modifier graph. Each route gets its own effect instances (so state is not
-    /// shared), plus an alignment delay that compensates for whichever route in
-    /// this output carries the most inherent effect latency.
-    /// </summary>
+    /// <summary>Keeps a real-time monitor alive for every tap processor.</summary>
+    private void RefreshTapMonitors()
+    {
+        if (_refreshingTapMonitors)
+        {
+            return;
+        }
+
+        _refreshingTapMonitors = true;
+        try
+        {
+            var wanted = new HashSet<ModifierNode>();
+            foreach (var modifier in Modifiers)
+            {
+                int[] transcriptionTaps = modifier.Processors
+                    .OfType<TranscriptionProcessor>()
+                    .Select(processor => processor.TapId)
+                    .Where(id => id > 0)
+                    .ToArray();
+                var waveformTaps = modifier.Processors
+                    .OfType<WaveformProcessor>()
+                    .Where(processor => processor.TapId > 0)
+                    .ToArray();
+                int[] dbMeterTaps = modifier.Processors
+                    .OfType<DbMeterProcessor>()
+                    .Select(processor => processor.TapId)
+                    .Where(id => id > 0)
+                    .ToArray();
+
+                if (transcriptionTaps.Length == 0 && waveformTaps.Length == 0 && dbMeterTaps.Length == 0)
+                {
+                    continue;
+                }
+
+                wanted.Add(modifier);
+                if (!_tapMonitors.TryGetValue(modifier, out var monitor))
+                {
+                    monitor = OutputNode.CreateMonitor((samples, length) =>
+                    {
+                        if (!modifier.Enabled)
+                        {
+                            return;
+                        }
+
+                        int frames = length / 2;
+                        var block = samples.AsSpan(0, length);
+                        for (int i = 0; i < transcriptionTaps.Length; i++)
+                        {
+                            TranscriptionProcessor.WriteTap(transcriptionTaps[i], block, frames);
+                        }
+
+                        for (int i = 0; i < waveformTaps.Length; i++)
+                        {
+                            var waveform = waveformTaps[i];
+                            WaveformProcessor.WriteTap(waveform.TapId, block, frames,
+                                waveform.Gain, waveform.Smoothing, waveform.Speed);
+                        }
+
+                        for (int i = 0; i < dbMeterTaps.Length; i++)
+                        {
+                            DbMeterProcessor.WriteTap(dbMeterTaps[i], block, frames);
+                        }
+                    });
+                    _tapMonitors[modifier] = monitor;
+                    Outputs.Add(monitor);
+                }
+
+                if (!modifier.Outputs.Contains(monitor))
+                {
+                    modifier.Outputs.Add(monitor);
+                }
+
+                foreach (var source in UpstreamSources(modifier))
+                {
+                    EnsureRunning(source);
+                }
+
+                SyncOutputRoutes(monitor);
+                EnsureRunning(monitor);
+            }
+
+            foreach (var pair in _tapMonitors.ToList())
+            {
+                if (wanted.Contains(pair.Key))
+                {
+                    continue;
+                }
+
+                pair.Key.Outputs.Remove(pair.Value);
+                _tapMonitors.Remove(pair.Key);
+                Outputs.Remove(pair.Value);
+                _directLinks.Remove(pair.Value);
+                pair.Value.Dispose();
+            }
+        }
+        finally
+        {
+            _refreshingTapMonitors = false;
+        }
+    }
+
+    /// <summary>Starts every tap monitor, used when routing is switched on.</summary>
+    public void EnsureMonitorsRunning()
+    {
+        foreach (var monitor in _tapMonitors.Values)
+        {
+            EnsureRunning(monitor);
+        }
+    }
+
+    /// <summary>Rebuilds each route's private effect chain and alignment delay.</summary>
     public void RebuildRouteProcessors(OutputNode output)
     {
         var chains = new List<(OutputNode.Route Route, IAudioProcessor[] Templates, int Latency)>();
@@ -426,10 +546,7 @@ public sealed class AudioGraph : IDisposable
         output.RefreshRoutes();
     }
 
-    /// <summary>
-    /// Depth-first walk from a source to an output, appending each modifier's
-    /// effects in signal order. <paramref name="visited"/> guards against loops.
-    /// </summary>
+    /// <summary>Walks modifiers in signal order from source to output.</summary>
     private void CollectChain(SourceNode source, OutputNode output, List<IAudioProcessor> chain, HashSet<ModifierNode> visited)
     {
         foreach (var modifier in Modifiers)
@@ -443,10 +560,7 @@ public sealed class AudioGraph : IDisposable
         }
     }
 
-    /// <summary>
-    /// Appends a modifier's effects (and those of any modifiers chained after
-    /// it) when it lies on the path to <paramref name="output"/>.
-    /// </summary>
+    /// <summary>Appends a modifier's effects when it reaches the output.</summary>
     private static void AppendModifier(ModifierNode modifier, OutputNode output, List<IAudioProcessor> chain, HashSet<ModifierNode> visited)
     {
         if (!visited.Add(modifier) || !IsReachableToOutput(modifier, output, new HashSet<ModifierNode>()))
@@ -458,6 +572,12 @@ public sealed class AudioGraph : IDisposable
         {
             foreach (var processor in modifier.Processors)
             {
+                // Taps are fed once by their monitor.
+                if (processor is ITapProcessor)
+                {
+                    continue;
+                }
+
                 chain.Add(processor);
             }
         }
@@ -504,6 +624,8 @@ public sealed class AudioGraph : IDisposable
             source.Dispose();
         }
 
+        _tapMonitors.Clear();
+        _directLinks.Clear();
         Outputs.Clear();
         Sources.Clear();
         Modifiers.Clear();

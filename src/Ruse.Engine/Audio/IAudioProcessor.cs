@@ -1,46 +1,27 @@
 namespace Ruse.App.Audio;
 
-/// <summary>
-/// A real-time audio effect applied to a signal as it travels along a route,
-/// between a <see cref="SourceNode"/> and an <see cref="OutputNode"/>.
-/// </summary>
-/// <remarks>
-/// Processors run on the output's render thread, so implementations must be
-/// allocation-free and lock-free in <see cref="Process"/>. Parameters may be
-/// written from the UI thread at any time, so read them into locals once per
-/// call. All samples are in the mixer's normalized format: 32-bit float,
-/// interleaved stereo, 48 kHz (see <see cref="FormatConverter"/>).
-/// </remarks>
+/// <summary>A real-time effect on a route. Runs lock-free on the render thread.</summary>
 public interface IAudioProcessor
 {
-    /// <summary>Stable identifier used when persisting a modifier chain.</summary>
     string TypeId { get; }
-
-    /// <summary>Human-readable name shown in the UI.</summary>
     string DisplayName { get; }
 
-    /// <summary>
-    /// Processes <paramref name="samples"/> in place. The span is interleaved
-    /// stereo; <paramref name="frames"/> is the number of stereo frames
-    /// (i.e. <c>samples.Length / 2</c>).
-    /// </summary>
+    /// <summary>Processes interleaved 48 kHz stereo in place.</summary>
     void Process(Span<float> samples, int frames);
 
-    /// <summary>Resets any internal state (e.g. filter history) when a route starts.</summary>
     void Reset();
 
-    /// <summary>
-    /// Processing latency this processor introduces, in frames per channel.
-    /// Zero unless the effect needs look-ahead or block/partitioned buffering;
-    /// the graph uses this to time-align parallel routes.
-    /// </summary>
+    /// <summary>Look-ahead latency in frames per channel.</summary>
     int LatencySamples => 0;
 }
 
-/// <summary>
-/// Registry of available modifier types, keyed by <see cref="IAudioProcessor.TypeId"/>.
-/// New effects are added here and immediately become available to the UI.
-/// </summary>
+/// <summary>A processor that feeds a display or transcription tap from a monitor.</summary>
+public interface ITapProcessor
+{
+    int TapId { get; }
+}
+
+/// <summary>Registry of modifier types, keyed by <see cref="IAudioProcessor.TypeId"/>.</summary>
 public static class AudioProcessorCatalog
 {
     public sealed record Descriptor(string TypeId, string DisplayName, string Description, Func<IAudioProcessor> Create);
@@ -73,6 +54,12 @@ public static class AudioProcessorCatalog
             () => new WaveformProcessor()));
 
         Register(new Descriptor(
+            DbMeterProcessor.Id,
+            "dB meter",
+            "Shows the RMS and peak level in dBFS.",
+            () => new DbMeterProcessor()));
+
+        Register(new Descriptor(
             TranscriptionProcessor.Id,
             "Transcriber",
             "Transcribes speech from this route offline.",
@@ -82,7 +69,7 @@ public static class AudioProcessorCatalog
             "lowpass",
             "Low-pass",
             "Removes high-frequency hiss above the cutoff.",
-            () => new BiquadProcessor(BiquadKind.LowPass, "lowpass", "Low-pass", 8000f, "Cutoff")));
+            () => new BiquadProcessor(BiquadKind.LowPass, "lowpass", "Low-pass", 8000f, "Cutoff", hasQ: true)));
 
         Register(new Descriptor(
             "eq-bell",
@@ -101,6 +88,12 @@ public static class AudioProcessorCatalog
             "EQ high shelf",
             "Shapes the high end above the corner frequency.",
             () => new BiquadProcessor(BiquadKind.HighShelf, "eq-high-shelf", "EQ high shelf", 4000f, "Frequency", hasGain: true)));
+
+        Register(new Descriptor(
+            GraphicEqualizerProcessor.Id,
+            "Graphic EQ",
+            "Ten-band ISO octave equalizer with click-free band changes.",
+            () => new GraphicEqualizerProcessor()));
 
         NaudioEffects.RegisterAll();
     }

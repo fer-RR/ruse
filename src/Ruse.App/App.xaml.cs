@@ -3,6 +3,7 @@ using System.Data;
 using System.IO;
 using System.Windows;
 using Ruse.App.Audio;
+using Whisper.net;
 
 namespace Ruse.App;
 
@@ -31,6 +32,13 @@ public partial class App : Application
 
     protected override void OnStartup(StartupEventArgs e)
     {
+        int probeIndex = Array.FindIndex(e.Args, a => a.Equals("--model-probe", StringComparison.OrdinalIgnoreCase));
+        if (probeIndex >= 0 && probeIndex + 2 < e.Args.Length)
+        {
+            RunModelProbe(e.Args[probeIndex + 1], e.Args[probeIndex + 2]);
+            return;
+        }
+
         Ruse.App.Diagnostics.AppLog.Initialize();
 
         if (e.Args.Contains("--demo", StringComparer.OrdinalIgnoreCase))
@@ -500,6 +508,36 @@ public partial class App : Application
         var window = new MainWindow();
         Current.MainWindow = window;
         window.Show();
+    }
+
+    /// <summary>
+    /// Loads a model in a disposable child process and writes the outcome to
+    /// <paramref name="resultPath"/>. A native Whisper crash kills this
+    /// process, not the app that is checking the model.
+    /// </summary>
+    private static void RunModelProbe(string modelPath, string resultPath)
+    {
+        try
+        {
+            using var factory = WhisperFactory.FromPath(modelPath);
+            using var processor = factory.CreateBuilder().WithLanguage("en").Build();
+            processor.Process(new float[16000]);
+            long peak = System.Diagnostics.Process.GetCurrentProcess().PeakWorkingSet64;
+            File.WriteAllText(resultPath, $"OK {peak / (1024 * 1024)}");
+            Environment.Exit(0);
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                File.WriteAllText(resultPath, $"ERROR {ex.GetType().Name}: {ex.Message}");
+            }
+            catch
+            {
+            }
+
+            Environment.Exit(3);
+        }
     }
 
     private static void RunSelfTest(string[] args)

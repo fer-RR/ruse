@@ -12,6 +12,10 @@ public sealed class AudioSessionInfo
     public string DisplayName { get; init; } = string.Empty;
     public bool IsActive { get; init; }
 
+    /// <summary>Render endpoint the process is currently playing to.</summary>
+    public string DeviceId { get; init; } = string.Empty;
+    public string DeviceName { get; init; } = string.Empty;
+
         public string Label => string.IsNullOrWhiteSpace(DisplayName) ? ProcessName : $"{DisplayName} ({ProcessName})";
 
         /// <summary>Extra information for the sidebar tooltip.</summary>
@@ -22,8 +26,7 @@ public sealed class AudioSessionInfo
 
 public static class AudioSessionEnumerator
 {
-    // Process names rarely change, but resolving one means opening a process
-    // handle. Caching them keeps the periodic refresh cheap.
+    // Caching process names keeps the periodic refresh cheap.
     private static readonly Dictionary<uint, string> ProcessNameCache = new();
     private static readonly object ProcessNameLock = new();
 
@@ -32,27 +35,23 @@ public static class AudioSessionEnumerator
         var result = new Dictionary<uint, AudioSessionInfo>();
         using var enumerator = new MMDeviceEnumerator();
 
-        // Every COM object created here must be released explicitly: otherwise
-        // the finalizer thread has to clean them up, which showed up as a
-        // double-digit percentage of a core burning while the app was idle.
+        // Release COM objects explicitly; finalizers burned CPU at idle.
         foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
         {
             using (device)
             {
                 try
                 {
-                    // The manager has to stay alive while the sessions are
-                    // read: releasing it first leaves the collection dangling
-                    // and the enumeration comes back empty.
+                    string deviceId = device.ID;
+                    string deviceName = device.FriendlyName;
+
+                    // The manager must outlive the session collection.
                     using var manager = device.AudioSessionManager;
                     using var sessions = manager.Sessions;
 
                     for (int i = 0; i < sessions.Count; i++)
                     {
-                        // The session controls are owned by the collection and
-                        // must not be disposed individually: NAudio hands out
-                        // cached wrappers, and releasing one makes the rest of
-                        // the enumeration unreadable.
+                        // Session controls are owned by the collection.
                         var session = sessions[i];
                         uint pid = session.GetProcessID;
                         if (pid == 0 || pid == (uint)Environment.ProcessId)
@@ -72,6 +71,8 @@ public static class AudioSessionEnumerator
                                 ProcessName = existing.ProcessName,
                                 DisplayName = string.IsNullOrWhiteSpace(existing.DisplayName) ? display : existing.DisplayName,
                                 IsActive = existing.IsActive || active,
+                                DeviceId = existing.DeviceId.Length == 0 ? deviceId : existing.DeviceId,
+                                DeviceName = existing.DeviceName.Length == 0 ? deviceName : existing.DeviceName,
                             };
                         }
                         else
@@ -82,6 +83,8 @@ public static class AudioSessionEnumerator
                                 ProcessName = name,
                                 DisplayName = display,
                                 IsActive = active,
+                                DeviceId = deviceId,
+                                DeviceName = deviceName,
                             };
                         }
                     }
@@ -122,8 +125,7 @@ public static class AudioSessionEnumerator
 
         lock (ProcessNameLock)
         {
-            // Drop entries for processes that are gone so the cache cannot grow
-            // without bound.
+            // Bound the cache.
             if (ProcessNameCache.Count > 256)
             {
                 ProcessNameCache.Clear();

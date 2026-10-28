@@ -27,9 +27,12 @@ internal sealed partial class WebShellController
         string Accent,
         double X,
         double Y,
+        double? Width,
+        double? Height,
         string? MicHint,
         SourceKind SourceKind,
         uint? ProcessId,
+        string? ProcessName,
         string? DeviceId,
         string? AsioDriver,
         int[] AsioChannels,
@@ -37,6 +40,8 @@ internal sealed partial class WebShellController
         bool IsFile,
         string? FilePath,
         AudioFileFormat FileFormat,
+        string RecorderMode,
+        bool AutoSave,
         List<PresetProcessor> Processors,
         float Volume,
         bool Muted,
@@ -124,8 +129,8 @@ internal sealed partial class WebShellController
     {
         var snapshot = new NodeSnapshot(
             entry.Id, entry.Kind, entry.Flavor, entry.Title, entry.Subtitle, entry.Accent,
-            entry.X, entry.Y, entry.MicHint, SourceKind.Application, null, null, null,
-            Array.Empty<int>(), false, false, null, AudioFileFormat.Wav24,
+            entry.X, entry.Y, entry.Width, entry.Height, entry.MicHint, SourceKind.Application, null, null, null, null,
+            Array.Empty<int>(), false, false, null, AudioFileFormat.Wav24, RecorderMode.Off.ToString(), false,
             new List<PresetProcessor>(), 1, false, true, null);
 
         if (entry.Source != null)
@@ -134,6 +139,7 @@ internal sealed partial class WebShellController
             {
                 SourceKind = entry.Source.Kind,
                 ProcessId = entry.Source.ProcessId,
+                ProcessName = entry.Source.ProcessName,
                 DeviceId = entry.Source.DeviceId,
                 AsioDriver = entry.Source.AsioDriver,
                 AsioChannels = entry.Source.AsioChannels.ToArray(),
@@ -151,6 +157,8 @@ internal sealed partial class WebShellController
                 IsFile = entry.Output.IsFileRecorder,
                 FilePath = entry.Output.IsFileRecorder ? entry.Output.RecordingPath : null,
                 FileFormat = entry.Output.RecordingFormat,
+                RecorderMode = entry.Output.RecorderMode.ToString(),
+                AutoSave = entry.Output.AutoSave,
                 Volume = entry.Output.Volume,
                 Muted = entry.Output.Muted,
             };
@@ -181,10 +189,14 @@ internal sealed partial class WebShellController
                     snapshot.ProcessId,
                     snapshot.DeviceId,
                     snapshot.AsioDriver,
-                    snapshot.AsioChannels);
+                    snapshot.AsioChannels,
+                    processName: snapshot.ProcessName);
                 source.Gain = snapshot.Volume;
                 source.Muted = snapshot.Muted;
-                return RegisterSource(source, snapshot.X, snapshot.Y, snapshot.Id);
+                var sourceEntry = RegisterSource(source, snapshot.X, snapshot.Y, snapshot.Id);
+                sourceEntry.Width = snapshot.Width;
+                sourceEntry.Height = snapshot.Height;
+                return sourceEntry;
             }
 
             if (snapshot.Kind == "output")
@@ -216,7 +228,13 @@ internal sealed partial class WebShellController
 
                 output.Volume = snapshot.Volume;
                 output.Muted = snapshot.Muted;
-                return RegisterOutput(output, snapshot.X, snapshot.Y, micHint, snapshot.Id);
+                output.RecorderMode = Enum.TryParse<RecorderMode>(snapshot.RecorderMode, true, out var mode)
+                    ? mode : RecorderMode.Off;
+                output.AutoSave = snapshot.AutoSave;
+                var outputEntry = RegisterOutput(output, snapshot.X, snapshot.Y, micHint, snapshot.Id);
+                outputEntry.Width = snapshot.Width;
+                outputEntry.Height = snapshot.Height;
+                return outputEntry;
             }
 
             if (snapshot.Kind == "modifier")
@@ -234,8 +252,11 @@ internal sealed partial class WebShellController
                 }
 
                 modifier.Enabled = snapshot.Enabled;
-                return RegisterModifier(modifier, snapshot.X, snapshot.Y,
+                var modifierEntry = RegisterModifier(modifier, snapshot.X, snapshot.Y,
                     snapshot.Flavor, snapshot.Subtitle, snapshot.Id, snapshot.TranscriberModel);
+                modifierEntry.Width = snapshot.Width;
+                modifierEntry.Height = snapshot.Height;
+                return modifierEntry;
             }
 
             return null;

@@ -12,9 +12,7 @@ public enum SourceKind
     Asio,
 }
 
-/// <summary>
-/// A capture source in the graph. Owns a ring buffer fed by the capture stream.
-/// </summary>
+/// <summary>A capture source with per-consumer audio copies.</summary>
 public sealed class SourceNode : IDisposable
 {
     private IDisposable? _capture;
@@ -43,7 +41,8 @@ public sealed class SourceNode : IDisposable
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public SourceKind Kind { get; }
     public string Title { get; set; }
-    public uint? ProcessId { get; }
+    public uint? ProcessId { get; private set; }
+    public string? ProcessName { get; set; }
     public string? DeviceId { get; }
 
     /// <summary>ASIO driver name when <see cref="Kind"/> is <see cref="SourceKind.Asio"/>.</summary>
@@ -74,25 +73,39 @@ public sealed class SourceNode : IDisposable
     public int SampleRate => _sourceSampleRate;
 
     public SourceNode(string title, SourceKind kind, uint? processId = null, string? deviceId = null,
-        string? asioDriver = null, int[]? asioChannels = null)
+        string? asioDriver = null, int[]? asioChannels = null, string? processName = null)
     {
         Title = title;
         Kind = kind;
         ProcessId = processId;
+        ProcessName = processName;
         DeviceId = deviceId;
         AsioDriver = asioDriver;
         AsioChannels = asioChannels ?? new[] { 0, 1 };
     }
 
-    /// <summary>
-    /// One consumer's private copy of this source's audio.
-    /// </summary>
-    /// <remarks>
-    /// Every output that listens to this source reads from its own copy, so a
-    /// source can feed several outputs at once and each one hears the whole
-    /// signal. The copy also keeps the audio a route sees independent of how
-    /// fast the other routes consume theirs.
-    /// </remarks>
+    /// <summary>Points an app source at a new process instance.</summary>
+    public void RetargetApplication(uint processId, string? processName = null)
+    {
+        if (Kind != SourceKind.Application)
+        {
+            return;
+        }
+
+        if (ProcessId == processId)
+        {
+            if (!string.IsNullOrWhiteSpace(processName)) ProcessName = processName;
+            return;
+        }
+
+        bool wasRunning = IsRunning;
+        if (wasRunning) Stop();
+        ProcessId = processId;
+        if (!string.IsNullOrWhiteSpace(processName)) ProcessName = processName;
+        if (wasRunning) Start();
+    }
+
+    /// <summary>One consumer's private copy of this source.</summary>
     public sealed class Subscription : IDisposable
     {
         /// <summary>How much audio may pile up before the stale head is dropped.</summary>
@@ -458,11 +471,7 @@ public sealed class SourceNode : IDisposable
         _clipping = float.IsFinite(peak) && peak > 1f;
     }
 
-    /// <summary>
-    /// How much captured audio is waiting for the slowest consumer, in ms. A
-    /// large value means a consumer is behind the capture, which is heard as
-    /// delay.
-    /// </summary>
+    /// <summary>Captured audio waiting to be consumed, in ms.</summary>
     public double BufferedMs
     {
         get

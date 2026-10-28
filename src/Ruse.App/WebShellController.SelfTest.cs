@@ -1,3 +1,4 @@
+using System.IO;
 using Ruse.App.Audio;
 
 namespace Ruse.App;
@@ -24,6 +25,100 @@ internal sealed partial class WebShellController
         Check("waveform tap", captured != null &&
                               captured.Any(value => Math.Abs(value - 0.25f) < 0.01f) &&
                               waveformSamples.All(value => Math.Abs(value - 0.25f) < 0.001f));
+
+        var transcriber = new TranscriptionProcessor();
+        transcriber.SetTapId(TranscriptionProcessor.NextTapId());
+        const int toneFrames = 480;
+        var tone = new float[toneFrames * 2];
+        for (int frame = 0; frame < toneFrames; frame++)
+        {
+            float sample = 0.5f * MathF.Sin(2f * MathF.PI * 1000f * frame / 48000f);
+            tone[frame * 2] = sample;
+            tone[frame * 2 + 1] = sample;
+        }
+
+        transcriber.Process(tone, toneFrames);
+        var tapBytes = new byte[4096];
+        int tapRead = TranscriptionProcessor.ReadAvailable(transcriber.TapId, tapBytes);
+        Check("transcriber resample", tapRead == 320 &&
+                                      TranscriptionProcessor.GetLevel(transcriber.TapId) > 0.1f &&
+                                      TranscriptionProcessor.GetLastAudioTick(transcriber.TapId) > 0);
+        TranscriptionProcessor.RemoveTap(transcriber.TapId);
+
+        var retarget = new SourceNode("App retarget", SourceKind.Application, 111);
+        retarget.RetargetApplication(222, "testapp");
+        Check("app retarget", retarget.ProcessId == 222 && retarget.ProcessName == "testapp");
+        retarget.Dispose();
+
+        Check("speech model catalog", TranscriptionModels.All.Count >= 8 &&
+                                      TranscriptionModels.Find(TranscriptionModels.DefaultId) != null &&
+                                      TranscriptionModels.All.All(model => !string.IsNullOrEmpty(model.Tier)) &&
+                                      TranscriptionModels.All.Any(model => model.Tier == "Base") &&
+                                      TranscriptionModels.All.Any(model => model.Tier == "Small") &&
+                                      TranscriptionModels.All.Any(model => model.Tier == "Large") &&
+                                      TranscriptionModels.All.All(model => model.Url.EndsWith(".bin", StringComparison.Ordinal)) &&
+                                      TranscriptionModels.All.All(model => model.Note?.Contains("MIT", StringComparison.Ordinal) == true) &&
+                                      TranscriptionModels.FormatSize(40L * 1024 * 1024).Contains("MB"));
+
+        bool autoRun = _graph.AutoRun;
+        _graph.AutoRun = false;
+        try
+        {
+            var tapSource = RegisterSource(
+                new SourceNode("Tap test source", SourceKind.Application, 12345), 40, 480);
+            var tapModifier = new ModifierNode("Tap test");
+            var tap = new TranscriptionProcessor();
+            tap.SetTapId(TranscriptionProcessor.NextTapId());
+            tapModifier.Add(tap);
+            _graph.AddModifier(tapModifier);
+            _graph.ConnectSourceToModifier(tapSource.Source!, tapModifier);
+            Check("standalone tap monitor", tapModifier.Outputs.Any(output => output.IsMonitor) &&
+                                            _graph.Outputs.Any(output => output.IsMonitor) &&
+                                            tapModifier.Outputs.Any(output => output.Inputs.Count > 0));
+
+            var monitor = tapModifier.Outputs.First(output => output.IsMonitor);
+            monitor.Start();
+            tapSource.Source!.WriteTestSamples(tone);
+            Thread.Sleep(160);
+            int monitored = TranscriptionProcessor.ReadAvailable(tap.TapId, tapBytes);
+            Check("standalone tap audio", monitored > 0);
+            monitor.Stop();
+
+            _graph.RemoveModifier(tapModifier);
+            Check("tap monitor cleanup", _graph.Outputs.All(output => !output.IsMonitor));
+            _graph.RemoveSource(tapSource.Source!);
+            _nodes.Remove(tapSource.Id);
+            TranscriptionProcessor.RemoveTap(tap.TapId);
+        }
+        finally
+        {
+            _graph.AutoRun = autoRun;
+        }
+
+        bool warningAutoRun = _graph.AutoRun;
+        _graph.AutoRun = false;
+        try
+        {
+            var warningSource = RegisterSource(
+                new SourceNode("Duplicate warning source", SourceKind.Application, 12345), 40, 640);
+            var warningOutput = RegisterOutput(
+                OutputNode.CreateForTest(static (_, _) => { }), 360, 640);
+            warningSource.SourceEndpointId = warningOutput.Output!.DeviceId;
+            warningSource.SourceEndpointName = "Test output";
+            ConnectEntries(warningSource, warningOutput, publish: false);
+            var warnings = BuildGraphWarnings();
+            Check("duplicate warning", warnings.Any(item =>
+                item.SourceId == warningSource.Id && item.OutputId == warningOutput.Id));
+            warningSource.SourceEndpointId = "different-endpoint";
+            Check("different device ignored", !BuildGraphWarnings().Any(item =>
+                item.SourceId == warningSource.Id && item.OutputId == warningOutput.Id));
+            RemoveEntryInternal(warningSource.Id);
+            RemoveEntryInternal(warningOutput.Id);
+        }
+        finally
+        {
+            _graph.AutoRun = warningAutoRun;
+        }
 
         void Check(string name, bool condition)
         {

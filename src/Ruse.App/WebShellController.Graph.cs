@@ -28,7 +28,8 @@ internal sealed partial class WebShellController
                 var app = _catalog.Apps.FirstOrDefault(item => item.Id == id) ??
                           _catalog.Apps.FirstOrDefault(item => item.ProcessId == processId) ??
                           throw new InvalidOperationException("The application audio session is no longer available. Refresh and try again.");
-                entry = RegisterSource(new SourceNode(app.Name, SourceKind.Application, app.ProcessId), x, y);
+                entry = RegisterSource(new SourceNode(app.Name, SourceKind.Application, app.ProcessId,
+                    processName: app.ProcessName), x, y);
                 SetStatus($"Added source: {app.Name}");
                 break;
             }
@@ -65,6 +66,103 @@ internal sealed partial class WebShellController
         }
 
         PublishGraph();
+    }
+
+    /// <summary>Creates the guided first route and returns its ids.</summary>
+    private void CreateFirstRoute(BridgeMessage message)
+    {
+        string sourceKind = String(message, "sourceKind");
+        string sourceId = String(message, "sourceId");
+        uint processId = (uint)Number(message, "processId");
+        string outputKind = String(message, "outputKind");
+        string outputId = String(message, "outputId");
+
+        NodeEntry? source;
+        switch (sourceKind)
+        {
+            case "system":
+                source = RegisterSource(new SourceNode("System audio", SourceKind.SystemLoopback), 80, 160);
+                break;
+            case "app":
+            {
+                var app = _catalog.Apps.FirstOrDefault(item => item.Id == sourceId) ??
+                          _catalog.Apps.FirstOrDefault(item => item.ProcessId == processId);
+                if (app == null)
+                {
+                    ShowError("That application audio session is no longer available. Refresh and try again.");
+                    return;
+                }
+
+                source = RegisterSource(new SourceNode(app.Name, SourceKind.Application, app.ProcessId,
+                    processName: app.ProcessName), 80, 160);
+                break;
+            }
+            case "input":
+                source = AddDeviceInput(sourceId, 80, 160);
+                break;
+            default:
+                ShowError("Choose a source for the first route.");
+                return;
+        }
+
+        NodeEntry? output;
+        try
+        {
+            output = outputKind == "virtual"
+                ? AddVirtualOutput(outputId, 660, 160)
+                : AddDeviceOutput(outputId, 660, 160);
+        }
+        catch
+        {
+            RemoveEntryInternal(source.Id);
+            PublishGraph();
+            throw;
+        }
+
+        if (output == null)
+        {
+            RemoveEntryInternal(source.Id);
+            PublishGraph();
+            SetStatus("That output is already on the canvas. Choose another one.", isError: true);
+            return;
+        }
+
+        var link = ConnectEntries(source, output, publish: false);
+        PushAddNode(source);
+        PushAddNode(output);
+        PushConnect(link);
+
+        _settings.OnboardingCompleted = true;
+        _settings.Save();
+
+        // Start even when the restored session was idle.
+        StartRouting();
+
+        var warning = BuildGraphWarnings()
+            .FirstOrDefault(item => item.SourceId == source.Id && item.OutputId == output.Id);
+        Post("first-route", new FirstRouteDto
+        {
+            SourceId = source.Id,
+            SourceTitle = source.Title,
+            OutputTitle = output.Title,
+            Warning = warning?.Message,
+            Severity = warning?.Severity,
+        });
+
+        SetStatus(warning == null
+            ? $"First route ready: {source.Title} → {output.Title}."
+            : $"First route ready, but this setup can double the audio: {source.Title} → {output.Title}.");
+    }
+
+    private void CompleteOnboarding()
+    {
+        if (!_settings.OnboardingCompleted)
+        {
+            _settings.OnboardingCompleted = true;
+            _settings.Save();
+        }
+
+        SetStatus("Welcome guide complete. Reopen it any time from Settings.");
     }
 
     /// <summary>Inserts a modifier into a cable as one undo step.</summary>
@@ -186,6 +284,10 @@ internal sealed partial class WebShellController
         {
             waveform.SetTapId(WaveformProcessor.NextTapId());
         }
+        else if (processor is DbMeterProcessor dbMeter)
+        {
+            dbMeter.SetTapId(DbMeterProcessor.NextTapId());
+        }
         else if (processor is TranscriptionProcessor transcriber)
         {
             transcriber.SetTapId(TranscriptionProcessor.NextTapId());
@@ -244,12 +346,19 @@ internal sealed partial class WebShellController
                 SourceKind.Asio => "ASIO input",
                 _ => "System audio",
             },
-            Accent = source.Kind == SourceKind.Application ? "#5B8DEF" : "#B18CFF",
+            Accent = source.Kind switch
+            {
+                SourceKind.Application => "#5B8DEF",
+                SourceKind.SystemLoopback => "#65D6D0",
+                SourceKind.Asio => "#F0DC5A",
+                _ => IsVirtualCapture(source.Title) ? "#7D5BD6" : "#F0DC5A",
+            },
             X = x,
             Y = y,
             Source = source,
         };
         _nodes.Add(entry.Id, entry);
+        UpdateSourceEndpoint(entry);
         source.Faulted += (node, reason) => _window.Dispatcher.BeginInvoke(new Action(() =>
             OnNodeFault(entry.Id, $"Capture '{node.Title}' stopped: {reason}")));
         return entry;
@@ -266,7 +375,7 @@ internal sealed partial class WebShellController
             Flavor = flavor,
             Title = output.Title,
             Subtitle = output.IsFileRecorder ? "File output" : micHint != null ? "Virtual output" : AsioCatalog.IsAsioId(output.DeviceId) ? "ASIO output" : "Output device",
-            Accent = output.IsFileRecorder ? "#FF8B72" : micHint != null ? "#E5AD51" : "#43E39A",
+            Accent = output.IsFileRecorder ? "#FF8B72" : micHint != null ? "#D9A8FF" : "#43E39A",
             X = x,
             Y = y,
             MicHint = micHint,
@@ -287,10 +396,16 @@ internal sealed partial class WebShellController
         string? id = null,
         string? transcriberModel = null)
     {
+        EnsureUniqueTapIds(modifier);
         _graph.AddModifier(modifier);
         foreach (var waveform in modifier.Processors.OfType<WaveformProcessor>())
         {
             WaveformProcessor.EnsureTap(waveform.TapId);
+        }
+
+        foreach (var dbMeter in modifier.Processors.OfType<DbMeterProcessor>())
+        {
+            dbMeter.SetTapId(dbMeter.TapId > 0 ? dbMeter.TapId : DbMeterProcessor.NextTapId());
         }
 
         bool hasTranscriber = modifier.Processors.OfType<TranscriptionProcessor>().Any();
@@ -314,7 +429,7 @@ internal sealed partial class WebShellController
             Flavor = flavor,
             Title = modifier.Title,
             Subtitle = subtitle ?? "Processing",
-            Accent = "#E5AD51",
+            Accent = flavor == "chain" ? "#B18CFF" : "#E5AD51",
             X = x,
             Y = y,
             TranscriberModel = resolvedModel,
@@ -322,6 +437,64 @@ internal sealed partial class WebShellController
         };
         _nodes.Add(entry.Id, entry);
         return entry;
+    }
+
+    /// <summary>Gives duplicated nodes their own tap.</summary>
+    private void EnsureUniqueTapIds(ModifierNode modifier)
+    {
+        var used = new HashSet<int>();
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Modifier == null)
+            {
+                continue;
+            }
+
+            foreach (var waveform in entry.Modifier.Processors.OfType<WaveformProcessor>())
+            {
+                used.Add(waveform.TapId);
+            }
+
+            foreach (var transcriber in entry.Modifier.Processors.OfType<TranscriptionProcessor>())
+            {
+                used.Add(transcriber.TapId);
+            }
+
+            foreach (var dbMeter in entry.Modifier.Processors.OfType<DbMeterProcessor>())
+            {
+                used.Add(dbMeter.TapId);
+            }
+        }
+
+        foreach (var waveform in modifier.Processors.OfType<WaveformProcessor>())
+        {
+            if (waveform.TapId <= 0 || used.Contains(waveform.TapId))
+            {
+                waveform.SetTapId(WaveformProcessor.NextTapId());
+            }
+
+            used.Add(waveform.TapId);
+        }
+
+        foreach (var transcriber in modifier.Processors.OfType<TranscriptionProcessor>())
+        {
+            if (transcriber.TapId <= 0 || used.Contains(transcriber.TapId))
+            {
+                transcriber.SetTapId(TranscriptionProcessor.NextTapId());
+            }
+
+            used.Add(transcriber.TapId);
+        }
+
+        foreach (var dbMeter in modifier.Processors.OfType<DbMeterProcessor>())
+        {
+            if (dbMeter.TapId <= 0 || used.Contains(dbMeter.TapId))
+            {
+                dbMeter.SetTapId(DbMeterProcessor.NextTapId());
+            }
+
+            used.Add(dbMeter.TapId);
+        }
     }
 
     private void OnNodeFault(string id, string reason)
@@ -359,19 +532,24 @@ internal sealed partial class WebShellController
         {
             dto.Volume = entry.Source.Gain;
             dto.Muted = entry.Source.Muted;
+            dto.DeviceId = entry.Source.DeviceId;
         }
         else if (entry.Output != null)
         {
             dto.Volume = entry.Output.Volume;
             dto.Muted = entry.Output.Muted;
+            dto.DeviceId = entry.Output.DeviceId;
             dto.IsRecorder = entry.Output.IsFileRecorder;
             dto.RecordingPath = entry.Output.RecordingPath;
             dto.RecordingFormat = entry.Output.RecordingFormat.ToString();
+            dto.RecorderMode = entry.Output.RecorderMode.ToString();
+            dto.RecorderAutoSave = entry.Output.AutoSave;
         }
         else if (entry.Modifier != null)
         {
             dto.Enabled = entry.Modifier.Enabled;
             dto.IsWaveform = entry.Modifier.Processors.OfType<WaveformProcessor>().Any();
+            dto.IsDbMeter = entry.Modifier.Processors.OfType<DbMeterProcessor>().Any();
             dto.IsTranscriber = entry.Modifier.Processors.OfType<TranscriptionProcessor>().Any();
             dto.TranscriberModel = entry.TranscriberModel;
             var chain = entry.Modifier.Processors.OfType<ChainProcessor>().FirstOrDefault();
@@ -391,7 +569,8 @@ internal sealed partial class WebShellController
                 for (int parameterIndex = 0; parameterIndex < parameterized.Parameters.Count; parameterIndex++)
                 {
                     var parameter = parameterized.Parameters[parameterIndex];
-                    if (parameter.Name is WaveformProcessor.TapParameterName or TranscriptionProcessor.TapParameterName) continue;
+                    if (parameter.Name is WaveformProcessor.TapParameterName or TranscriptionProcessor.TapParameterName or DbMeterProcessor.TapParameterName) continue;
+                    if (parameterized is DbMeterProcessor && parameter.Name == "Orientation") continue;
                     dto.Parameters.Add(new ParameterDto
                     {
                         ProcessorIndex = processorIndex,
@@ -419,21 +598,22 @@ internal sealed partial class WebShellController
         if (!_nodes.TryGetValue(id, out var entry)) return;
         double oldX = entry.X;
         double oldY = entry.Y;
-        entry.X = Math.Max(0, x);
-        entry.Y = Math.Max(0, y);
+        entry.X = x;
+        entry.Y = y;
         double newX = entry.X;
         double newY = entry.Y;
         PushAction("Move node",
             undo: () => SetNodePosition(id, oldX, oldY, publish: true),
             redo: () => SetNodePosition(id, newX, newY, publish: true),
             coalesceKey: $"move:{id}");
+        PublishGraph();
     }
 
     private void SetNodePosition(string id, double x, double y, bool publish)
     {
         if (!_nodes.TryGetValue(id, out var entry)) return;
-        entry.X = Math.Max(0, x);
-        entry.Y = Math.Max(0, y);
+        entry.X = x;
+        entry.Y = y;
         if (publish) PublishGraph();
     }
 
@@ -535,6 +715,24 @@ internal sealed partial class WebShellController
         }
 
         if (publish) PublishGraph();
+    }
+
+    private void SetDbMeterOrientation(string id, bool vertical)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null)
+        {
+            return;
+        }
+
+        var meter = entry.Modifier.Processors.OfType<DbMeterProcessor>().FirstOrDefault();
+        if (meter == null)
+        {
+            return;
+        }
+
+        meter.IsVertical = vertical;
+        SetStatus($"{entry.Title}: {(vertical ? "vertical" : "horizontal")} meter.");
+        PublishTelemetry(force: true);
     }
 
     private void RenameNode(string id, string title)
@@ -713,6 +911,17 @@ internal sealed partial class WebShellController
             foreach (var transcriber in entry.Modifier.Processors.OfType<TranscriptionProcessor>())
             {
                 TranscriptionRegistry.Stop(transcriber.TapId);
+                TranscriptionProcessor.RemoveTap(transcriber.TapId);
+            }
+
+            foreach (var waveform in entry.Modifier.Processors.OfType<WaveformProcessor>())
+            {
+                WaveformProcessor.RemoveTap(waveform.TapId);
+            }
+
+            foreach (var dbMeter in entry.Modifier.Processors.OfType<DbMeterProcessor>())
+            {
+                DbMeterProcessor.RemoveTap(dbMeter.TapId);
             }
 
             _graph.RemoveModifier(entry.Modifier);
@@ -730,6 +939,7 @@ internal sealed partial class WebShellController
         _graph = new AudioGraph { AutoRun = false };
         _nodes.Clear();
         _links.Clear();
+        _frames.Clear();
         _running = false;
         PublishTelemetry();
     }
@@ -739,6 +949,7 @@ internal sealed partial class WebShellController
         _graph.AutoRun = true;
         int started = 0;
         int recordings = 0;
+        int armed = 0;
         int unarmed = 0;
         foreach (var entry in _nodes.Values)
         {
@@ -751,9 +962,32 @@ internal sealed partial class WebShellController
                 }
                 else if (entry.Output is { IsRunning: false } output)
                 {
+                    if (output.IsFileRecorder)
+                    {
+                        if (!output.AutoStart)
+                        {
+                            continue;
+                        }
+
+                        if (output.RecorderMode == RecorderMode.On)
+                        {
+                            if (StartRecorder(entry, output)) recordings++;
+                            else if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
+                        }
+                        else if (output.RecorderMode == RecorderMode.Armed)
+                        {
+                            armed++;
+                            if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
+                        }
+                        else if (!output.AutoSave && !output.HasRecordingPath)
+                        {
+                            unarmed++;
+                        }
+
+                        continue;
+                    }
+
                     output.Start();
-                    if (output.IsRecording) recordings++;
-                    if (output.IsFileRecorder && !output.HasRecordingPath) unarmed++;
                 }
             }
             catch (Exception ex)
@@ -762,10 +996,13 @@ internal sealed partial class WebShellController
             }
         }
 
+        _graph.EnsureMonitorsRunning();
         _running = _graph.Outputs.Any(output => output.IsRunning);
+        int outputCount = _graph.Outputs.Count(output => !output.IsMonitor);
         string recordingNote = recordings > 0 ? $", {recordings} recording(s)" : string.Empty;
+        string armedNote = armed > 0 ? $", {armed} armed" : string.Empty;
         string unarmedNote = unarmed > 0 ? $"; {unarmed} recorder(s) need a file" : string.Empty;
-        SetStatus($"Routing started · {started} source(s), {_graph.Outputs.Count} output(s){recordingNote}{unarmedNote}.");
+        SetStatus($"Routing started · {started} source(s), {outputCount} output(s){recordingNote}{unarmedNote}.");
         PublishGraph();
         PublishTelemetry(force: true);
     }
@@ -803,39 +1040,6 @@ internal sealed partial class WebShellController
         PublishTelemetry(force: true);
     }
 
-    private void SetRouteGain(string id, float gain)
-    {
-        var link = _links.FirstOrDefault(item => item.Id == id && item.Kind == "direct");
-        if (link == null || !_nodes.TryGetValue(link.From, out var from) ||
-            !_nodes.TryGetValue(link.To, out var to) || from.Source == null || to.Output == null)
-        {
-            return;
-        }
-
-        gain = Math.Clamp(gain, 0, 2);
-        float old = link.Gain;
-        ApplyRouteGain(id, gain, publish: true);
-        PushAction("Set route gain",
-            undo: () => ApplyRouteGain(id, old, publish: true),
-            redo: () => ApplyRouteGain(id, gain, publish: true));
-        SetStatus($"Route gain set to {gain:P0}.");
-    }
-
-    private void ApplyRouteGain(string id, float gain, bool publish)
-    {
-        var link = _links.FirstOrDefault(item => item.Id == id && item.Kind == "direct");
-        if (link == null || !_nodes.TryGetValue(link.From, out var from) ||
-            !_nodes.TryGetValue(link.To, out var to) || from.Source == null || to.Output == null)
-        {
-            return;
-        }
-
-        link.Gain = gain;
-        var route = to.Output.Inputs.FirstOrDefault(item => item.Source == from.Source);
-        if (route != null) route.Gain = gain;
-        if (publish) PublishGraph();
-    }
-
     private void ChooseRecorderFile(string id, string formatName)
     {
         if (!_nodes.TryGetValue(id, out var entry) || entry.Output is not { IsFileRecorder: true } output) return;
@@ -852,31 +1056,18 @@ internal sealed partial class WebShellController
 
         output.SetRecordingDestination(dialog.FileName, format.Format);
         entry.Title = output.Title;
-        if (_graph.AutoRun && output.Inputs.Count > 0)
+        if (_graph.AutoRun && output.RecorderMode == RecorderMode.On)
         {
-            _graph.EnsureRunning(output);
+            StartRecorder(entry, output);
         }
 
-        SetStatus($"Recorder armed: {Path.GetFileName(dialog.FileName)}");
+        SetStatus($"Recorder destination set: {Path.GetFileName(dialog.FileName)}");
         PublishGraph();
     }
 
     private void StopRecorder(string id)
     {
-        if (!_nodes.TryGetValue(id, out var entry) ||
-            entry.Output is not { IsFileRecorder: true, IsRecording: true } output)
-        {
-            return;
-        }
-
-        output.Stop();
-        _running = _graph.Outputs.Any(item => item.IsRunning);
-        string result = string.IsNullOrEmpty(output.RecordingError)
-            ? "Recording saved."
-            : "Recording failed: " + output.RecordingError;
-        SetStatus($"{output.Title}: {result}");
-        PublishGraph();
-        PublishTelemetry(force: true);
+        SetRecorderMode(id, RecorderMode.Off.ToString());
     }
 
     private void SetRecorderFormat(string id, string formatName)
@@ -946,8 +1137,8 @@ internal sealed partial class WebShellController
                 continue;
             }
 
-            double x = Math.Max(0, xValue.GetDouble());
-            double y = Math.Max(0, yValue.GetDouble());
+            double x = xValue.GetDouble();
+            double y = yValue.GetDouble();
             changes.Add((nodeId, entry.X, entry.Y, x, y));
             entry.X = x;
             entry.Y = y;

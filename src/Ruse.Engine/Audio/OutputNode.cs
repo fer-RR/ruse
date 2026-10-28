@@ -3,10 +3,7 @@ using NAudio.Wave;
 
 namespace Ruse.App.Audio;
 
-/// <summary>
-/// A physical output endpoint that receives a mixed stream from one or more routes.
-/// Each output runs its own render thread pulling from the routes bound to it.
-/// </summary>
+/// <summary>A render endpoint with its own mixing thread.</summary>
 public sealed class OutputNode : IDisposable
 {
     private readonly MMDevice _device;
@@ -28,6 +25,10 @@ public sealed class OutputNode : IDisposable
     private double _lastRecordedSeconds;
     private string? _lastRecordingError;
 
+    /// <summary>Persistent recorder control state.</summary>
+    public RecorderMode RecorderMode { get; set; } = RecorderMode.Off;
+    public bool AutoSave { get; set; }
+
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public string DeviceId { get; }
     public string Title { get; set; }
@@ -37,10 +38,13 @@ public sealed class OutputNode : IDisposable
     /// <summary>True when this output records to a file rather than a device.</summary>
     public bool IsFileRecorder { get; private set; }
 
-    /// <summary>
-    /// False for a recorder restored from a preset: reconnecting must not start
-    /// a new take (and overwrite the file) just because the session loaded.
-    /// </summary>
+    /// <summary>True for a hidden tap monitor.</summary>
+    public bool IsMonitor { get; private set; }
+
+    /// <summary>Receives the post-effect mix before master gain for a monitor output.</summary>
+    private Action<float[], int>? _mixSink;
+
+    /// <summary>False for recorders restored from a preset.</summary>
     public bool AutoStart { get; set; } = true;
 
     public string RecordingPath => _recordingPath ?? string.Empty;
@@ -67,11 +71,7 @@ public sealed class OutputNode : IDisposable
 
     private volatile bool _stopRequested;
 
-    /// <summary>
-    /// Approximate end-to-end buffering latency for this endpoint, in ms:
-    /// the WASAPI shared-mode period plus however much decoded audio is queued
-    /// waiting to be played.
-    /// </summary>
+    /// <summary>Approximate endpoint latency, in ms.</summary>
     public double EstimatedLatencyMs
     {
         get
@@ -81,10 +81,7 @@ public sealed class OutputNode : IDisposable
         }
     }
 
-    /// <summary>
-    /// Extra latency the effect chains add, in ms: the slowest route's own
-    /// effect latency plus whatever alignment delay the other routes carry.
-    /// </summary>
+    /// <summary>Latency added by effect chains and alignment, in ms.</summary>
     public double ChainLatencyMs => _chainLatencyMs;
 
     private double _outputLatencyMs;
@@ -162,6 +159,17 @@ public sealed class OutputNode : IDisposable
     {
         var node = new OutputNode();
         node._testSink = sink;
+        return node;
+    }
+
+    /// <summary>Creates a silent real-time output for a tap sink.</summary>
+    public static OutputNode CreateMonitor(Action<float[], int> sink)
+    {
+        var node = new OutputNode("monitor:" + Guid.NewGuid().ToString("N"), "Tap monitor");
+        node.IsMonitor = true;
+        node.PaceRealTime = true;
+        node._testSink = static (_, _) => { };
+        node._mixSink = sink;
         return node;
     }
 
@@ -282,7 +290,7 @@ public sealed class OutputNode : IDisposable
                     .WithDevice(_device)
                     .WithSharedMode()
                     .WithEventSync()
-                    .WithLowLatency(true)
+                    .WithLowLatency()
                     .WithLatency(5)
                     .Build();
 
@@ -291,7 +299,14 @@ public sealed class OutputNode : IDisposable
                 _wasapiOut.Play();
 
                 // These reflect what the engine actually granted, so read them only
-                // after Init/Play â€” before that they report the requested defaults.
+                // after Init/Play — before that they report the requested defaults.
+                if (!_wasapiOut.LowLatencyActive &&
+                    _wasapiOut.LowLatencyUnavailableReason is { Length: > 0 } reason)
+                {
+                    Ruse.App.Diagnostics.AppLog.Info(
+                        $"Output '{Title}': low latency unavailable ({reason}); using standard shared mode.");
+                }
+
                 _lowLatency = _wasapiOut.LowLatencyActive;
                 _outputLatencyMs = _wasapiOut.LatencyMilliseconds > 0 ? _wasapiOut.LatencyMilliseconds : 5;
             }
@@ -399,12 +414,7 @@ public sealed class OutputNode : IDisposable
         }
     }
 
-    /// <summary>Render-buffer depth to keep ahead of the device, in ms.</summary>
-    /// <remarks>
-    /// This is pure added latency: the device plays what is queued. Two or
-    /// three chunks of headroom is enough to ride out a scheduling hiccup
-    /// without the buffer growing into an audible delay.
-    /// </remarks>
+    // Small enough for low latency, large enough to absorb a scheduling hiccup.
     private const double TargetBufferMs = 12;
 
     /// <summary>Set by diagnostics to pace a test sink at real time instead of full speed.</summary>
@@ -422,10 +432,7 @@ public sealed class OutputNode : IDisposable
     [System.Runtime.InteropServices.DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
     private static extern uint TimeEndPeriod(uint uPeriod);
 
-    /// <summary>
-    /// Mixes and emits one pump chunk. Shared by the render thread and the
-    /// latency self-test so both exercise exactly the same code path.
-    /// </summary>
+    /// <summary>Mixes and emits one pump chunk.</summary>
     internal void RenderChunk(float[] mix, float[] temp, byte[] byteBuffer, int channels)
     {
         long allocBefore = GC.GetAllocatedBytesForCurrentThread();
@@ -472,6 +479,20 @@ public sealed class OutputNode : IDisposable
             for (int i = 0; i < read; i++)
             {
                 mix[i] += temp[i] * gain;
+            }
+        }
+
+        // Tap processors see the post-effect mix before master gain and
+        // clipping, and before any output volume is applied.
+        if (_mixSink != null)
+        {
+            try
+            {
+                _mixSink(mix, mix.Length);
+            }
+            catch
+            {
+                // A tap must never be able to take down the audio path.
             }
         }
 
