@@ -42,6 +42,9 @@ internal sealed partial class WebShellController
             case "virtual": entry = AddVirtualOutput(id, x, y); break;
             case "effect": entry = AddEffect(id, x, y); break;
             case "chain": entry = AddChain(id, x, y); break;
+            case "vst3":
+                entry = AddVst3Plugin(id, x, y);
+                break;
             case "file-player":
                 AddFilePlayer(x, y);
                 return;
@@ -73,25 +76,12 @@ internal sealed partial class WebShellController
 
     private void AddFilePlayer(double x = 80, double y = 120)
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = "Choose an audio file",
-            Filter = "Audio files|*.wav;*.mp3;*.flac;*.aiff;*.aif;*.m4a;*.wma;*.ogg|All files|*.*",
-            CheckFileExists = true,
-        };
-        if (dialog.ShowDialog(_window) != true)
-        {
-            return;
-        }
-
-        string path = dialog.FileName;
-        var source = new SourceNode(
-            Path.GetFileNameWithoutExtension(path), SourceKind.File, filePath: path);
+        var source = new SourceNode("File player", SourceKind.File);
         var entry = RegisterSource(source, x, y);
         PushAddNode(entry);
         PublishGraph();
         PublishTelemetry(force: true);
-        SetStatus($"Added file player: {Path.GetFileName(path)}");
+        SetStatus("Added a file player. Choose a file to load audio.");
     }
 
     private void ChooseFilePlayerFile(string id)
@@ -115,12 +105,11 @@ internal sealed partial class WebShellController
 
         string path = dialog.FileName;
         source.SetFile(path, source.FileLoop);
-        _graph.EnsureRunning(source);
         entry.Title = Path.GetFileNameWithoutExtension(path);
         source.Title = entry.Title;
         PublishGraph();
         PublishTelemetry(force: true);
-        SetStatus($"File player loaded: {Path.GetFileName(path)}");
+        SetStatus($"File loaded: {Path.GetFileName(path)}. Press Start to play.");
     }
 
     private void SetFilePlayerLoop(string id, bool loop)
@@ -151,6 +140,51 @@ internal sealed partial class WebShellController
         source.RestartFile();
         PublishTelemetry(force: true);
         SetStatus($"{entry.Title}: restarting from the beginning.");
+    }
+
+    private void StartFilePlayer(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        if (!source.HasFile)
+        {
+            SetStatus("Choose an audio file first.", isError: true);
+            return;
+        }
+
+        if (!_graph.AutoRun)
+        {
+            SetStatus("Start routing before playing the file.", isError: true);
+            return;
+        }
+
+        try
+        {
+            source.Start();
+            PublishGraph();
+            PublishTelemetry(force: true);
+            SetStatus($"{entry.Title}: playing.");
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Could not play '{entry.Title}': {ex.Message}", ex);
+        }
+    }
+
+    private void StopFilePlayer(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        source.Stop();
+        PublishGraph();
+        PublishTelemetry(force: true);
+        SetStatus($"{entry.Title}: stopped.");
     }
 
     /// <summary>Creates the guided first route and returns its ids.</summary>
@@ -432,10 +466,71 @@ internal sealed partial class WebShellController
         {
             transcriber.SetTapId(TranscriptionProcessor.NextTapId());
         }
+        else if (processor is TranslatorProcessor translator)
+        {
+            translator.SetTapId(TranscriptionProcessor.NextTapId());
+        }
 
         modifier.Add(processor);
-        var entry = RegisterModifier(modifier, x, y, transcriberModel: _settings.TranscriberModel);
+        var entry = RegisterModifier(
+            modifier,
+            x,
+            y,
+            flavor: processor is TranslatorProcessor ? "translator" : "effect",
+            subtitle: processor is TranslatorProcessor ? "Speech translation" : null,
+            transcriberModel: _settings.TranscriberModel,
+            translatorTarget: processor is TranslatorProcessor ? _settings.TranslatorTarget : null,
+            translatorModel: processor is TranslatorProcessor ? _settings.TranslatorModel : null);
         SetStatus($"Added effect: {descriptor.DisplayName}");
+        return entry;
+    }
+
+    private void SetVst3Editor(string id, bool open)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Modifier?.Processors.OfType<Vst3Processor>().FirstOrDefault() is not { } vst)
+        {
+            return;
+        }
+
+        try
+        {
+            if (open)
+            {
+                if (!vst.OpenEditor(entry.Title))
+                {
+                    SetStatus("This VST3 has no editor window.", isError: true);
+                }
+            }
+            else
+            {
+                vst.CloseEditor();
+            }
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not open the VST3 editor: " + ex.Message, ex);
+        }
+
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private NodeEntry AddVst3Plugin(string identifier, double x, double y)
+    {
+        var descriptor = FindVst3Descriptor(identifier);
+        string name = string.IsNullOrWhiteSpace(descriptor?.Name) ? "VST3 plugin" : descriptor!.Name;
+        var processor = new Vst3Processor(identifier, start: false);
+        var modifier = new ModifierNode(name);
+        modifier.Add(processor);
+        var entry = RegisterModifier(
+            modifier,
+            x,
+            y,
+            flavor: "vst3",
+            subtitle: "VST3 effect");
+        entry.Title = name;
+        SetStatus($"Added VST3: {name}.");
         return entry;
     }
 
@@ -537,7 +632,9 @@ internal sealed partial class WebShellController
         string flavor = "effect",
         string? subtitle = null,
         string? id = null,
-        string? transcriberModel = null)
+        string? transcriberModel = null,
+        string? translatorTarget = null,
+        string? translatorModel = null)
     {
         EnsureUniqueTapIds(modifier);
         _graph.AddModifier(modifier);
@@ -552,8 +649,18 @@ internal sealed partial class WebShellController
         }
 
         bool hasTranscriber = modifier.Processors.OfType<TranscriptionProcessor>().Any();
+        bool hasTranslator = modifier.Processors.OfType<TranslatorProcessor>().Any();
         string? resolvedModel = hasTranscriber
             ? TranscriptionModels.Resolve(transcriberModel ?? _settings.TranscriberModel)
+            : null;
+        string? resolvedTranslatorSpeechModel = hasTranslator
+            ? TranscriptionModels.ResolveMultilingual(transcriberModel ?? _settings.TranscriberModel)
+            : null;
+        string? resolvedTarget = hasTranslator
+            ? TranslationLanguages.Normalize(translatorTarget ?? _settings.TranslatorTarget)
+            : null;
+        string? resolvedTranslationModel = hasTranslator && TranslationLanguages.NeedsModel(resolvedTarget)
+            ? TranslationModels.Resolve(translatorModel ?? _settings.TranslatorModel)
             : null;
 
         foreach (var transcriber in modifier.Processors.OfType<TranscriptionProcessor>())
@@ -565,6 +672,19 @@ internal sealed partial class WebShellController
             }
         }
 
+        foreach (var translator in modifier.Processors.OfType<TranslatorProcessor>())
+        {
+            TranscriptionProcessor.EnsureTap(translator.TapId);
+            if (!string.IsNullOrEmpty(resolvedTranslatorSpeechModel))
+            {
+                TranslationRegistry.Ensure(
+                    translator.TapId,
+                    resolvedTranslatorSpeechModel,
+                    resolvedTranslationModel ?? "",
+                    resolvedTarget ?? TranslationLanguages.DefaultCode);
+            }
+        }
+
         var entry = new NodeEntry
         {
             Id = id ?? modifier.Id,
@@ -572,14 +692,62 @@ internal sealed partial class WebShellController
             Flavor = flavor,
             Title = modifier.Title,
             Subtitle = subtitle ?? "Processing",
-            Accent = flavor == "chain" ? "#B18CFF" : "#E5AD51",
+            Accent = flavor == "chain" ? "#B18CFF" : flavor == "translator" ? "#73C8E8" : flavor == "vst3" ? "#A3E635" : "#E5AD51",
             X = x,
             Y = y,
-            TranscriberModel = resolvedModel,
+            TranscriberModel = hasTranslator ? resolvedTranslatorSpeechModel : resolvedModel,
+            TranslatorTarget = resolvedTarget,
+            TranslatorModel = resolvedTranslationModel,
             Modifier = modifier,
         };
         _nodes.Add(entry.Id, entry);
+
+        if (modifier.Processors.OfType<Vst3Processor>().FirstOrDefault() is { } vst)
+        {
+            vst.Changed += _ => _window.Dispatcher.BeginInvoke(new Action(() => OnVst3Changed(entry.Id)));
+            vst.Start();
+        }
+
         return entry;
+    }
+
+    private void OnVst3Changed(string id)
+    {
+        if (_disposed || !_nodes.TryGetValue(id, out var entry) || entry.Modifier == null)
+        {
+            return;
+        }
+
+        var vst = entry.Modifier.Processors.OfType<Vst3Processor>().FirstOrDefault();
+        if (vst == null)
+        {
+            return;
+        }
+
+        if (entry.Title == "VST3 plugin" && !string.IsNullOrWhiteSpace(vst.PluginName))
+        {
+            entry.Title = vst.PluginName;
+        }
+
+        if (entry.Flavor == "vst3")
+        {
+            entry.Subtitle = string.IsNullOrWhiteSpace(vst.Vendor) ? "VST3 effect" : $"{vst.Vendor} · VST3";
+        }
+
+        if (!string.IsNullOrWhiteSpace(vst.Error))
+        {
+            SetStatus($"{entry.Title}: {vst.Error}", isError: true);
+        }
+
+        // The plugin may have loaded after the chain was built; its latency is
+        // only known now. The same-template fast path keeps the VST instance.
+        foreach (var output in _graph.Outputs)
+        {
+            _graph.RebuildRouteProcessors(output);
+        }
+
+        PublishGraph();
+        PublishTelemetry(force: true);
     }
 
     /// <summary>Gives duplicated nodes their own tap.</summary>
@@ -601,6 +769,11 @@ internal sealed partial class WebShellController
             foreach (var transcriber in entry.Modifier.Processors.OfType<TranscriptionProcessor>())
             {
                 used.Add(transcriber.TapId);
+            }
+
+            foreach (var translator in entry.Modifier.Processors.OfType<TranslatorProcessor>())
+            {
+                used.Add(translator.TapId);
             }
 
             foreach (var dbMeter in entry.Modifier.Processors.OfType<DbMeterProcessor>())
@@ -627,6 +800,16 @@ internal sealed partial class WebShellController
             }
 
             used.Add(transcriber.TapId);
+        }
+
+        foreach (var translator in modifier.Processors.OfType<TranslatorProcessor>())
+        {
+            if (translator.TapId <= 0 || used.Contains(translator.TapId))
+            {
+                translator.SetTapId(TranscriptionProcessor.NextTapId());
+            }
+
+            used.Add(translator.TapId);
         }
 
         foreach (var dbMeter in modifier.Processors.OfType<DbMeterProcessor>())
@@ -697,7 +880,22 @@ internal sealed partial class WebShellController
             dto.IsWaveform = entry.Modifier.Processors.OfType<WaveformProcessor>().Any();
             dto.IsDbMeter = entry.Modifier.Processors.OfType<DbMeterProcessor>().Any();
             dto.IsTranscriber = entry.Modifier.Processors.OfType<TranscriptionProcessor>().Any();
+            dto.IsTranslator = entry.Modifier.Processors.OfType<TranslatorProcessor>().Any();
             dto.TranscriberModel = entry.TranscriberModel;
+            dto.TranslatorTarget = entry.TranslatorTarget;
+            dto.TranslatorModel = entry.TranslatorModel;
+            if (entry.Modifier.Processors.OfType<Vst3Processor>().FirstOrDefault() is { } vst)
+            {
+                dto.IsVst3 = true;
+                dto.Vst3Identifier = vst.Identifier;
+                dto.Vst3Status = vst.Status;
+                dto.Vst3Vendor = vst.Vendor;
+                dto.Vst3Version = vst.Version;
+                dto.Vst3Error = vst.Error;
+                dto.Vst3HasEditor = vst.HasEditor;
+                dto.Vst3EditorOpen = vst.IsEditorOpen;
+                dto.Vst3LatencyMs = (int)Math.Round(vst.LatencySamples * 1000.0 / 48000.0);
+            }
             var chain = entry.Modifier.Processors.OfType<ChainProcessor>().FirstOrDefault();
             if (chain != null)
             {
@@ -1060,6 +1258,12 @@ internal sealed partial class WebShellController
                 TranscriptionProcessor.RemoveTap(transcriber.TapId);
             }
 
+            foreach (var translator in entry.Modifier.Processors.OfType<TranslatorProcessor>())
+            {
+                TranslationRegistry.Stop(translator.TapId);
+                TranscriptionProcessor.RemoveTap(translator.TapId);
+            }
+
             foreach (var waveform in entry.Modifier.Processors.OfType<WaveformProcessor>())
             {
                 WaveformProcessor.RemoveTap(waveform.TapId);
@@ -1081,6 +1285,7 @@ internal sealed partial class WebShellController
     {
         _graph.AutoRun = false;
         TranscriptionRegistry.StopAll();
+        TranslationRegistry.StopAll();
         _graph.Dispose();
         _graph = new AudioGraph { AutoRun = false };
         _nodes.Clear();
@@ -1097,12 +1302,19 @@ internal sealed partial class WebShellController
         int recordings = 0;
         int armed = 0;
         int unarmed = 0;
+        int playersWithoutFile = 0;
         foreach (var entry in _nodes.Values)
         {
             try
             {
                 if (entry.Source is { IsRunning: false } source)
                 {
+                    if (source.Kind == SourceKind.File && !source.HasFile)
+                    {
+                        playersWithoutFile++;
+                        continue;
+                    }
+
                     source.Start();
                     started++;
                 }
@@ -1148,7 +1360,10 @@ internal sealed partial class WebShellController
         string recordingNote = recordings > 0 ? $", {recordings} recording(s)" : string.Empty;
         string armedNote = armed > 0 ? $", {armed} armed" : string.Empty;
         string unarmedNote = unarmed > 0 ? $"; {unarmed} recorder(s) need a file" : string.Empty;
-        SetStatus($"Routing started · {started} source(s), {outputCount} output(s){recordingNote}{unarmedNote}.");
+        string playerNote = playersWithoutFile > 0
+            ? $"; {playersWithoutFile} file player(s) need a file"
+            : string.Empty;
+        SetStatus($"Routing started · {started} source(s), {outputCount} output(s){recordingNote}{unarmedNote}{playerNote}.");
         PublishGraph();
         PublishTelemetry(force: true);
     }

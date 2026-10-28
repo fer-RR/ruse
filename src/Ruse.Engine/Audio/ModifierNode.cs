@@ -11,8 +11,10 @@ namespace Ruse.App.Audio;
 /// route's <see cref="OutputNode.Route.Processors"/> array, flattening every
 /// modifier between a source and an output into one immutable snapshot.
 /// </remarks>
-public sealed class ModifierNode
+public sealed class ModifierNode : IDisposable
 {
+    private bool _disposed;
+
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public string Title { get; set; }
 
@@ -78,5 +80,25 @@ public sealed class ModifierNode
         {
             p.Reset();
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        var seen = new HashSet<IAudioProcessor>(ReferenceEqualityComparer.Instance);
+        foreach (var processor in _processors)
+        {
+            if (seen.Add(processor))
+            {
+                (processor as IDisposable)?.Dispose();
+            }
+        }
+
+        _processors.Clear();
     }
 }

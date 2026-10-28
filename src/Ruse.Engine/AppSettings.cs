@@ -44,6 +44,8 @@ public sealed class AppSettings
 
     /// <summary>Default Whisper model id for new transcriber nodes.</summary>
     public string TranscriberModel { get; set; } = "whisper-small.en";
+    public string TranslatorModel { get; set; } = "qwen2.5-1.5b-instruct-q4_k_m";
+    public string TranslatorTarget { get; set; } = "en";
 
     /// <summary>When the mini-map is shown (0 = always, 1 = never, 2 = when zoomed in).</summary>
     public int MinimapMode { get; set; } = 2;

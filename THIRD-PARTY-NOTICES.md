@@ -11,6 +11,13 @@ summary; keep the complete licence texts with any distributed build.
   https://github.com/ggml-org/whisper.cpp
 - **Whisper.net** — Copyright (c) 2024 sandrohanea
   https://github.com/sandrohanea/whisper.net
+- **LLamaSharp / llama.cpp** — Copyright (c) The LLamaSharp and llama.cpp authors
+  https://github.com/SciSharp/LLamaSharp, https://github.com/ggml-org/llama.cpp
+- **OwnAudioVst / OwnVST3Host** — Copyright (c) ModernMube
+  https://github.com/ModernMube/OwnAudioVST3
+- **Steinberg VST 3 SDK** — Copyright (c) Steinberg Media Technologies GmbH.
+  The VST 3.8+ SDK is MIT licensed; plugins hosted by Ruse remain under their
+  own licences. https://github.com/steinbergmedia/vst3sdk
 - **NAudio / NAudio.Asio** — Copyright (c) Mark Heath
   https://github.com/naudio/NAudio
 - **React, React DOM, React Flow** — https://react.dev, https://reactflow.dev
@@ -64,6 +71,9 @@ THIS SOFTWARE.
 
 ## Apache 2.0
 
+- **Qwen2.5 Instruct GGUF models** — Copyright (c) Alibaba Cloud.
+  Downloaded separately when the user installs a translation model; not bundled.
+  https://huggingface.co/Qwen
 - **TypeScript**, **baseline-browser-mapping** and other Apache-licensed build
   dependencies.
   https://www.apache.org/licenses/LICENSE-2.0

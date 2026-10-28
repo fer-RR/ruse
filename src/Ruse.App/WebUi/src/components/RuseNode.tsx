@@ -3,17 +3,19 @@ import type { CSSProperties } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
-  AppWindow, AudioLines, FileAudio, Layers3, Mic, MonitorSpeaker, Power, Radio,
-  Settings, SlidersHorizontal, Volume2, VolumeX, X,
+  AppWindow, AudioLines, FileAudio, Languages, Layers3, Mic, MonitorSpeaker, Play, Power, Puzzle, Radio,
+  Settings, SlidersHorizontal, Square, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
 import type { RuseFlowNode } from '../flow';
 import { useI18n } from '../i18n';
+import { TRANSLATION_TARGETS, translationTarget } from '../languages';
 import { useNodeTelemetry } from '../telemetry';
 import type { NodeTelemetry } from '../types';
 import DiagnosticsNode from './DiagnosticsNode';
 import ParameterControl from './ParameterControl';
 import TranscriptionView from './TranscriptionView';
+import TranslationView from './TranslationView';
 import WaveformView from './WaveformView';
 
 const RECORD_FORMATS = [
@@ -35,6 +37,8 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'virtual': return <Radio {...props} />;
     case 'file': return <FileAudio {...props} />;
     case 'recorder': return <FileAudio {...props} />;
+    case 'translator': return <Languages {...props} />;
+    case 'vst3': return <Puzzle {...props} />;
     default: return <SlidersHorizontal {...props} />;
   }
 }
@@ -73,15 +77,23 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
   );
 }
 
-function FilePlayerControls({ node }: { node: RuseFlowNode['data'] }) {
+function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; telemetry?: NodeTelemetry }) {
   const { t } = useI18n();
   const fileName = node.filePath ? node.filePath.split(/[\\/]/).pop() : t('No file selected');
+  const hasFile = Boolean(node.filePath);
+  const playing = telemetry?.filePlaying === true;
   return (
     <div className="file-player-controls nodrag">
       <div className="file-player-name" title={node.filePath ?? ''}>{fileName}</div>
       <div className="file-player-actions">
+        <button className="small-button" disabled={!hasFile || playing} onClick={() => send('file-player-start', { id: node.id })}>
+          <Play size={11} /> {t('Start')}
+        </button>
+        <button className="small-button" disabled={!playing} onClick={() => send('file-player-stop', { id: node.id })}>
+          <Square size={11} /> {t('Stop')}
+        </button>
         <button className="small-button" onClick={() => send('file-player-file', { id: node.id })}>{t('Choose file')}</button>
-        <button className="small-button" onClick={() => send('file-player-restart', { id: node.id })}>{t('Restart')}</button>
+        <button className="small-button" disabled={!hasFile} onClick={() => send('file-player-restart', { id: node.id })}>{t('Restart')}</button>
         <label className="file-player-loop">
           <input
             type="checkbox"
@@ -90,6 +102,80 @@ function FilePlayerControls({ node }: { node: RuseFlowNode['data'] }) {
           />
           <span>{t('Loop')}</span>
         </label>
+      </div>
+    </div>
+  );
+}
+
+function Vst3Controls({ node }: { node: RuseFlowNode['data'] }) {
+  const { t } = useI18n();
+  const status = node.vst3Status ?? 'Loading plugin';
+  const tone = status === 'Error' ? 'error' : status === 'Ready' ? 'ready' : 'loading';
+  return (
+    <div className="vst3-controls nodrag">
+      <div className={`vst3-status ${tone}`}>
+        <span className="status-dot" />
+        <span>{t(status)}</span>
+        {node.vst3LatencyMs ? <span className="vst3-latency">{node.vst3LatencyMs} ms</span> : null}
+      </div>
+      {(node.vst3Vendor || node.vst3Version) && (
+        <div className="vst3-meta">
+          {node.vst3Vendor}{node.vst3Version ? ` · ${node.vst3Version}` : ''}
+        </div>
+      )}
+      <div className="vst3-actions">
+        <button
+          className="small-button"
+          disabled={!node.vst3HasEditor || status !== 'Ready'}
+          onClick={() => send('vst3-editor', { id: node.id, open: !node.vst3EditorOpen })}
+        >
+          {node.vst3EditorOpen ? t('Close editor') : t('Open editor')}
+        </button>
+      </div>
+      {node.vst3Error && <div className="node-error">{node.vst3Error}</div>}
+    </div>
+  );
+}
+
+function TranslatorControls({ node }: { node: RuseFlowNode['data'] }) {
+  const { t } = useI18n();
+  const target = translationTarget(node.translatorTarget);
+  const installed = node.translatorModels?.filter(model => model.installed) ?? [];
+  const selected = installed.some(model => model.id === node.translatorModel)
+    ? node.translatorModel
+    : installed[0]?.id ?? '';
+  return (
+    <div className="translator-controls nodrag">
+      <label className="translator-field">
+        <span>{t('Translate to')}</span>
+        <select
+          value={target.code}
+          onChange={event => send('translator-target', { id: node.id, target: event.target.value })}
+        >
+          {TRANSLATION_TARGETS.map(entry => <option key={entry.code} value={entry.code}>{entry.label}</option>)}
+        </select>
+      </label>
+      {target.needsModel && (installed.length > 0
+        ? <label className="translator-field">
+            <span>{t('Translation model')}</span>
+            <select
+              value={selected}
+              onChange={event => send('translator-model', { id: node.id, model: event.target.value })}
+            >
+              {installed.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
+            </select>
+          </label>
+        : <div className="translator-missing">
+            <span>{t('No translation models installed.')}</span>
+            <button className="small-button" onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-settings', { detail: { tab: 'speech' } }))}>
+              {t('Open Settings')}
+            </button>
+          </div>)}
+      <div className="translator-hint">
+        <span>{target.needsModel
+          ? t('Whisper listens, then the local model translates. No audio leaves your PC.')
+          : t('Whisper translates speech directly into English.')}</span>
+        <button className="icon-button compact" title={t('Manage translation models')} aria-label={t('Manage translation models')} onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-settings', { detail: { tab: 'speech' } }))}><Settings size={13} /></button>
       </div>
     </div>
   );
@@ -218,6 +304,9 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.duplicateRisk ? (data.warningSeverity === 'info' ? 'copy' : 'duplicate') : '',
     recording ? 'recording' : '',
     flowing ? 'flowing' : '',
+    data.isTranscriber ? 'transcriber-node' : '',
+    data.isTranslator ? 'translator-node' : '',
+    data.isVst3 ? 'vst3-node' : '',
     isDbMeter ? (dbVertical ? 'db-meter-node db-meter-vertical' : 'db-meter-node db-meter-horizontal') : '',
     enabled ? '' : 'disabled',
   ].filter(Boolean).join(' ');
@@ -274,6 +363,22 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
                 })
               : undefined}
           />}
+          {data.isVst3 && <Vst3Controls node={data} />}
+          {data.isTranslator && <TranslatorControls node={data} />}
+          {data.isTranslator && <TranslationView
+            id={data.id}
+            status={telemetry?.transcriptionStatus}
+            source={telemetry?.transcript}
+            sourcePartial={telemetry?.partialTranscript}
+            translated={telemetry?.translatedTranscript}
+            translatedPartial={telemetry?.translatedPartial}
+            error={telemetry?.transcriptionError}
+            level={telemetry?.transcriptionLevel}
+            hasAudio={telemetry?.transcriptionHasAudio}
+            elapsed={telemetry?.transcriptionElapsed}
+            detected={telemetry?.detectedLanguage}
+            target={data.translatorTarget}
+          />}
           {data.isTranscriber && (installedModels.length > 0
             ? <div className="transcriber-model-picker nodrag">
                 <span>{t('Model')}</span>
@@ -320,7 +425,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         </div>
       ) : (
         <>
-          {data.isFilePlayer && <FilePlayerControls node={data} />}
+          {data.isFilePlayer && <FilePlayerControls node={data} telemetry={telemetry} />}
           <VolumeControl id={data.id} value={data.volume} muted={data.muted} />
           {data.isRecorder && <RecorderControls node={data} telemetry={telemetry} />}
         </>

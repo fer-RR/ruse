@@ -66,6 +66,8 @@ internal sealed partial class WebShellController
                     Title = entry.Title,
                     Enabled = entry.Modifier.Enabled,
                     TranscriberModel = entry.TranscriberModel,
+                    TranslatorTarget = entry.TranslatorTarget,
+                    TranslatorModel = entry.TranslatorModel,
                     X = entry.X,
                     Y = entry.Y,
                     Width = entry.Width,
@@ -243,7 +245,9 @@ internal sealed partial class WebShellController
             var modifierEntry = RegisterModifier(modifier, saved.X, saved.Y,
                 flavor: isChain ? "chain" : "effect",
                 subtitle: isChain ? "Saved chain" : "Processing",
-                transcriberModel: saved.TranscriberModel);
+                transcriberModel: saved.TranscriberModel,
+                translatorTarget: saved.TranslatorTarget,
+                translatorModel: saved.TranslatorModel);
             modifierEntry.Width = saved.Width;
             modifierEntry.Height = saved.Height;
             modifiers.Add(modifierEntry);
@@ -297,7 +301,7 @@ internal sealed partial class WebShellController
 
     private void SaveSession()
     {
-        if (App.DemoMode || App.UiTestMode || (_nodes.Count == 0 && _frames.Count == 0))
+        if (App.DemoMode || (_nodes.Count == 0 && _frames.Count == 0))
         {
             return;
         }
@@ -327,7 +331,7 @@ internal sealed partial class WebShellController
 
     private void DeleteSession()
     {
-        if (App.DemoMode || App.UiTestMode)
+        if (App.DemoMode)
         {
             return;
         }
@@ -376,6 +380,8 @@ internal sealed partial class WebShellController
     private void ApplySettings(SettingsDto settings)
     {
         string oldModel = _settings.TranscriberModel;
+        string oldTranslatorModel = _settings.TranslatorModel;
+        string oldTranslatorTarget = _settings.TranslatorTarget;
         _settings.AutoLoadSession = settings.AutoLoadSession;
         _settings.FollowPlayingApps = settings.FollowPlayingApps;
         _settings.FollowOutputId = settings.FollowOutputId ?? "";
@@ -393,6 +399,8 @@ internal sealed partial class WebShellController
         _settings.MinimizeToTray = settings.MinimizeToTray;
         _settings.ShowDiagnostics = settings.ShowDiagnostics;
         _settings.TranscriberModel = TranscriptionModels.Find(settings.TranscriberModel)?.Id ?? TranscriptionModels.DefaultId;
+        _settings.TranslatorModel = TranslationModels.Find(settings.TranslatorModel)?.Id ?? TranslationModels.DefaultId;
+        _settings.TranslatorTarget = TranslationLanguages.Normalize(settings.TranslatorTarget);
         StartupRegistration.SetEnabled(settings.StartWithWindows);
         _settings.Save();
 
@@ -408,11 +416,30 @@ internal sealed partial class WebShellController
         if (!string.Equals(oldModel, newModel, StringComparison.OrdinalIgnoreCase))
         {
             foreach (var entry in _nodes.Values.Where(entry =>
-                         entry.Modifier?.Processors.OfType<TranscriptionProcessor>().Any() == true &&
+                         (entry.Modifier?.Processors.OfType<TranscriptionProcessor>().Any() == true ||
+                          entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true) &&
                          (string.IsNullOrEmpty(entry.TranscriberModel) ||
                           string.Equals(entry.TranscriberModel, oldModel, StringComparison.OrdinalIgnoreCase))))
             {
                 ApplyTranscriberModel(entry, newModel);
+            }
+        }
+
+        string newTranslatorModel = TranslationModels.Resolve(_settings.TranslatorModel);
+        string newTranslatorTarget = TranslationLanguages.Normalize(_settings.TranslatorTarget);
+        foreach (var entry in _nodes.Values.Where(entry =>
+                     entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true))
+        {
+            bool modelChanged = !string.Equals(entry.TranslatorModel, newTranslatorModel, StringComparison.OrdinalIgnoreCase) &&
+                                (string.IsNullOrEmpty(entry.TranslatorModel) ||
+                                 string.Equals(entry.TranslatorModel, oldTranslatorModel, StringComparison.OrdinalIgnoreCase));
+            bool targetChanged = !string.Equals(entry.TranslatorTarget, newTranslatorTarget, StringComparison.OrdinalIgnoreCase) &&
+                                 string.Equals(entry.TranslatorTarget, oldTranslatorTarget, StringComparison.OrdinalIgnoreCase);
+            if (modelChanged || targetChanged)
+            {
+                ApplyTranslatorSettings(entry,
+                    modelChanged ? newTranslatorModel : entry.TranslatorModel,
+                    targetChanged ? newTranslatorTarget : entry.TranslatorTarget);
             }
         }
 
@@ -428,13 +455,58 @@ internal sealed partial class WebShellController
             return;
         }
 
-        entry.TranscriberModel = modelId;
+        bool hasTranslator = entry.Modifier.Processors.OfType<TranslatorProcessor>().Any();
+        string? translatorSpeechModel = hasTranslator
+            ? TranscriptionModels.ResolveMultilingual(modelId)
+            : null;
+        entry.TranscriberModel = hasTranslator ? translatorSpeechModel : modelId;
         foreach (var transcriber in entry.Modifier.Processors.OfType<TranscriptionProcessor>())
         {
             TranscriptionRegistry.Stop(transcriber.TapId);
             if (!string.IsNullOrEmpty(modelId))
             {
                 TranscriptionRegistry.Ensure(transcriber.TapId, modelId);
+            }
+        }
+
+        foreach (var translator in entry.Modifier.Processors.OfType<TranslatorProcessor>())
+        {
+            TranslationRegistry.Stop(translator.TapId);
+            if (!string.IsNullOrEmpty(translatorSpeechModel))
+            {
+                TranslationRegistry.Ensure(
+                    translator.TapId,
+                    translatorSpeechModel,
+                    entry.TranslatorModel ?? "",
+                    entry.TranslatorTarget ?? TranslationLanguages.DefaultCode);
+            }
+        }
+    }
+
+    private void ApplyTranslatorSettings(NodeEntry entry, string? translationModel, string? target)
+    {
+        if (entry.Modifier == null)
+        {
+            return;
+        }
+
+        entry.TranslatorTarget = TranslationLanguages.Normalize(target);
+        entry.TranslatorModel = TranslationLanguages.NeedsModel(entry.TranslatorTarget)
+            ? TranslationModels.Resolve(translationModel)
+            : null;
+        string speechModel = TranscriptionModels.ResolveMultilingual(entry.TranscriberModel);
+        entry.TranscriberModel = string.IsNullOrEmpty(speechModel) ? null : speechModel;
+
+        foreach (var translator in entry.Modifier.Processors.OfType<TranslatorProcessor>())
+        {
+            TranslationRegistry.Stop(translator.TapId);
+            if (!string.IsNullOrEmpty(speechModel))
+            {
+                TranslationRegistry.Ensure(
+                    translator.TapId,
+                    speechModel,
+                    entry.TranslatorModel ?? "",
+                    entry.TranslatorTarget);
             }
         }
     }
@@ -483,7 +555,8 @@ internal sealed partial class WebShellController
             }
 
             foreach (var entry in _nodes.Values.Where(entry =>
-                         entry.Modifier?.Processors.OfType<TranscriptionProcessor>().Any() == true &&
+                         (entry.Modifier?.Processors.OfType<TranscriptionProcessor>().Any() == true ||
+                          entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true) &&
                          (string.IsNullOrEmpty(entry.TranscriberModel) ||
                           string.Equals(entry.TranscriberModel, modelId, StringComparison.OrdinalIgnoreCase))))
             {
@@ -545,6 +618,7 @@ internal sealed partial class WebShellController
         try
         {
             TranscriptionRegistry.StopModel(modelId);
+            TranslationRegistry.StopSpeechModel(modelId);
             SpeechModelCache.Drop(modelId);
             TranscriptionModels.Delete(modelId);
             ModelProbe.Clear();
@@ -560,7 +634,8 @@ internal sealed partial class WebShellController
             }
 
             foreach (var entry in _nodes.Values.Where(entry =>
-                         entry.Modifier?.Processors.OfType<TranscriptionProcessor>().Any() == true &&
+                         (entry.Modifier?.Processors.OfType<TranscriptionProcessor>().Any() == true ||
+                          entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true) &&
                          string.Equals(entry.TranscriberModel, modelId, StringComparison.OrdinalIgnoreCase)))
             {
                 ApplyTranscriberModel(entry, fallback);
@@ -645,12 +720,276 @@ internal sealed partial class WebShellController
         SetStatus($"Transcript saved: {Path.GetFileName(dialog.FileName)}");
     }
 
+    private void SetTranslatorTarget(string id, string target)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() != true)
+        {
+            return;
+        }
+
+        string code = TranslationLanguages.Normalize(target);
+        ApplyTranslatorSettings(entry, entry.TranslatorModel, code);
+        var language = TranslationLanguages.Find(code);
+        SetStatus($"{entry.Title}: translating to {language?.Label ?? code}.");
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private void SetTranslatorModel(string id, string modelId)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() != true)
+        {
+            return;
+        }
+
+        if (!TranslationModels.IsInstalled(modelId))
+        {
+            SetStatus("That translation model is not installed.", isError: true);
+            return;
+        }
+
+        ApplyTranslatorSettings(entry, modelId, entry.TranslatorTarget);
+        SetStatus($"{entry.Title}: using {TranslationModels.Find(modelId)?.Name ?? modelId}.");
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private async void DownloadTranslationModel(string modelId)
+    {
+        var model = TranslationModels.Find(modelId);
+        if (model == null) return;
+        if (_translationDownloadCancel != null)
+        {
+            SetStatus("Another translation model is already downloading.", isError: true);
+            return;
+        }
+
+        var cancel = new CancellationTokenSource();
+        _translationDownloadCancel = cancel;
+        var progress = new Progress<TranslationModelProgress>(PublishTranslationProgress);
+        try
+        {
+            await TranslationModels.DownloadAsync(modelId, progress, cancel.Token);
+            TranslationModelProbe.Clear();
+            if (string.IsNullOrEmpty(TranslationModels.Resolve(_settings.TranslatorModel)))
+            {
+                _settings.TranslatorModel = modelId;
+                _settings.Save();
+            }
+
+            foreach (var entry in _nodes.Values.Where(entry =>
+                         entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true &&
+                         (string.IsNullOrEmpty(entry.TranslatorModel) ||
+                          string.Equals(entry.TranslatorModel, modelId, StringComparison.OrdinalIgnoreCase))))
+            {
+                ApplyTranslatorSettings(entry, modelId, entry.TranslatorTarget);
+            }
+
+            PublishSettings();
+            PublishGraph();
+            PublishTelemetry(force: true);
+            SetStatus($"{model.Name} installed.");
+        }
+        catch (OperationCanceledException)
+        {
+            SetStatus($"{model.Name} download cancelled.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"{model.Name} download failed: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _translationDownloadCancel = null;
+            cancel.Dispose();
+            PublishSettings();
+        }
+    }
+
+    private void CancelTranslationDownload()
+    {
+        _translationDownloadCancel?.Cancel();
+    }
+
+    private void PublishTranslationProgress(TranslationModelProgress progress)
+    {
+        _translationDownload = progress;
+        long now = Environment.TickCount64;
+        if (progress.Phase is "done" or "error" or "cancelled" || now - _lastTranslationPublish >= 150)
+        {
+            _lastTranslationPublish = now;
+            PublishSettings();
+        }
+
+        if (progress.Phase is "done" or "error" or "cancelled")
+        {
+            SetStatus(progress.Message, isError: progress.Phase == "error");
+        }
+        else if (now - _lastTranslationStatus >= 1000)
+        {
+            _lastTranslationStatus = now;
+            SetStatus(progress.Message);
+        }
+    }
+
+    private void DeleteTranslationModel(string modelId)
+    {
+        var model = TranslationModels.Find(modelId);
+        if (model == null) return;
+
+        try
+        {
+            TranslationRegistry.StopTranslationModel(modelId);
+            TranslationModelCache.Drop(modelId);
+            TranslationModels.Delete(modelId);
+            TranslationModelProbe.Clear();
+
+            string fallback = TranslationModels.Resolve(
+                string.Equals(_settings.TranslatorModel, modelId, StringComparison.OrdinalIgnoreCase)
+                    ? null
+                    : _settings.TranslatorModel);
+            if (string.Equals(_settings.TranslatorModel, modelId, StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.TranslatorModel = fallback;
+                _settings.Save();
+            }
+
+            foreach (var entry in _nodes.Values.Where(entry =>
+                         entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true &&
+                         string.Equals(entry.TranslatorModel, modelId, StringComparison.OrdinalIgnoreCase)))
+            {
+                ApplyTranslatorSettings(entry, fallback, entry.TranslatorTarget);
+            }
+
+            PublishSettings();
+            PublishGraph();
+            PublishTelemetry(force: true);
+            SetStatus($"{model.Name} removed.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not remove {model.Name}: {ex.Message}", isError: true);
+            AppLog.Error($"Could not delete translation model '{modelId}'.", ex);
+        }
+    }
+
+    private void ClearTranslation(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
+        foreach (var translator in entry.Modifier.Processors.OfType<TranslatorProcessor>())
+        {
+            TranslationRegistry.Clear(translator.TapId);
+        }
+
+        SetStatus($"{entry.Title}: translation cleared.");
+        PublishTelemetry(force: true);
+    }
+
+    private void RestartTranslation(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
+        string speechModel = TranscriptionModels.ResolveMultilingual(
+            string.IsNullOrEmpty(entry.TranscriberModel)
+                ? _settings.TranscriberModel
+                : entry.TranscriberModel);
+        string translationModel = string.IsNullOrEmpty(entry.TranslatorModel)
+            ? TranslationModels.Resolve(_settings.TranslatorModel)
+            : entry.TranslatorModel;
+        string target = TranslationLanguages.Normalize(entry.TranslatorTarget);
+
+        if (string.IsNullOrEmpty(speechModel))
+        {
+            SetStatus("Install a multilingual speech model before retrying.", isError: true);
+            return;
+        }
+
+        if (TranslationLanguages.NeedsModel(target) && string.IsNullOrEmpty(translationModel))
+        {
+            SetStatus("Install a translation model before retrying.", isError: true);
+            return;
+        }
+
+        entry.TranscriberModel = speechModel;
+        entry.TranslatorModel = TranslationLanguages.NeedsModel(target) ? translationModel : null;
+        ModelProbe.Invalidate(TranscriptionModels.GetInstalledPath(speechModel));
+        TranslationModelProbe.Invalidate(TranslationModels.GetInstalledPath(translationModel));
+        foreach (var translator in entry.Modifier.Processors.OfType<TranslatorProcessor>())
+        {
+            TranslationRegistry.Restart(
+                translator.TapId,
+                speechModel,
+                entry.TranslatorModel ?? "",
+                target);
+        }
+
+        SetStatus($"{entry.Title}: translation restarted.");
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private void ExportTranslation(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
+        var translator = entry.Modifier.Processors.OfType<TranslatorProcessor>().FirstOrDefault();
+        if (translator == null) return;
+
+        var snapshot = TranslationRegistry.Snapshot(translator.TapId);
+        string source = snapshot?.SourceText?.Trim() ?? "";
+        string translated = snapshot?.TranslatedText?.Trim() ?? "";
+        if (source.Length == 0 && translated.Length == 0)
+        {
+            SetStatus("There is no translation to export yet.", isError: true);
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Export translation",
+            Filter = "Text file (*.txt)|*.txt|All files (*.*)|*.*",
+            FileName = SanitizeFileName(entry.Title) + ".txt",
+            DefaultExt = "txt",
+            AddExtension = true,
+        };
+        if (dialog.ShowDialog(_window) != true) return;
+
+        string targetLabel = TranslationLanguages.Find(entry.TranslatorTarget)?.Label ?? entry.TranslatorTarget ?? "";
+        File.WriteAllText(dialog.FileName,
+            $"{entry.Title}{Environment.NewLine}" +
+            $"{DateTime.Now:yyyy-MM-dd HH:mm}{Environment.NewLine}{Environment.NewLine}" +
+            $"Original{Environment.NewLine}{source}{Environment.NewLine}{Environment.NewLine}" +
+            $"{targetLabel}{Environment.NewLine}{translated}{Environment.NewLine}");
+        SetStatus($"Translation saved: {Path.GetFileName(dialog.FileName)}");
+    }
+
+    private void OpenTranslationModelsFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(TranslationModels.Root);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = TranslationModels.Root,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Could not open the translation models folder: " + ex.Message, isError: true);
+        }
+    }
+
     private void CopyDiagnostics()
     {
         int installedCount = TranscriptionModels.All.Count(model => TranscriptionModels.IsInstalled(model.Id));
         long installedBytes = TranscriptionModels.All
             .Where(model => TranscriptionModels.IsInstalled(model.Id))
             .Sum(model => TranscriptionModels.GetInstalledSizeBytes(model.Id));
+        int installedTranslationCount = TranslationModels.All.Count(model => TranslationModels.IsInstalled(model.Id));
+        long installedTranslationBytes = TranslationModels.All
+            .Where(model => TranslationModels.IsInstalled(model.Id))
+            .Sum(model => TranslationModels.GetInstalledSizeBytes(model.Id));
         string version = typeof(WebShellController).Assembly.GetName().Version?.ToString(3) ?? "dev";
         var lines = new[]
         {
@@ -663,6 +1002,8 @@ internal sealed partial class WebShellController
             $"Models: {TranscriptionModels.Root}",
             $"Installed models: {installedCount} ({TranscriptionModels.FormatSize(installedBytes)})",
             $"Default model: {_settings.TranscriberModel}",
+            $"Translation models: {installedTranslationCount} ({TranslationModels.FormatSize(installedTranslationBytes)})",
+            $"Default translation: {_settings.TranslatorModel} -> {_settings.TranslatorTarget}",
             $"Nodes: {_nodes.Count} · links: {_links.Count} · running: {_running}",
         };
 

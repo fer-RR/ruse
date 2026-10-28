@@ -1,5 +1,3 @@
-using System.Configuration;
-using System.Data;
 using System.IO;
 using System.Windows;
 using Ruse.App.Audio;
@@ -12,12 +10,8 @@ namespace Ruse.App;
 /// </summary>
 public partial class App : Application
 {
-    /// <summary>True when launched with --demo; MainWindow builds a sample graph.</summary>
+    /// <summary>True when launched with --demo; the Web UI builds a sample graph.</summary>
     public static bool DemoMode { get; private set; }
-
-    /// <summary>True when launched with --uitest; the window starts empty so the
-    /// UI self-test is not disturbed by a saved session.</summary>
-    public static bool UiTestMode { get; private set; }
 
     /// <summary>True when launched with --live-demo; builds a graph carrying
     /// real audio instead of restoring the saved session.</summary>
@@ -25,10 +19,6 @@ public partial class App : Application
 
     /// <summary>The process whose audio --live-demo captures.</summary>
     public static uint LiveDemoProcessId { get; private set; }
-
-    /// <summary>True when launched with --perf-test; starts from an empty
-    /// canvas so the benchmark measures a known state.</summary>
-    public static bool PerfTestMode { get; private set; }
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -39,7 +29,120 @@ public partial class App : Application
             return;
         }
 
+        int translationProbeIndex = Array.FindIndex(e.Args, a => a.Equals("--translation-probe", StringComparison.OrdinalIgnoreCase));
+        if (translationProbeIndex >= 0 && translationProbeIndex + 2 < e.Args.Length)
+        {
+            TranslationModelProbe.Run(e.Args[translationProbeIndex + 1], e.Args[translationProbeIndex + 2]);
+            return;
+        }
+
+        int translationTextIndex = Array.FindIndex(e.Args, a => a.Equals("--translation-text-test", StringComparison.OrdinalIgnoreCase));
+        if (translationTextIndex >= 0 && translationTextIndex + 4 < e.Args.Length)
+        {
+            try
+            {
+                string translated = TranslationModelProbe.TranslateText(
+                    e.Args[translationTextIndex + 1],
+                    e.Args[translationTextIndex + 2],
+                    e.Args[translationTextIndex + 3]);
+                File.WriteAllText(e.Args[translationTextIndex + 4], translated);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[translationTextIndex + 4], "ERROR " + ex);
+                Environment.Exit(3);
+            }
+        }
+
         Ruse.App.Diagnostics.AppLog.Initialize();
+
+        int translationE2EIndex = Array.FindIndex(e.Args, a => a.Equals("--translation-e2e-test", StringComparison.OrdinalIgnoreCase));
+        if (translationE2EIndex >= 0 && translationE2EIndex + 5 < e.Args.Length)
+        {
+            try
+            {
+                string line = TranslationPipelineTest.Run(
+                    e.Args[translationE2EIndex + 1],
+                    e.Args[translationE2EIndex + 2],
+                    e.Args[translationE2EIndex + 3],
+                    e.Args[translationE2EIndex + 4]);
+                File.WriteAllText(e.Args[translationE2EIndex + 5], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[translationE2EIndex + 5], "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
+        int vst3TestIndex = Array.FindIndex(e.Args, a => a.Equals("--vst3-test", StringComparison.OrdinalIgnoreCase));
+        if (vst3TestIndex >= 0 && vst3TestIndex + 2 < e.Args.Length)
+        {
+            try
+            {
+                string line = Vst3SelfTest.RunPlugin(e.Args[vst3TestIndex + 1]);
+                File.WriteAllText(e.Args[vst3TestIndex + 2], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[vst3TestIndex + 2], "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
+        int vst3RouteIndex = Array.FindIndex(e.Args, a => a.Equals("--vst3-route-test", StringComparison.OrdinalIgnoreCase));
+        if (vst3RouteIndex >= 0 && vst3RouteIndex + 2 < e.Args.Length)
+        {
+            try
+            {
+                string line = Vst3SelfTest.RunRoute(e.Args[vst3RouteIndex + 1]);
+                File.WriteAllText(e.Args[vst3RouteIndex + 2], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[vst3RouteIndex + 2], "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
+        int vst3EditorIndex = Array.FindIndex(e.Args, a => a.Equals("--vst3-editor-test", StringComparison.OrdinalIgnoreCase));
+        if (vst3EditorIndex >= 0 && vst3EditorIndex + 2 < e.Args.Length)
+        {
+            try
+            {
+                string line = Vst3SelfTest.RunEditor(e.Args[vst3EditorIndex + 1]);
+                File.WriteAllText(e.Args[vst3EditorIndex + 2], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[vst3EditorIndex + 2], "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
+        if (e.Args.Contains("--vst3-scan-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string output = Path.Combine(AppContext.BaseDirectory, "vst3-scan-test.txt");
+            try
+            {
+                var found = Task.Run(() => OwnVST3Host.PluginScanner.ScanAsync(
+                    OwnVST3Host.PluginFormat.Vst3,
+                    OwnVST3Host.ScanMode.Fast)).GetAwaiter().GetResult();
+                File.WriteAllLines(output, found.Select(plugin =>
+                    $"{plugin.Name} | {plugin.Vendor} | instrument={plugin.IsInstrument} | {plugin.Identifier}"));
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(output, "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
 
         if (e.Args.Contains("--demo", StringComparer.OrdinalIgnoreCase))
         {
@@ -60,49 +163,6 @@ public partial class App : Application
 
             WriteResult("chain-test.txt", chainLine);
             Shutdown();
-            return;
-        }
-        if (e.Args.Contains("--uitest", StringComparer.OrdinalIgnoreCase))
-        {
-            UiTestMode = true;
-
-            // Keep the self-test completely away from the user's real settings
-            // and saved session.
-            AppSettings.OverrideDirectory = System.IO.Path.Combine(
-                System.IO.Path.GetTempPath(), "Ruse-uitest");
-        }
-
-        if (e.Args.Contains("--feedback-bench", StringComparer.OrdinalIgnoreCase))
-        {
-            // Same isolation as the UI test: no saved session, no real settings.
-            UiTestMode = true;
-            PerfTestMode = true;
-            AppSettings.OverrideDirectory = System.IO.Path.Combine(
-                System.IO.Path.GetTempPath(), "Ruse-feedback-bench");
-
-            base.OnStartup(e);
-            OpenLegacyWindow();
-            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
-                new Action(() =>
-                {
-                    string result;
-                    try
-                    {
-                        var window = MainWindow as Ruse.App.MainWindow;
-                        result = window == null
-                            ? "no main window -> FAIL"
-                            : window.RunFeedbackBench();
-                    }
-                    catch (Exception ex)
-                    {
-                        result = $"FAILED: {ex}";
-                    }
-
-                    WriteResult("feedback-bench.txt", $"Ruse feedback bench: {result}");
-                    (MainWindow as Ruse.App.MainWindow)?.Close();
-                    Shutdown();
-                }),
-                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             return;
         }
 
@@ -362,98 +422,9 @@ public partial class App : Application
             LiveDemoMode = true;
             LiveDemoProcessId = livePid;
             base.OnStartup(e);
-            if (!e.Args.Contains("--legacy-ui", StringComparer.OrdinalIgnoreCase))
-            {
-                var webWindow = new WebMainWindow();
-                MainWindow = webWindow;
-                webWindow.Show();
-                return;
-            }
-
-            OpenLegacyWindow();
-            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
-                new Action(() =>
-                {
-                    try
-                    {
-                        (MainWindow as Ruse.App.MainWindow)?.BuildLiveGraph(livePid);
-                    }
-                    catch (Exception ex)
-                    {
-                        (MainWindow as Ruse.App.MainWindow)?.ShowStatus($"Live graph failed: {ex.Message}");
-                    }
-                }),
-                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            return;
-        }
-
-        if (e.Args.Contains("--perf-test", StringComparer.OrdinalIgnoreCase))
-        {
-            uint perfPid = (uint)GetIntArg(e.Args, "--pid", 0);
-            PerfTestMode = true;
-            double seconds = GetDoubleArg(e.Args, "--seconds", 4.0);
-            bool useSink = e.Args.Contains("--perf-sink", StringComparer.OrdinalIgnoreCase);
-            base.OnStartup(e);
-            OpenLegacyWindow();
-            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
-                new Action(async () =>
-                {
-                    string result;
-                    try
-                    {
-                        var window = MainWindow as Ruse.App.MainWindow;
-                        result = window == null
-                            ? "no main window -> FAIL"
-                            : await window.RunPerformanceTest(perfPid, seconds, useSink);
-                    }
-                    catch (Exception ex)
-                    {
-                        result = $"FAILED: {ex}";
-                    }
-
-                    WriteResult("perf-test.txt", $"Ruse perf test: {result}");
-                    (MainWindow as Ruse.App.MainWindow)?.Close();
-                    Shutdown();
-                }),
-                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
-            return;
-        }
-
-        if (e.Args.Contains("--uitest", StringComparer.OrdinalIgnoreCase))
-        {
-            // Exercises the real window: layout, hit-testing and the drop
-            // target logic all need a live visual tree.
-            base.OnStartup(e);
-            OpenLegacyWindow();
-            System.Windows.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(
-                new Action(() =>
-                {
-                    string result;
-                    try
-                    {
-                        var window = MainWindow as Ruse.App.MainWindow;
-                        result = window == null
-                            ? "no main window -> FAIL"
-                            : window.RunWindowFrameSelfTest() + " | " +
-                              window.RunDropTargetSelfTest() + " | " +
-                              window.RunUndoSelfTest() + " | " +
-                              window.RunAppearanceSelfTest() + " | " +
-                              window.RunRecorderSelfTest() + " | " +
-                              window.RunAlertSelfTest() + " | " +
-                              window.RunSidebarWheelSelfTest() + " | " +
-                              window.RunNodeZOrderSelfTest() + " | " +
-                              window.RunNodeOverlapSelfTest();
-                    }
-                    catch (Exception ex)
-                    {
-                        result = $"FAILED: {ex}";
-                    }
-
-                    WriteResult("uitest.txt", $"Ruse UI test: {result}");
-                    (MainWindow as Ruse.App.MainWindow)?.Close();
-                    Shutdown();
-                }),
-                System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            var webWindow = new WebMainWindow();
+            MainWindow = webWindow;
+            webWindow.Show();
             return;
         }
 
@@ -491,23 +462,9 @@ public partial class App : Application
         }
 
         base.OnStartup(e);
-        if (!e.Args.Contains("--legacy-ui", StringComparer.OrdinalIgnoreCase) &&
-            !UiTestMode && !PerfTestMode && !LiveDemoMode)
-        {
-            var webWindow = new WebMainWindow();
-            MainWindow = webWindow;
-            webWindow.Show();
-            return;
-        }
-
-        OpenLegacyWindow();
-    }
-
-    private static void OpenLegacyWindow()
-    {
-        var window = new MainWindow();
-        Current.MainWindow = window;
-        window.Show();
+        var mainWindow = new WebMainWindow();
+        MainWindow = mainWindow;
+        mainWindow.Show();
     }
 
     /// <summary>

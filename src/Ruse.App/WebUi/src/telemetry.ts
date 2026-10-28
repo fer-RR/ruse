@@ -25,6 +25,7 @@ function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefined): b
   if (!a || !b) return false;
   return a.level === b.level &&
     a.clipping === b.clipping &&
+    a.filePlaying === b.filePlaying &&
     a.recordingStatus === b.recordingStatus &&
     a.recordingSeconds === b.recordingSeconds &&
     a.recordingError === b.recordingError &&
@@ -34,6 +35,9 @@ function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefined): b
     a.transcriptionStatus === b.transcriptionStatus &&
     a.transcript === b.transcript &&
     a.partialTranscript === b.partialTranscript &&
+    a.translatedTranscript === b.translatedTranscript &&
+    a.translatedPartial === b.translatedPartial &&
+    a.detectedLanguage === b.detectedLanguage &&
     a.transcriptionError === b.transcriptionError &&
     a.transcriptionLevel === b.transcriptionLevel &&
     a.transcriptionHasAudio === b.transcriptionHasAudio &&

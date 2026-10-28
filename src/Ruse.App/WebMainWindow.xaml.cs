@@ -57,14 +57,19 @@ public partial class WebMainWindow : Window
     {
         base.OnSourceInitialized(e);
         WindowFrameBehavior.Attach(this);
+    }
 
-        if (_controller.UserSettings.MinimizeToTray)
+    private void CreateTrayIcon()
+    {
+        if (!_controller.UserSettings.MinimizeToTray || _tray != null)
         {
-            (string open, string exit) = TrayText(_controller.UserSettings.UiLanguage);
-            _tray = new TrayIcon(this, open, exit);
-            _tray.OpenRequested += RestoreFromTray;
-            _tray.ExitRequested += ExitFromTray;
+            return;
         }
+
+        (string open, string exit) = TrayText(_controller.UserSettings.UiLanguage);
+        _tray = new TrayIcon(this, open, exit);
+        _tray.OpenRequested += RestoreFromTray;
+        _tray.ExitRequested += ExitFromTray;
     }
 
     private void OnStateChanged(object? sender, EventArgs e)
@@ -128,19 +133,29 @@ public partial class WebMainWindow : Window
         try
         {
             await _controller.InitializeAsync(WebView);
+            CreateTrayIcon();
         }
         catch (Exception ex)
         {
-            AppLog.Error("The Web UI could not start; opening the legacy shell.", ex);
+            AppLog.Error("The Web UI could not start.", ex);
             if (_closed)
             {
                 return;
             }
 
-            var legacy = new MainWindow();
-            Application.Current.MainWindow = legacy;
-            legacy.Show();
+            string detail =
+                "The WebView2 runtime may be missing or damaged.\n\n" +
+                ex.GetBaseException().Message +
+                "\n\nDetails were written to:\n" + AppLog.LogPath;
+            var dialog = new StartupErrorDialog(
+                "Ruse could not open its interface. Install the Microsoft Edge WebView2 Runtime, then start Ruse again.",
+                detail)
+            {
+                Owner = this,
+            };
+            dialog.ShowDialog();
             Close();
+            Application.Current.Shutdown();
         }
     }
 }

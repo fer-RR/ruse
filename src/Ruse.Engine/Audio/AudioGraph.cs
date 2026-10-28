@@ -94,6 +94,7 @@ public sealed class AudioGraph : IDisposable
             SyncOutputRoutes(output);
         }
 
+        modifier.Dispose();
         RefreshTapMonitors();
     }
 
@@ -415,9 +416,12 @@ public sealed class AudioGraph : IDisposable
             var wanted = new HashSet<ModifierNode>();
             foreach (var modifier in Modifiers)
             {
-                int[] transcriptionTaps = modifier.Processors
+                int[] speechTaps = modifier.Processors
                     .OfType<TranscriptionProcessor>()
                     .Select(processor => processor.TapId)
+                    .Concat(modifier.Processors
+                        .OfType<TranslatorProcessor>()
+                        .Select(processor => processor.TapId))
                     .Where(id => id > 0)
                     .ToArray();
                 var waveformTaps = modifier.Processors
@@ -430,7 +434,7 @@ public sealed class AudioGraph : IDisposable
                     .Where(id => id > 0)
                     .ToArray();
 
-                if (transcriptionTaps.Length == 0 && waveformTaps.Length == 0 && dbMeterTaps.Length == 0)
+                if (speechTaps.Length == 0 && waveformTaps.Length == 0 && dbMeterTaps.Length == 0)
                 {
                     continue;
                 }
@@ -447,9 +451,9 @@ public sealed class AudioGraph : IDisposable
 
                         int frames = length / 2;
                         var block = samples.AsSpan(0, length);
-                        for (int i = 0; i < transcriptionTaps.Length; i++)
+                        for (int i = 0; i < speechTaps.Length; i++)
                         {
-                            TranscriptionProcessor.WriteTap(transcriptionTaps[i], block, frames);
+                            TranscriptionProcessor.WriteTap(speechTaps[i], block, frames);
                         }
 
                         for (int i = 0; i < waveformTaps.Length; i++)
@@ -622,6 +626,11 @@ public sealed class AudioGraph : IDisposable
         foreach (var source in Sources)
         {
             source.Dispose();
+        }
+
+        foreach (var modifier in Modifiers)
+        {
+            modifier.Dispose();
         }
 
         _tapMonitors.Clear();

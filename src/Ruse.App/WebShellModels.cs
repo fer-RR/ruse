@@ -48,6 +48,7 @@ internal sealed class CatalogDto
     public List<CatalogItemDto> Virtuals { get; set; } = new();
     public List<CatalogItemDto> Effects { get; set; } = new();
     public List<CatalogItemDto> Chains { get; set; } = new();
+    public List<CatalogItemDto> Vst3Plugins { get; set; } = new();
     public string DefaultOutputId { get; set; } = "";
     public string DefaultOutputName { get; set; } = "";
 }
@@ -96,6 +97,18 @@ internal sealed class NodeDto
     public bool IsDbMeter { get; set; }
     public bool IsTranscriber { get; set; }
     public string? TranscriberModel { get; set; }
+    public bool IsTranslator { get; set; }
+    public string? TranslatorTarget { get; set; }
+    public string? TranslatorModel { get; set; }
+    public bool IsVst3 { get; set; }
+    public string? Vst3Identifier { get; set; }
+    public string? Vst3Status { get; set; }
+    public string? Vst3Vendor { get; set; }
+    public string? Vst3Version { get; set; }
+    public string? Vst3Error { get; set; }
+    public bool Vst3HasEditor { get; set; }
+    public bool Vst3EditorOpen { get; set; }
+    public int Vst3LatencyMs { get; set; }
     public string? ChainName { get; set; }
     public List<string> ChainElements { get; set; } = new();
     public bool DuplicateRisk { get; set; }
@@ -159,6 +172,7 @@ internal sealed class NodeTelemetryDto
 {
     public float Level { get; set; }
     public bool Clipping { get; set; }
+    public bool FilePlaying { get; set; }
     public string? RecordingStatus { get; set; }
     public double? RecordingSeconds { get; set; }
     public string? RecordingError { get; set; }
@@ -169,6 +183,9 @@ internal sealed class NodeTelemetryDto
     public string? TranscriptionStatus { get; set; }
     public string? Transcript { get; set; }
     public string? PartialTranscript { get; set; }
+    public string? TranslatedTranscript { get; set; }
+    public string? TranslatedPartial { get; set; }
+    public string? DetectedLanguage { get; set; }
     public string? TranscriptionError { get; set; }
     public float TranscriptionLevel { get; set; }
     public bool TranscriptionHasAudio { get; set; }
@@ -232,6 +249,12 @@ internal sealed class SettingsDto
     public string TranscriberModel { get; set; } = "";
     public List<TranscriberModelDto> TranscriberModels { get; set; } = new();
     public TranscriberDownloadDto? TranscriberDownload { get; set; }
+    public string TranslatorModel { get; set; } = "";
+    public string TranslatorTarget { get; set; } = "en";
+    public List<TranslatorModelDto> TranslatorModels { get; set; } = new();
+    public TranslatorDownloadDto? TranslatorDownload { get; set; }
+    public string InstalledTranslatorModelsSize { get; set; } = "";
+    public int InstalledTranslatorModelsCount { get; set; }
     public string InstalledModelsSize { get; set; } = "";
     public int InstalledModelsCount { get; set; }
     public string AppVersion { get; set; } = "";
@@ -255,6 +278,26 @@ internal sealed class TranscriberModelDto
 }
 
 internal sealed class TranscriberDownloadDto
+{
+    public string Id { get; set; } = "";
+    public string Phase { get; set; } = "";
+    public int Percent { get; set; }
+    public string Message { get; set; } = "";
+}
+
+internal sealed class TranslatorModelDto
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Tier { get; set; } = "";
+    public int SizeMb { get; set; }
+    public bool Installed { get; set; }
+    public string InstalledSize { get; set; } = "";
+    public string License { get; set; } = "";
+    public string? Note { get; set; }
+}
+
+internal sealed class TranslatorDownloadDto
 {
     public string Id { get; set; } = "";
     public string Phase { get; set; } = "";

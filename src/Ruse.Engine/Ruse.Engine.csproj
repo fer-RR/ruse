@@ -11,6 +11,7 @@
   <ItemGroup>
     <PackageReference Include="NAudio" Version="3.3.0" />
     <PackageReference Include="NAudio.Asio" Version="3.3.0" />
+    <PackageReference Include="OwnAudioVst" Version="2.1.0" />
   </ItemGroup>
 
 </Project>

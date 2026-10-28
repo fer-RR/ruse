@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
 using NAudio.CoreAudioApi;
+using OwnVST3Host;
 using Ruse.App.Audio;
 using Ruse.App.Diagnostics;
 
@@ -13,6 +14,8 @@ namespace Ruse.App;
 internal sealed partial class WebShellController
 {
     private IReadOnlyList<AsioDriverInfo> _asioDrivers = Array.Empty<AsioDriverInfo>();
+    private IReadOnlyList<PluginDescriptor> _vst3Descriptors = Array.Empty<PluginDescriptor>();
+    private Task? _vst3ScanTask;
 
     private void RefreshCatalog()
     {
@@ -28,6 +31,73 @@ internal sealed partial class WebShellController
         {
             ShowError("Device enumeration failed: " + ex.Message, ex);
         }
+
+        QueueVst3Scan();
+    }
+
+    private void QueueVst3Scan()
+    {
+        if (_vst3ScanTask is { IsCompleted: false } || _disposed)
+        {
+            return;
+        }
+
+        _vst3ScanTask = Task.Run(async () =>
+        {
+            try
+            {
+                var found = await PluginScanner.ScanAsync(PluginFormat.Vst3, ScanMode.Fast);
+                var descriptors = found
+                    .Where(plugin => !plugin.IsInstrument && !string.IsNullOrWhiteSpace(plugin.Identifier))
+                    .OrderBy(plugin => plugin.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _ = _window.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    if (_disposed)
+                    {
+                        return;
+                    }
+
+                    _vst3Descriptors = descriptors;
+                    _catalog.Vst3Plugins = descriptors.Select(plugin => new CatalogItemDto
+                    {
+                        Id = plugin.Identifier,
+                        Kind = "vst3",
+                        Name = string.IsNullOrWhiteSpace(plugin.Name) ? "VST3 plugin" : plugin.Name,
+                        Subtitle = string.IsNullOrWhiteSpace(plugin.Vendor) ? "VST3 effect" : $"{plugin.Vendor} · VST3",
+                        Details = string.IsNullOrWhiteSpace(plugin.Category) ? plugin.FilePath : plugin.Category,
+                    }).ToList();
+                    Post("catalog", _catalog);
+                    SetStatus($"Found {descriptors.Length} VST3 effect(s).");
+                }));
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning("VST3 scan failed: " + ex.Message);
+            }
+        });
+    }
+
+    private PluginDescriptor? FindVst3Descriptor(string identifier) =>
+        _vst3Descriptors.FirstOrDefault(plugin =>
+            string.Equals(plugin.Identifier, identifier, StringComparison.OrdinalIgnoreCase));
+
+    private void RescanVst3Plugins()
+    {
+        if (_vst3ScanTask is { IsCompleted: false })
+        {
+            SetStatus("A VST3 scan is already running.");
+            return;
+        }
+
+        SetStatus("Scanning for VST3 plugins...");
+        QueueVst3Scan();
     }
 
     private void RefreshDevices()

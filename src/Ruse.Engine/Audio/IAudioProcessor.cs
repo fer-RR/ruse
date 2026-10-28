@@ -21,6 +21,14 @@ public interface ITapProcessor
     int TapId { get; }
 }
 
+/// <summary>
+/// A processor whose instance must be shared by every route that uses it.
+/// VST3 plugins own native state and cannot be cloned cheaply or safely.
+/// </summary>
+public interface ISharedProcessor
+{
+}
+
 /// <summary>Registry of modifier types, keyed by <see cref="IAudioProcessor.TypeId"/>.</summary>
 public static class AudioProcessorCatalog
 {
@@ -64,6 +72,12 @@ public static class AudioProcessorCatalog
             "Transcriber",
             "Transcribes speech from this route offline.",
             () => new TranscriptionProcessor()));
+
+        Register(new Descriptor(
+            TranslatorProcessor.Id,
+            "Translator",
+            "Translates speech from this route into another language, offline.",
+            () => new TranslatorProcessor()));
 
         Register(new Descriptor(
             "lowpass",

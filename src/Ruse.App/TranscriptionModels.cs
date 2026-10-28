@@ -72,6 +72,25 @@ internal static class TranscriptionModels
         return All.FirstOrDefault(model => IsInstalled(model.Id))?.Id ?? "";
     }
 
+    /// <summary>Translators need a multilingual model; English-only models cannot translate.</summary>
+    public static string ResolveMultilingual(string? requested)
+    {
+        if (IsInstalled(requested) && IsMultilingual(requested)) return requested!;
+        foreach (string id in new[]
+                 {
+                     "whisper-small", "whisper-base", "whisper-tiny", "whisper-medium",
+                     "whisper-large-v3-turbo", "whisper-large-v3",
+                 })
+        {
+            if (IsInstalled(id)) return id;
+        }
+
+        return All.FirstOrDefault(model => model.Language == "Multilingual" && IsInstalled(model.Id))?.Id ?? "";
+    }
+
+    public static bool IsMultilingual(string? id) =>
+        string.Equals(Find(id)?.Language, "Multilingual", StringComparison.OrdinalIgnoreCase);
+
     public static async Task DownloadAsync(
         string id,
         IProgress<TranscriberModelProgress>? progress,

@@ -89,6 +89,8 @@ public sealed class PresetModifier
     public string Title { get; set; } = "Modifier";
     public bool Enabled { get; set; } = true;
     public string? TranscriberModel { get; set; }
+    public string? TranslatorTarget { get; set; }
+    public string? TranslatorModel { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
     public double? Width { get; set; }
@@ -112,6 +114,12 @@ public sealed class PresetProcessor
 {
     public string TypeId { get; set; } = "";
     public Dictionary<string, float> Parameters { get; set; } = new();
+
+    /// <summary>For a VST3 processor: the bundle/class identifier it was loaded from.</summary>
+    public string? PluginPath { get; set; }
+
+    /// <summary>For a VST3 processor: the base64 component state chunk.</summary>
+    public string? PluginState { get; set; }
 
     /// <summary>For a saved chain: the effects it contains, in order.</summary>
     public List<PresetProcessor>? Elements { get; set; }
@@ -147,6 +155,18 @@ public static class PresetSerializer
     /// <summary>Captures an effect and its current parameter values.</summary>
     public static PresetProcessor SerializeProcessor(IAudioProcessor processor)
     {
+        if (processor is Vst3Processor vst)
+        {
+            return new PresetProcessor
+            {
+                TypeId = Vst3Processor.Id,
+                Name = vst.DisplayName,
+                PluginPath = vst.Identifier,
+                PluginState = vst.CaptureStateBase64(),
+                Parameters = vst.Parameters.ToDictionary(parameter => parameter.Name, parameter => parameter.Get()),
+            };
+        }
+
         if (processor is ChainProcessor chain)
         {
             return new PresetProcessor
@@ -175,6 +195,16 @@ public static class PresetSerializer
     /// </summary>
     public static IAudioProcessor? CreateProcessor(PresetProcessor entry)
     {
+        if (entry.TypeId == Vst3Processor.Id)
+        {
+            if (string.IsNullOrWhiteSpace(entry.PluginPath))
+            {
+                return null;
+            }
+
+            return new Vst3Processor(entry.PluginPath, entry.PluginState, entry.Parameters);
+        }
+
         if (entry.TypeId == "chain")
         {
             var chain = new ChainProcessor(entry.Name ?? "Chain");
@@ -183,7 +213,7 @@ public static class PresetSerializer
                 foreach (var inner in entry.Elements)
                 {
                     var processor = CreateProcessor(inner);
-                    if (processor != null && processor is not ITapProcessor)
+                    if (processor != null && processor is not ITapProcessor && processor is not Vst3Processor)
                     {
                         chain.Add(processor);
                     }

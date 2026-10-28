@@ -92,6 +92,9 @@ public sealed class SourceNode : IDisposable
 
     public bool FileLoop { get; private set; }
 
+    public bool HasFile => Kind == SourceKind.File &&
+        !string.IsNullOrWhiteSpace(FilePath) && File.Exists(FilePath);
+
     public void SetFile(string path, bool loop)
     {
         bool wasRunning = IsRunning;
@@ -237,6 +240,11 @@ public sealed class SourceNode : IDisposable
         }
 
         if (_capture != null)
+        {
+            return;
+        }
+
+        if (Kind == SourceKind.File && !HasFile)
         {
             return;
         }

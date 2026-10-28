@@ -45,6 +45,28 @@ internal sealed partial class WebShellController
                                       TranscriptionProcessor.GetLastAudioTick(transcriber.TapId) > 0);
         TranscriptionProcessor.RemoveTap(transcriber.TapId);
 
+        var translator = new TranslatorProcessor();
+        translator.SetTapId(TranscriptionProcessor.NextTapId());
+        translator.Process(tone, toneFrames);
+        int translatorTapRead = TranscriptionProcessor.ReadAvailable(translator.TapId, tapBytes);
+        Check("translator resample", translatorTapRead == 320 &&
+                                     TranscriptionProcessor.GetLevel(translator.TapId) > 0.1f);
+        TranscriptionProcessor.RemoveTap(translator.TapId);
+
+        Check("translator catalog",
+            AudioProcessorCatalog.Find(TranslatorProcessor.Id) != null &&
+            TranslationLanguages.Normalize("pt-br") == "pt-BR" &&
+            TranslationLanguages.Normalize("unknown") == TranslationLanguages.DefaultCode &&
+            TranslationLanguages.NeedsModel("pt-BR") &&
+            !TranslationLanguages.NeedsModel("en"));
+
+        Check("translation model catalog",
+            TranslationModels.All.Count >= 3 &&
+            TranslationModels.Find(TranslationModels.DefaultId) != null &&
+            TranslationModels.All.All(model => model.Url.EndsWith(".gguf", StringComparison.Ordinal)) &&
+            TranslationModels.All.All(model => model.License == "Apache-2.0") &&
+            TranslationModels.FormatSize(600L * 1024 * 1024).Contains("MB"));
+
         var retarget = new SourceNode("App retarget", SourceKind.Application, 111);
         retarget.RetargetApplication(222, "testapp");
         Check("app retarget", retarget.ProcessId == 222 && retarget.ProcessName == "testapp");

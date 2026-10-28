@@ -1,6 +1,6 @@
 export type NodeKind = 'source' | 'output' | 'modifier';
 export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output';
-export type CatalogKind = 'app' | 'system' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'recorder';
+export type CatalogKind = 'app' | 'system' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'recorder' | 'vst3';
 
 export interface ChainElement {
   typeId: string;
@@ -36,6 +36,7 @@ export interface CatalogSnapshot {
   virtuals: CatalogItem[];
   effects: CatalogItem[];
   chains: CatalogItem[];
+  vst3Plugins: CatalogItem[];
   defaultOutputId: string;
   defaultOutputName: string;
 }
@@ -77,6 +78,19 @@ export interface NodeModel {
   isDbMeter?: boolean;
   isTranscriber?: boolean;
   transcriberModel?: string;
+  isTranslator?: boolean;
+  translatorTarget?: string;
+  translatorModel?: string;
+  translatorModels?: TranslatorModelInfo[];
+  isVst3?: boolean;
+  vst3Identifier?: string;
+  vst3Status?: string;
+  vst3Vendor?: string;
+  vst3Version?: string;
+  vst3Error?: string;
+  vst3HasEditor?: boolean;
+  vst3EditorOpen?: boolean;
+  vst3LatencyMs?: number;
   isRecorder: boolean;
   recordingPath: string;
   recordingFormat: string;
@@ -134,6 +148,7 @@ export interface FirstRouteResult {
 export interface NodeTelemetry {
   level: number;
   clipping: boolean;
+  filePlaying?: boolean;
   recordingStatus?: string;
   recordingSeconds?: number;
   recordingError?: string;
@@ -144,6 +159,9 @@ export interface NodeTelemetry {
   transcriptionStatus?: string;
   transcript?: string;
   partialTranscript?: string;
+  translatedTranscript?: string;
+  translatedPartial?: string;
+  detectedLanguage?: string;
   transcriptionError?: string;
   transcriptionLevel?: number;
   transcriptionHasAudio?: boolean;
@@ -203,6 +221,24 @@ export interface TranscriberDownload {
   message: string;
 }
 
+export interface TranslatorModelInfo {
+  id: string;
+  name: string;
+  tier: string;
+  sizeMb: number;
+  installed: boolean;
+  installedSize?: string;
+  license?: string;
+  note?: string;
+}
+
+export interface TranslatorDownload {
+  id: string;
+  phase: string;
+  percent: number;
+  message: string;
+}
+
 export interface SettingsModel {
   autoLoadSession: boolean;
   followPlayingApps: boolean;
@@ -222,6 +258,12 @@ export interface SettingsModel {
   transcriberModel: string;
   transcriberModels: TranscriberModelInfo[];
   transcriberDownload?: TranscriberDownload | null;
+  translatorModel: string;
+  translatorTarget: string;
+  translatorModels: TranslatorModelInfo[];
+  translatorDownload?: TranslatorDownload | null;
+  installedTranslatorModelsSize?: string;
+  installedTranslatorModelsCount?: number;
   installedModelsSize?: string;
   installedModelsCount?: number;
   appVersion?: string;

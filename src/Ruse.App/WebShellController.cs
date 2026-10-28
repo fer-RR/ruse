@@ -45,6 +45,10 @@ internal sealed partial class WebShellController : IDisposable
     private TranscriberModelProgress? _modelDownload;
     private long _lastModelPublish;
     private long _lastModelStatus;
+    private CancellationTokenSource? _translationDownloadCancel;
+    private TranslationModelProgress? _translationDownload;
+    private long _lastTranslationPublish;
+    private long _lastTranslationStatus;
 
     public WebShellController(WebMainWindow window)
     {
@@ -152,7 +156,7 @@ internal sealed partial class WebShellController : IDisposable
         {
             case "ready":
                 PublishAll();
-                if (!App.DemoMode && !App.UiTestMode && !App.LiveDemoMode && _settings.ShowWelcomeScreen)
+                if (!App.DemoMode && !App.LiveDemoMode && _settings.ShowWelcomeScreen)
                 {
                     Post("splash", new
                     {
@@ -171,6 +175,8 @@ internal sealed partial class WebShellController : IDisposable
             case "add-file-player": AddFilePlayer(); break;
             case "file-player-file": ChooseFilePlayerFile(String(message, "id")); break;
             case "file-player-loop": SetFilePlayerLoop(String(message, "id"), Bool(message, "value")); break;
+            case "file-player-start": StartFilePlayer(String(message, "id")); break;
+            case "file-player-stop": StopFilePlayer(String(message, "id")); break;
             case "file-player-restart": RestartFilePlayer(String(message, "id")); break;
             case "first-route": CreateFirstRoute(message); break;
             case "onboarding-complete": CompleteOnboarding(); break;
@@ -200,6 +206,17 @@ internal sealed partial class WebShellController : IDisposable
             case "transcriber-restart": RestartTranscription(String(message, "id")); break;
             case "transcriber-export": ExportTranscription(String(message, "id")); break;
             case "transcriber-open-folder": OpenTranscriberModelsFolder(); break;
+            case "translator-target": SetTranslatorTarget(String(message, "id"), String(message, "target")); break;
+            case "translator-model": SetTranslatorModel(String(message, "id"), String(message, "model")); break;
+            case "translator-download": DownloadTranslationModel(String(message, "id")); break;
+            case "translator-download-cancel": CancelTranslationDownload(); break;
+            case "translator-delete": DeleteTranslationModel(String(message, "id")); break;
+            case "translator-clear": ClearTranslation(String(message, "id")); break;
+            case "translator-restart": RestartTranslation(String(message, "id")); break;
+            case "translator-export": ExportTranslation(String(message, "id")); break;
+            case "translator-open-folder": OpenTranslationModelsFolder(); break;
+            case "vst3-editor": SetVst3Editor(String(message, "id"), Bool(message, "open")); break;
+            case "vst3-rescan": RescanVst3Plugins(); break;
             case "rename": RenameNode(String(message, "id"), String(message, "title")); break;
             case "transport":
                 if (Bool(message, "running")) StartRouting(); else StopRouting();
@@ -364,7 +381,7 @@ internal sealed partial class WebShellController : IDisposable
     internal List<GraphWarningDto> BuildGraphWarnings()
     {
         var warnings = new List<GraphWarningDto>();
-        if (App.DemoMode || App.UiTestMode)
+        if (App.DemoMode)
         {
             return warnings;
         }
@@ -443,6 +460,31 @@ internal sealed partial class WebShellController : IDisposable
             };
         }).ToList();
 
+        int installedTranslationCount = 0;
+        long installedTranslationBytes = 0;
+        var translationModels = TranslationModels.All.Select(model =>
+        {
+            bool installed = TranslationModels.IsInstalled(model.Id);
+            long bytes = installed ? TranslationModels.GetInstalledSizeBytes(model.Id) : 0;
+            if (installed)
+            {
+                installedTranslationCount++;
+                installedTranslationBytes += bytes;
+            }
+
+            return new TranslatorModelDto
+            {
+                Id = model.Id,
+                Name = model.Name,
+                Tier = model.Tier,
+                SizeMb = model.SizeMb,
+                License = model.License,
+                Note = model.Note,
+                Installed = installed,
+                InstalledSize = installed ? TranslationModels.FormatSize(bytes) : "",
+            };
+        }).ToList();
+
         Post("settings", new SettingsDto
         {
             AutoLoadSession = _settings.AutoLoadSession,
@@ -471,8 +513,22 @@ internal sealed partial class WebShellController : IDisposable
                     Percent = _modelDownload.Percent,
                     Message = _modelDownload.Message,
                 },
+            TranslatorModel = _settings.TranslatorModel,
+            TranslatorTarget = _settings.TranslatorTarget,
+            TranslatorModels = translationModels,
+            TranslatorDownload = _translationDownload == null
+                ? null
+                : new TranslatorDownloadDto
+                {
+                    Id = _translationDownload.ModelId,
+                    Phase = _translationDownload.Phase,
+                    Percent = _translationDownload.Percent,
+                    Message = _translationDownload.Message,
+                },
             InstalledModelsCount = installedCount,
             InstalledModelsSize = TranscriptionModels.FormatSize(installedBytes),
+            InstalledTranslatorModelsCount = installedTranslationCount,
+            InstalledTranslatorModelsSize = TranslationModels.FormatSize(installedTranslationBytes),
             AppVersion = typeof(WebShellController).Assembly.GetName().Version?.ToString(3) ?? "dev",
             DotNetVersion = Environment.Version.ToString(),
             WebView2Version = string.IsNullOrEmpty(_webView2Version) ? "not initialized" : _webView2Version,
@@ -521,6 +577,7 @@ internal sealed partial class WebShellController : IDisposable
             {
                 meter.Level = entry.Source.Muted ? 0 : Meter(entry.Source.MeterLevel);
                 meter.Clipping = !entry.Source.Muted && entry.Source.Clipping;
+                meter.FilePlaying = entry.Source.Kind == SourceKind.File && entry.Source.IsRunning;
             }
             else if (entry.Output != null)
             {
@@ -556,7 +613,30 @@ internal sealed partial class WebShellController : IDisposable
                         meter.PeakDb = DbMeterProcessor.GetPeakDb(dbMeter.TapId);
                     }
 
-                    if (modifier.Enabled && modifier.Processors.OfType<TranscriptionProcessor>().FirstOrDefault() is { } transcriber)
+                    if (modifier.Enabled && modifier.Processors.OfType<TranslatorProcessor>().FirstOrDefault() is { } translator)
+                    {
+                        meter.TranscriptionLevel = Meter(TranscriptionProcessor.GetLevel(translator.TapId));
+                        long lastAudio = TranscriptionProcessor.GetLastAudioTick(translator.TapId);
+                        meter.TranscriptionHasAudio = lastAudio > 0 && now - lastAudio < 2500;
+
+                        if (string.IsNullOrEmpty(entry.TranscriberModel))
+                        {
+                            meter.TranscriptionStatus = "No speech model installed";
+                        }
+                        else
+                        {
+                            var snapshot = TranslationRegistry.Snapshot(translator.TapId);
+                            meter.TranscriptionStatus = snapshot?.Status ?? "Starting";
+                            meter.Transcript = snapshot?.SourceText;
+                            meter.PartialTranscript = snapshot?.SourcePartial;
+                            meter.TranslatedTranscript = snapshot?.TranslatedText;
+                            meter.TranslatedPartial = snapshot?.TranslatedPartial;
+                            meter.DetectedLanguage = snapshot?.DetectedLanguage;
+                            meter.TranscriptionError = snapshot?.Error;
+                            meter.TranscriptionElapsed = snapshot?.ElapsedSeconds;
+                        }
+                    }
+                    else if (modifier.Enabled && modifier.Processors.OfType<TranscriptionProcessor>().FirstOrDefault() is { } transcriber)
                     {
                         meter.TranscriptionLevel = Meter(TranscriptionProcessor.GetLevel(transcriber.TapId));
                         long lastAudio = TranscriptionProcessor.GetLastAudioTick(transcriber.TapId);
@@ -790,8 +870,12 @@ internal sealed partial class WebShellController : IDisposable
         _appsTimer.Stop();
         _modelDownloadCancel?.Cancel();
         _modelDownloadCancel?.Dispose();
+        _translationDownloadCancel?.Cancel();
+        _translationDownloadCancel?.Dispose();
         TranscriptionRegistry.StopAll();
+        TranslationRegistry.StopAll();
         SpeechModelCache.DropAll();
+        TranslationModelCache.DropAll();
         _graph.Dispose();
     }
 
@@ -809,6 +893,8 @@ internal sealed partial class WebShellController : IDisposable
         public double? Height { get; set; }
         public string? MicHint { get; init; }
         public string? TranscriberModel { get; set; }
+        public string? TranslatorTarget { get; set; }
+        public string? TranslatorModel { get; set; }
         public string? SourceEndpointId { get; set; }
         public string? SourceEndpointName { get; set; }
         public SourceNode? Source { get; init; }

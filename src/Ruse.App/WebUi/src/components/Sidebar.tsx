@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { RefObject } from 'react';
 import {
   AppWindow, AudioLines, Check, ChevronDown, FileAudio, Headphones,
-  Layers3, Mic, Pencil, Plus, Radio, Search, SlidersHorizontal, Speaker, X,
+  Layers3, Mic, Pencil, Plus, Puzzle, Radio, Search, SlidersHorizontal, Speaker, X,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { catalogKey } from '../library';
@@ -40,6 +40,7 @@ function ItemIcon({ item }: { item: CatalogItem }) {
     case 'virtual': return <Radio {...props} />;
     case 'effect': return <SlidersHorizontal {...props} />;
     case 'chain': return <Layers3 {...props} />;
+    case 'vst3': return <Puzzle {...props} />;
     case 'file-player': return <FileAudio {...props} />;
     case 'recorder': return <FileAudio {...props} />;
   }
@@ -90,17 +91,19 @@ function LibraryItem({ item, name, onAdd, onEdit, onRename, onCanvas }: {
           {t(item.subtitle)}
         </span>
       </span>
-      {onEdit && <button className="library-add" title={t('Edit {name}', { name })} aria-label={t('Edit {name}', { name })} onClick={event => { event.stopPropagation(); onEdit(item); }}>
-        <Layers3 size={13} />
-      </button>}
-      {onRename && <button className="library-add" title={t('Rename {name}', { name })} aria-label={t('Rename {name}', { name })} onClick={event => { event.stopPropagation(); onRename(item); }}>
-        <Pencil size={13} />
-      </button>}
       {onCanvas
         ? <span className="library-add library-added" title={t('Already on the canvas')}><Check size={14} /></span>
-        : <button className="library-add" title={t('Add {name}', { name })} aria-label={t('Add {name}', { name })} onClick={event => { event.stopPropagation(); onAdd(item); }}>
-            <Plus size={14} />
-          </button>}
+        : <span className="library-actions">
+            {onEdit && <button className="library-add" title={t('Edit {name}', { name })} aria-label={t('Edit {name}', { name })} onClick={event => { event.stopPropagation(); onEdit(item); }}>
+              <Layers3 size={13} />
+            </button>}
+            {onRename && <button className="library-add" title={t('Rename {name}', { name })} aria-label={t('Rename {name}', { name })} onClick={event => { event.stopPropagation(); onRename(item); }}>
+              <Pencil size={13} />
+            </button>}
+            <button className="library-add" title={t('Add {name}', { name })} aria-label={t('Add {name}', { name })} onClick={event => { event.stopPropagation(); onAdd(item); }}>
+              <Plus size={14} />
+            </button>
+          </span>}
     </div>
   );
 }
@@ -124,7 +127,7 @@ const VIEWS: ReadonlyArray<{ id: View; label: string }> = [
   { id: 'processing', label: 'Processing' },
 ];
 
-export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onNewChain, onEditChain }: {
+export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onNewChain, onEditChain, onRescanPlugins }: {
   catalog: CatalogSnapshot;
   searchRef: RefObject<HTMLInputElement | null>;
   aliases: Record<string, string>;
@@ -133,6 +136,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
   onRename: (item: CatalogItem) => void;
   onNewChain: () => void;
   onEditChain: (item: CatalogItem) => void;
+  onRescanPlugins: () => void;
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
@@ -163,15 +167,16 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     const physicalOutputs = catalog.outputs.filter(item => item.provider !== 'ASIO');
     const asioOutputs = catalog.outputs.filter(item => item.provider === 'ASIO');
     return {
-      applications: { label: 'Applications', items: [systemItem, filePlayerItem, ...catalog.apps] },
+      applications: { label: 'Applications', items: [systemItem, ...catalog.apps] },
       physicalOutputs: { label: 'Speakers & headphones', items: physicalOutputs },
       physicalInputs: { label: 'Microphones & inputs', items: physicalInputs },
-      recording: { label: 'Recording', items: [recorderItem] },
+      recording: { label: 'Record & Play', items: [recorderItem, filePlayerItem] },
       virtualBuses: { label: 'Virtual buses', items: virtualInputs },
       virtualInputs: { label: 'Virtual inputs', items: catalog.virtuals },
       asioOutputs: { label: 'ASIO outputs', items: asioOutputs },
       asioInputs: { label: 'ASIO inputs', items: asioInputs },
       effects: { label: 'Effects', items: catalog.effects },
+      plugins: { label: 'VST3 plugins', items: catalog.vst3Plugins },
       chains: { label: 'Saved chains', items: catalog.chains },
     };
   }, [catalog]);
@@ -197,7 +202,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     },
     {
       title: 'Processing',
-      sections: [catalogSections.effects, catalogSections.chains],
+      sections: [catalogSections.effects, catalogSections.plugins, catalogSections.chains],
     },
   ], [catalogSections]);
 
@@ -211,6 +216,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     catalogSections.asioOutputs,
     catalogSections.asioInputs,
     catalogSections.effects,
+    catalogSections.plugins,
     catalogSections.chains,
   ].filter(section => section.items.length > 0), [catalogSections]);
 
@@ -335,6 +341,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
                       onCanvas={isOnCanvas(item)}
                     />)}
                     {section.label === 'Saved chains' && <button className="new-chain-button" onClick={onNewChain}><Plus size={13} /> {t('New chain')}</button>}
+                    {section.label === 'VST3 plugins' && <button className="new-chain-button" onClick={onRescanPlugins}><Plus size={13} /> {t('Rescan VST3 plugins')}</button>}
                   </div>}
                 </div>
               );

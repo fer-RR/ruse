@@ -36,7 +36,7 @@ const edgeTypes = { ruseEdge: RuseEdge };
 const FRAME_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const;
 type FrameHandle = typeof FRAME_HANDLES[number];
 const emptyCatalog: CatalogSnapshot = {
-  apps: [], outputs: [], inputs: [], virtuals: [], effects: [], chains: [],
+  apps: [], outputs: [], inputs: [], virtuals: [], effects: [], chains: [], vst3Plugins: [],
   defaultOutputId: '', defaultOutputName: '',
 };
 const initialSettings: SettingsModel = demoSettings;
@@ -379,6 +379,7 @@ export default function App() {
           ...model,
           highlightMuted: settingsRef.current.highlightMutedNodes,
           transcriberModels: settingsRef.current.transcriberModels,
+          translatorModels: settingsRef.current.translatorModels,
         },
       } satisfies RuseFlowNode;
     });
@@ -432,6 +433,12 @@ export default function App() {
       ? { ...node, data: { ...node.data, transcriberModels: settings.transcriberModels } }
       : node));
   }, [settings.transcriberModels, setNodes]);
+
+  useEffect(() => {
+    setNodes(current => current.map(node => node.data.isTranslator
+      ? { ...node, data: { ...node.data, translatorModels: settings.translatorModels } }
+      : node));
+  }, [settings.translatorModels, setNodes]);
 
   useEffect(() => {
     const openSettings = (event: Event) => {
@@ -872,6 +879,7 @@ export default function App() {
               onAdd={quickAdd}
               onRename={setRenameLibrary}
               onNewChain={() => setChainEditor({ name: 'My chain', elements: [] })}
+              onRescanPlugins={() => send('vst3-rescan')}
               onEditChain={item => setChainEditor({
                 name: item.name,
                 previousName: item.name,
@@ -1075,7 +1083,7 @@ export default function App() {
       />}
       {chainEditor && <ChainEditorDialog
         request={chainEditor}
-        effects={catalog.effects.filter(item => item.id !== 'transcriber' && item.id !== 'waveform')}
+        effects={catalog.effects.filter(item => item.id !== 'transcriber' && item.id !== 'translator' && item.id !== 'waveform')}
         onSave={request => {
           send('chain-save', {
             name: request.name,

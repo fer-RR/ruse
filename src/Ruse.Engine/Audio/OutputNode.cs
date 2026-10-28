@@ -652,6 +652,7 @@ public sealed class OutputNode : IDisposable
 
     public sealed class Route : IDisposable
     {
+        private readonly object _chainLock = new();
         private IAudioProcessor[] _instances = Array.Empty<IAudioProcessor>();
         private ParameterBinding[] _bindings = Array.Empty<ParameterBinding>();
         private DelayLine? _compensation;
@@ -670,11 +671,23 @@ public sealed class OutputNode : IDisposable
 
         public SourceNode.Subscription Subscription => _subscription ??= Source.Subscribe();
 
-        public void Dispose() => _subscription?.Dispose();
+        public void Dispose()
+        {
+            lock (_chainLock)
+            {
+                DisposeInstances(_instances);
+                _instances = Array.Empty<IAudioProcessor>();
+                _bindings = Array.Empty<ParameterBinding>();
+                _compensation = null;
+                _subscription?.Dispose();
+                _subscription = null;
+            }
+        }
 
         /// <summary>
         /// The chain's authoritative processors, owned by the modifiers. The UI
-        /// edits their parameters; they are never processed directly.
+        /// edits their parameters; shared native processors are also processed
+        /// directly, managed effects are cloned into per-route instances.
         /// </summary>
         public IAudioProcessor[] Templates { get; private set; } = Array.Empty<IAudioProcessor>();
 
@@ -685,14 +698,23 @@ public sealed class OutputNode : IDisposable
         /// </summary>
         public IAudioProcessor[] Processors
         {
-            get => _instances;
+            get
+            {
+                lock (_chainLock) return _instances;
+            }
             set
             {
-                _instances = value ?? Array.Empty<IAudioProcessor>();
-                _bindings = Array.Empty<ParameterBinding>();
-                _compensation = null;
-                CompensationFrames = 0;
-                InherentLatencyFrames = SumLatency(_instances);
+                var processors = value ?? Array.Empty<IAudioProcessor>();
+                lock (_chainLock)
+                {
+                    var old = _instances;
+                    _instances = processors;
+                    _bindings = Array.Empty<ParameterBinding>();
+                    _compensation = null;
+                    CompensationFrames = 0;
+                    InherentLatencyFrames = SumLatency(processors);
+                    DisposeInstances(old);
+                }
             }
         }
 
@@ -703,40 +725,78 @@ public sealed class OutputNode : IDisposable
         public int CompensationFrames { get; private set; }
 
         /// <summary>
-        /// Installs a chain: clones the templates into private instances, mirrors
-        /// their parameters and inserts the alignment delay for this route.
+        /// Installs a chain: clones managed effects into private instances, reuses
+        /// shared native processors, mirrors parameters and inserts the alignment
+        /// delay for this route.
         /// </summary>
         public void SetChain(IAudioProcessor[] templates, int compensationFrames)
         {
-            Templates = templates ?? Array.Empty<IAudioProcessor>();
-            _instances = new IAudioProcessor[Templates.Length];
-            for (int i = 0; i < Templates.Length; i++)
+            var templateArray = templates ?? Array.Empty<IAudioProcessor>();
+            int latency = SumLatency(templateArray);
+            int compensation = Math.Max(0, compensationFrames);
+            var delay = compensation > 0 ? new DelayLine(compensation, 2) : null;
+
+            bool sameChain = Templates.Length == templateArray.Length;
+            for (int i = 0; sameChain && i < templateArray.Length; i++)
             {
-                _instances[i] = Clone(Templates[i]);
+                sameChain = ReferenceEquals(Templates[i], templateArray[i]);
             }
 
-            InherentLatencyFrames = SumLatency(Templates);
-            _bindings = BuildBindings(Templates, _instances);
+            if (sameChain)
+            {
+                lock (_chainLock)
+                {
+                    InherentLatencyFrames = latency;
+                    CompensationFrames = compensation;
+                    _compensation = delay;
+                }
 
-            CompensationFrames = Math.Max(0, compensationFrames);
-            _compensation = CompensationFrames > 0 ? new DelayLine(CompensationFrames, 2) : null;
+                return;
+            }
+
+            var instances = new IAudioProcessor[templateArray.Length];
+            for (int i = 0; i < templateArray.Length; i++)
+            {
+                // Native plugins own global state and are intentionally shared.
+                instances[i] = templateArray[i] is ISharedProcessor
+                    ? templateArray[i]
+                    : Clone(templateArray[i]);
+            }
+
+            var bindings = BuildBindings(templateArray, instances);
+            lock (_chainLock)
+            {
+                var old = _instances;
+                Templates = templateArray;
+                _instances = instances;
+                _bindings = bindings;
+                InherentLatencyFrames = latency;
+                CompensationFrames = compensation;
+                _compensation = delay;
+                DisposeInstances(old);
+            }
         }
 
         /// <summary>
         /// Runs the effect chain and any alignment delay on one block. Called on
-        /// the output's render thread, so it must not allocate or lock.
+        /// the output's render thread.
         /// </summary>
         public void Process(Span<float> block, int frames, int channels)
         {
-            SyncParameters();
-
-            var instances = _instances;
-            for (int i = 0; i < instances.Length; i++)
+            lock (_chainLock)
             {
-                instances[i].Process(block, frames);
-            }
+                SyncParameters();
 
-            _compensation?.Process(block, channels);
+                var instances = _instances;
+                for (int i = 0; i < instances.Length; i++)
+                {
+                    // A null entry should never survive SetChain, but never take the
+                    // audio thread down if a future chain builder publishes early.
+                    instances[i]?.Process(block, frames);
+                }
+
+                _compensation?.Process(block, channels);
+            }
         }
 
         // Parameters are edited on the template, so mirror values that changed
@@ -779,11 +839,36 @@ public sealed class OutputNode : IDisposable
             }
         }
 
+        private static void DisposeInstances(IAudioProcessor[] instances)
+        {
+            if (instances.Length == 0)
+            {
+                return;
+            }
+
+            var seen = new HashSet<IAudioProcessor>(ReferenceEqualityComparer.Instance);
+            for (int i = 0; i < instances.Length; i++)
+            {
+                var instance = instances[i];
+                if (instance is null || instance is ISharedProcessor || !seen.Add(instance))
+                {
+                    continue;
+                }
+
+                (instance as IDisposable)?.Dispose();
+            }
+        }
+
         private static ParameterBinding[] BuildBindings(IAudioProcessor[] templates, IAudioProcessor[] instances)
         {
             var bindings = new List<ParameterBinding>();
             for (int i = 0; i < templates.Length && i < instances.Length; i++)
             {
+                if (ReferenceEquals(templates[i], instances[i]))
+                {
+                    continue;
+                }
+
                 if (templates[i] is not IParameterizedProcessor source ||
                     instances[i] is not IParameterizedProcessor target)
                 {

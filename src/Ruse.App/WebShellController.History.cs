@@ -47,6 +47,8 @@ internal sealed partial class WebShellController
         bool Muted,
         bool Enabled,
         string? TranscriberModel,
+        string? TranslatorTarget,
+        string? TranslatorModel,
         bool FileLoop);
 
     private void PushAction(string label, Action undo, Action redo, string? coalesceKey = null)
@@ -132,7 +134,7 @@ internal sealed partial class WebShellController
             entry.Id, entry.Kind, entry.Flavor, entry.Title, entry.Subtitle, entry.Accent,
             entry.X, entry.Y, entry.Width, entry.Height, entry.MicHint, SourceKind.Application, null, null, null, null,
             Array.Empty<int>(), false, false, null, AudioFileFormat.Wav24, RecorderMode.Off.ToString(), false,
-            new List<PresetProcessor>(), 1, false, true, null, false);
+            new List<PresetProcessor>(), 1, false, true, null, null, null, false);
 
         if (entry.Source != null)
         {
@@ -174,6 +176,8 @@ internal sealed partial class WebShellController
                 Processors = entry.Modifier.Processors.Select(PresetSerializer.SerializeProcessor).ToList(),
                 Enabled = entry.Modifier.Enabled,
                 TranscriberModel = entry.TranscriberModel,
+                TranslatorTarget = entry.TranslatorTarget,
+                TranslatorModel = entry.TranslatorModel,
             };
         }
 
@@ -258,7 +262,8 @@ internal sealed partial class WebShellController
 
                 modifier.Enabled = snapshot.Enabled;
                 var modifierEntry = RegisterModifier(modifier, snapshot.X, snapshot.Y,
-                    snapshot.Flavor, snapshot.Subtitle, snapshot.Id, snapshot.TranscriberModel);
+                    snapshot.Flavor, snapshot.Subtitle, snapshot.Id, snapshot.TranscriberModel,
+                    snapshot.TranslatorTarget, snapshot.TranslatorModel);
                 modifierEntry.Width = snapshot.Width;
                 modifierEntry.Height = snapshot.Height;
                 return modifierEntry;

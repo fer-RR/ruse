@@ -3,8 +3,10 @@ import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { Activity, AudioLines, Cable, Copy, FileText, FolderOpen, Headphones, Keyboard, LayoutGrid, Mic, MonitorSpeaker, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
+import { TRANSLATION_TARGETS } from '../languages';
 import type { CatalogItem, GraphWarning, SettingsModel } from '../types';
 import ModelCatalog from './ModelCatalog';
+import TranslationModelCatalog from './TranslationModelCatalog';
 
 export function Modal({ title, onClose, children, className = '', movable = false }: {
   title: string;
@@ -229,6 +231,9 @@ const SHORTCUTS: ReadonlyArray<readonly [string, string]> = [
 const LICENSES: ReadonlyArray<readonly [string, string, string]> = [
   ['OpenAI Whisper', 'MIT', 'Speech recognition code and model weights'],
   ['Whisper.net / whisper.cpp', 'MIT', 'Whisper bindings and native runtime'],
+  ['LLamaSharp / llama.cpp', 'MIT', 'Offline translation runtime'],
+  ['Qwen2.5 Instruct', 'Apache-2.0', 'Offline translation model weights'],
+  ['OwnAudioVst / VST 3 SDK', 'MIT', 'VST3 plugin hosting and native editor windows'],
   ['NAudio', 'MIT', 'Audio capture, effects, WASAPI and ASIO'],
   ['WebView2', 'Microsoft', 'Embedded browser runtime and SDK'],
   ['React / React DOM / React Flow', 'MIT', 'Web interface'],
@@ -237,7 +242,7 @@ const LICENSES: ReadonlyArray<readonly [string, string, string]> = [
 const SETTINGS_TABS = [
   { id: 'behavior', label: 'Behavior', Icon: SlidersHorizontal },
   { id: 'workspace', label: 'Workspace', Icon: LayoutGrid },
-  { id: 'speech', label: 'Speech', Icon: AudioLines },
+  { id: 'speech', label: 'Speech & translation', Icon: AudioLines },
   { id: 'shortcuts', label: 'Shortcuts', Icon: Keyboard },
   { id: 'diagnostics', label: 'Info', Icon: Activity },
 ] as const;
@@ -258,6 +263,10 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
   const selectedModel = installed.some(model => model.id === settings.transcriberModel)
     ? settings.transcriberModel
     : installed[0]?.id ?? '';
+  const installedTranslators = settings.translatorModels.filter(model => model.installed);
+  const selectedTranslator = installedTranslators.some(model => model.id === settings.translatorModel)
+    ? settings.translatorModel
+    : installedTranslators[0]?.id ?? '';
 
   return (
     <Modal title={t('Settings')} onClose={onClose} className="settings-modal" movable>
@@ -290,6 +299,23 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               </label>
             </div>
             <div className="settings-section">
+              <span className="eyebrow">{t('Translation')}</span>
+              <label className="setting-row">
+                <span><strong>{t('Default translation language')}</strong><small>{t('Used by new Translator nodes; each node can override it.')}</small></span>
+                <select value={settings.translatorTarget} onChange={event => onChange({ ...settings, translatorTarget: event.target.value })}>
+                  {TRANSLATION_TARGETS.map(target => <option key={target.code} value={target.code}>{target.label}</option>)}
+                </select>
+              </label>
+              <label className="setting-row">
+                <span><strong>{t('Default translation model')}</strong><small>{t('Used when the target language is not English.')}</small></span>
+                {installedTranslators.length > 0
+                  ? <select value={selectedTranslator} onChange={event => onChange({ ...settings, translatorModel: event.target.value })}>
+                      {installedTranslators.map(model => <option key={model.id} value={model.id} title={model.name}>{model.name}</option>)}
+                    </select>
+                  : <span className="model-missing">{t('No models installed')}</span>}
+              </label>
+            </div>
+            <div className="settings-section">
               <div className="settings-section-head">
                 <span className="eyebrow">{t('Models')}</span>
                 <span className="settings-summary">
@@ -301,6 +327,20 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 selectedModel={selectedModel}
                 download={settings.transcriberDownload}
                 onSelectDefault={id => onChange({ ...settings, transcriberModel: id })}
+              />
+            </div>
+            <div className="settings-section">
+              <div className="settings-section-head">
+                <span className="eyebrow">{t('Translation models')}</span>
+                <span className="settings-summary">
+                  {t('{count} installed', { count: settings.installedTranslatorModelsCount ?? installedTranslators.length })} / {settings.installedTranslatorModelsSize ?? '0 MB'}
+                </span>
+              </div>
+              <TranslationModelCatalog
+                models={settings.translatorModels}
+                selectedModel={selectedTranslator}
+                download={settings.translatorDownload}
+                onSelectDefault={id => onChange({ ...settings, translatorModel: id })}
               />
             </div>
           </>
@@ -399,6 +439,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 <button className="tool-button" onClick={() => send('open-log')}><FileText size={14} /> {t('Open log')}</button>
                 <button className="tool-button" onClick={() => send('open-log-folder')}><FolderOpen size={14} /> {t('Open data folder')}</button>
                 <button className="tool-button" onClick={() => send('copy-diagnostics')}><Copy size={14} /> {t('Copy diagnostics')}</button>
+                <button className="tool-button" onClick={() => send('vst3-rescan')}><FolderOpen size={14} /> {t('Rescan VST3 plugins')}</button>
               </div>
               <p className="settings-note">{t('The interface runs in WebView2. Audio capture, mixing, ASIO and recording remain in the native engine.')}</p>
             </div>
