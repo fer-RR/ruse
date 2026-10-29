@@ -10,7 +10,8 @@ ONNX Runtime OPUS-MT for translation, and OwnAudioVst for VST3. There is one UI;
 the old WPF workspace was removed.
 
 - Canonical repo: `C:\Users\ih_me\Projects\Ruse` (`main`, stale at `240d065`)
-- Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, clean at `113c428`).
+- Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, clean; latest feature
+  commit `113c428`).
   Do not reset or clean it.
 - Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`
 - Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-win-x64-2026-10-29.zip`
@@ -133,6 +134,7 @@ src/Ruse.App/
 - Comments explain why, not what. Keep them short. No emoji.
 - UI text goes through `useI18n().t('English')`; update every locale file.
 - Effect ids and parameter names are stable (presets depend on them).
-- Keep `bin/`, `obj/`, `node_modules/`, `WebUi/dist/`, models and screenshots
+- Keep `bin/`, `obj/`, 
+ode_modules/`, `WebUi/dist/`, models and screenshots
   out of the repo. Do not commit or merge unless the user asks.
 - Demo graphs are reviewed visually; keep `--demo` tidy.
