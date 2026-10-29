@@ -225,6 +225,8 @@ public sealed class OutputNode : IDisposable
 
         _stopRequested = false;
         _running = true;
+        Underruns = 0;
+        _renderedOnce = false;
 
         int sampleRate = 48000;
         int channels = 2;
@@ -318,6 +320,7 @@ public sealed class OutputNode : IDisposable
         {
             IsBackground = true,
             Name = $"OutputPump-{Title}",
+            Priority = ThreadPriority.AboveNormal,
         };
         _pumpThread.Start();
     }
@@ -398,9 +401,15 @@ public sealed class OutputNode : IDisposable
             while (_running)
             {
                 var buffer = _buffer;
-                if (buffer != null && buffer.BufferedDuration.TotalMilliseconds < TargetBufferMs)
+                if (buffer != null && buffer.BufferedDuration.TotalMilliseconds < RenderTargetBufferMs)
                 {
+                    if (_renderedOnce && buffer.BufferedBytes == 0)
+                    {
+                        Underruns++;
+                    }
+
                     RenderChunk(mix, temp, byteBuffer, channels);
+                    _renderedOnce = true;
                 }
                 else
                 {
@@ -417,11 +426,64 @@ public sealed class OutputNode : IDisposable
     // Small enough for low latency, large enough to absorb a scheduling hiccup.
     private const double TargetBufferMs = 12;
 
+    // Native plugins do their work on the render thread. A 5 ms pump with a
+    // 12 ms cushion is too tight when a VST3 can take a couple of milliseconds
+    // and the device pulls every 2 ms, which shows up as periodic dropouts.
+    // Keep extra headroom whenever a shared native processor is in the chain.
+    private const double NativePluginTargetBufferMs = 24;
+
+    private double RenderTargetBufferMs
+    {
+        get
+        {
+            var routes = _routeSnapshot;
+            for (int r = 0; r < routes.Length; r++)
+            {
+                var templates = routes[r].Templates;
+                for (int i = 0; i < templates.Length; i++)
+                {
+                    if (HasNativeProcessor(templates[i]))
+                    {
+                        return NativePluginTargetBufferMs;
+                    }
+                }
+            }
+
+            return TargetBufferMs;
+        }
+    }
+
+    private static bool HasNativeProcessor(IAudioProcessor processor)
+    {
+        if (processor is ISharedProcessor)
+        {
+            return true;
+        }
+
+        if (processor is ChainProcessor chain)
+        {
+            foreach (var inner in chain.Processors)
+            {
+                if (HasNativeProcessor(inner))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Set by diagnostics to pace a test sink at real time instead of full speed.</summary>
     public bool PaceRealTime { get; set; }
 
     /// <summary>Frames that had to be silence-padded because the source underran.</summary>
     public long ShortReadFrames { get; private set; }
+
+    /// <summary>Times the device buffer was empty when the pump wanted to refill it.</summary>
+    public long Underruns { get; private set; }
+
+    private bool _renderedOnce;
 
     /// <summary>Bytes allocated by the render thread while mixing (diagnostics).</summary>
     public long RenderAllocatedBytes { get; private set; }

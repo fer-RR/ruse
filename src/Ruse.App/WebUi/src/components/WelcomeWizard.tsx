@@ -1,17 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
-  AlertTriangle, AppWindow, AudioLines, Cable, Check, ChevronLeft, CircleHelp,
-  Mic, MonitorSpeaker, Power, Radio, RefreshCw, SlidersHorizontal, Volume2,
+  AlertTriangle, AppWindow, AudioLines, Cable, Check, ChevronLeft, ChevronRight,
+  CircleHelp, Mic, MonitorSpeaker, Power, Radio, RefreshCw, SlidersHorizontal, Volume2,
 } from 'lucide-react';
 import { send, subscribe } from '../bridge';
-import { useI18n } from '../i18n';
+import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { useNodeTelemetry } from '../telemetry';
-import type { CatalogItem, CatalogSnapshot, FirstRouteResult } from '../types';
+import type { CatalogItem, CatalogSnapshot, FirstRouteResult, SettingsModel } from '../types';
 import { Modal } from './Dialogs';
+import RuseLogo from './RuseLogo';
 
 type SourceKind = 'system' | 'app' | 'input';
-type Step = 1 | 2 | 3 | 4;
+type Step = 0 | 1 | 2 | 3 | 4;
 
 const SYSTEM_SOURCE: CatalogItem = {
   id: 'system',
@@ -59,13 +60,16 @@ function Choice({ item, selected, onSelect, subtitle, icon, badge }: {
   );
 }
 
-export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
+export default function WelcomeWizard({ catalog, settings, onChange, onClose, onOpenHelp }: {
   catalog: CatalogSnapshot;
+  settings: SettingsModel;
+  onChange: (settings: SettingsModel) => void;
   onClose: () => void;
   onOpenHelp: () => void;
 }) {
   const { t } = useI18n();
-  const [step, setStep] = useState<Step>(1);
+  const [step, setStep] = useState<Step>(0);
+  const hideNextTime = !settings.showWelcomeScreen;
   const [sourceKind, setSourceKind] = useState<SourceKind>('system');
   const [sourceItem, setSourceItem] = useState<CatalogItem | null>(SYSTEM_SOURCE);
   const [outputItem, setOutputItem] = useState<CatalogItem | null>(null);
@@ -143,6 +147,8 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
   const selectOutput = (item: CatalogItem) => {
     setOutputItem(item);
     setAcknowledged(false);
+    setResult(null);
+    setError(null);
   };
 
   const create = () => {
@@ -157,6 +163,45 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
       outputId: outputItem.id,
     });
   };
+
+  const renderIntroStep = () => (
+    <div className="welcome-splash wizard-intro">
+      <div className="welcome-splash-hero">
+        <span className="welcome-splash-logo"><RuseLogo size={54} /></span>
+        <div>
+          <p className="wizard-kicker">{t('Sound routing, simplified')}</p>
+          <h2>{t('Send sound anywhere.')}</h2>
+          <p>{t('Ruse sends the sound from one app, the whole PC, or a microphone to any speaker, headphones or virtual device. It makes a copy, so the original app keeps working normally.')}</p>
+        </div>
+      </div>
+
+      <div className="welcome-splash-cards">
+        <div className="welcome-splash-card">
+          <span className="welcome-splash-card-icon blue"><AppWindow size={18} /></span>
+          <strong>{t('1. Pick a sound')}</strong>
+          <small>{t('An application, everything Windows plays, or a microphone.')}</small>
+        </div>
+        <div className="welcome-splash-card">
+          <span className="welcome-splash-card-icon amber"><SlidersHorizontal size={18} /></span>
+          <strong>{t('2. Shape it')}</strong>
+          <small>{t('Adjust volume, add effects, or record and transcribe the mix.')}</small>
+        </div>
+        <div className="welcome-splash-card">
+          <span className="welcome-splash-card-icon green"><MonitorSpeaker size={18} /></span>
+          <strong>{t('3. Send it anywhere')}</strong>
+          <small>{t('Speakers, headphones, a virtual cable, or another app.')}</small>
+        </div>
+      </div>
+
+      <div className="welcome-splash-note">
+        <AudioLines size={18} />
+        <div>
+          <strong>{t('Start with a guided setup')}</strong>
+          <p>{t('We will pick a sound, choose where it comes out, and test the connection together. You can skip it and explore the canvas on your own.')}</p>
+        </div>
+      </div>
+    </div>
+  );
 
   const renderSourceStep = () => (
     <>
@@ -194,7 +239,7 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
             {apps.map(item => (
               <Choice key={item.id} item={item} selected={sourceItem?.id === item.id} onSelect={() => selectSource(item)} icon={<SourceIcon item={item} />} subtitle={item.active ? t('Playing now') : t(item.subtitle)} />
             ))}
-            {apps.length === 0 && <p className="wizard-empty">{t('No applications found. Start playback, then refresh.')}</p>}
+            {apps.length === 0 && <p className="wizard-empty">{catalog.perAppCaptureAvailable ? t('No applications found. Start playback, then refresh.') : t('Per-app capture needs Windows 10 build 20348 or later. Use System audio instead.')}</p>}
           </div>
         </>
       )}
@@ -379,16 +424,19 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
   return (
     <Modal title={t('Welcome to Ruse')} onClose={onClose} className="wizard-modal">
       <div className="wizard-body">
-        <div className="wizard-steps" aria-label={t('Progress')}>
-          {[1, 2, 3, 4].map(value => (
-            <div key={value} className={`wizard-step ${step === value ? 'active' : ''} ${step > value ? 'done' : ''}`}>
-              <span className="wizard-step-number">{step > value ? <Check size={12} /> : value}</span>
-              <span>{value === 1 ? t('Source') : value === 2 ? t('Output') : value === 3 ? t('Test') : t('Basics')}</span>
-            </div>
-          ))}
-        </div>
+        {step > 0 && (
+          <div className="wizard-steps" aria-label={t('Progress')}>
+            {[1, 2, 3, 4].map(value => (
+              <div key={value} className={`wizard-step ${step === value ? 'active' : ''} ${step > value ? 'done' : ''}`}>
+                <span className="wizard-step-number">{step > value ? <Check size={12} /> : value}</span>
+                <span>{value === 1 ? t('Source') : value === 2 ? t('Output') : value === 3 ? t('Test') : t('Basics')}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         <div className="wizard-content">
+          {step === 0 && renderIntroStep()}
           {step === 1 && renderSourceStep()}
           {step === 2 && renderOutputStep()}
           {step === 3 && renderReviewStep()}
@@ -397,11 +445,40 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
 
         <div className="wizard-footer">
           <div>
-            {!result && <button className="wizard-skip" onClick={onClose}>{t('Skip for now')}</button>}
-            {result && step < 4 && <span className="wizard-muted">{t('You can reopen this guide any time from Settings.')}</span>}
+            {step === 0 ? (
+              <div className="wizard-intro-options">
+                <label className="welcome-splash-language">
+                  <span>{t('Language')}</span>
+                  <select value={normalizeLanguage(settings.uiLanguage)} onChange={event => onChange({ ...settings, uiLanguage: event.target.value })}>
+                    {LANGUAGES.map(language => <option key={language.id} value={language.id}>{language.label}</option>)}
+                  </select>
+                </label>
+                <label className="welcome-splash-check">
+                  <input
+                    type="checkbox"
+                    checked={hideNextTime}
+                    onChange={event => onChange({ ...settings, showWelcomeScreen: !event.target.checked })}
+                  />
+                  <span>{t("Don't show this again")}</span>
+                </label>
+              </div>
+            ) : (
+              <>
+                {!result && <button className="wizard-skip" onClick={onClose}>{t('Skip for now')}</button>}
+                {result && step < 4 && <span className="wizard-muted">{t('You can reopen this guide any time from Settings.')}</span>}
+              </>
+            )}
           </div>
           <div className="wizard-footer-actions">
-            {step > 1 && step < 4 && !result && <button className="tool-button" onClick={() => setStep((step - 1) as Step)}><ChevronLeft size={14} /> {t('Back')}</button>}
+            {step === 0 && (
+              <>
+                <button className="tool-button" onClick={onClose}>{t('Explore on my own')}</button>
+                <button className="primary-button" onClick={() => setStep(1)}>
+                  {t('Set up my first route')} <ChevronRight size={14} />
+                </button>
+              </>
+            )}
+            {step > 1 && <button className="tool-button" onClick={() => setStep((step - 1) as Step)}><ChevronLeft size={14} /> {t('Back')}</button>}
             {step === 1 && <button className="primary-button" disabled={!sourceItem} onClick={() => setStep(2)}>{t('Continue')}</button>}
             {step === 2 && <button className="primary-button" disabled={!outputItem} onClick={() => setStep(3)}>{t('Continue')}</button>}
             {step === 3 && !result && (
@@ -409,7 +486,11 @@ export default function WelcomeWizard({ catalog, onClose, onOpenHelp }: {
                 {creating ? t('Creating route…') : duplicateRisk ? t('Create and start anyway') : t('Create and start')}
               </button>
             )}
-            {step === 3 && result && <button className="primary-button" onClick={() => setStep(4)}>{t('Continue')}</button>}
+            {step === 3 && result && (
+              <button className={`primary-button ${hasSignal ? 'signal-ready' : ''}`} onClick={() => setStep(4)}>
+                {t('Continue')}
+              </button>
+            )}
             {step === 4 && result && <button className="primary-button" onClick={onClose}>{t('Done')}</button>}
           </div>
         </div>

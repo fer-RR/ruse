@@ -155,7 +155,7 @@ public static class PresetSerializer
     /// <summary>Captures an effect and its current parameter values.</summary>
     public static PresetProcessor SerializeProcessor(IAudioProcessor processor)
     {
-        if (processor is Vst3Processor vst)
+        if (processor is IVst3Processor vst)
         {
             return new PresetProcessor
             {
@@ -202,7 +202,7 @@ public static class PresetSerializer
                 return null;
             }
 
-            return new Vst3Processor(entry.PluginPath, entry.PluginState, entry.Parameters);
+            return Vst3ProcessorFactory.Create(entry.PluginPath, entry.PluginState, entry.Parameters);
         }
 
         if (entry.TypeId == "chain")
@@ -213,7 +213,7 @@ public static class PresetSerializer
                 foreach (var inner in entry.Elements)
                 {
                     var processor = CreateProcessor(inner);
-                    if (processor != null && processor is not ITapProcessor && processor is not Vst3Processor)
+                    if (processor != null && processor is not ITapProcessor && processor is not IVst3Processor)
                     {
                         chain.Add(processor);
                     }

@@ -18,13 +18,13 @@ internal sealed record TranslationSnapshot(
     float Level,
     bool HasAudio,
     double ElapsedSeconds,
-    string? DetectedLanguage);
+    string? DetectedLanguage,
+    bool? GpuActive,
+    IReadOnlyList<SubtitleCue> SourceSegments,
+    IReadOnlyList<SubtitleCue> TranslatedSegments);
 
 internal sealed class TranslationSession : IDisposable
 {
-    private const int SampleRate = 16000;
-    private const int MinChunkSamples = SampleRate * 2;
-    private const int MaxChunkSamples = SampleRate * 10;
     private const int TranslationContextSize = 2048;
 
     private static readonly SemaphoreSlim TranslationGate = new(1, 1);
@@ -33,14 +33,19 @@ internal sealed class TranslationSession : IDisposable
     private readonly string _speechModelId;
     private readonly string _translationModelId;
     private readonly string _targetCode;
+    private readonly string _provider;
     private readonly CancellationTokenSource _cancel = new();
     private readonly object _textLock = new();
     private readonly object _sampleLock = new();
-    private readonly List<float> _samples = new(MaxChunkSamples + 8192);
+    private readonly SpeechChunker _chunker = new();
+    private readonly List<SubtitleCue> _sourceCues = new();
+    private readonly List<SubtitleCue> _translatedCues = new();
+    private float[] _decoded = new float[8192];
     private readonly Task _worker;
     private readonly long _startedAt = Environment.TickCount64;
 
     private StatelessExecutor? _translator;
+    private OpusMtEngine? _opus;
     private string _baseStatus = "Starting";
     private string _sourceText = "";
     private string _sourcePartial = "";
@@ -49,23 +54,27 @@ internal sealed class TranslationSession : IDisposable
     private string? _error;
     private string? _detectedLanguage;
     private bool _modelReady;
+    private bool _gpuActive;
     private bool _processing;
     private int _disposed;
 
-    public TranslationSession(int tapId, string speechModelId, string translationModelId, string targetCode)
+    public TranslationSession(int tapId, string speechModelId, string translationModelId, string targetCode, string translationProvider = "qwen")
     {
         _tapId = tapId;
         _speechModelId = speechModelId;
         _translationModelId = translationModelId;
         _targetCode = TranslationLanguages.Normalize(targetCode);
+        _provider = string.Equals(translationProvider, "opus", StringComparison.OrdinalIgnoreCase)
+            ? "opus" : "qwen";
         _worker = Task.Run(RunAsync);
     }
 
     public string SpeechModelId => _speechModelId;
     public string TranslationModelId => _translationModelId;
     public string TargetCode => _targetCode;
+    public string Provider => _provider;
 
-    public TranslationSnapshot Snapshot()
+    public TranslationSnapshot Snapshot(bool includeCues = false)
     {
         long lastAudio = TranscriptionProcessor.GetLastAudioTick(_tapId);
         bool hasAudio = lastAudio > 0 && Environment.TickCount64 - lastAudio < 2500;
@@ -86,14 +95,17 @@ internal sealed class TranslationSession : IDisposable
                 level,
                 hasAudio,
                 Math.Max(0, (Environment.TickCount64 - _startedAt) / 1000.0),
-                _detectedLanguage);
+                _detectedLanguage,
+                _modelReady ? _gpuActive : null,
+                includeCues ? _sourceCues.ToArray() : Array.Empty<SubtitleCue>(),
+                includeCues ? _translatedCues.ToArray() : Array.Empty<SubtitleCue>());
         }
     }
 
     public void Clear()
     {
         TranscriptionProcessor.ClearTap(_tapId);
-        lock (_sampleLock) _samples.Clear();
+        lock (_sampleLock) _chunker.Clear();
         lock (_textLock)
         {
             _sourceText = "";
@@ -102,6 +114,8 @@ internal sealed class TranslationSession : IDisposable
             _translatedPartial = "";
             _error = null;
             _detectedLanguage = null;
+            _sourceCues.Clear();
+            _translatedCues.Clear();
         }
     }
 
@@ -145,7 +159,12 @@ internal sealed class TranslationSession : IDisposable
                 return;
             }
 
-            if (TranslationLanguages.NeedsModel(_targetCode))
+            if (_provider == "opus")
+            {
+                _opus = new OpusMtEngine();
+            }
+            if (TranslationLanguages.NeedsModel(_targetCode) &&
+                (_provider != "opus" || _targetCode is "ja" or "ko"))
             {
                 if (string.IsNullOrEmpty(_translationModelId))
                 {
@@ -183,17 +202,36 @@ internal sealed class TranslationSession : IDisposable
                 }
 
                 translationAcquired = true;
-                _translator = new StatelessExecutor(weights, new ModelParams(translationPath)
+                int threads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
+                try
                 {
-                    ContextSize = TranslationContextSize,
-                    BatchSize = 256,
-                    GpuLayerCount = 0,
-                    Threads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8),
-                })
+                    _translator = new StatelessExecutor(
+                        weights,
+                        ModelRuntime.TranslationParams(translationPath, 256, TranslationContextSize, threads))
+                    {
+                        ApplyTemplate = true,
+                        SystemMessage = TranslationPrompt.System(_targetCode),
+                    };
+                }
+                catch (Exception gpuError) when (ModelRuntime.UseGpu)
                 {
-                    ApplyTemplate = true,
-                    SystemMessage = TranslationPrompt.System(_targetCode),
-                };
+                    AppLog.Warning(
+                        "GPU context creation failed for translation; falling back to CPU. " +
+                        gpuError.GetBaseException().Message);
+                    ModelRuntime.ReportGpuFallback(
+                        "Translation context: " + gpuError.GetBaseException().Message);
+                    _translator = new StatelessExecutor(weights, new ModelParams(translationPath)
+                    {
+                        ContextSize = TranslationContextSize,
+                        BatchSize = 256,
+                        GpuLayerCount = 0,
+                        Threads = threads,
+                    })
+                    {
+                        ApplyTemplate = true,
+                        SystemMessage = TranslationPrompt.System(_targetCode),
+                    };
+                }
             }
 
             try
@@ -201,19 +239,33 @@ internal sealed class TranslationSession : IDisposable
                 var builder = factory.CreateBuilder()
                     .WithThreads(Math.Clamp(Environment.ProcessorCount / 2, 1, 8))
                     .WithNoContext();
-                builder = _targetCode == TranslationLanguages.English
+                builder = _targetCode == TranslationLanguages.English && _provider != "opus"
                     ? builder.WithTranslate()
                     : builder.WithLanguage("auto");
 
                 processor = builder.Build();
+                bool speechGpu = SpeechModelCache.IsGpu(_speechModelId);
+                bool qwenFallback = _provider == "opus" &&
+                                    _targetCode is "ja" or "ko" && _translator != null;
+                bool translationGpu = (_provider != "opus" || qwenFallback) &&
+                                      (!TranslationLanguages.NeedsModel(_targetCode) ||
+                                       string.IsNullOrEmpty(_translationModelId) ||
+                                       TranslationModelCache.IsGpu(_translationModelId));
+                _gpuActive = speechGpu && translationGpu;
                 _modelReady = true;
                 SetStatus("Listening");
                 await RunRecognitionAsync(processor);
             }
             finally
             {
-                processor?.Dispose();
-                SpeechModelCache.Release(_speechModelId);
+                try
+                {
+                    if (processor != null) await processor.DisposeAsync();
+                }
+                finally
+                {
+                    SpeechModelCache.Release(_speechModelId);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -241,42 +293,41 @@ internal sealed class TranslationSession : IDisposable
         {
             int read = TranscriptionProcessor.ReadAvailable(_tapId, buffer);
             float[]? chunk = null;
-            if (read > 0)
+            double chunkStart = 0;
+            if (read > 1)
             {
+                int sampleCount = read / 2;
                 lock (_sampleLock)
                 {
-                    for (int i = 0; i + 1 < read; i += 2)
+                    if (_decoded.Length < sampleCount)
                     {
-                        short value = (short)(buffer[i] | (buffer[i + 1] << 8));
-                        _samples.Add(value / 32768f);
+                        _decoded = new float[sampleCount];
                     }
 
-                    long now = Environment.TickCount64;
-                    long lastAudio = TranscriptionProcessor.GetLastAudioTick(_tapId);
-                    bool silent = lastAudio > 0 && now - lastAudio > 1200;
-                    if (_samples.Count >= MaxChunkSamples ||
-                        (silent && _samples.Count >= MinChunkSamples))
+                    for (int i = 0; i < sampleCount; i++)
                     {
-                        chunk = _samples.ToArray();
-                        _samples.Clear();
+                        short value = (short)(buffer[i * 2] | (buffer[i * 2 + 1] << 8));
+                        _decoded[i] = value / 32768f;
                     }
-                    else if (lastAudio == 0 || now - lastAudio > 3000)
+
+                    if (_chunker.Add(_decoded.AsSpan(0, sampleCount), out var produced, out var start))
                     {
-                        _samples.Clear();
+                        chunk = produced;
+                        chunkStart = start;
                     }
                 }
             }
 
             if (chunk != null)
             {
-                await TranslateChunkAsync(processor, chunk);
+                await TranslateChunkAsync(processor, chunk, chunkStart);
             }
 
             await Task.Delay(40, _cancel.Token);
         }
     }
 
-    private async Task TranslateChunkAsync(WhisperProcessor processor, float[] chunk)
+    private async Task TranslateChunkAsync(WhisperProcessor processor, float[] chunk, double chunkStart)
     {
         lock (_textLock)
         {
@@ -286,6 +337,7 @@ internal sealed class TranslationSession : IDisposable
         }
 
         var source = new StringBuilder();
+        var sourceCues = new List<SubtitleCue>();
         string? detected = null;
         try
         {
@@ -301,6 +353,10 @@ internal sealed class TranslationSession : IDisposable
                 {
                     detected ??= segment.Language;
                 }
+
+                double start = chunkStart + segment.Start.TotalSeconds;
+                double end = chunkStart + segment.End.TotalSeconds;
+                sourceCues.AddRange(SentenceSplitter.Split(value, start, end));
 
                 if (source.Length > 0) source.Append(' ');
                 source.Append(value);
@@ -326,19 +382,48 @@ internal sealed class TranslationSession : IDisposable
             return;
         }
 
-        lock (_textLock)
-        {
-            _sourceText = _sourceText.Length == 0 ? text : _sourceText + " " + text;
-            if (!string.IsNullOrWhiteSpace(detected))
-            {
-                _detectedLanguage = detected;
-            }
-        }
+        AppendSource(text, sourceCues, detected);
 
-        if (_targetCode == TranslationLanguages.English ||
+        if ((_provider == "qwen" && _targetCode == TranslationLanguages.English) ||
             TranslationLanguages.MatchesSource(_targetCode, detected))
         {
-            AppendTranslation(text);
+            AppendTranslation(text, sourceCues);
+        }
+        else if (_provider == "opus" && _opus != null && _targetCode is not "ja" and not "ko")
+        {
+            lock (_textLock)
+            {
+                _baseStatus = "Translating";
+                _translatedPartial = "...";
+            }
+
+            try
+            {
+                string translated = await Task.Run(
+                    () => _opus.Translate(text, detected, _targetCode, _cancel.Token),
+                    _cancel.Token);
+                AppendTranslation(translated, SentenceSplitter.Align(sourceCues, translated));
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                lock (_textLock)
+                {
+                    _error = "Translation failed: " + ex.Message;
+                }
+
+                AppLog.Error("OPUS-MT inference failed.", ex);
+            }
+            finally
+            {
+                lock (_textLock)
+                {
+                    _translatedPartial = "";
+                }
+            }
         }
         else if (_translator != null)
         {
@@ -351,7 +436,7 @@ internal sealed class TranslationSession : IDisposable
             try
             {
                 string translated = await TranslateTextAsync(_translator, text, _cancel.Token);
-                AppendTranslation(translated);
+                AppendTranslation(translated, SentenceSplitter.Align(sourceCues, translated));
             }
             catch (OperationCanceledException)
             {
@@ -434,7 +519,24 @@ internal sealed class TranslationSession : IDisposable
         return string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
     }
 
-    private void AppendTranslation(string text)
+    private void AppendSource(string text, List<SubtitleCue> cues, string? detected)
+    {
+        lock (_textLock)
+        {
+            _sourceText = _sourceText.Length == 0 ? text : _sourceText + " " + text;
+            if (cues.Count > 0)
+            {
+                _sourceCues.AddRange(cues);
+            }
+
+            if (!string.IsNullOrWhiteSpace(detected))
+            {
+                _detectedLanguage = detected;
+            }
+        }
+    }
+
+    private void AppendTranslation(string text, List<SubtitleCue> cues)
     {
         text = text.Trim();
         if (text.Length == 0) return;
@@ -444,6 +546,11 @@ internal sealed class TranslationSession : IDisposable
             _translatedText = _translatedText.Length == 0
                 ? text
                 : _translatedText + " " + text;
+            if (cues.Count > 0)
+            {
+                _translatedCues.AddRange(cues);
+            }
+
             _translatedPartial = "";
         }
     }
@@ -485,7 +592,8 @@ internal static class TranslationRegistry
         int tapId,
         string speechModelId,
         string translationModelId,
-        string targetCode)
+        string targetCode,
+        string translationProvider = "qwen")
     {
         if (tapId <= 0 || string.IsNullOrWhiteSpace(speechModelId))
         {
@@ -500,7 +608,8 @@ internal static class TranslationRegistry
             {
                 if (string.Equals(current.SpeechModelId, speechModelId, StringComparison.OrdinalIgnoreCase) &&
                     string.Equals(current.TranslationModelId, translationModelId, StringComparison.OrdinalIgnoreCase) &&
-                    string.Equals(current.TargetCode, targetCode, StringComparison.OrdinalIgnoreCase))
+                    string.Equals(current.TargetCode, targetCode, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(current.Provider, translationProvider, StringComparison.OrdinalIgnoreCase))
                 {
                     return;
                 }
@@ -514,17 +623,18 @@ internal static class TranslationRegistry
                 TranscriptionProcessor.ClearTap(tapId);
             }
 
-            Sessions[tapId] = new TranslationSession(tapId, speechModelId, translationModelId, targetCode);
+            Sessions[tapId] = new TranslationSession(
+                tapId, speechModelId, translationModelId, targetCode, translationProvider);
         }
 
         previous?.Dispose();
     }
 
-    public static TranslationSnapshot? Snapshot(int tapId)
+    public static TranslationSnapshot? Snapshot(int tapId, bool includeCues = false)
     {
         lock (Lock)
         {
-            return Sessions.TryGetValue(tapId, out var session) ? session.Snapshot() : null;
+            return Sessions.TryGetValue(tapId, out var session) ? session.Snapshot(includeCues) : null;
         }
     }
 
@@ -542,10 +652,11 @@ internal static class TranslationRegistry
         int tapId,
         string speechModelId,
         string translationModelId,
-        string targetCode)
+        string targetCode,
+        string translationProvider = "qwen")
     {
         Stop(tapId);
-        Ensure(tapId, speechModelId, translationModelId, targetCode);
+        Ensure(tapId, speechModelId, translationModelId, targetCode, translationProvider);
     }
 
     public static void Stop(int tapId)

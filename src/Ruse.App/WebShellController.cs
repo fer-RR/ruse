@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -40,6 +41,7 @@ internal sealed partial class WebShellController : IDisposable
     private bool _autoStartDone;
     private bool _postFailureLogged;
     private long _lastTelemetryPublish;
+    private string? _lastGpuFallbackReason;
     private string _statusText = "Native audio engine ready.";
     private CancellationTokenSource? _modelDownloadCancel;
     private TranscriberModelProgress? _modelDownload;
@@ -54,6 +56,9 @@ internal sealed partial class WebShellController : IDisposable
     {
         _window = window;
         _settings = AppSettings.Load();
+        ModelRuntime.UseGpu = _settings.UseGpu;
+        ModelRuntime.ConfigureNativeLibraries();
+        Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
         _telemetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _telemetryTimer.Tick += (_, _) => { CheckArmedRecorders(); PublishTelemetry(); };
         _appsTimer = new DispatcherTimer
@@ -177,10 +182,12 @@ internal sealed partial class WebShellController : IDisposable
             case "file-player-loop": SetFilePlayerLoop(String(message, "id"), Bool(message, "value")); break;
             case "file-player-start": StartFilePlayer(String(message, "id")); break;
             case "file-player-stop": StopFilePlayer(String(message, "id")); break;
+            case "file-player-pause": PauseFilePlayer(String(message, "id")); break;
+            case "file-player-resume": ResumeFilePlayer(String(message, "id")); break;
+            case "file-player-seek": SeekFilePlayer(String(message, "id"), Number(message, "seconds")); break;
             case "file-player-restart": RestartFilePlayer(String(message, "id")); break;
             case "first-route": CreateFirstRoute(message); break;
             case "onboarding-complete": CompleteOnboarding(); break;
-            case "show-welcome": Post("welcome", new { manual = true }); break;
             case "show-splash": Post("splash", new { manual = true }); break;
             case "open-sound-settings": OpenSoundSettings(); break;
             case "move": MoveNode(String(message, "id"), Number(message, "x"), Number(message, "y")); break;
@@ -211,6 +218,8 @@ internal sealed partial class WebShellController : IDisposable
             case "translator-download": DownloadTranslationModel(String(message, "id")); break;
             case "translator-download-cancel": CancelTranslationDownload(); break;
             case "translator-delete": DeleteTranslationModel(String(message, "id")); break;
+            case "opus-download": DownloadOpusTranslationModel(String(message, "id")); break;
+            case "opus-delete": DeleteOpusTranslationModel(String(message, "id")); break;
             case "translator-clear": ClearTranslation(String(message, "id")); break;
             case "translator-restart": RestartTranslation(String(message, "id")); break;
             case "translator-export": ExportTranslation(String(message, "id")); break;
@@ -454,6 +463,7 @@ internal sealed partial class WebShellController : IDisposable
                 Name = model.Name,
                 Tier = model.Tier,
                 SizeMb = model.SizeMb,
+                VramMb = model.VramMb,
                 Note = model.Note,
                 Installed = installed,
                 InstalledSize = installed ? TranscriptionModels.FormatSize(bytes) : "",
@@ -478,8 +488,35 @@ internal sealed partial class WebShellController : IDisposable
                 Name = model.Name,
                 Tier = model.Tier,
                 SizeMb = model.SizeMb,
+                VramMb = model.VramMb,
                 License = model.License,
                 Note = model.Note,
+                Installed = installed,
+                InstalledSize = installed ? TranslationModels.FormatSize(bytes) : "",
+            };
+        }).ToList();
+
+        int installedOpusCount = 0;
+        long installedOpusBytes = 0;
+        var opusModels = OpusTranslationModels.All.Select(model =>
+        {
+            bool installed = OpusTranslationModels.IsInstalled(model.Id);
+            long bytes = installed ? OpusTranslationModels.GetInstalledSizeBytes(model.Id) : 0;
+            if (installed)
+            {
+                installedOpusCount++;
+                installedOpusBytes += bytes;
+            }
+
+            return new OpusModelDto
+            {
+                Id = model.Id,
+                Name = model.Name,
+                Source = model.Source,
+                Target = model.Target,
+                SizeMb = model.SizeMb,
+                License = model.License,
+                Note = model.Prefix == null ? null : model.Prefix.Trim(),
                 Installed = installed,
                 InstalledSize = installed ? TranslationModels.FormatSize(bytes) : "",
             };
@@ -491,17 +528,25 @@ internal sealed partial class WebShellController : IDisposable
             FollowPlayingApps = _settings.FollowPlayingApps,
             FollowOutputId = _settings.FollowOutputId,
             UiLanguage = _settings.UiLanguage,
+            Theme = _settings.Theme,
             StartRoutingOnLaunch = _settings.StartRoutingOnLaunch,
             HighlightMutedNodes = _settings.HighlightMutedNodes,
             SignalGlow = _settings.SignalGlow,
             SnapToGrid = _settings.SnapToGrid,
             HighlightCableOnHover = _settings.HighlightCableOnHover,
             CableAnimation = _settings.CableAnimation,
+            ConnectorAnimation = _settings.ConnectorAnimation,
             MinimapMode = _settings.MinimapMode,
             StartWithWindows = StartupRegistration.IsEnabled(),
             ShowWelcomeScreen = _settings.ShowWelcomeScreen,
             MinimizeToTray = _settings.MinimizeToTray,
             ShowDiagnostics = _settings.ShowDiagnostics,
+            UseGpu = _settings.UseGpu,
+            IsolateVst3 = _settings.IsolateVst3,
+            GpuAvailable = ModelRuntime.GpuAvailable,
+            GpuDeviceName = ModelRuntime.GpuDeviceName,
+            GpuStatusError = ModelRuntime.GpuStatusError,
+            GpuFallbackReason = ModelRuntime.GpuFallbackReason,
             TranscriberModel = _settings.TranscriberModel,
             TranscriberModels = models,
             TranscriberDownload = _modelDownload == null
@@ -515,7 +560,9 @@ internal sealed partial class WebShellController : IDisposable
                 },
             TranslatorModel = _settings.TranslatorModel,
             TranslatorTarget = _settings.TranslatorTarget,
+            TranslationProvider = _settings.TranslationProvider,
             TranslatorModels = translationModels,
+            OpusModels = opusModels,
             TranslatorDownload = _translationDownload == null
                 ? null
                 : new TranslatorDownloadDto
@@ -529,6 +576,8 @@ internal sealed partial class WebShellController : IDisposable
             InstalledModelsSize = TranscriptionModels.FormatSize(installedBytes),
             InstalledTranslatorModelsCount = installedTranslationCount,
             InstalledTranslatorModelsSize = TranslationModels.FormatSize(installedTranslationBytes),
+            InstalledOpusModelsCount = installedOpusCount,
+            InstalledOpusModelsSize = TranslationModels.FormatSize(installedOpusBytes),
             AppVersion = typeof(WebShellController).Assembly.GetName().Version?.ToString(3) ?? "dev",
             DotNetVersion = Environment.Version.ToString(),
             WebView2Version = string.IsNullOrEmpty(_webView2Version) ? "not initialized" : _webView2Version,
@@ -577,7 +626,12 @@ internal sealed partial class WebShellController : IDisposable
             {
                 meter.Level = entry.Source.Muted ? 0 : Meter(entry.Source.MeterLevel);
                 meter.Clipping = !entry.Source.Muted && entry.Source.Clipping;
-                meter.FilePlaying = entry.Source.Kind == SourceKind.File && entry.Source.IsRunning;
+                meter.FilePlaying = entry.Source.Kind == SourceKind.File &&
+                                    entry.Source.IsRunning &&
+                                    !entry.Source.FilePaused;
+                meter.FilePaused = entry.Source.Kind == SourceKind.File && entry.Source.FilePaused;
+                meter.FilePositionSeconds = entry.Source.Kind == SourceKind.File ? entry.Source.FilePositionSeconds : 0;
+                meter.FileDurationSeconds = entry.Source.Kind == SourceKind.File ? entry.Source.FileDurationSeconds : 0;
             }
             else if (entry.Output != null)
             {
@@ -602,9 +656,17 @@ internal sealed partial class WebShellController : IDisposable
                         meter.DbMeterVertical = orientationMeter.IsVertical;
                     }
 
-                    if (modifier.Enabled && modifier.Processors.OfType<WaveformProcessor>().FirstOrDefault() is { } waveform)
+                    if (modifier.Enabled && modifier.Processors.OfType<SpectrumProcessor>().FirstOrDefault() is { } spectrum)
                     {
-                        meter.Waveform = WaveformProcessor.GetSamples(waveform.TapId);
+                        meter.Spectrum = SpectrumProcessor.GetBands(spectrum.TapId);
+                        meter.SpectrumPeakHz = SpectrumProcessor.GetPeakHz(spectrum.TapId);
+                    }
+
+                    if (modifier.Enabled && modifier.Processors.OfType<SpectrogramProcessor>().FirstOrDefault() is { } spectrogram)
+                    {
+                        meter.Spectrogram = SpectrogramProcessor.GetColumns(spectrogram.TapId);
+                        meter.SpectrogramPeakHz = SpectrogramProcessor.GetPeakHz(spectrogram.TapId);
+                        meter.SpectrogramColumns = SpectrogramProcessor.Columns;
                     }
 
                     if (modifier.Enabled && modifier.Processors.OfType<DbMeterProcessor>().FirstOrDefault() is { } dbMeter)
@@ -634,6 +696,7 @@ internal sealed partial class WebShellController : IDisposable
                             meter.DetectedLanguage = snapshot?.DetectedLanguage;
                             meter.TranscriptionError = snapshot?.Error;
                             meter.TranscriptionElapsed = snapshot?.ElapsedSeconds;
+                            meter.UsesGpu = snapshot?.GpuActive;
                         }
                     }
                     else if (modifier.Enabled && modifier.Processors.OfType<TranscriptionProcessor>().FirstOrDefault() is { } transcriber)
@@ -654,6 +717,8 @@ internal sealed partial class WebShellController : IDisposable
                             meter.PartialTranscript = snapshot?.Partial;
                             meter.TranscriptionError = snapshot?.Error;
                             meter.TranscriptionElapsed = snapshot?.ElapsedSeconds;
+                            meter.UsesGpu = snapshot?.GpuActive;
+                            meter.DetectedLanguage = snapshot?.DetectedLanguage;
                         }
                     }
                 }
@@ -670,6 +735,12 @@ internal sealed partial class WebShellController : IDisposable
         if (_settings.ShowDiagnostics)
         {
             telemetry.Diagnostics = BuildDiagnostics(now);
+        }
+
+        if (!string.Equals(_lastGpuFallbackReason, ModelRuntime.GpuFallbackReason, StringComparison.Ordinal))
+        {
+            _lastGpuFallbackReason = ModelRuntime.GpuFallbackReason;
+            PublishSettings();
         }
 
         Post("telemetry", telemetry);
@@ -797,8 +868,27 @@ internal sealed partial class WebShellController : IDisposable
         Post("alert", new StatusDto { Text = text, IsError = true });
     }
 
+    /// <summary>Matches the 6 px native resize margin to the web workspace theme.</summary>
+    private void ApplyWindowTheme()
+    {
+        Color color = _settings.Theme == "light"
+            ? Color.FromRgb(0xEE, 0xF1, 0xF6)
+            : Color.FromRgb(0x17, 0x1E, 0x29);
+        _window.Background = new SolidColorBrush(color);
+    }
+
+    /// <summary>Persists the answer to the first-minimize tray prompt.</summary>
+    internal void SaveTrayPreference(bool minimizeToTray)
+    {
+        _settings.MinimizeToTray = minimizeToTray;
+        _settings.TrayPromptShown = true;
+        _settings.Save();
+        PublishSettings();
+    }
+
     private void RestoreWindowBounds()
     {
+        ApplyWindowTheme();
         _window.Width = _settings.Width;
         _window.Height = _settings.Height;
         if (!double.IsNaN(_settings.Left) && !double.IsNaN(_settings.Top) && IsOnScreen(_settings.Left, _settings.Top))
@@ -807,7 +897,9 @@ internal sealed partial class WebShellController : IDisposable
             _window.Top = _settings.Top;
         }
 
-        if (_settings.Maximized)
+        // The first launch has no saved placement, so open full screen instead
+        // of the small default size. Later launches respect what the user chose.
+        if (_settings.IsFirstRun || _settings.Maximized)
         {
             _window.WindowState = WindowState.Maximized;
         }

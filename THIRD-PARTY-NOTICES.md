@@ -18,6 +18,10 @@ summary; keep the complete licence texts with any distributed build.
 - **Steinberg VST 3 SDK** — Copyright (c) Steinberg Media Technologies GmbH.
   The VST 3.8+ SDK is MIT licensed; plugins hosted by Ruse remain under their
   own licences. https://github.com/steinbergmedia/vst3sdk
+- **Microsoft.ML.OnnxRuntime** — Copyright (c) Microsoft Corporation.
+  https://github.com/microsoft/onnxruntime
+- **Microsoft.ML.Tokenizers** — Copyright (c) Microsoft Corporation.
+  https://github.com/dotnet/machinelearning
 - **NAudio / NAudio.Asio** — Copyright (c) Mark Heath
   https://github.com/naudio/NAudio
 - **React, React DOM, React Flow** — https://react.dev, https://reactflow.dev
@@ -68,6 +72,14 @@ THIS SOFTWARE.
   modification, are permitted under the Microsoft WebView2 licence. See the
   `LICENSE.txt` and `NOTICE.txt` supplied with the NuGet package.
   https://learn.microsoft.com/microsoft-edge/webview2/
+
+## CC-BY 4.0 and Apache 2.0
+
+- **OPUS-MT models** — Copyright (c) Helsinki-NLP. Downloaded separately when
+  the user installs a pair; not bundled. Converted ONNX files are provided by
+  the Xenova Hugging Face repositories.
+  https://huggingface.co/Helsinki-NLP
+  https://creativecommons.org/licenses/by/4.0/
 
 ## Apache 2.0
 

@@ -23,7 +23,6 @@ import { StatusBar, TitleBar, Toolbar } from './components/Chrome';
 import { ConfirmDialog, DeviceHelpDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog } from './components/Dialogs';
 import type { SettingsTab } from './components/Dialogs';
 import ChainEditorDialog from './components/ChainEditorDialog';
-import WelcomeSplash from './components/WelcomeSplash';
 import WelcomeWizard from './components/WelcomeWizard';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
@@ -37,7 +36,7 @@ const FRAME_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const;
 type FrameHandle = typeof FRAME_HANDLES[number];
 const emptyCatalog: CatalogSnapshot = {
   apps: [], outputs: [], inputs: [], virtuals: [], effects: [], chains: [], vst3Plugins: [],
-  defaultOutputId: '', defaultOutputName: '',
+  defaultOutputId: '', defaultOutputName: '', perAppCaptureAvailable: true,
 };
 const initialSettings: SettingsModel = demoSettings;
 const systemItem: CatalogItem = {
@@ -93,6 +92,10 @@ export default function App() {
   const [graph, setGraph] = useState<GraphSnapshot>(isHosted ? { version: 0, nodes: [], links: [], running: false } : demoGraph);
   const [settings, setSettings] = useState<SettingsModel>(initialSettings);
   const language = normalizeLanguage(settings.uiLanguage);
+  const theme = settings.theme === 'light' ? 'light' : 'dark';
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
   const t = (text: string, vars?: Record<string, string | number>) => translate(language, text, vars);
   const ui = useUiTelemetry();
   const [status, setStatus] = useState<StatusMessage>({ text: isHosted ? 'Starting native audio engine.' : 'Interface preview - native engine not attached.', isError: false });
@@ -112,7 +115,6 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('behavior');
   const [showAudioHelp, setShowAudioHelp] = useState(false);
   const [showDeviceHelp, setShowDeviceHelp] = useState(false);
-  const [splashOpen, setSplashOpen] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [showClear, setShowClear] = useState(false);
   const [renamePrompt, setRenamePrompt] = useState<RenamePrompt | null>(null);
@@ -332,7 +334,7 @@ export default function App() {
       case 'chain-edit': setChainEditor(payload as ChainEditorRequest); break;
       case 'status': setStatus(payload as StatusMessage); break;
       case 'alert': setAlert(payload as StatusMessage); break;
-      case 'splash': setSplashOpen(true); break;
+      case 'splash':
       case 'welcome': setWelcomeOpen(true); break;
     }
   }), []);
@@ -808,6 +810,7 @@ export default function App() {
   });
   const showMiniMap = nodes.length > 0 && settings.minimapMode !== 1 && anyNodeOffscreen;
   const running = ui.running || graph.running;
+  const audioPlaying = catalog.apps.some(item => item.active === true);
   const primaryWarning = graph.warnings?.find(warning => warning.severity === 'warning') ?? graph.warnings?.[0];
   const warningSignature = primaryWarning
     ? `${primaryWarning.severity}|${primaryWarning.sourceId}|${primaryWarning.outputId}|${primaryWarning.deviceName}|${primaryWarning.message}`
@@ -830,10 +833,11 @@ export default function App() {
 
   return (
     <I18nProvider language={language }>
-    <div ref={appShellRef} className={`app-shell ${settings.signalGlow ? 'signal-glow' : ''} ${settings.highlightCableOnHover ? 'cable-hover' : ''} ${settings.cableAnimation ? 'cable-animation' : ''} ${altPressed ? 'alt' : ''}`}>
+    <div ref={appShellRef} className={`app-shell ${settings.signalGlow ? 'signal-glow' : ''} ${settings.connectorAnimation ? 'connector-animation' : ''} ${settings.highlightCableOnHover ? 'cable-hover' : ''} ${settings.cableAnimation ? 'cable-animation' : ''} ${altPressed ? 'alt' : ''}`}>
       <TitleBar />
       <Toolbar
         running={running}
+        audioPlaying={audioPlaying}
         micMuted={ui.micMuted}
         canUndo={history.canUndo}
         canRedo={history.canRedo}
@@ -852,6 +856,12 @@ export default function App() {
         onSettings={() => { setSettingsTab('behavior'); setShowSettings(true); }}
       />
       {alert && <div className={`alert-bar ${alert.isError ? 'error' : ''}` }><span>{alert.text}</span><div className="alert-actions"><button onClick={() => send('open-log') }>{t('Open log')}</button><button onClick={() => setAlert(null) }>{t('Dismiss')}</button></div></div>}
+      {!catalog.perAppCaptureAvailable && (
+        <div className="routing-warning-bar info" role="status">
+          <Info size={15} />
+          <span className="routing-warning-copy">{t('Per-app capture needs Windows 10 build 20348 or later. Use System audio instead.')}</span>
+        </div>
+      )}
       {warningVisible && primaryWarning && (
         <div className={`routing-warning-bar ${primaryWarning.severity === 'info' ? 'info' : ''}`} role="alert">
           {primaryWarning.severity === 'info' ? <Info size={15} /> : <AlertTriangle size={15} />}
@@ -975,7 +985,7 @@ export default function App() {
             proOptions={{ hideAttribution: true }}
             defaultEdgeOptions={{ type: 'ruseEdge' }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color="#222B39" />
+            <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color={theme === 'light' ? '#C5CFDD' : '#34465A'} />
             <ViewportPortal>
               <div className={`ruse-frame-layer ${altPressed ? 'alt' : ''}` }>
                 {frameDraft && <div className="ruse-frame draft" style={{ left: frameDraft.x, top: frameDraft.y, width: frameDraft.width, height: frameDraft.height }} />}
@@ -1083,7 +1093,7 @@ export default function App() {
       />}
       {chainEditor && <ChainEditorDialog
         request={chainEditor}
-        effects={catalog.effects.filter(item => item.id !== 'transcriber' && item.id !== 'translator' && item.id !== 'waveform')}
+        effects={catalog.effects.filter(item => item.id !== 'transcriber' && item.id !== 'translator')}
         onSave={request => {
           send('chain-save', {
             name: request.name,
@@ -1125,14 +1135,10 @@ export default function App() {
           </>}
         </div>
       </div>}
-      {splashOpen && <WelcomeSplash
-        settings={settings}
-        onChange={next => { setSettings(next); send('settings', { ...next }); }}
-        onStartSetup={() => { setSplashOpen(false); setWelcomeOpen(true); }}
-        onClose={() => setSplashOpen(false)}
-      />}
       {welcomeOpen && <WelcomeWizard
         catalog={catalog}
+        settings={settings}
+        onChange={next => { setSettings(next); send('settings', { ...next }); }}
         onClose={() => { setWelcomeOpen(false); send('onboarding-complete'); }}
         onOpenHelp={() => setShowAudioHelp(true)}
       />}

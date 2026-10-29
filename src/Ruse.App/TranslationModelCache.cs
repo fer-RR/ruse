@@ -8,7 +8,7 @@ namespace Ruse.App;
 internal static class TranslationModelCache
 {
     private static readonly object Lock = new();
-    private static readonly Dictionary<string, (LLamaWeights Weights, int References)> Models = new();
+    private static readonly Dictionary<string, (LLamaWeights Weights, int References, bool Gpu)> Models = new();
     private static readonly HashSet<string> PendingDrops = new();
 
     public static LLamaWeights? Acquire(string modelId, string path, CancellationToken token)
@@ -18,7 +18,7 @@ internal static class TranslationModelCache
             if (Models.TryGetValue(modelId, out var existing))
             {
                 PendingDrops.Remove(modelId);
-                Models[modelId] = (existing.Weights, existing.References + 1);
+                Models[modelId] = (existing.Weights, existing.References + 1, existing.Gpu);
                 return existing.Weights;
             }
 
@@ -29,20 +29,37 @@ internal static class TranslationModelCache
 
             try
             {
-                var parameters = new ModelParams(path)
+                int threads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
+                bool gpu = ModelRuntime.UseGpu;
+                LLamaWeights weights;
+                try
                 {
-                    GpuLayerCount = 0,
-                    Threads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8),
-                    BatchSize = 256,
-                };
-                var weights = LLamaWeights.LoadFromFile(parameters);
+                    weights = LLamaWeights.LoadFromFile(
+                        ModelRuntime.TranslationParams(path, 256, null, threads));
+                }
+                catch (Exception gpuError) when (gpu)
+                {
+                    AppLog.Warning(
+                        $"GPU load failed for translation model '{modelId}'; falling back to CPU. " +
+                        gpuError.GetBaseException().Message);
+                    ModelRuntime.ReportGpuFallback(
+                        $"Translation model '{modelId}': {gpuError.GetBaseException().Message}");
+                    gpu = false;
+                    weights = LLamaWeights.LoadFromFile(new ModelParams(path)
+                    {
+                        GpuLayerCount = 0,
+                        Threads = threads,
+                        BatchSize = 256,
+                    });
+                }
+
                 if (token.IsCancellationRequested)
                 {
                     weights.Dispose();
                     return null;
                 }
 
-                Models[modelId] = (weights, 1);
+                Models[modelId] = (weights, 1, gpu);
                 AppLog.Info($"Translation model '{modelId}' loaded.");
                 return weights;
             }
@@ -54,6 +71,14 @@ internal static class TranslationModelCache
         }
     }
 
+    public static bool IsGpu(string modelId)
+    {
+        lock (Lock)
+        {
+            return Models.TryGetValue(modelId, out var entry) && entry.Gpu;
+        }
+    }
+
     public static void Release(string modelId)
     {
         lock (Lock)
@@ -61,7 +86,7 @@ internal static class TranslationModelCache
             if (!Models.TryGetValue(modelId, out var entry)) return;
             if (entry.References > 1)
             {
-                Models[modelId] = (entry.Weights, entry.References - 1);
+                Models[modelId] = (entry.Weights, entry.References - 1, entry.Gpu);
                 return;
             }
 

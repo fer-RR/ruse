@@ -11,7 +11,8 @@ internal sealed record TranslationModel(
     int SizeMb,
     string Url,
     string License,
-    string Note);
+    string Note,
+    int VramMb = 0);
 
 internal sealed record TranslationModelProgress(
     string ModelId,
@@ -29,13 +30,13 @@ internal static class TranslationModels
     {
         Model("qwen2.5-0.5b-instruct-q4_k_m", "Qwen2.5 0.5B Instruct", "Fast", 469,
             "Qwen/Qwen2.5-0.5B-Instruct-GGUF", "qwen2.5-0.5b-instruct-q4_k_m.gguf", "Apache-2.0",
-            "Low memory, good for short and simple sentences."),
+            "Low memory, good for short and simple sentences.", vramMb: 2048),
         Model("qwen2.5-1.5b-instruct-q4_k_m", "Qwen2.5 1.5B Instruct", "Balanced", 1066,
             "Qwen/Qwen2.5-1.5B-Instruct-GGUF", "qwen2.5-1.5b-instruct-q4_k_m.gguf", "Apache-2.0",
-            "Recommended balance of quality, memory and speed."),
+            "Recommended balance of quality, memory and speed.", vramMb: 4096),
         Model("qwen2.5-3b-instruct-q4_k_m", "Qwen2.5 3B Instruct", "Quality", 2007,
             "Qwen/Qwen2.5-3B-Instruct-GGUF", "qwen2.5-3b-instruct-q4_k_m.gguf", "Apache-2.0",
-            "Better wording and context, at the cost of memory and speed."),
+            "Better wording and context, at the cost of memory and speed.", vramMb: 6144),
     };
 
     public static string DefaultId => "qwen2.5-1.5b-instruct-q4_k_m";
@@ -192,10 +193,11 @@ internal static class TranslationModels
         string repo,
         string file,
         string license,
-        string note) =>
+        string note,
+        int vramMb = 0) =>
         new(id, name, tier, sizeMb,
             $"https://huggingface.co/{repo}/resolve/main/{file}",
-            license, note);
+            license, note, vramMb);
 
     private static HttpClient CreateHttpClient()
     {

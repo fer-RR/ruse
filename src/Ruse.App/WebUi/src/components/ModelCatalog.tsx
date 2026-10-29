@@ -10,6 +10,10 @@ function formatModelSize(sizeMb: number): string {
   return sizeMb >= 1000 ? `${(sizeMb / 1000).toFixed(1)} GB` : `${sizeMb} MB`;
 }
 
+function formatVram(vramMb: number): string {
+  return vramMb % 1024 === 0 ? `${vramMb / 1024}` : `${(vramMb / 1024).toFixed(1)}`;
+}
+
 function tierRank(tier: string): number {
   return TIER_ORDER[tier] ?? 0;
 }
@@ -48,6 +52,7 @@ function ModelTier({
         {model.installed && <span className="model-tier-installed" title={t('Installed')}><Check size={11} /></span>}
       </div>
       {model.note && <small className="model-tier-note">{model.note}</small>}
+      {model.vramMb ? <small className="model-tier-vram">{t('GPU: ~{size} GB VRAM', { size: formatVram(model.vramMb) })}</small> : null}
       {model.installed && model.installedSize && <small className="model-tier-disk">{model.installedSize} {t('on disk')}</small>}
       {isDownloading && (
         <>

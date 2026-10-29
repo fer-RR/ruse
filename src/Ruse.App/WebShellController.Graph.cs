@@ -187,6 +187,42 @@ internal sealed partial class WebShellController
         SetStatus($"{entry.Title}: stopped.");
     }
 
+    private void PauseFilePlayer(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        source.PauseFile();
+        PublishTelemetry(force: true);
+        SetStatus($"{entry.Title}: paused.");
+    }
+
+    private void ResumeFilePlayer(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        source.ResumeFile();
+        PublishTelemetry(force: true);
+        SetStatus($"{entry.Title}: playing.");
+    }
+
+    private void SeekFilePlayer(string id, double seconds)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        source.SeekFile(seconds);
+        PublishTelemetry(force: true);
+        SetStatus($"{entry.Title}: jumped to {TimeSpan.FromSeconds(Math.Max(0, seconds)):mm\\:ss}.");
+    }
+
     /// <summary>Creates the guided first route and returns its ids.</summary>
     private void CreateFirstRoute(BridgeMessage message)
     {
@@ -454,9 +490,13 @@ internal sealed partial class WebShellController
                          throw new InvalidOperationException($"Unknown effect '{typeId}'.");
         var modifier = new ModifierNode(descriptor.DisplayName);
         var processor = descriptor.Create();
-        if (processor is WaveformProcessor waveform)
+        if (processor is SpectrumProcessor spectrum)
         {
-            waveform.SetTapId(WaveformProcessor.NextTapId());
+            spectrum.SetTapId(SpectrumProcessor.NextTapId());
+        }
+        else if (processor is SpectrogramProcessor spectrogram)
+        {
+            spectrogram.SetTapId(SpectrogramProcessor.NextTapId());
         }
         else if (processor is DbMeterProcessor dbMeter)
         {
@@ -476,8 +516,11 @@ internal sealed partial class WebShellController
             modifier,
             x,
             y,
-            flavor: processor is TranslatorProcessor ? "translator" : "effect",
-            subtitle: processor is TranslatorProcessor ? "Speech translation" : null,
+            flavor: processor is TranslatorProcessor ? "translator" :
+                processor is SpectrumProcessor or SpectrogramProcessor ? "analysis" : "effect",
+            subtitle: processor is TranslatorProcessor ? "Speech translation" :
+                processor is SpectrumProcessor ? "FFT spectrum" :
+                processor is SpectrogramProcessor ? "FFT history" : null,
             transcriberModel: _settings.TranscriberModel,
             translatorTarget: processor is TranslatorProcessor ? _settings.TranslatorTarget : null,
             translatorModel: processor is TranslatorProcessor ? _settings.TranslatorModel : null);
@@ -488,7 +531,7 @@ internal sealed partial class WebShellController
     private void SetVst3Editor(string id, bool open)
     {
         if (!_nodes.TryGetValue(id, out var entry) ||
-            entry.Modifier?.Processors.OfType<Vst3Processor>().FirstOrDefault() is not { } vst)
+            entry.Modifier?.Processors.OfType<IVst3Processor>().FirstOrDefault() is not { } vst)
         {
             return;
         }
@@ -520,7 +563,7 @@ internal sealed partial class WebShellController
     {
         var descriptor = FindVst3Descriptor(identifier);
         string name = string.IsNullOrWhiteSpace(descriptor?.Name) ? "VST3 plugin" : descriptor!.Name;
-        var processor = new Vst3Processor(identifier, start: false);
+        var processor = Vst3ProcessorFactory.Create(identifier, start: false);
         var modifier = new ModifierNode(name);
         modifier.Add(processor);
         var entry = RegisterModifier(
@@ -577,7 +620,7 @@ internal sealed partial class WebShellController
             Title = source.Title,
             Subtitle = source.Kind switch
             {
-                SourceKind.Application => "Application",
+                SourceKind.Application => SourceNode.SupportsApplicationCapture ? "Application" : "Capture unavailable",
                 SourceKind.Device => "Input device",
                 SourceKind.Asio => "ASIO input",
                 SourceKind.File => "Audio file",
@@ -638,9 +681,14 @@ internal sealed partial class WebShellController
     {
         EnsureUniqueTapIds(modifier);
         _graph.AddModifier(modifier);
-        foreach (var waveform in modifier.Processors.OfType<WaveformProcessor>())
+        foreach (var spectrum in modifier.Processors.OfType<SpectrumProcessor>())
         {
-            WaveformProcessor.EnsureTap(waveform.TapId);
+            spectrum.SetTapId(spectrum.TapId > 0 ? spectrum.TapId : SpectrumProcessor.NextTapId());
+        }
+
+        foreach (var spectrogram in modifier.Processors.OfType<SpectrogramProcessor>())
+        {
+            spectrogram.SetTapId(spectrogram.TapId > 0 ? spectrogram.TapId : SpectrogramProcessor.NextTapId());
         }
 
         foreach (var dbMeter in modifier.Processors.OfType<DbMeterProcessor>())
@@ -681,7 +729,8 @@ internal sealed partial class WebShellController
                     translator.TapId,
                     resolvedTranslatorSpeechModel,
                     resolvedTranslationModel ?? "",
-                    resolvedTarget ?? TranslationLanguages.DefaultCode);
+                    resolvedTarget ?? TranslationLanguages.DefaultCode,
+                    _settings.TranslationProvider);
             }
         }
 
@@ -692,7 +741,8 @@ internal sealed partial class WebShellController
             Flavor = flavor,
             Title = modifier.Title,
             Subtitle = subtitle ?? "Processing",
-            Accent = flavor == "chain" ? "#B18CFF" : flavor == "translator" ? "#73C8E8" : flavor == "vst3" ? "#A3E635" : "#E5AD51",
+            Accent = flavor == "chain" ? "#B18CFF" : flavor == "translator" ? "#73C8E8" :
+                flavor == "vst3" ? "#A3E635" : flavor == "analysis" ? "#65D6D0" : "#E5AD51",
             X = x,
             Y = y,
             TranscriberModel = hasTranslator ? resolvedTranslatorSpeechModel : resolvedModel,
@@ -702,9 +752,9 @@ internal sealed partial class WebShellController
         };
         _nodes.Add(entry.Id, entry);
 
-        if (modifier.Processors.OfType<Vst3Processor>().FirstOrDefault() is { } vst)
+        if (modifier.Processors.OfType<IVst3Processor>().FirstOrDefault() is { } vst)
         {
-            vst.Changed += _ => _window.Dispatcher.BeginInvoke(new Action(() => OnVst3Changed(entry.Id)));
+            vst.Changed += () => _window.Dispatcher.BeginInvoke(new Action(() => OnVst3Changed(entry.Id)));
             vst.Start();
         }
 
@@ -718,7 +768,7 @@ internal sealed partial class WebShellController
             return;
         }
 
-        var vst = entry.Modifier.Processors.OfType<Vst3Processor>().FirstOrDefault();
+        var vst = entry.Modifier.Processors.OfType<IVst3Processor>().FirstOrDefault();
         if (vst == null)
         {
             return;
@@ -761,9 +811,14 @@ internal sealed partial class WebShellController
                 continue;
             }
 
-            foreach (var waveform in entry.Modifier.Processors.OfType<WaveformProcessor>())
+            foreach (var spectrum in entry.Modifier.Processors.OfType<SpectrumProcessor>())
             {
-                used.Add(waveform.TapId);
+                used.Add(spectrum.TapId);
+            }
+
+            foreach (var spectrogram in entry.Modifier.Processors.OfType<SpectrogramProcessor>())
+            {
+                used.Add(spectrogram.TapId);
             }
 
             foreach (var transcriber in entry.Modifier.Processors.OfType<TranscriptionProcessor>())
@@ -782,14 +837,24 @@ internal sealed partial class WebShellController
             }
         }
 
-        foreach (var waveform in modifier.Processors.OfType<WaveformProcessor>())
+        foreach (var spectrum in modifier.Processors.OfType<SpectrumProcessor>())
         {
-            if (waveform.TapId <= 0 || used.Contains(waveform.TapId))
+            if (spectrum.TapId <= 0 || used.Contains(spectrum.TapId))
             {
-                waveform.SetTapId(WaveformProcessor.NextTapId());
+                spectrum.SetTapId(SpectrumProcessor.NextTapId());
             }
 
-            used.Add(waveform.TapId);
+            used.Add(spectrum.TapId);
+        }
+
+        foreach (var spectrogram in modifier.Processors.OfType<SpectrogramProcessor>())
+        {
+            if (spectrogram.TapId <= 0 || used.Contains(spectrogram.TapId))
+            {
+                spectrogram.SetTapId(SpectrogramProcessor.NextTapId());
+            }
+
+            used.Add(spectrogram.TapId);
         }
 
         foreach (var transcriber in modifier.Processors.OfType<TranscriptionProcessor>())
@@ -877,14 +942,16 @@ internal sealed partial class WebShellController
         else if (entry.Modifier != null)
         {
             dto.Enabled = entry.Modifier.Enabled;
-            dto.IsWaveform = entry.Modifier.Processors.OfType<WaveformProcessor>().Any();
+            dto.IsSpectrum = entry.Modifier.Processors.OfType<SpectrumProcessor>().Any();
+            dto.IsSpectrogram = entry.Modifier.Processors.OfType<SpectrogramProcessor>().Any();
             dto.IsDbMeter = entry.Modifier.Processors.OfType<DbMeterProcessor>().Any();
             dto.IsTranscriber = entry.Modifier.Processors.OfType<TranscriptionProcessor>().Any();
             dto.IsTranslator = entry.Modifier.Processors.OfType<TranslatorProcessor>().Any();
             dto.TranscriberModel = entry.TranscriberModel;
             dto.TranslatorTarget = entry.TranslatorTarget;
             dto.TranslatorModel = entry.TranslatorModel;
-            if (entry.Modifier.Processors.OfType<Vst3Processor>().FirstOrDefault() is { } vst)
+            dto.TranslatorProvider = _settings.TranslationProvider;
+            if (entry.Modifier.Processors.OfType<IVst3Processor>().FirstOrDefault() is { } vst)
             {
                 dto.IsVst3 = true;
                 dto.Vst3Identifier = vst.Identifier;
@@ -913,7 +980,7 @@ internal sealed partial class WebShellController
                 for (int parameterIndex = 0; parameterIndex < parameterized.Parameters.Count; parameterIndex++)
                 {
                     var parameter = parameterized.Parameters[parameterIndex];
-                    if (parameter.Name is WaveformProcessor.TapParameterName or TranscriptionProcessor.TapParameterName or DbMeterProcessor.TapParameterName) continue;
+                    if (parameter.Name is SpectrumProcessor.TapParameterName or SpectrogramProcessor.TapParameterName or TranscriptionProcessor.TapParameterName or DbMeterProcessor.TapParameterName) continue;
                     if (parameterized is DbMeterProcessor && parameter.Name == "Orientation") continue;
                     dto.Parameters.Add(new ParameterDto
                     {
@@ -1264,9 +1331,14 @@ internal sealed partial class WebShellController
                 TranscriptionProcessor.RemoveTap(translator.TapId);
             }
 
-            foreach (var waveform in entry.Modifier.Processors.OfType<WaveformProcessor>())
+            foreach (var spectrum in entry.Modifier.Processors.OfType<SpectrumProcessor>())
             {
-                WaveformProcessor.RemoveTap(waveform.TapId);
+                SpectrumProcessor.RemoveTap(spectrum.TapId);
+            }
+
+            foreach (var spectrogram in entry.Modifier.Processors.OfType<SpectrogramProcessor>())
+            {
+                SpectrogramProcessor.RemoveTap(spectrogram.TapId);
             }
 
             foreach (var dbMeter in entry.Modifier.Processors.OfType<DbMeterProcessor>())

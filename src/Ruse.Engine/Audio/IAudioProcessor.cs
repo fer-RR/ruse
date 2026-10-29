@@ -56,16 +56,22 @@ public static class AudioProcessorCatalog
             () => new HighPassProcessor()));
 
         Register(new Descriptor(
-            WaveformProcessor.Id,
-            "Waveform",
-            "Shows the signal passing through this route.",
-            () => new WaveformProcessor()));
-
-        Register(new Descriptor(
             DbMeterProcessor.Id,
             "dB meter",
             "Shows the RMS and peak level in dBFS.",
             () => new DbMeterProcessor()));
+
+        Register(new Descriptor(
+            SpectrumProcessor.Id,
+            "Spectrum",
+            "Shows a smoothed FFT spectrum of this route.",
+            () => new SpectrumProcessor()));
+
+        Register(new Descriptor(
+            SpectrogramProcessor.Id,
+            "Spectrogram",
+            "Scrolls a short FFT history of this route.",
+            () => new SpectrogramProcessor()));
 
         Register(new Descriptor(
             TranscriptionProcessor.Id,

@@ -133,12 +133,15 @@ export default function DiagnosticsNode({ nodeId }: { nodeId: string }) {
           <div className="diag-row"><span>{t('Capture backlog')}</span><b>{formatMs(diagnostics?.worstBacklogMs)}</b></div>
           <div className="diag-row"><span>{t('Chain delay')}</span><b>{formatMs(diagnostics?.chainLatencyMs)}</b></div>
           <div className="diag-row"><span>{t('Skipped / underrun')}</span><b>{diagnostics ? `${diagnostics.skippedFrames} / ${diagnostics.shortReadFrames}` : '—'}</b></div>
+          <div className="diag-row"><span>{t('Output underruns')}</span><b>{diagnostics?.outputUnderruns ?? '—'}</b></div>
           <div className="diag-row"><span>{t('Format')}</span><b>{diagnostics?.audioFormat ?? '48 kHz · stereo · f32'}</b></div>
         </div>
         <div className="diag-section">
           <span className="diag-title">{t('Performance')}</span>
           <div className="diag-row"><span>CPU</span><b>{cpu}</b></div>
           <div className="diag-row"><span>GPU</span><b>{gpu}</b></div>
+          <div className="diag-row"><span>{t('GPU device')}</span><b>{diagnostics ? (diagnostics.gpuAvailable ? diagnostics.gpuDeviceName ?? '—' : diagnostics.gpuStatusError ?? '—') : '—'}</b></div>
+          {diagnostics?.gpuFallbackReason && <div className="diag-row"><span>{t('GPU fallback')}</span><b>{diagnostics.gpuFallbackReason}</b></div>}
           <div className="diag-row"><span>{t('Memory')}</span><b>{formatMb(diagnostics?.workingSetMb)}</b></div>
           <div className="diag-row"><span>{t('Managed')}</span><b>{formatMb(diagnostics?.managedMb)}</b></div>
           <div className="diag-row"><span>{t('Threads')}</span><b>{diagnostics?.threads ?? '—'}</b></div>

@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { Check, Clipboard, Download, RotateCcw, Trash2 } from 'lucide-react';
 import { send } from '../bridge';
 import { useI18n } from '../i18n';
+import { languageLabel } from '../languages';
+import { useAutoScroll } from '../useAutoScroll';
 
 function formatDuration(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
@@ -20,7 +22,7 @@ function stateClass(status: string | undefined, error: string | undefined, hasAu
 }
 
 export default function TranscriptionView({
-  id, status, transcript, partial, error, level, hasAudio, elapsed,
+  id, status, transcript, partial, error, level, hasAudio, elapsed, detected,
 }: {
   id: string;
   status?: string;
@@ -30,10 +32,12 @@ export default function TranscriptionView({
   level?: number;
   hasAudio?: boolean;
   elapsed?: number;
+  detected?: string;
 }) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const text = useMemo(() => [transcript, partial].filter(Boolean).join(' ').trim(), [transcript, partial]);
+  const textScroll = useAutoScroll(text);
   const hasText = Boolean(transcript?.trim() || partial?.trim());
   const meter = Math.min(1, Math.max(0, Math.pow(level ?? 0, 0.65)));
   const tone = stateClass(status, error, hasAudio);
@@ -64,12 +68,13 @@ export default function TranscriptionView({
     <div className={`transcription-view ${tone}`}>
       <div className="transcription-head">
         <span className="transcription-status"><span className="status-dot" />{t(status ?? 'Waiting for audio')}</span>
+        {detected ? <span className="transcription-language">{languageLabel(detected)}</span> : null}
         {elapsed ? <span className="transcription-clock">{formatDuration(elapsed)}</span> : null}
       </div>
       <div className="transcription-level" title={t('Input level')} aria-label={t('Transcription input level {level}%', { level: Math.round(meter * 100) })}>
         <span style={{ width: `${Math.round(meter * 100)}%` }} />
       </div>
-      <div className="transcription-text" aria-live="polite">
+      <div className="transcription-text" aria-live="polite" ref={textScroll.ref} onScroll={textScroll.onScroll}>
         {transcript
           ? transcript
           : <span className="transcription-placeholder">

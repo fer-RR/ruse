@@ -12,20 +12,21 @@ internal static class TranslationPipelineTest
         string translationModelId,
         string targetCode,
         string wavPath,
-        int timeoutSeconds = 180)
+        int timeoutSeconds = 180,
+        string translationProvider = "qwen")
     {
         int tapId = TranscriptionProcessor.NextTapId();
         TranscriptionProcessor.EnsureTap(tapId);
         try
         {
-            using var session = new TranslationSession(tapId, speechModelId, translationModelId, targetCode);
+            using var session = new TranslationSession(tapId, speechModelId, translationModelId, targetCode, translationProvider);
             Feed(tapId, wavPath);
 
             DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
             TranslationSnapshot snapshot;
             while (true)
             {
-                snapshot = session.Snapshot();
+                snapshot = session.Snapshot(includeCues: true);
                 if (snapshot.TranslatedText.Length > 0 || snapshot.Error != null ||
                     DateTime.UtcNow >= deadline)
                 {
@@ -35,9 +36,9 @@ internal static class TranslationPipelineTest
                 Thread.Sleep(250);
             }
 
-            return $"status={snapshot.Status}; source={snapshot.SourceText}; " +
-                   $"translated={snapshot.TranslatedText}; detected={snapshot.DetectedLanguage}; " +
-                   $"error={snapshot.Error}";
+            return $"status={snapshot.Status}; cues={snapshot.TranslatedSegments.Count}; " +
+                   $"source={snapshot.SourceText}; translated={snapshot.TranslatedText}; " +
+                   $"detected={snapshot.DetectedLanguage}; error={snapshot.Error}";
         }
         finally
         {

@@ -44,7 +44,7 @@ internal static class Vst3SelfTest
 
         var preset = PresetSerializer.SerializeProcessor(processor);
         string restore = "skipped";
-        using (var restored = PresetSerializer.CreateProcessor(preset) as Vst3Processor)
+        using (var restored = PresetSerializer.CreateProcessor(preset) as IVst3Processor)
         {
             if (restored != null)
             {
@@ -63,6 +63,44 @@ internal static class Vst3SelfTest
         return $"name={processor.PluginName}; vendor={processor.Vendor}; version={processor.Version}; " +
                $"parameters={processor.Parameters.Count}; latency={processor.LatencySamples} frames; " +
                $"editor={processor.HasEditor}; rms={rms:0.0000}; state={state}; restore={restore}";
+    }
+
+    public static string RunIsolated(string identifier, int timeoutSeconds = 60)
+    {
+        using var processor = new IsolatedVst3Processor(identifier);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+        while (!processor.IsReady && processor.Error == null && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(50);
+        }
+
+        if (!processor.IsReady)
+        {
+            return $"FAILED: {processor.Error ?? "timed out waiting for the isolated plugin"}";
+        }
+
+        var block = new float[480 * 2];
+        double rms = 0;
+        for (int pass = 0; pass < 10; pass++)
+        {
+            for (int frame = 0; frame < 480; frame++)
+            {
+                float sample = 0.2f * MathF.Sin(2f * MathF.PI * 440f * (pass * 480 + frame) / 48000f);
+                block[frame * 2] = sample;
+                block[frame * 2 + 1] = sample;
+            }
+
+            processor.Process(block, 480);
+            if (pass == 9)
+            {
+                for (int i = 0; i < block.Length; i++) rms += block[i] * block[i];
+                rms = Math.Sqrt(rms / block.Length);
+            }
+        }
+        string state = processor.CaptureStateBase64() is { Length: > 0 } saved ? $"{saved.Length} chars" : "none";
+        return $"name={processor.PluginName}; vendor={processor.Vendor}; version={processor.Version}; " +
+               $"parameters={processor.Parameters.Count}; latency={processor.LatencySamples} frames; " +
+               $"editor={processor.HasEditor}; rms={rms:0.0000}; state={state}";
     }
 
     public static string RunEditor(string identifier, int timeoutSeconds = 60)

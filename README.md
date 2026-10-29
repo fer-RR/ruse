@@ -6,18 +6,23 @@ capture device to any output device, with an effect chain in between.
 ## What it does
 
 - **Offline transcription** — a pass-through node streams the route to OpenAI Whisper (Whisper.net / whisper.cpp).
+  It shows sentence cues with timestamps and exports SRT, VTT or plain text.
   The small English model downloads on first use and then runs without a network.
-- **Offline translation** — a pass-through node translates speech into English with Whisper, or into Portuguese, Spanish, French, German, Italian, Japanese, Korean or Simplified Chinese with a local Qwen2.5 GGUF model. Audio and text stay on the PC.
+- **Offline translation** — a pass-through node translates speech into English with Whisper, or into Portuguese, Spanish, French, German, Italian, Japanese, Korean or Simplified Chinese with a local Qwen2.5 GGUF model. Optional OPUS-MT ONNX models can replace Qwen for supported pairs. It also exports timed SRT/VTT cues. Audio and text stay on the PC.
 - **Per-application capture** — pick a process (Edge, Discord, a game…) in the
   sidebar and drag it onto the canvas. Ruse captures it through the Windows
-  process-loopback API, so nothing has to be reconfigured in the app.
-- **File player** — add an audio file as a source node, with optional looping,
+  process-loopback API on Windows 10 build 20348 or later, so nothing has to be
+  reconfigured in the app. On older builds the Applications list is hidden with a
+  banner; use **System audio** instead.
+- **File player** — add an audio file as a source node, with position/seek,
+  play/pause and optional looping,
   and route it through the same effects and outputs.
 - **Any output device** — WASAPI endpoints (speakers, headphones, Voicemeeter
   inputs) and **ASIO** drivers, including multichannel interfaces.
-- **Effect chains** — 29 built-in audio effects plus waveform, dB meter,
+- **Effect chains** — 36 built-in audio effects and analysis taps, including dB meter, spectrum, spectrogram,
   offline transcription and translation taps: gain, EQ shapes, a 10-band graphic EQ, compressor,
-  limiter, gate, reverb, delay, chorus, flanger, phaser, tremolo, pitch shift,
+  multiband compressor, limiter, gate, reverb, delay, chorus, flanger, phaser,
+  tremolo, pitch shift (standard and high quality),
   bitcrusher, noise suppression, AGC, comfort noise… with live parameters.
 - **Saved chains** — build a chain of effects once, save it to the library and
   drop it anywhere as a single node.
@@ -25,9 +30,12 @@ capture device to any output device, with an effect chain in between.
   float), MP3 or FLAC, and save the routed mix to disk.
 - **VST3 plugins** — scan the standard VST3 folders and drop any effect into the
   graph. Parameters appear as normal node controls and the plugin's native
-  editor opens in its own window. VST3 only; VST2 is not supported.
+  editor opens in its own window. Plugins run in a separate host process by
+  default, so a crashing plugin cannot close Ruse; turn this off in Settings >
+  Plugins if you need the old in-process behavior. VST3 only; VST2 is not
+  supported.
 - **Live signal feedback** — glowing nodes and matching library items, small
-  marching packets along active cables, a waveform tap and a dedicated compact
+  marching packets along active cables, spectrum and spectrogram taps and a dedicated compact
   dB meter node (vertical by default, horizontal from its menu). The glow can be
   disabled in Settings.
 - **Live recording feedback** — each recorder shows NO FILE / ARMED / REC /
@@ -62,9 +70,14 @@ first use and compiles the React assets into the app output. The app itself is
 `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`.
 
 Speech and translation models are downloaded from Settings > Speech &
-translation. Whisper models run speech recognition; non-English translation also
-needs one Qwen2.5 GGUF model (0.5B, 1.5B or 3B). Inference runs on the CPU in
-the shipped build; CUDA/Vulkan GPU backends are possible but not included.
+translation. Whisper models run speech recognition. Translation uses Qwen2.5
+GGUF by default (0.5B, 1.5B or 3B); Settings > Speech & translation >
+Translation engine can switch to optional OPUS-MT ONNX models, downloaded per
+language pair. OPUS-MT covers English with German, Spanish, French, Italian,
+Portuguese and Chinese, plus those languages and Japanese/Korean into English;
+other pairs pivot through English. English to Japanese or Korean falls back to Qwen when installed.
+Inference runs on the CPU by default; enable GPU acceleration to use a
+Vulkan-capable GPU. It falls back to the CPU when no Vulkan device is available.
 
 VST3 effects are discovered from the standard folders (`Program Files\Common
 Files\VST3`, `Program Files (x86)\Common Files\VST3` and
@@ -86,9 +99,12 @@ rescan button in the library) after installing a plugin.
 | `--device-test --pid <pid>` | End-to-end run against a real output device |
 | `--effects-test` | Checks every effect: parameters, output, preset round-trip |
 | `--record-test` | Writes/reads every recording format and a live route |
-| `--translation-text-test <model> <target> <text> <out>` | Checks one local translation model without a route |
-| `--translation-e2e-test <speech> <translation> <target> <wav> <out>` | Runs a WAV through the speech-and-translation pipeline |
+| `--translation-text-test <model> <target> <text> <out>` | Checks one local Qwen model without a route |
+| `--opus-test <source> <target> <text> <out>` | Runs one installed OPUS-MT pair, including an English pivot |
+| `--opus-download-test <pair> <out>` | Downloads and verifies one OPUS-MT pair |
+| `--translation-e2e-test <speech> <translation> <target> <wav> <out>` | Runs a WAV through the speech-and-translation pipeline (add `--opus`) |
 | `--vst3-test <plugin> <out>` | Loads a VST3, processes a tone and saves state |
+| `--vst3-isolated-test <plugin> <out>` | Runs a VST3 in the isolated host process |
 | `--vst3-route-test <plugin> <out>` | Runs a VST3 through the real route renderer |
 | `--vst3-editor-test <plugin> <out>` | Opens and closes a VST3 editor |
 | `--vst3-scan-test` | Lists the VST3 effects found in the standard folders |
@@ -102,9 +118,9 @@ For a machine without .NET, publish self-contained:
 dotnet publish src\Ruse.App\Ruse.App.csproj -c Release -r win-x64 --self-contained true -o ..\Ruse-publish
 ```
 
-The publish target copies `WebUi/dist` beside the exe. Models, VST3 plugins and
-ASIO drivers are not bundled; the target machine still needs the WebView2
-Runtime. See `README-first-run.txt` in a packaged build.
+The publish target copies `WebUi/dist` beside the exe. Models, OPUS-MT ONNX
+files, VST3 plugins and ASIO drivers are not bundled; the target machine still
+needs the WebView2 Runtime. See `README-first-run.txt` in a packaged build.
 
 ## How it is put together
 
@@ -116,6 +132,11 @@ src/Ruse.Engine/
     OutputNode.cs         a render endpoint (WASAPI, ASIO or file)
     ModifierNode.cs       an effect chain on a route
     Vst3Processor.cs      VST3 plugin effect adapter
+    IsolatedVst3Processor.cs  out-of-process VST3 proxy
+    Vst3HostRunner.cs     child-process plugin host
+    FftAnalyzer.cs        radix-2 FFT for the analysis taps
+    SpectrumProcessor.cs  smoothed log-frequency spectrum tap
+    SpectrogramProcessor.cs  scrolling FFT history tap
     GraphicEqualizerProcessor.cs  NAudio 10-band ISO equalizer wrapper
     (the effect processors and the preset model also live in Audio/)
   Diagnostics/    the log
@@ -125,8 +146,10 @@ src/Ruse.App/
   WebShellController.Diagnostics.cs  CPU/GPU/audio diagnostics snapshot
   GpuUsage.cs       Windows GPU Engine usage sampler
   TranscriptionService.cs  Whisper recognition workers
-  TranslationService.cs    speech translation workers (Whisper + local GGUF)
-  TranslationModels.cs     translation model catalog and downloads
+  TranslationService.cs    speech translation workers (Whisper + Qwen/OPUS)
+  TranslationModels.cs     Qwen catalog and downloads
+  OpusTranslationModels.cs OPUS-MT catalog and downloads
+  OpusMtEngine.cs          ONNX Runtime encoder/decoder loop
   TranslationModelProbe.cs child-process GGUF load check
   StartupErrorDialog.xaml  native fallback when WebView2 cannot start
   WebUi/            React + TypeScript workspace

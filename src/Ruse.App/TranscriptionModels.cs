@@ -11,7 +11,8 @@ internal sealed record TranscriberModel(
     string Tier,
     int SizeMb,
     string Url,
-    string? Note = null);
+    string? Note = null,
+    int VramMb = 0);
 
 internal sealed record TranscriberModelProgress(
     string ModelId,
@@ -26,16 +27,16 @@ internal static class TranscriptionModels
 
     public static IReadOnlyList<TranscriberModel> All { get; } = new[]
     {
-        Model("whisper-tiny.en", "English", "Whisper Tiny English", "Tiny", 75, "ggml-tiny.en.bin", "OpenAI weights · MIT"),
-        Model("whisper-base.en", "English", "Whisper Base English", "Base", 142, "ggml-base.en.bin", "OpenAI weights · MIT"),
-        Model("whisper-small.en", "English", "Whisper Small English", "Small", 466, "ggml-small.en.bin", "OpenAI weights · MIT"),
-        Model("whisper-medium.en", "English", "Whisper Medium English", "Medium", 1500, "ggml-medium.en.bin", "OpenAI weights · MIT"),
-        Model("whisper-tiny", "Multilingual", "Whisper Tiny", "Tiny", 75, "ggml-tiny.bin", "OpenAI weights · MIT"),
-        Model("whisper-base", "Multilingual", "Whisper Base", "Base", 142, "ggml-base.bin", "OpenAI weights · MIT"),
-        Model("whisper-small", "Multilingual", "Whisper Small", "Small", 466, "ggml-small.bin", "OpenAI weights · MIT"),
-        Model("whisper-medium", "Multilingual", "Whisper Medium", "Medium", 1500, "ggml-medium.bin", "OpenAI weights · MIT"),
-        Model("whisper-large-v3-turbo", "Multilingual", "Whisper Large v3 Turbo", "Large", 1620, "ggml-large-v3-turbo.bin", "OpenAI weights · MIT"),
-        Model("whisper-large-v3", "Multilingual", "Whisper Large v3", "Large", 3090, "ggml-large-v3.bin", "OpenAI weights · MIT"),
+        Model("whisper-tiny.en", "English", "Whisper Tiny English", "Tiny", 75, "ggml-tiny.en.bin", "OpenAI weights · MIT", vramMb: 1024),
+        Model("whisper-base.en", "English", "Whisper Base English", "Base", 142, "ggml-base.en.bin", "OpenAI weights · MIT", vramMb: 1024),
+        Model("whisper-small.en", "English", "Whisper Small English", "Small", 466, "ggml-small.en.bin", "OpenAI weights · MIT", vramMb: 2048),
+        Model("whisper-medium.en", "English", "Whisper Medium English", "Medium", 1500, "ggml-medium.en.bin", "OpenAI weights · MIT", vramMb: 5120),
+        Model("whisper-tiny", "Multilingual", "Whisper Tiny", "Tiny", 75, "ggml-tiny.bin", "OpenAI weights · MIT", vramMb: 1024),
+        Model("whisper-base", "Multilingual", "Whisper Base", "Base", 142, "ggml-base.bin", "OpenAI weights · MIT", vramMb: 1024),
+        Model("whisper-small", "Multilingual", "Whisper Small", "Small", 466, "ggml-small.bin", "OpenAI weights · MIT", vramMb: 2048),
+        Model("whisper-medium", "Multilingual", "Whisper Medium", "Medium", 1500, "ggml-medium.bin", "OpenAI weights · MIT", vramMb: 5120),
+        Model("whisper-large-v3-turbo", "Multilingual", "Whisper Large v3 Turbo", "Large", 1620, "ggml-large-v3-turbo.bin", "OpenAI weights · MIT", vramMb: 8192),
+        Model("whisper-large-v3", "Multilingual", "Whisper Large v3", "Large", 3090, "ggml-large-v3.bin", "OpenAI weights · MIT", vramMb: 10240),
     };
 
     public static string DefaultId => "whisper-small.en";
@@ -191,9 +192,9 @@ internal static class TranscriptionModels
         }
     }
 
-    private static TranscriberModel Model(string id, string language, string name, string tier, int sizeMb, string file, string note) =>
+    private static TranscriberModel Model(string id, string language, string name, string tier, int sizeMb, string file, string note, int vramMb = 0) =>
         new(id, language, name, tier, sizeMb,
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + file, note);
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + file, note, vramMb);
 
     private static void TryDelete(string path)
     {

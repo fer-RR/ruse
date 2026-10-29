@@ -21,6 +21,7 @@ public sealed class SourceNode : IDisposable
     private volatile bool _clipping;
     private int _sourceChannels;
     private int _sourceSampleRate;
+    private double _fileDurationSeconds;
 
     // Every consumer of this source (each output route) takes its own copy of
     // the audio. Sharing one queue would mean two outputs split the signal
@@ -72,6 +73,8 @@ public sealed class SourceNode : IDisposable
     /// <summary>Bytes allocated by the capture thread while decoding (diagnostics).</summary>
     public long CaptureAllocatedBytes { get; private set; }
 
+    public static bool SupportsApplicationCapture => ProcessLoopbackCapture.IsSupported;
+
     public int Channels => _sourceChannels;
     public int SampleRate => _sourceSampleRate;
 
@@ -86,6 +89,9 @@ public sealed class SourceNode : IDisposable
         DeviceId = deviceId;
         FilePath = filePath;
         FileLoop = fileLoop;
+        _fileDurationSeconds = !string.IsNullOrWhiteSpace(filePath)
+            ? AudioFileCapture.GetDuration(filePath)
+            : 0;
         AsioDriver = asioDriver;
         AsioChannels = asioChannels ?? new[] { 0, 1 };
     }
@@ -101,6 +107,7 @@ public sealed class SourceNode : IDisposable
         Stop();
         FilePath = path;
         FileLoop = loop;
+        _fileDurationSeconds = AudioFileCapture.GetDuration(path);
         if (wasRunning)
         {
             Start();
@@ -128,6 +135,29 @@ public sealed class SourceNode : IDisposable
         {
             Start();
         }
+    }
+
+    public double FilePositionSeconds =>
+        _capture is AudioFileCapture file ? file.PositionSeconds : 0;
+
+    public double FileDurationSeconds =>
+        _capture is AudioFileCapture file ? file.DurationSeconds : _fileDurationSeconds;
+
+    public bool FilePaused => _capture is AudioFileCapture file && file.IsPaused;
+
+    public void PauseFile()
+    {
+        if (_capture is AudioFileCapture file) file.Pause();
+    }
+
+    public void ResumeFile()
+    {
+        if (_capture is AudioFileCapture file) file.Resume();
+    }
+
+    public void SeekFile(double seconds)
+    {
+        if (_capture is AudioFileCapture file) file.Seek(seconds);
     }
 
     /// <summary>Points an app source at a new process instance.</summary>
@@ -233,6 +263,12 @@ public sealed class SourceNode : IDisposable
 
     public void Start()
     {
+        if (Kind == SourceKind.Application && !SupportsApplicationCapture)
+        {
+            _faulted = true;
+            return;
+        }
+
         if (_capture is AudioFileCapture ended && !ended.IsRunning)
         {
             ended.Dispose();
@@ -354,6 +390,7 @@ public sealed class SourceNode : IDisposable
         }
 
         var capture = new AudioFileCapture(FilePath, FileLoop);
+        _fileDurationSeconds = capture.DurationSeconds;
         SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate);
         capture.DataAvailable += OnDataAvailable;
         capture.Start();

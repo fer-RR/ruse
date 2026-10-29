@@ -424,8 +424,12 @@ public sealed class AudioGraph : IDisposable
                         .Select(processor => processor.TapId))
                     .Where(id => id > 0)
                     .ToArray();
-                var waveformTaps = modifier.Processors
-                    .OfType<WaveformProcessor>()
+                var spectrumTaps = modifier.Processors
+                    .OfType<SpectrumProcessor>()
+                    .Where(processor => processor.TapId > 0)
+                    .ToArray();
+                var spectrogramTaps = modifier.Processors
+                    .OfType<SpectrogramProcessor>()
                     .Where(processor => processor.TapId > 0)
                     .ToArray();
                 int[] dbMeterTaps = modifier.Processors
@@ -434,7 +438,8 @@ public sealed class AudioGraph : IDisposable
                     .Where(id => id > 0)
                     .ToArray();
 
-                if (speechTaps.Length == 0 && waveformTaps.Length == 0 && dbMeterTaps.Length == 0)
+                if (speechTaps.Length == 0 && spectrumTaps.Length == 0 &&
+                    spectrogramTaps.Length == 0 && dbMeterTaps.Length == 0)
                 {
                     continue;
                 }
@@ -456,11 +461,18 @@ public sealed class AudioGraph : IDisposable
                             TranscriptionProcessor.WriteTap(speechTaps[i], block, frames);
                         }
 
-                        for (int i = 0; i < waveformTaps.Length; i++)
+                        for (int i = 0; i < spectrumTaps.Length; i++)
                         {
-                            var waveform = waveformTaps[i];
-                            WaveformProcessor.WriteTap(waveform.TapId, block, frames,
-                                waveform.Gain, waveform.Smoothing, waveform.Speed);
+                            var spectrum = spectrumTaps[i];
+                            SpectrumProcessor.WriteTap(spectrum.TapId, block, frames,
+                                spectrum.Smoothing, spectrum.Floor, spectrum.Ceiling);
+                        }
+
+                        for (int i = 0; i < spectrogramTaps.Length; i++)
+                        {
+                            var spectrogram = spectrogramTaps[i];
+                            SpectrogramProcessor.WriteTap(spectrogram.TapId, block, frames,
+                                spectrogram.Contrast, spectrogram.Floor, spectrogram.Ceiling);
                         }
 
                         for (int i = 0; i < dbMeterTaps.Length; i++)

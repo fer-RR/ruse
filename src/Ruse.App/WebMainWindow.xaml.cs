@@ -11,6 +11,7 @@ public partial class WebMainWindow : Window
     private bool _closed;
     private bool _closeConfirmed;
     private bool _hiddenToTray;
+    private bool _trayPrompting;
     private TrayIcon? _tray;
     private WindowState _lastVisibleState = WindowState.Normal;
 
@@ -61,7 +62,9 @@ public partial class WebMainWindow : Window
 
     private void CreateTrayIcon()
     {
-        if (!_controller.UserSettings.MinimizeToTray || _tray != null)
+        if (!_controller.UserSettings.MinimizeToTray ||
+            !_controller.UserSettings.TrayPromptShown ||
+            _tray != null)
         {
             return;
         }
@@ -70,6 +73,19 @@ public partial class WebMainWindow : Window
         _tray = new TrayIcon(this, open, exit);
         _tray.OpenRequested += RestoreFromTray;
         _tray.ExitRequested += ExitFromTray;
+    }
+
+    /// <summary>Creates or removes the tray icon after a settings change.</summary>
+    internal void SyncTrayIcon()
+    {
+        if (_controller.UserSettings.MinimizeToTray && _controller.UserSettings.TrayPromptShown)
+        {
+            CreateTrayIcon();
+            return;
+        }
+
+        _tray?.Dispose();
+        _tray = null;
     }
 
     private void OnStateChanged(object? sender, EventArgs e)
@@ -81,10 +97,31 @@ public partial class WebMainWindow : Window
             return;
         }
 
-        if (WindowState != WindowState.Minimized ||
-            !_controller.UserSettings.MinimizeToTray ||
-            _tray == null ||
-            _hiddenToTray)
+        if (WindowState != WindowState.Minimized || _hiddenToTray || _trayPrompting)
+        {
+            return;
+        }
+
+        if (!_controller.UserSettings.TrayPromptShown)
+        {
+            _trayPrompting = true;
+            bool minimizeToTray = MessageBox.Show(
+                "Minimize Ruse to the notification area?\n\nAudio keeps routing while the window is hidden. You can change this later in Settings.",
+                "Ruse",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question) == MessageBoxResult.Yes;
+            _trayPrompting = false;
+
+            _controller.SaveTrayPreference(minimizeToTray);
+            if (!minimizeToTray)
+            {
+                return;
+            }
+
+            CreateTrayIcon();
+        }
+
+        if (!_controller.UserSettings.MinimizeToTray || _tray == null)
         {
             return;
         }
@@ -94,7 +131,7 @@ public partial class WebMainWindow : Window
         ShowInTaskbar = false;
     }
 
-    private void RestoreFromTray()
+    internal void RestoreFromTray()
     {
         ShowInTaskbar = true;
         Show();
@@ -103,6 +140,9 @@ public partial class WebMainWindow : Window
             : WindowState.Normal;
         _hiddenToTray = false;
         Activate();
+        Topmost = true;
+        Topmost = false;
+        Focus();
     }
 
     private void ExitFromTray()

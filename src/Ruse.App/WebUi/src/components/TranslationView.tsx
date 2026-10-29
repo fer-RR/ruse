@@ -3,6 +3,7 @@ import { Check, Clipboard, Download, RotateCcw, Trash2 } from 'lucide-react';
 import { send } from '../bridge';
 import { useI18n } from '../i18n';
 import { languageLabel, translationTarget } from '../languages';
+import { useAutoScroll } from '../useAutoScroll';
 
 function formatDuration(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
@@ -40,11 +41,14 @@ export default function TranslationView({
   const [copied, setCopied] = useState(false);
   const text = useMemo(() => [translated, translatedPartial].filter(Boolean).join(' ').trim(), [translated, translatedPartial]);
   const sourceText = useMemo(() => [source, sourcePartial].filter(Boolean).join(' ').trim(), [source, sourcePartial]);
+  const sourceScroll = useAutoScroll(sourceText);
+  const translationScroll = useAutoScroll(text);
   const hasText = Boolean(text || sourceText);
   const meter = Math.min(1, Math.max(0, Math.pow(level ?? 0, 0.65)));
   const tone = stateClass(status, error, hasAudio);
   const targetLabel = translationTarget(target).label;
   const detectedLabel = detected ? languageLabel(detected) : '';
+  const sourceLabel = target === 'en' ? t('English transcript') : t('Original');
 
   const copy = async () => {
     if (!text) return;
@@ -81,9 +85,9 @@ export default function TranslationView({
         <span style={{ width: `${Math.round(meter * 100)}%` }} />
       </div>
       <div className="translation-pane">
-        <span className="translation-label">{t('Original')}</span>
-        <div className="transcription-text" aria-live="polite">
-          {sourceText || <span className="transcription-placeholder">
+        <span className="translation-label">{sourceLabel}</span>
+        <div className="transcription-text" aria-live="polite" ref={sourceScroll.ref} onScroll={sourceScroll.onScroll}>
+          {source || <span className="transcription-placeholder">
             {error
               ? t('The original text is unavailable. See the error below.')
               : hasAudio ? t('Listening for speech…') : t('Waiting for audio. Connect an input to this node.')}
@@ -93,8 +97,8 @@ export default function TranslationView({
       </div>
       <div className="translation-pane translated">
         <span className="translation-label">{targetLabel}</span>
-        <div className="transcription-text" aria-live="polite">
-          {text || <span className="transcription-placeholder">
+        <div className="transcription-text" aria-live="polite" ref={translationScroll.ref} onScroll={translationScroll.onScroll}>
+          {translated || <span className="transcription-placeholder">
             {status === 'No translation model installed'
               ? t('Install a translation model in Settings, then press Retry.')
               : status === 'No speech model installed'

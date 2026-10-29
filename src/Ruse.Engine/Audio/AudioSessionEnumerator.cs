@@ -28,6 +28,7 @@ public static class AudioSessionEnumerator
 {
     // Caching process names keeps the periodic refresh cheap.
     private static readonly Dictionary<uint, string> ProcessNameCache = new();
+    private static readonly string CurrentProcessName = System.Diagnostics.Process.GetCurrentProcess().ProcessName;
     private static readonly object ProcessNameLock = new();
 
     public static IReadOnlyList<AudioSessionInfo> GetRenderSessions()
@@ -60,6 +61,11 @@ public static class AudioSessionEnumerator
                         }
 
                         string name = TryGetProcessName(pid);
+                        if (string.Equals(name, CurrentProcessName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
                         string display = TryGetDisplayName(session);
                         bool active = TryIsActive(session);
 

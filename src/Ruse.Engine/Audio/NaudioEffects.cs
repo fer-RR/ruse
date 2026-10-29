@@ -75,15 +75,23 @@ public static class NaudioEffects
         Register("bitcrusher", "Bitcrusher",
             "Lo-fi reduction of bit depth and sample rate.", () => new BitCrusherEffect());
 
-        Register("pitch-shift", "Pitch shift",
-            "Shifts the pitch without changing the playback speed.",
-            () => new PitchShiftEffect());
+        RegisterProcessor("pitch-shift", "Pitch shift",
+            "Shifts pitch with about 43 ms latency.",
+            () => new PitchShiftProcessor(PitchShiftProcessor.Id, "Pitch shift", 2048));
+
+        RegisterProcessor("pitch-shift-hq", "Pitch shift HQ",
+            "Highest-quality pitch shift, with about 85 ms latency.",
+            () => new PitchShiftProcessor(PitchShiftProcessor.HqId, "Pitch shift HQ", 4096));
 
         Register("transient-shaper", "Transient shaper",
             "Shapes the attack and sustain of the signal.", () => new TransientShaperEffect());
 
         Register("room-reverb", "Room reverb",
             "Larger, smoother room reverb (FDN).", () => new FdnReverbEffect());
+
+        RegisterProcessor(MultibandCompressorProcessor.Id, "Multiband compressor",
+            "Independent dynamics for low, mid and high bands.",
+            () => new MultibandCompressorProcessor());
     }
 
     private static void Register(string typeId, string displayName, string description, Func<AudioEffect> factory)
@@ -93,5 +101,14 @@ public static class NaudioEffects
             displayName,
             description,
             () => new NaudioEffectProcessor(typeId, displayName, factory())));
+    }
+
+    private static void RegisterProcessor(string typeId, string displayName, string description, Func<IAudioProcessor> factory)
+    {
+        AudioProcessorCatalog.Register(new AudioProcessorCatalog.Descriptor(
+            typeId,
+            displayName,
+            description,
+            factory));
     }
 }

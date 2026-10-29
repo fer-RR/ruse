@@ -80,8 +80,9 @@ function ToolButton({ icon, children, title, onClick, danger = false, active = f
   return <button className={`tool-button ${danger ? 'danger' : ''} ${active ? 'active' : ''}`} title={title} onClick={onClick}>{icon}<span>{children}</span></button>;
 }
 
-export function Toolbar({ running, micMuted, canUndo, canRedo, undoLabel, redoLabel, onTransport, onRefresh, onSave, onLoad, onClear, onUndo, onRedo, onTidy, onMicMute, onDeviceHelp, onSettings }: {
+export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, undoLabel, redoLabel, onTransport, onRefresh, onSave, onLoad, onClear, onUndo, onRedo, onTidy, onMicMute, onDeviceHelp, onSettings }: {
   running: boolean;
+  audioPlaying: boolean;
   micMuted: boolean;
   canUndo: boolean;
   canRedo: boolean;
@@ -102,7 +103,7 @@ export function Toolbar({ running, micMuted, canUndo, canRedo, undoLabel, redoLa
   const { t } = useI18n();
   return (
     <div className="toolbar">
-      <button className={`routing-switch ${running ? 'on' : ''}`} role="switch" aria-checked={running} aria-label={t('Routing')} title={running ? t('Stop routing') : t('Start routing')} onClick={() => onTransport(!running)}>
+      <button className={`routing-switch ${running ? 'on' : ''} ${!running && audioPlaying ? 'off-alert' : ''}`} role="switch" aria-checked={running} aria-label={t('Routing')} title={running ? t('Stop routing') : t('Start routing')} onClick={() => onTransport(!running)}>
         <span className="switch-track"><span className="switch-knob" /></span><span className="switch-state">{running ? t('ON') : t('OFF')}</span>
       </button>
       <span className="toolbar-separator" />

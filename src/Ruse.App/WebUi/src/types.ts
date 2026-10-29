@@ -39,6 +39,8 @@ export interface CatalogSnapshot {
   vst3Plugins: CatalogItem[];
   defaultOutputId: string;
   defaultOutputName: string;
+  perAppCaptureAvailable: boolean;
+  perAppCaptureMessage?: string;
 }
 
 export interface ParameterModel {
@@ -71,7 +73,8 @@ export interface NodeModel {
   deviceId?: string;
   parameters: ParameterModel[];
   enabled?: boolean;
-  isWaveform?: boolean;
+  isSpectrum?: boolean;
+  isSpectrogram?: boolean;
   isFilePlayer?: boolean;
   filePath?: string;
   fileLoop?: boolean;
@@ -81,6 +84,7 @@ export interface NodeModel {
   isTranslator?: boolean;
   translatorTarget?: string;
   translatorModel?: string;
+  translatorProvider?: string;
   translatorModels?: TranslatorModelInfo[];
   isVst3?: boolean;
   vst3Identifier?: string;
@@ -149,10 +153,17 @@ export interface NodeTelemetry {
   level: number;
   clipping: boolean;
   filePlaying?: boolean;
+  filePaused?: boolean;
+  filePositionSeconds?: number;
+  fileDurationSeconds?: number;
   recordingStatus?: string;
   recordingSeconds?: number;
   recordingError?: string;
-  waveform?: number[];
+  spectrum?: number[];
+  spectrumPeakHz?: number;
+  spectrogram?: number[];
+  spectrogramPeakHz?: number;
+  spectrogramColumns?: number;
   db?: number;
   peakDb?: number;
   dbMeterVertical?: boolean;
@@ -166,6 +177,7 @@ export interface NodeTelemetry {
   transcriptionLevel?: number;
   transcriptionHasAudio?: boolean;
   transcriptionElapsed?: number;
+  usesGpu?: boolean;
 }
 
 export interface DiagnosticInfo {
@@ -188,9 +200,14 @@ export interface DiagnosticInfo {
   worstLatencyMs: number;
   chainLatencyMs: number;
   shortReadFrames: number;
+  outputUnderruns: number;
   lowLatency: boolean;
   telemetryMs: number;
   audioFormat: string;
+  gpuAvailable?: boolean;
+  gpuDeviceName?: string;
+  gpuStatusError?: string;
+  gpuFallbackReason?: string;
 }
 
 export interface TelemetrySnapshot {
@@ -209,6 +226,7 @@ export interface TranscriberModelInfo {
   name: string;
   tier: string;
   sizeMb: number;
+  vramMb?: number;
   installed: boolean;
   installedSize?: string;
   note?: string;
@@ -225,6 +243,19 @@ export interface TranslatorModelInfo {
   id: string;
   name: string;
   tier: string;
+  sizeMb: number;
+  vramMb?: number;
+  installed: boolean;
+  installedSize?: string;
+  license?: string;
+  note?: string;
+}
+
+export interface OpusModelInfo {
+  id: string;
+  name: string;
+  source: string;
+  target: string;
   sizeMb: number;
   installed: boolean;
   installedSize?: string;
@@ -244,24 +275,36 @@ export interface SettingsModel {
   followPlayingApps: boolean;
   followOutputId: string;
   uiLanguage: string;
+  theme: 'dark' | 'light';
   startRoutingOnLaunch: boolean;
   highlightMutedNodes: boolean;
   signalGlow: boolean;
   snapToGrid: boolean;
   highlightCableOnHover: boolean;
   cableAnimation: boolean;
+  connectorAnimation: boolean;
   minimapMode: number;
   startWithWindows: boolean;
   showWelcomeScreen: boolean;
   minimizeToTray: boolean;
   showDiagnostics: boolean;
+  useGpu: boolean;
+  isolateVst3: boolean;
+  gpuAvailable?: boolean;
+  gpuDeviceName?: string;
+  gpuStatusError?: string;
+  gpuFallbackReason?: string;
   transcriberModel: string;
   transcriberModels: TranscriberModelInfo[];
   transcriberDownload?: TranscriberDownload | null;
   translatorModel: string;
   translatorTarget: string;
   translatorModels: TranslatorModelInfo[];
+  translationProvider: string;
+  opusModels: OpusModelInfo[];
   translatorDownload?: TranslatorDownload | null;
+  installedOpusModelsSize?: string;
+  installedOpusModelsCount?: number;
   installedTranslatorModelsSize?: string;
   installedTranslatorModelsCount?: number;
   installedModelsSize?: string;

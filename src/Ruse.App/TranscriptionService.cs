@@ -12,25 +12,29 @@ internal sealed record TranscriptionSnapshot(
     string? Error,
     float Level,
     bool HasAudio,
-    double ElapsedSeconds);
+    double ElapsedSeconds,
+    bool? GpuActive,
+    string? DetectedLanguage,
+    IReadOnlyList<SubtitleCue> Segments);
 
 internal sealed class TranscriptionSession : IDisposable
 {
-    private const int SampleRate = 16000;
-    private const int MinChunkSamples = SampleRate * 2;
-    private const int MaxChunkSamples = SampleRate * 10;
     private readonly int _tapId;
     private readonly CancellationTokenSource _cancel = new();
     private readonly object _textLock = new();
     private readonly object _sampleLock = new();
-    private readonly List<float> _samples = new(MaxChunkSamples + 8192);
+    private readonly SpeechChunker _chunker = new();
+    private readonly List<SubtitleCue> _segments = new();
+    private float[] _decoded = new float[8192];
     private readonly Task _worker;
     private readonly long _startedAt = Environment.TickCount64;
     private string _baseStatus = "Starting";
     private string _transcript = "";
     private string _partial = "";
     private string? _error;
+    private string? _detectedLanguage;
     private bool _modelReady;
+    private bool _gpuActive;
     private bool _processing;
     private int _disposed;
 
@@ -43,7 +47,7 @@ internal sealed class TranscriptionSession : IDisposable
 
     public string ModelId { get; }
 
-    public TranscriptionSnapshot Snapshot()
+    public TranscriptionSnapshot Snapshot(bool includeCues = false)
     {
         long lastAudio = TranscriptionProcessor.GetLastAudioTick(_tapId);
         bool hasAudio = lastAudio > 0 && Environment.TickCount64 - lastAudio < 2500;
@@ -63,19 +67,24 @@ internal sealed class TranscriptionSession : IDisposable
                 _error,
                 level,
                 hasAudio,
-                Math.Max(0, (Environment.TickCount64 - _startedAt) / 1000.0));
+                Math.Max(0, (Environment.TickCount64 - _startedAt) / 1000.0),
+                _modelReady ? _gpuActive : null,
+                _detectedLanguage,
+                includeCues ? _segments.ToArray() : Array.Empty<SubtitleCue>());
         }
     }
 
     public void Clear()
     {
         TranscriptionProcessor.ClearTap(_tapId);
-        lock (_sampleLock) _samples.Clear();
+        lock (_sampleLock) _chunker.Clear();
         lock (_textLock)
         {
             _transcript = "";
             _partial = "";
             _error = null;
+            _detectedLanguage = null;
+            _segments.Clear();
         }
     }
 
@@ -118,14 +127,21 @@ internal sealed class TranscriptionSession : IDisposable
                     .WithThreads(Math.Clamp(Environment.ProcessorCount / 2, 1, 8))
                     .WithNoContext()
                     .Build();
+                _gpuActive = SpeechModelCache.IsGpu(ModelId);
                 _modelReady = true;
                 SetStatus("Listening");
                 await RunRecognitionAsync(processor);
             }
             finally
             {
-                processor?.Dispose();
-                SpeechModelCache.Release(ModelId);
+                try
+                {
+                    if (processor != null) await processor.DisposeAsync();
+                }
+                finally
+                {
+                    SpeechModelCache.Release(ModelId);
+                }
             }
         }
         catch (OperationCanceledException)
@@ -146,42 +162,41 @@ internal sealed class TranscriptionSession : IDisposable
         {
             int read = TranscriptionProcessor.ReadAvailable(_tapId, buffer);
             float[]? chunk = null;
-            if (read > 0)
+            double chunkStart = 0;
+            if (read > 1)
             {
+                int sampleCount = read / 2;
                 lock (_sampleLock)
                 {
-                    for (int i = 0; i + 1 < read; i += 2)
+                    if (_decoded.Length < sampleCount)
                     {
-                        short value = (short)(buffer[i] | (buffer[i + 1] << 8));
-                        _samples.Add(value / 32768f);
+                        _decoded = new float[sampleCount];
                     }
 
-                    long now = Environment.TickCount64;
-                    long lastAudio = TranscriptionProcessor.GetLastAudioTick(_tapId);
-                    bool silent = lastAudio > 0 && now - lastAudio > 1200;
-                    if (_samples.Count >= MaxChunkSamples ||
-                        (silent && _samples.Count >= MinChunkSamples))
+                    for (int i = 0; i < sampleCount; i++)
                     {
-                        chunk = _samples.ToArray();
-                        _samples.Clear();
+                        short value = (short)(buffer[i * 2] | (buffer[i * 2 + 1] << 8));
+                        _decoded[i] = value / 32768f;
                     }
-                    else if (lastAudio == 0 || now - lastAudio > 3000)
+
+                    if (_chunker.Add(_decoded.AsSpan(0, sampleCount), out var produced, out var start))
                     {
-                        _samples.Clear();
+                        chunk = produced;
+                        chunkStart = start;
                     }
                 }
             }
 
             if (chunk != null)
             {
-                await TranscribeAsync(processor, chunk);
+                await TranscribeAsync(processor, chunk, chunkStart);
             }
 
             await Task.Delay(40, _cancel.Token);
         }
     }
 
-    private async Task TranscribeAsync(WhisperProcessor processor, float[] chunk)
+    private async Task TranscribeAsync(WhisperProcessor processor, float[] chunk, double chunkStart)
     {
         lock (_textLock)
         {
@@ -191,6 +206,8 @@ internal sealed class TranscriptionSession : IDisposable
         }
 
         var text = new StringBuilder();
+        var cues = new List<SubtitleCue>();
+        string? detected = null;
         try
         {
             await foreach (var segment in processor.ProcessAsync(chunk, _cancel.Token))
@@ -200,6 +217,15 @@ internal sealed class TranscriptionSession : IDisposable
                 {
                     continue;
                 }
+
+                if (!string.IsNullOrWhiteSpace(segment.Language))
+                {
+                    detected ??= segment.Language;
+                }
+
+                double start = chunkStart + segment.Start.TotalSeconds;
+                double end = chunkStart + segment.End.TotalSeconds;
+                cues.AddRange(SentenceSplitter.Split(value, start, end));
 
                 if (text.Length > 0) text.Append(' ');
                 text.Append(value);
@@ -215,20 +241,29 @@ internal sealed class TranscriptionSession : IDisposable
             }
         }
 
-        AppendFinal(text.ToString());
+        AppendFinal(text.ToString(), cues, detected);
     }
 
-    private void AppendFinal(string text)
+    private void AppendFinal(string text, List<SubtitleCue> cues, string? detected)
     {
         text = text.Trim();
-        if (text.Length == 0)
-        {
-            return;
-        }
-
         lock (_textLock)
         {
-            _transcript = _transcript.Length == 0 ? text : _transcript + " " + text;
+            if (text.Length > 0)
+            {
+                _transcript = _transcript.Length == 0 ? text : _transcript + " " + text;
+            }
+
+            if (cues.Count > 0)
+            {
+                _segments.AddRange(cues);
+            }
+
+            if (!string.IsNullOrWhiteSpace(detected))
+            {
+                _detectedLanguage = detected;
+            }
+
             _partial = "";
         }
     }
@@ -295,11 +330,11 @@ internal static class TranscriptionRegistry
         previous?.Dispose();
     }
 
-    public static TranscriptionSnapshot? Snapshot(int tapId)
+    public static TranscriptionSnapshot? Snapshot(int tapId, bool includeCues = false)
     {
         lock (Lock)
         {
-            return Sessions.TryGetValue(tapId, out var session) ? session.Snapshot() : null;
+            return Sessions.TryGetValue(tapId, out var session) ? session.Snapshot(includeCues) : null;
         }
     }
 
@@ -362,7 +397,7 @@ internal static class TranscriptionRegistry
 internal static class SpeechModelCache
 {
     private static readonly object Lock = new();
-    private static readonly Dictionary<string, (WhisperFactory Factory, int References)> Models = new();
+    private static readonly Dictionary<string, (WhisperFactory Factory, int References, bool Gpu)> Models = new();
     private static readonly HashSet<string> PendingDrops = new();
 
     public static WhisperFactory? Acquire(string modelId, string path, CancellationToken token)
@@ -372,7 +407,7 @@ internal static class SpeechModelCache
             if (Models.TryGetValue(modelId, out var existing))
             {
                 PendingDrops.Remove(modelId);
-                Models[modelId] = (existing.Factory, existing.References + 1);
+                Models[modelId] = (existing.Factory, existing.References + 1, existing.Gpu);
                 return existing.Factory;
             }
 
@@ -383,14 +418,33 @@ internal static class SpeechModelCache
 
             try
             {
-                var factory = WhisperFactory.FromPath(path);
+                WhisperFactory factory;
+                bool gpu = ModelRuntime.UseGpu;
+                try
+                {
+                    factory = WhisperFactory.FromPath(path, new WhisperFactoryOptions
+                    {
+                        UseGpu = gpu,
+                    });
+                }
+                catch (Exception gpuError) when (gpu)
+                {
+                    AppLog.Warning(
+                        $"GPU load failed for speech model '{modelId}'; falling back to CPU. " +
+                        gpuError.GetBaseException().Message);
+                    ModelRuntime.ReportGpuFallback(
+                        $"Speech model '{modelId}': {gpuError.GetBaseException().Message}");
+                    gpu = false;
+                    factory = WhisperFactory.FromPath(path);
+                }
+
                 if (token.IsCancellationRequested)
                 {
                     factory.Dispose();
                     return null;
                 }
 
-                Models[modelId] = (factory, 1);
+                Models[modelId] = (factory, 1, gpu);
                 return factory;
             }
             catch (Exception ex)
@@ -401,6 +455,14 @@ internal static class SpeechModelCache
         }
     }
 
+    public static bool IsGpu(string modelId)
+    {
+        lock (Lock)
+        {
+            return Models.TryGetValue(modelId, out var entry) && entry.Gpu;
+        }
+    }
+
     public static void Release(string modelId)
     {
         lock (Lock)
@@ -408,7 +470,7 @@ internal static class SpeechModelCache
             if (!Models.TryGetValue(modelId, out var entry)) return;
             if (entry.References > 1)
             {
-                Models[modelId] = (entry.Factory, entry.References - 1);
+                Models[modelId] = (entry.Factory, entry.References - 1, entry.Gpu);
                 return;
             }
 

@@ -16,6 +16,8 @@ public sealed class AudioFileCapture : IDisposable
     private volatile bool _stop;
     private volatile bool _ended;
     private volatile bool _restart;
+    private volatile bool _paused;
+    private volatile int _seekRequest = -1;
     private volatile float _positionSeconds;
 
     public AudioFileCapture(string path, bool loop)
@@ -36,7 +38,21 @@ public sealed class AudioFileCapture : IDisposable
     public double DurationSeconds { get; }
     public float PositionSeconds => _positionSeconds;
     public bool IsRunning => _thread is { IsAlive: true } && !_ended;
+    public bool IsPaused => _paused;
     public volatile bool Loop;
+
+    public static double GetDuration(string path)
+    {
+        try
+        {
+            using var reader = new AudioFileReader(path);
+            return reader.TotalTime.TotalSeconds;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
 
     public event EventHandler<WaveInEventArgs>? DataAvailable;
 
@@ -50,6 +66,7 @@ public sealed class AudioFileCapture : IDisposable
         _stop = false;
         _ended = false;
         _restart = false;
+        _paused = false;
         _thread = new Thread(Pump)
         {
             IsBackground = true,
@@ -58,8 +75,27 @@ public sealed class AudioFileCapture : IDisposable
         _thread.Start();
     }
 
+    public void Pause()
+    {
+        if (_thread is { IsAlive: true })
+        {
+            _paused = true;
+        }
+    }
+
+    public void Resume()
+    {
+        _paused = false;
+    }
+
+    public void Seek(double seconds)
+    {
+        _seekRequest = (int)Math.Clamp(seconds * 1000.0, 0, int.MaxValue);
+    }
+
     public void Restart()
     {
+        _paused = false;
         if (_thread is { IsAlive: true })
         {
             _restart = true;
@@ -82,8 +118,52 @@ public sealed class AudioFileCapture : IDisposable
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long produced = 0;
 
+        void ApplySeek()
+        {
+            int request = _seekRequest;
+            if (request < 0)
+            {
+                return;
+            }
+
+            _seekRequest = -1;
+            try
+            {
+                _reader.CurrentTime = TimeSpan.FromSeconds(
+                    Math.Clamp(request / 1000.0, 0, Math.Max(0, DurationSeconds)));
+                _positionSeconds = (float)_reader.CurrentTime.TotalSeconds;
+            }
+            catch
+            {
+                // A closed or unsupported stream simply stays at its position.
+            }
+
+            produced = 0;
+            clock.Restart();
+            _ended = false;
+        }
+
         while (!_stop)
         {
+            if (_paused)
+            {
+                clock.Stop();
+                while (_paused && !_stop)
+                {
+                    ApplySeek();
+                    Thread.Sleep(10);
+                }
+
+                if (_stop)
+                {
+                    return;
+                }
+
+                clock.Start();
+            }
+
+            ApplySeek();
+
             if (_restart)
             {
                 _restart = false;

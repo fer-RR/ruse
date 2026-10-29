@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Activity, AudioLines, Cable, Copy, FileText, FolderOpen, Headphones, Keyboard, LayoutGrid, Mic, MonitorSpeaker, SlidersHorizontal, Volume2, X } from 'lucide-react';
+import { Activity, AudioLines, Cable, ChevronRight, Copy, FileText, FolderOpen, Headphones, Keyboard, LayoutGrid, Mic, MonitorSpeaker, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { TRANSLATION_TARGETS } from '../languages';
 import type { CatalogItem, GraphWarning, SettingsModel } from '../types';
 import ModelCatalog from './ModelCatalog';
 import TranslationModelCatalog from './TranslationModelCatalog';
+import OpusModelCatalog from './OpusModelCatalog';
 
 export function Modal({ title, onClose, children, className = '', movable = false }: {
   title: string;
@@ -258,6 +259,8 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const [speechOpen, setSpeechOpen] = useState(true);
+  const [translationOpen, setTranslationOpen] = useState(true);
   useEffect(() => setTab(initialTab), [initialTab]);
   const installed = settings.transcriberModels.filter(model => model.installed);
   const selectedModel = installed.some(model => model.id === settings.transcriberModel)
@@ -288,60 +291,118 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
         {tab === 'speech' && (
           <>
             <div className="settings-section">
-              <span className="eyebrow">{t('Default speech model')}</span>
-              <label className="setting-row">
-                <span><strong>{t('Default speech model')}</strong><small>{t('Used by new Transcriber nodes; each node can override it.')}</small></span>
-                {installed.length > 0
-                  ? <select value={selectedModel} onChange={event => onChange({ ...settings, transcriberModel: event.target.value })}>
-                      {installed.map(model => <option key={model.id} value={model.id} title={model.name}>{t(model.language)} / {t(model.tier)}</option>)}
-                    </select>
-                  : <span className="model-missing">{t('No models installed')}</span>}
-              </label>
+              <span className="eyebrow">{t('Hardware')}</span>
+              <ToggleSetting
+                label={t('GPU acceleration')}
+                description={t('Run speech and translation models on the GPU. Requires a Vulkan-capable driver; falls back to CPU.')}
+                checked={settings.useGpu}
+                onChange={value => onChange({ ...settings, useGpu: value })}
+              />
+              <p className="settings-note">
+                {settings.gpuAvailable
+                  ? t('GPU: {device}', { device: settings.gpuDeviceName ?? 'Vulkan' })
+                  : `${t('No Vulkan GPU detected.')}${settings.gpuStatusError ? ` ${settings.gpuStatusError}` : ''}`}
+              </p>
+              {settings.gpuFallbackReason && (
+                <p className="settings-note gpu-restart-note">
+                  {t('Last model load fell back to CPU: {reason}', { reason: settings.gpuFallbackReason })}
+                </p>
+              )}
+              {settings.useGpu && (
+                <p className="settings-note gpu-restart-note">
+                  {t('You may need to restart Ruse for the GPU change to take effect.')}
+                </p>
+              )}
             </div>
-            <div className="settings-section">
-              <span className="eyebrow">{t('Translation')}</span>
-              <label className="setting-row">
-                <span><strong>{t('Default translation language')}</strong><small>{t('Used by new Translator nodes; each node can override it.')}</small></span>
-                <select value={settings.translatorTarget} onChange={event => onChange({ ...settings, translatorTarget: event.target.value })}>
-                  {TRANSLATION_TARGETS.map(target => <option key={target.code} value={target.code}>{target.label}</option>)}
-                </select>
-              </label>
-              <label className="setting-row">
-                <span><strong>{t('Default translation model')}</strong><small>{t('Used when the target language is not English.')}</small></span>
-                {installedTranslators.length > 0
-                  ? <select value={selectedTranslator} onChange={event => onChange({ ...settings, translatorModel: event.target.value })}>
-                      {installedTranslators.map(model => <option key={model.id} value={model.id} title={model.name}>{model.name}</option>)}
-                    </select>
-                  : <span className="model-missing">{t('No models installed')}</span>}
-              </label>
-            </div>
-            <div className="settings-section">
-              <div className="settings-section-head">
-                <span className="eyebrow">{t('Models')}</span>
+            <div className="settings-section settings-collapse-section">
+              <button
+                type="button"
+                className="settings-collapse"
+                aria-expanded={speechOpen}
+                onClick={() => setSpeechOpen(value => !value)}
+              >
+                <ChevronRight size={14} className="settings-collapse-chevron" />
+                <span className="eyebrow">{t('Transcribe speech')}</span>
                 <span className="settings-summary">
                   {t('{count} installed', { count: settings.installedModelsCount ?? installed.length })} / {settings.installedModelsSize ?? '0 MB'}
                 </span>
-              </div>
-              <ModelCatalog
-                models={settings.transcriberModels}
-                selectedModel={selectedModel}
-                download={settings.transcriberDownload}
-                onSelectDefault={id => onChange({ ...settings, transcriberModel: id })}
-              />
+              </button>
+              {speechOpen && (
+                <div className="settings-collapse-body">
+                  <label className="setting-row">
+                    <span><strong>{t('Default speech model')}</strong><small>{t('Used by new Transcriber nodes; each node can override it.')}</small></span>
+                    {installed.length > 0
+                      ? <select value={selectedModel} onChange={event => onChange({ ...settings, transcriberModel: event.target.value })}>
+                          {installed.map(model => <option key={model.id} value={model.id} title={model.name}>{t(model.language)} / {t(model.tier)}</option>)}
+                        </select>
+                      : <span className="model-missing">{t('No models installed')}</span>}
+                  </label>
+                  <div className="settings-section-head">
+                    <span className="eyebrow">{t('Speech')}</span>
+                  </div>
+                  <ModelCatalog
+                    models={settings.transcriberModels}
+                    selectedModel={selectedModel}
+                    download={settings.transcriberDownload}
+                    onSelectDefault={id => onChange({ ...settings, transcriberModel: id })}
+                  />
+                </div>
+              )}
             </div>
-            <div className="settings-section">
-              <div className="settings-section-head">
-                <span className="eyebrow">{t('Translation models')}</span>
+            <div className="settings-section settings-collapse-section">
+              <button
+                type="button"
+                className="settings-collapse"
+                aria-expanded={translationOpen}
+                onClick={() => setTranslationOpen(value => !value)}
+              >
+                <ChevronRight size={14} className="settings-collapse-chevron" />
+                <span className="eyebrow">{t('Translation')}</span>
                 <span className="settings-summary">
                   {t('{count} installed', { count: settings.installedTranslatorModelsCount ?? installedTranslators.length })} / {settings.installedTranslatorModelsSize ?? '0 MB'}
                 </span>
-              </div>
-              <TranslationModelCatalog
-                models={settings.translatorModels}
-                selectedModel={selectedTranslator}
-                download={settings.translatorDownload}
-                onSelectDefault={id => onChange({ ...settings, translatorModel: id })}
-              />
+              </button>
+              {translationOpen && (
+                <div className="settings-collapse-body">
+                  <label className="setting-row">
+                    <span><strong>{t('Translation engine')}</strong><small>{t('Qwen is flexible and works for any language pair. OPUS-MT is smaller and runs on ONNX Runtime.')}</small></span>
+                    <select value={settings.translationProvider} onChange={event => onChange({ ...settings, translationProvider: event.target.value })}>
+                      <option value="qwen">{t('Qwen (recommended)')}</option>
+                      <option value="opus">{t('OPUS-MT (ONNX)')}</option>
+                    </select>
+                  </label>
+                  <label className="setting-row">
+                    <span><strong>{t('Default translation language')}</strong><small>{t('Used by new Translator nodes; each node can override it.')}</small></span>
+                    <select value={settings.translatorTarget} onChange={event => onChange({ ...settings, translatorTarget: event.target.value })}>
+                      <option value={normalizeLanguage(settings.uiLanguage)}>{t('Auto (my language)')}</option>
+                      {TRANSLATION_TARGETS.map(target => <option key={target.code} value={target.code}>{target.label}</option>)}
+                    </select>
+                  </label>
+                  {settings.translationProvider === 'qwen' ? (
+                    <>
+                      <label className="setting-row">
+                        <span><strong>{t('Default translation model')}</strong><small>{t('Used when the target language is not English.')}</small></span>
+                        {installedTranslators.length > 0
+                          ? <select value={selectedTranslator} onChange={event => onChange({ ...settings, translatorModel: event.target.value })}>
+                              {installedTranslators.map(model => <option key={model.id} value={model.id} title={model.name}>{model.name}</option>)}
+                            </select>
+                          : <span className="model-missing">{t('No models installed')}</span>}
+                      </label>
+                      <div className="settings-section-head">
+                        <span className="eyebrow">{t('Translation models')}</span>
+                      </div>
+                      <TranslationModelCatalog
+                        models={settings.translatorModels}
+                        selectedModel={selectedTranslator}
+                        download={settings.translatorDownload}
+                        onSelectDefault={id => onChange({ ...settings, translatorModel: id })}
+                      />
+                    </>
+                  ) : (
+                    <OpusModelCatalog models={settings.opusModels} download={settings.translatorDownload} />
+                  )}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -359,14 +420,18 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <label className="setting-row"><span><strong>{t('Auto-add new apps to')}</strong><small>{t('Add a source and connect it to this output when an app starts playing.')}</small></span><select disabled={!settings.followPlayingApps} value={settings.followOutputId} onChange={event => onChange({ ...settings, followOutputId: event.target.value })}><option value="">{t('Do not auto-add')}</option>{outputs.map(output => <option key={output.id} value={output.id}>{output.name}</option>)}</select></label>
             </div>
             <div className="settings-section">
-              <span className="eyebrow">{t('Session')}</span>
-              <p className="settings-note">{t('The current graph is saved whenever Ruse closes. Turning off restore keeps the file but does not load it automatically.')}</p>
+              <span className="eyebrow">{t('Plugins')}</span>
+              <ToggleSetting
+                label={t('Isolate VST3 plugins')}
+                description={t('Run each VST3 in a separate process so a crashing plugin cannot close Ruse. New VST3 nodes use this setting.')}
+                checked={settings.isolateVst3}
+                onChange={value => onChange({ ...settings, isolateVst3: value })}
+              />
             </div>
             <div className="settings-section">
               <span className="eyebrow">{t('Help')}</span>
               <div className="settings-actions">
                 <button className="tool-button" onClick={() => send('show-splash')}>{t('Show welcome screen')}</button>
-                <button className="tool-button" onClick={() => send('show-welcome')}>{t('Show welcome guide')}</button>
                 <button className="tool-button" onClick={() => send('open-sound-settings')}>{t('Open Windows sound settings')}</button>
               </div>
               <p className="settings-note">{t('If you hear the same sound twice, the source is already playing on the output device. The warning banner explains how to avoid it.')}</p>
@@ -380,6 +445,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <span className="eyebrow">{t('Visual feedback')}</span>
               <ToggleSetting label={t('Signal glow')} description={t('Glow active nodes and matching library items while sound is flowing.')} checked={settings.signalGlow} onChange={value => onChange({ ...settings, signalGlow: value })} />
               <ToggleSetting label={t('Cable animation')} description={t('Show small packets moving along cables that carry signal.')} checked={settings.cableAnimation} onChange={value => onChange({ ...settings, cableAnimation: value })} />
+              <ToggleSetting label={t('Animate active connectors')} description={t('Pulse the input and output dots on nodes while signal is flowing.')} checked={settings.connectorAnimation} onChange={value => onChange({ ...settings, connectorAnimation: value })} />
               <ToggleSetting label={t('Highlight cables on hover')} description={t('Brighten a cable when the pointer moves over it.')} checked={settings.highlightCableOnHover} onChange={value => onChange({ ...settings, highlightCableOnHover: value })} />
               <ToggleSetting label={t('Highlight muted nodes')} description={t('Use a red outline when a node is muted.')} checked={settings.highlightMutedNodes} onChange={value => onChange({ ...settings, highlightMutedNodes: value })} />
             </div>
@@ -389,7 +455,14 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <label className="setting-row"><span><strong>{t('Mini-map')}</strong><small>{t('Show the overview only when part of the graph is off-screen.')}</small></span><select value={settings.minimapMode === 0 ? 2 : settings.minimapMode} onChange={event => onChange({ ...settings, minimapMode: Number(event.target.value) })}><option value={2}>{t('When needed')}</option><option value={1}>{t('Never')}</option></select></label>
             </div>
             <div className="settings-section">
-              <span className="eyebrow">{t('Language')}</span>
+              <span className="eyebrow">{t('Interface')}</span>
+              <label className="setting-row">
+                <span><strong>{t('Theme')}</strong><small>{t('Choose the workspace colour scheme.')}</small></span>
+                <select value={settings.theme === 'light' ? 'light' : 'dark'} onChange={event => onChange({ ...settings, theme: event.target.value === 'light' ? 'light' : 'dark' })}>
+                  <option value="dark">{t('Dark')}</option>
+                  <option value="light">{t('Light')}</option>
+                </select>
+              </label>
               <label className="setting-row">
                 <span><strong>{t('Language')}</strong><small>{t('Interface language. Audio status and device names stay in English.')}</small></span>
                 <select value={normalizeLanguage(settings.uiLanguage)} onChange={event => onChange({ ...settings, uiLanguage: event.target.value })}>

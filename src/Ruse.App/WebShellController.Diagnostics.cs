@@ -36,6 +36,7 @@ internal sealed partial class WebShellController
         double worstLatency = 0;
         double chainLatency = 0;
         long shortReads = 0;
+        long outputUnderruns = 0;
         bool lowLatency = false;
         foreach (var output in _graph.Outputs)
         {
@@ -52,6 +53,7 @@ internal sealed partial class WebShellController
             }
 
             shortReads += output.ShortReadFrames;
+            outputUnderruns += output.Underruns;
         }
 
         diagnostics.WorstBacklogMs = worstBacklog;
@@ -59,7 +61,12 @@ internal sealed partial class WebShellController
         diagnostics.WorstLatencyMs = worstLatency;
         diagnostics.ChainLatencyMs = chainLatency;
         diagnostics.ShortReadFrames = shortReads;
+        diagnostics.OutputUnderruns = outputUnderruns;
         diagnostics.LowLatency = lowLatency;
+        diagnostics.GpuAvailable = ModelRuntime.GpuAvailable;
+        diagnostics.GpuDeviceName = ModelRuntime.GpuDeviceName;
+        diagnostics.GpuStatusError = ModelRuntime.GpuStatusError;
+        diagnostics.GpuFallbackReason = ModelRuntime.GpuFallbackReason;
 
         SampleProcess(now, diagnostics);
         diagnostics.GpuPercent = GpuUsage.Sample();

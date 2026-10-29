@@ -8,6 +8,10 @@ function formatModelSize(sizeMb: number): string {
   return sizeMb >= 1000 ? `${(sizeMb / 1000).toFixed(1)} GB` : `${sizeMb} MB`;
 }
 
+function formatVram(vramMb: number): string {
+  return vramMb % 1024 === 0 ? `${vramMb / 1024}` : `${(vramMb / 1024).toFixed(1)}`;
+}
+
 function TranslationTier({
   model, selected, download, activeDownload, pendingDelete, setPendingDelete, onSelectDefault,
 }: {
@@ -36,6 +40,7 @@ function TranslationTier({
       </div>
       {model.note && <small className="model-tier-note">{t(model.note)}</small>}
       {model.license && <small className="model-tier-disk">{model.license}</small>}
+      {model.vramMb ? <small className="model-tier-vram">{t('GPU: ~{size} GB VRAM', { size: formatVram(model.vramMb) })}</small> : null}
       {model.installed && model.installedSize && <small className="model-tier-disk">{model.installedSize} {t('on disk')}</small>}
       {isDownloading && (
         <>

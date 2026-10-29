@@ -28,6 +28,7 @@ export const demoCatalog: CatalogSnapshot = {
   vst3Plugins: [],
   defaultOutputId: 'demo-headphones',
   defaultOutputName: 'Headphones',
+  perAppCaptureAvailable: true,
 };
 
 export const demoGraph: GraphSnapshot = {
@@ -43,6 +44,8 @@ export const demoGraph: GraphSnapshot = {
       { processorIndex: 0, parameterIndex: 0, name: 'Threshold', min: -60, max: 0, value: -18, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] },
       { processorIndex: 0, parameterIndex: 1, name: 'Ratio', min: 1, max: 20, value: 4, unit: ':1', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] },
     ], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
+    { id: 'spectrum', kind: 'modifier', flavor: 'analysis', title: 'Spectrum', subtitle: 'FFT analyser', accent: '#65D6D0', x: 750, y: 30, volume: 1, muted: false, isSpectrum: true, parameters: [{ processorIndex: 0, parameterIndex: 1, name: 'Smoothing', min: 0, max: 95, value: 55, unit: '%', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 2, name: 'Floor', min: -100, max: -20, value: -80, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 3, name: 'Ceiling', min: -40, max: 0, value: 0, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
+    { id: 'spectrogram', kind: 'modifier', flavor: 'analysis', title: 'Spectrogram', subtitle: 'FFT history', accent: '#65D6D0', x: 750, y: 250, volume: 1, muted: false, isSpectrogram: true, parameters: [{ processorIndex: 0, parameterIndex: 1, name: 'Contrast', min: 0.5, max: 2.5, value: 1, unit: 'x', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 2, name: 'Floor', min: -100, max: -30, value: -80, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 3, name: 'Ceiling', min: -40, max: 0, value: 0, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'headphones', kind: 'output', flavor: 'output', title: 'Headphones', subtitle: 'Output device', accent: '#43E39A', x: 940, y: 80, volume: 1, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'virtual', kind: 'output', flavor: 'virtual', title: 'Voicemeeter Input', subtitle: 'Virtual output', accent: '#D9A8FF', x: 970, y: 580, volume: 1, muted: false, micHint: 'Voicemeeter Out B1', parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'recorder', kind: 'output', flavor: 'recorder', title: 'Session recorder', subtitle: 'File output', accent: '#FF8B72', x: 970, y: 870, volume: 1, muted: false, parameters: [], isRecorder: true, recordingPath: 'C:\\Recordings\\ruse-session.wav', recordingFormat: 'Wav24' },
@@ -63,26 +66,34 @@ export const demoSettings: SettingsModel = {
   followPlayingApps: false,
   followOutputId: '',
   uiLanguage: 'en',
+  theme: 'dark',
   startRoutingOnLaunch: false,
   highlightMutedNodes: true,
   signalGlow: true,
   snapToGrid: true,
   highlightCableOnHover: true,
   cableAnimation: true,
+  connectorAnimation: true,
   minimapMode: 2,
   startWithWindows: false,
   showWelcomeScreen: true,
   minimizeToTray: true,
   showDiagnostics: false,
+  useGpu: false,
+  isolateVst3: true,
   transcriberModel: '',
   transcriberModels: [],
   translatorModel: '',
   translatorTarget: 'en',
+  translationProvider: 'qwen',
   translatorModels: [],
+  opusModels: [],
   installedModelsSize: '0 MB',
   installedModelsCount: 0,
   installedTranslatorModelsSize: '0 MB',
   installedTranslatorModelsCount: 0,
+  installedOpusModelsSize: '0 MB',
+  installedOpusModelsCount: 0,
   appVersion: 'preview',
   dotNetVersion: 'preview',
   webView2Version: 'preview',
@@ -95,11 +106,32 @@ export function createDemoTelemetry(time: number): TelemetrySnapshot {
   const meters: TelemetrySnapshot['meters'] = {};
   for (const node of demoGraph.nodes) {
     const phase = time / 700 + node.id.length;
+    const spectrum = node.isSpectrum
+      ? Array.from({ length: 64 }, (_, index) => {
+          const peak = 40 * Math.exp(-Math.pow((index - 36) / 7, 2));
+          const harmonics = 9 * Math.exp(-Math.pow((index - 22) / 5, 2)) +
+                            6 * Math.exp(-Math.pow((index - 48) / 6, 2));
+          return -80 + peak + harmonics + Math.abs(Math.sin(phase + index * 0.31)) * 4;
+        })
+      : undefined;
+    const spectrogram = node.isSpectrogram
+      ? Array.from({ length: 96 * 64 }, (_, index) => {
+          const column = Math.floor(index / 64);
+          const band = index % 64;
+          const peak = 210 * Math.exp(-Math.pow((band - 36) / 7, 2));
+          const pulse = 28 * Math.abs(Math.sin(phase * 0.8 + column * 0.2));
+          return Math.max(0, Math.min(255, Math.round(peak + pulse - 26)));
+        })
+      : undefined;
     meters[node.id] = {
-      level: node.kind === 'modifier' ? 0 : 0.25 + Math.abs(Math.sin(phase)) * 0.45,
+      level: node.kind === 'modifier' && !node.isSpectrum && !node.isSpectrogram
+        ? 0
+        : 0.25 + Math.abs(Math.sin(phase)) * 0.45,
       clipping: false,
       recordingStatus: node.isRecorder ? 'REC' : undefined,
       recordingSeconds: node.isRecorder ? Math.floor(time / 1000) : undefined,
+      ...(spectrum ? { spectrum, spectrumPeakHz: 1000 } : {}),
+      ...(spectrogram ? { spectrogram, spectrogramColumns: 96, spectrogramPeakHz: 1000 } : {}),
     };
   }
 

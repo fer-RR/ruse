@@ -73,10 +73,12 @@ public sealed class DbMeterProcessor : IAudioProcessor, IParameterizedProcessor,
 
 internal sealed class DbMeterTap
 {
+    private const float MinimumDb = -100f;
     private readonly object _lock = new();
-    private float _db = -120f;
-    private float _peakDb = -120f;
+    private float _db = MinimumDb;
+    private float _peakDb = MinimumDb;
     private long _peakTick;
+    private long _lastWrite;
 
     public float Db { get { lock (_lock) return _db; } }
     public float PeakDb
@@ -85,12 +87,7 @@ internal sealed class DbMeterTap
         {
             lock (_lock)
             {
-                if (Environment.TickCount64 - _peakTick > 1500)
-                {
-                    _peakDb = Math.Max(-120f, _peakDb - 12f);
-                    _peakTick = Environment.TickCount64;
-                }
-
+                DecayPeak(Environment.TickCount64);
                 return _peakDb;
             }
         }
@@ -109,16 +106,35 @@ internal sealed class DbMeterTap
         }
 
         float rms = (float)Math.Sqrt(sum / samples.Length);
-        float db = rms <= 0.000001f ? -120f : 20f * MathF.Log10(rms);
-        float peakDb = peak <= 0.000001f ? -120f : 20f * MathF.Log10(peak);
+        float target = rms <= 0.000001f ? MinimumDb : 20f * MathF.Log10(rms);
+        float peakDb = peak <= 0.000001f ? MinimumDb : 20f * MathF.Log10(peak);
+        long now = Environment.TickCount64;
         lock (_lock)
         {
-            _db = Math.Clamp(db, -120f, 6f);
-            if (peakDb >= _peakDb || Environment.TickCount64 - _peakTick > 1500)
+            float elapsed = _lastWrite == 0 ? 5f : Math.Clamp(now - _lastWrite, 1f, 100f);
+            _lastWrite = now;
+            target = Math.Clamp(target, MinimumDb, 6f);
+            float time = target > _db ? 40f : 260f;
+            float coefficient = 1f - MathF.Exp(-elapsed / time);
+            _db += (target - _db) * coefficient;
+            if (peakDb > _peakDb)
             {
-                _peakDb = Math.Clamp(peakDb, -120f, 6f);
-                _peakTick = Environment.TickCount64;
+                _peakDb = Math.Clamp(peakDb, MinimumDb, 6f);
+                _peakTick = now;
+            }
+            else
+            {
+                DecayPeak(now);
             }
         }
+    }
+
+    private void DecayPeak(long now)
+    {
+        if (_peakTick == 0) return;
+        long elapsed = now - _peakTick;
+        if (elapsed < 900) return;
+        _peakDb = Math.Max(_db, _peakDb - (elapsed - 900) * 0.018f);
+        _peakTick = now;
     }
 }

@@ -13,11 +13,18 @@ public sealed class AppSettings
     public double Top { get; set; } = double.NaN;
     public bool Maximized { get; set; }
     public bool AutoLoadSession { get; set; } = true;
+
+    /// <summary>True when this was loaded without an existing settings file.</summary>
+    [JsonIgnore]
+    public bool IsFirstRun { get; private set; }
     public bool OnboardingCompleted { get; set; }
     public bool ShowWelcomeScreen { get; set; } = true;
 
     /// <summary>Hide the window to the notification area when minimized.</summary>
     public bool MinimizeToTray { get; set; } = true;
+
+    /// <summary>True after the first-minimize prompt has been answered.</summary>
+    public bool TrayPromptShown { get; set; }
 
     public bool FollowPlayingApps { get; set; }
 
@@ -26,6 +33,9 @@ public sealed class AppSettings
 
     /// <summary>UI language code; the engine and audio status stay English for now.</summary>
     public string UiLanguage { get; set; } = "en";
+
+    /// <summary>Workspace colour scheme: "dark" or "light".</summary>
+    public string Theme { get; set; } = "dark";
 
     /// <summary>Draw a red border around muted nodes so they stand out.</summary>
     public bool HighlightMutedNodes { get; set; } = true;
@@ -42,10 +52,22 @@ public sealed class AppSettings
     /// <summary>Animate small packets along cables that carry signal.</summary>
     public bool CableAnimation { get; set; } = true;
 
+    /// <summary>Pulse node input/output connectors while signal flows through the node.</summary>
+    public bool ConnectorAnimation { get; set; } = true;
+
+    /// <summary>Run speech and translation model inference on the GPU when a Vulkan driver is available.</summary>
+    public bool UseGpu { get; set; }
+
+    /// <summary>Run VST3 plugins in a child process so a plugin crash cannot close Ruse.</summary>
+    public bool IsolateVst3 { get; set; } = true;
+
     /// <summary>Default Whisper model id for new transcriber nodes.</summary>
     public string TranscriberModel { get; set; } = "whisper-small.en";
     public string TranslatorModel { get; set; } = "qwen2.5-1.5b-instruct-q4_k_m";
     public string TranslatorTarget { get; set; } = "en";
+
+    /// <summary>Translation engine: "qwen" (default) or "opus" (ONNX Runtime).</summary>
+    public string TranslationProvider { get; set; } = "qwen";
 
     /// <summary>When the mini-map is shown (0 = always, 1 = never, 2 = when zoomed in).</summary>
     public int MinimapMode { get; set; } = 2;
@@ -79,18 +101,22 @@ public sealed class AppSettings
 
     public static AppSettings Load()
     {
+        bool exists = File.Exists(SettingsPath);
+        AppSettings settings = new();
+
         try
         {
-            if (File.Exists(SettingsPath))
+            if (exists)
             {
-                return JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath), Options) ?? new AppSettings();
+                settings = JsonSerializer.Deserialize<AppSettings>(File.ReadAllText(SettingsPath), Options) ?? new AppSettings();
             }
         }
         catch
         {
         }
 
-        return new AppSettings();
+        settings.IsFirstRun = !exists;
+        return settings;
     }
 
     public void Save()

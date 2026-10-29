@@ -26,6 +26,9 @@ function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefined): b
   return a.level === b.level &&
     a.clipping === b.clipping &&
     a.filePlaying === b.filePlaying &&
+    a.filePaused === b.filePaused &&
+    a.filePositionSeconds === b.filePositionSeconds &&
+    a.fileDurationSeconds === b.fileDurationSeconds &&
     a.recordingStatus === b.recordingStatus &&
     a.recordingSeconds === b.recordingSeconds &&
     a.recordingError === b.recordingError &&
@@ -42,10 +45,15 @@ function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefined): b
     a.transcriptionLevel === b.transcriptionLevel &&
     a.transcriptionHasAudio === b.transcriptionHasAudio &&
     a.transcriptionElapsed === b.transcriptionElapsed &&
-    sameWaveform(a.waveform, b.waveform);
+    a.usesGpu === b.usesGpu &&
+    sameArray(a.spectrum, b.spectrum) &&
+    a.spectrumPeakHz === b.spectrumPeakHz &&
+    sameArray(a.spectrogram, b.spectrogram) &&
+    a.spectrogramPeakHz === b.spectrogramPeakHz &&
+    a.spectrogramColumns === b.spectrogramColumns;
 }
 
-function sameWaveform(a?: number[], b?: number[]): boolean {
+function sameArray(a?: number[], b?: number[]): boolean {
   if (a === b) return true;
   if (!a || !b || a.length !== b.length) return false;
   for (let index = 0; index < a.length; index++) {
@@ -67,7 +75,8 @@ export function publishTelemetry(next: TelemetrySnapshot): void {
 
   const activeIds = new Set<string>();
   for (const [id, meter] of Object.entries(next.meters)) {
-    if (meter.level > 0.01) activeIds.add(id);
+    const threshold = nodeActive.get(id) ? 0.0003 : 0.00075;
+    if (meter.level > threshold) activeIds.add(id);
   }
 
   for (const id of new Set([...nodeActive.keys(), ...activeIds])) {
@@ -124,7 +133,7 @@ function recomputeTitleLevels(): void {
   titleLevels.clear();
   for (const [title, level] of next) titleLevels.set(title, level);
   for (const title of titles) {
-    const active = (titleLevels.get(title) ?? 0) > 0.01;
+    const active = (titleLevels.get(title) ?? 0) > 0.00075;
     if (active !== (titleActive.get(title) ?? false)) {
       titleActive.set(title, active);
       for (const listener of titleListeners.get(title) ?? []) listener();
@@ -146,7 +155,7 @@ export function useTitleActive(title: string): boolean {
         if (listeners?.size === 0) titleListeners.delete(title);
       };
     },
-    () => (titleLevels.get(title) ?? 0) > 0.01,
+    () => (titleLevels.get(title) ?? 0) > 0.00075,
     () => false,
   );
 }

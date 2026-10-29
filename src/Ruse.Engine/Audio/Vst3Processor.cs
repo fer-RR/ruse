@@ -8,7 +8,7 @@ namespace Ruse.App.Audio;
 /// Hosts one VST3 effect. The native wrapper owns the plugin thread; this class
 /// adapts the plugin to the engine's stereo interleaved processing contract.
 /// </summary>
-public sealed class Vst3Processor : IAudioProcessor, IParameterizedProcessor, ISharedProcessor, IDisposable
+public sealed class Vst3Processor : IVst3Processor
 {
     public const string Id = "vst3";
     private const int MaxBlockFrames = 1024;
@@ -58,7 +58,7 @@ public sealed class Vst3Processor : IAudioProcessor, IParameterizedProcessor, IS
         }
     }
 
-    public event Action<Vst3Processor>? Changed;
+    public event Action? Changed;
 
     public string TypeId => Id;
     public string DisplayName => _pluginName;
@@ -358,7 +358,7 @@ public sealed class Vst3Processor : IAudioProcessor, IParameterizedProcessor, IS
     {
         if (!_disposed)
         {
-            Changed?.Invoke(this);
+            Changed?.Invoke();
         }
     }
 

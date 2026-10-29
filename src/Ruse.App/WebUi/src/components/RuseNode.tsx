@@ -10,13 +10,14 @@ import { send } from '../bridge';
 import type { RuseFlowNode } from '../flow';
 import { useI18n } from '../i18n';
 import { TRANSLATION_TARGETS, translationTarget } from '../languages';
-import { useNodeTelemetry } from '../telemetry';
+import { useNodeActive, useNodeTelemetry } from '../telemetry';
 import type { NodeTelemetry } from '../types';
 import DiagnosticsNode from './DiagnosticsNode';
 import ParameterControl from './ParameterControl';
 import TranscriptionView from './TranscriptionView';
 import TranslationView from './TranslationView';
-import WaveformView from './WaveformView';
+import SpectrumView from './SpectrumView';
+import SpectrogramView from './SpectrogramView';
 
 const RECORD_FORMATS = [
   ['Wav24', 'WAV \u00B7 24-bit'],
@@ -39,6 +40,7 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'recorder': return <FileAudio {...props} />;
     case 'translator': return <Languages {...props} />;
     case 'vst3': return <Puzzle {...props} />;
+    case 'analysis': return <AudioLines {...props} />;
     default: return <SlidersHorizontal {...props} />;
   }
 }
@@ -79,17 +81,52 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
 
 function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; telemetry?: NodeTelemetry }) {
   const { t } = useI18n();
+  const [seekValue, setSeekValue] = useState<number | null>(null);
   const fileName = node.filePath ? node.filePath.split(/[\\/]/).pop() : t('No file selected');
   const hasFile = Boolean(node.filePath);
   const playing = telemetry?.filePlaying === true;
+  const paused = telemetry?.filePaused === true;
+  const position = telemetry?.filePositionSeconds ?? 0;
+  const duration = telemetry?.fileDurationSeconds ?? 0;
+  const sliderValue = seekValue ?? (duration > 0 ? Math.round((position / duration) * 1000) : 0);
+  const canSeek = hasFile && duration > 0 && (playing || paused);
+
+  const commitSeek = () => {
+    if (seekValue === null || duration <= 0) return;
+    send('file-player-seek', { id: node.id, seconds: (duration * seekValue) / 1000 });
+    setSeekValue(null);
+  };
+
   return (
     <div className="file-player-controls nodrag">
       <div className="file-player-name" title={node.filePath ?? ''}>{fileName}</div>
+      <div className="file-player-position">
+        <span>{formatTime(position)}</span>
+        <input
+          type="range"
+          min={0}
+          max={1000}
+          value={sliderValue}
+          disabled={!canSeek}
+          onChange={event => setSeekValue(Number(event.target.value))}
+          onPointerUp={commitSeek}
+          onPointerCancel={commitSeek}
+          onKeyUp={commitSeek}
+          aria-label={t('Position')}
+        />
+        <span>{formatTime(duration)}</span>
+      </div>
       <div className="file-player-actions">
-        <button className="small-button" disabled={!hasFile || playing} onClick={() => send('file-player-start', { id: node.id })}>
-          <Play size={11} /> {t('Start')}
-        </button>
-        <button className="small-button" disabled={!playing} onClick={() => send('file-player-stop', { id: node.id })}>
+        {playing || paused ? (
+          <button className="small-button" onClick={() => send(playing ? 'file-player-pause' : 'file-player-resume', { id: node.id })}>
+            {playing ? t('Pause') : t('Resume')}
+          </button>
+        ) : (
+          <button className="small-button" disabled={!hasFile} onClick={() => send('file-player-start', { id: node.id })}>
+            <Play size={11} /> {t('Start')}
+          </button>
+        )}
+        <button className="small-button" disabled={!playing && !paused} onClick={() => send('file-player-stop', { id: node.id })}>
           <Square size={11} /> {t('Stop')}
         </button>
         <button className="small-button" onClick={() => send('file-player-file', { id: node.id })}>{t('Choose file')}</button>
@@ -120,7 +157,7 @@ function Vst3Controls({ node }: { node: RuseFlowNode['data'] }) {
       </div>
       {(node.vst3Vendor || node.vst3Version) && (
         <div className="vst3-meta">
-          {node.vst3Vendor}{node.vst3Version ? ` · ${node.vst3Version}` : ''}
+          {node.vst3Vendor}{node.vst3Version ? ` Â· ${node.vst3Version}` : ''}
         </div>
       )}
       <div className="vst3-actions">
@@ -138,8 +175,9 @@ function Vst3Controls({ node }: { node: RuseFlowNode['data'] }) {
 }
 
 function TranslatorControls({ node }: { node: RuseFlowNode['data'] }) {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const target = translationTarget(node.translatorTarget);
+  const opus = node.translatorProvider === 'opus';
   const installed = node.translatorModels?.filter(model => model.installed) ?? [];
   const selected = installed.some(model => model.id === node.translatorModel)
     ? node.translatorModel
@@ -152,10 +190,11 @@ function TranslatorControls({ node }: { node: RuseFlowNode['data'] }) {
           value={target.code}
           onChange={event => send('translator-target', { id: node.id, target: event.target.value })}
         >
+          <option value={language}>{t('Auto (my language)')}</option>
           {TRANSLATION_TARGETS.map(entry => <option key={entry.code} value={entry.code}>{entry.label}</option>)}
         </select>
       </label>
-      {target.needsModel && (installed.length > 0
+      {target.needsModel && !opus && (installed.length > 0
         ? <label className="translator-field">
             <span>{t('Translation model')}</span>
             <select
@@ -172,9 +211,11 @@ function TranslatorControls({ node }: { node: RuseFlowNode['data'] }) {
             </button>
           </div>)}
       <div className="translator-hint">
-        <span>{target.needsModel
-          ? t('Whisper listens, then the local model translates. No audio leaves your PC.')
-          : t('Whisper translates speech directly into English.')}</span>
+        <span>{opus
+          ? t('OPUS-MT uses one local ONNX model per language pair. No audio leaves your PC.')
+          : target.needsModel
+            ? t('Whisper listens, then the local model translates. No audio leaves your PC.')
+            : t('Whisper translates speech directly into English.')}</span>
         <button className="icon-button compact" title={t('Manage translation models')} aria-label={t('Manage translation models')} onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-settings', { detail: { tab: 'speech' } }))}><Settings size={13} /></button>
       </div>
     </div>
@@ -222,7 +263,7 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
         </button>
       </div>
       <div className="recorder-path" title={node.recordingPath}>
-        {autoSave && !node.recordingPath ? t('Auto save · Music/Ruse Recordings') : fileName}
+        {autoSave && !node.recordingPath ? t('Auto save Â· Music/Ruse Recordings') : fileName}
       </div>
       <div className={`recorder-state ${recording ? 'recording' : ''} ${telemetry?.recordingError ? 'error' : ''}`}>
         <span className="status-dot" />
@@ -243,9 +284,10 @@ function formatTime(seconds: number): string {
 function DbMeterView({ db, peakDb, vertical }: { db?: number; peakDb?: number; vertical: boolean }) {
   const value = Number.isFinite(db) ? Math.max(-60, Math.min(0, db!)) : -60;
   const peak = Number.isFinite(peakDb) ? Math.max(-60, Math.min(0, peakDb!)) : -60;
-  const label = value <= -59.9 ? '-∞' : value.toFixed(1);
-  const fill = (value + 60) / 60 * 100;
-  const peakFill = (peak + 60) / 60 * 100;
+  const silent = !Number.isFinite(db) || value <= -59.9;
+  const label = silent ? '-\u221E' : value.toFixed(1);
+  const fill = silent ? 0 : (value + 60) / 60 * 100;
+  const peakFill = peak <= -59.9 ? 0 : (peak + 60) / 60 * 100;
   if (vertical) {
     return (
       <div className="db-meter-view vertical">
@@ -278,12 +320,15 @@ function DbMeterView({ db, peakDb, vertical }: { db?: number; peakDb?: number; v
 function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const { t } = useI18n();
   const telemetry = useNodeTelemetry(data.id);
+  const active = useNodeActive(data.id);
   if (data.diagnostics) {
     return <DiagnosticsNode nodeId={id} />;
   }
 
   const isModifier = data.kind === 'modifier';
   const isDbMeter = data.isDbMeter === true;
+  const isSpectrum = data.isSpectrum === true;
+  const isSpectrogram = data.isSpectrogram === true;
   const dbVertical = isDbMeter && (telemetry?.dbMeterVertical ?? true);
   const enabled = data.enabled !== false;
   const recording = telemetry?.recordingStatus === 'REC';
@@ -291,12 +336,12 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const selectedModel = installedModels.some(model => model.id === data.transcriberModel)
     ? data.transcriberModel
     : installedModels[0]?.id ?? '';
-  const waveformAmplitude = data.isWaveform
-    ? data.parameters.find(parameter => parameter.name === 'Gain')
-    : undefined;
-  const flowing = enabled && (telemetry?.level ?? 0) > 0.01;
+  const spectrumFloor = data.parameters.find(parameter => parameter.name === 'Floor')?.value ?? -80;
+  const spectrumCeiling = data.parameters.find(parameter => parameter.name === 'Ceiling')?.value ?? 0;
+  const flowing = enabled && active;
   const classes = [
     'ruse-node',
+
     `node-${data.kind}`,
     selected ? 'selected' : '',
     data.muted && data.highlightMuted ? 'muted' : '',
@@ -307,13 +352,15 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isTranscriber ? 'transcriber-node' : '',
     data.isTranslator ? 'translator-node' : '',
     data.isVst3 ? 'vst3-node' : '',
+    isSpectrum ? 'spectrum-node' : '',
+    isSpectrogram ? 'spectrogram-node' : '',
     isDbMeter ? (dbVertical ? 'db-meter-node db-meter-vertical' : 'db-meter-node db-meter-horizontal') : '',
     enabled ? '' : 'disabled',
   ].filter(Boolean).join(' ');
 
   return (
     <div className={classes} style={{ '--accent': data.accent } as CSSProperties}>
-      {data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className="ruse-handle" />}
+      {data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
       <header className="node-header">
         <span className="node-icon"><FlavorIcon flavor={data.flavor} /></span>
         <strong
@@ -327,6 +374,9 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         {recording && <span className="node-badge rec-badge">REC</span>}
         {data.duplicateRisk && <span className={`node-badge ${data.warningSeverity === 'info' ? 'copy-badge' : 'warn-badge'}`} title={data.duplicateWarning}>{data.warningSeverity === 'info' ? 'COPY' : 'DUP'}</span>}
         {telemetry?.clipping && <span className="node-badge clip-badge">CLIP</span>}
+        {(data.isTranscriber || data.isTranslator) && typeof telemetry?.usesGpu === 'boolean' && (
+          <span className={`node-badge ${telemetry.usesGpu ? 'gpu-badge' : 'cpu-badge'}`}>{telemetry.usesGpu ? 'GPU' : 'CPU'}</span>
+        )}
         {isModifier && <button className={`node-power nodrag ${enabled ? '' : 'off'}`} title={enabled ? t('Bypass effect') : t('Enable effect')} aria-label={enabled ? t('Bypass effect') : t('Enable effect')} onClick={() => send('effect-enabled', { id: data.id, value: !enabled })}>
           <Power size={13} />
         </button>}
@@ -348,20 +398,17 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         </div>
       ) : isModifier ? (
         <div className="parameter-list">
-          {data.isWaveform && <WaveformView
-            samples={telemetry?.waveform}
+          {isSpectrum && <SpectrumView
+            bands={telemetry?.spectrum}
+            peakHz={telemetry?.spectrumPeakHz}
             color={data.accent}
-            amplitude={waveformAmplitude?.value}
-            min={waveformAmplitude?.min}
-            max={waveformAmplitude?.max}
-            onAmplitudeChange={waveformAmplitude
-              ? value => send('param', {
-                  id: data.id,
-                  processor: waveformAmplitude.processorIndex,
-                  parameter: waveformAmplitude.parameterIndex,
-                  value,
-                })
-              : undefined}
+            floor={spectrumFloor}
+            ceiling={spectrumCeiling}
+          />}
+          {isSpectrogram && <SpectrogramView
+            values={telemetry?.spectrogram}
+            columns={telemetry?.spectrogramColumns}
+            peakHz={telemetry?.spectrogramPeakHz}
           />}
           {data.isVst3 && <Vst3Controls node={data} />}
           {data.isTranslator && <TranslatorControls node={data} />}
@@ -400,12 +447,12 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             level={telemetry?.transcriptionLevel}
             hasAudio={telemetry?.transcriptionHasAudio}
             elapsed={telemetry?.transcriptionElapsed}
+            detected={telemetry?.detectedLanguage}
           />}
           {data.flavor === 'chain' && !!(data.chainElements?.length) && <div className="chain-chips">
             {data.chainElements.map((name, index) => <span className="chain-chip" key={`${name}-${index}`}>{name}</span>)}
           </div>}
           {data.parameters
-            .filter(parameter => !(data.isWaveform && parameter.name === 'Gain'))
             .map(parameter => (
             <ParameterControl
               key={`${parameter.processorIndex}-${parameter.parameterIndex}`}
@@ -430,7 +477,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
           {data.isRecorder && <RecorderControls node={data} telemetry={telemetry} />}
         </>
       )}
-      {data.kind !== 'output' && <Handle id="out" type="source" position={Position.Right} className="ruse-handle" />}
+      {data.kind !== 'output' && <Handle id="out" type="source" position={Position.Right} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
     </div>
   );
 }

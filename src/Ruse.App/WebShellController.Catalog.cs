@@ -256,6 +256,21 @@ internal sealed partial class WebShellController
             return;
         }
 
+        _catalog.PerAppCaptureAvailable = ProcessLoopbackCapture.IsSupported;
+        _catalog.PerAppCaptureMessage = _catalog.PerAppCaptureAvailable
+            ? ""
+            : "Per-app capture needs Windows 10 build 20348 or later. Use System audio instead.";
+        if (!_catalog.PerAppCaptureAvailable)
+        {
+            _catalog.Apps = new List<CatalogItemDto>();
+            if (publish)
+            {
+                Post("catalog", _catalog);
+            }
+
+            return;
+        }
+
         try
         {
             _catalog.Apps = AudioSessionEnumerator.GetRenderSessions()
@@ -598,7 +613,7 @@ internal sealed partial class WebShellController
         for (int index = 0; index < parameterized.Parameters.Count; index++)
         {
             var parameter = parameterized.Parameters[index];
-            if (parameter.Name is WaveformProcessor.TapParameterName or TranscriptionProcessor.TapParameterName or DbMeterProcessor.TapParameterName) continue;
+            if (parameter.Name is SpectrumProcessor.TapParameterName or SpectrogramProcessor.TapParameterName or TranscriptionProcessor.TapParameterName or DbMeterProcessor.TapParameterName) continue;
             if (parameterized is DbMeterProcessor && parameter.Name == "Orientation") continue;
             result.Add(new ParameterDto
             {

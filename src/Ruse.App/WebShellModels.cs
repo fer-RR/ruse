@@ -51,6 +51,8 @@ internal sealed class CatalogDto
     public List<CatalogItemDto> Vst3Plugins { get; set; } = new();
     public string DefaultOutputId { get; set; } = "";
     public string DefaultOutputName { get; set; } = "";
+    public bool PerAppCaptureAvailable { get; set; } = true;
+    public string PerAppCaptureMessage { get; set; } = "";
 }
 
 internal sealed class ParameterDto
@@ -90,16 +92,21 @@ internal sealed class NodeDto
     public string RecordingFormat { get; set; } = "Wav24";
     public string RecorderMode { get; set; } = "Off";
     public bool RecorderAutoSave { get; set; }
-    public bool IsWaveform { get; set; }
+    public bool IsSpectrum { get; set; }
+    public bool IsSpectrogram { get; set; }
     public bool IsFilePlayer { get; set; }
     public string? FilePath { get; set; }
     public bool FileLoop { get; set; }
+    public bool FilePaused { get; set; }
+    public double FilePositionSeconds { get; set; }
+    public double FileDurationSeconds { get; set; }
     public bool IsDbMeter { get; set; }
     public bool IsTranscriber { get; set; }
     public string? TranscriberModel { get; set; }
     public bool IsTranslator { get; set; }
     public string? TranslatorTarget { get; set; }
     public string? TranslatorModel { get; set; }
+    public string? TranslatorProvider { get; set; }
     public bool IsVst3 { get; set; }
     public string? Vst3Identifier { get; set; }
     public string? Vst3Status { get; set; }
@@ -173,10 +180,17 @@ internal sealed class NodeTelemetryDto
     public float Level { get; set; }
     public bool Clipping { get; set; }
     public bool FilePlaying { get; set; }
+    public bool FilePaused { get; set; }
+    public double FilePositionSeconds { get; set; }
+    public double FileDurationSeconds { get; set; }
     public string? RecordingStatus { get; set; }
     public double? RecordingSeconds { get; set; }
     public string? RecordingError { get; set; }
-    public float[]? Waveform { get; set; }
+    public float[]? Spectrum { get; set; }
+    public float? SpectrumPeakHz { get; set; }
+    public int[]? Spectrogram { get; set; }
+    public float? SpectrogramPeakHz { get; set; }
+    public int? SpectrogramColumns { get; set; }
     public float? Db { get; set; }
     public float? PeakDb { get; set; }
     public bool? DbMeterVertical { get; set; }
@@ -190,6 +204,7 @@ internal sealed class NodeTelemetryDto
     public float TranscriptionLevel { get; set; }
     public bool TranscriptionHasAudio { get; set; }
     public double? TranscriptionElapsed { get; set; }
+    public bool? UsesGpu { get; set; }
 }
 
 internal sealed class TelemetryDto
@@ -224,9 +239,14 @@ internal sealed class DiagnosticsDto
     public double WorstLatencyMs { get; set; }
     public double ChainLatencyMs { get; set; }
     public long ShortReadFrames { get; set; }
+    public long OutputUnderruns { get; set; }
     public bool LowLatency { get; set; }
     public double TelemetryMs { get; set; }
     public string AudioFormat { get; set; } = "48 kHz · stereo · f32";
+    public bool GpuAvailable { get; set; }
+    public string? GpuDeviceName { get; set; }
+    public string? GpuStatusError { get; set; }
+    public string? GpuFallbackReason { get; set; }
 }
 
 internal sealed class SettingsDto
@@ -235,26 +255,38 @@ internal sealed class SettingsDto
     public bool FollowPlayingApps { get; set; }
     public string FollowOutputId { get; set; } = "";
     public string UiLanguage { get; set; } = "en";
+    public string Theme { get; set; } = "dark";
     public bool StartRoutingOnLaunch { get; set; }
     public bool HighlightMutedNodes { get; set; } = true;
     public bool SignalGlow { get; set; } = true;
     public bool SnapToGrid { get; set; } = true;
     public bool HighlightCableOnHover { get; set; } = true;
     public bool CableAnimation { get; set; } = true;
+    public bool ConnectorAnimation { get; set; } = true;
     public int MinimapMode { get; set; } = 2;
     public bool StartWithWindows { get; set; }
     public bool ShowWelcomeScreen { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
     public bool ShowDiagnostics { get; set; }
+    public bool UseGpu { get; set; }
+    public bool IsolateVst3 { get; set; } = true;
+    public bool GpuAvailable { get; set; }
+    public string? GpuDeviceName { get; set; }
+    public string? GpuStatusError { get; set; }
+    public string? GpuFallbackReason { get; set; }
     public string TranscriberModel { get; set; } = "";
     public List<TranscriberModelDto> TranscriberModels { get; set; } = new();
     public TranscriberDownloadDto? TranscriberDownload { get; set; }
     public string TranslatorModel { get; set; } = "";
     public string TranslatorTarget { get; set; } = "en";
+    public string TranslationProvider { get; set; } = "qwen";
     public List<TranslatorModelDto> TranslatorModels { get; set; } = new();
     public TranslatorDownloadDto? TranslatorDownload { get; set; }
     public string InstalledTranslatorModelsSize { get; set; } = "";
     public int InstalledTranslatorModelsCount { get; set; }
+    public List<OpusModelDto> OpusModels { get; set; } = new();
+    public string InstalledOpusModelsSize { get; set; } = "";
+    public int InstalledOpusModelsCount { get; set; }
     public string InstalledModelsSize { get; set; } = "";
     public int InstalledModelsCount { get; set; }
     public string AppVersion { get; set; } = "";
@@ -272,6 +304,7 @@ internal sealed class TranscriberModelDto
     public string Name { get; set; } = "";
     public string Tier { get; set; } = "";
     public int SizeMb { get; set; }
+    public int VramMb { get; set; }
     public bool Installed { get; set; }
     public string InstalledSize { get; set; } = "";
     public string? Note { get; set; }
@@ -290,6 +323,20 @@ internal sealed class TranslatorModelDto
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public string Tier { get; set; } = "";
+    public int SizeMb { get; set; }
+    public int VramMb { get; set; }
+    public bool Installed { get; set; }
+    public string InstalledSize { get; set; } = "";
+    public string License { get; set; } = "";
+    public string? Note { get; set; }
+}
+
+internal sealed class OpusModelDto
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Source { get; set; } = "";
+    public string Target { get; set; } = "";
     public int SizeMb { get; set; }
     public bool Installed { get; set; }
     public string InstalledSize { get; set; } = "";

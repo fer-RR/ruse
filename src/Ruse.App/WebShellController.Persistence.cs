@@ -382,25 +382,46 @@ internal sealed partial class WebShellController
         string oldModel = _settings.TranscriberModel;
         string oldTranslatorModel = _settings.TranslatorModel;
         string oldTranslatorTarget = _settings.TranslatorTarget;
+        string oldTranslationProvider = _settings.TranslationProvider;
         _settings.AutoLoadSession = settings.AutoLoadSession;
         _settings.FollowPlayingApps = settings.FollowPlayingApps;
         _settings.FollowOutputId = settings.FollowOutputId ?? "";
         _settings.UiLanguage = settings.UiLanguage is "pt-BR" or "es" or "fr" or "de" or "it" or "ja" or "ko" or "zh-CN"
             ? settings.UiLanguage
             : "en";
+        _settings.Theme = settings.Theme is "light" ? "light" : "dark";
+        ApplyWindowTheme();
         _settings.StartRoutingOnLaunch = settings.StartRoutingOnLaunch;
         _settings.HighlightMutedNodes = settings.HighlightMutedNodes;
         _settings.SignalGlow = settings.SignalGlow;
         _settings.SnapToGrid = settings.SnapToGrid;
         _settings.HighlightCableOnHover = settings.HighlightCableOnHover;
         _settings.CableAnimation = settings.CableAnimation;
+        _settings.ConnectorAnimation = settings.ConnectorAnimation;
         _settings.MinimapMode = Math.Clamp(settings.MinimapMode, 0, 2);
         _settings.ShowWelcomeScreen = settings.ShowWelcomeScreen;
+        bool trayChanged = _settings.MinimizeToTray != settings.MinimizeToTray;
         _settings.MinimizeToTray = settings.MinimizeToTray;
+        if (trayChanged)
+        {
+            _settings.TrayPromptShown = true;
+        }
+
         _settings.ShowDiagnostics = settings.ShowDiagnostics;
+        bool gpuChanged = _settings.UseGpu != settings.UseGpu;
+        _settings.UseGpu = settings.UseGpu;
+        ModelRuntime.UseGpu = _settings.UseGpu;
+        _settings.IsolateVst3 = settings.IsolateVst3;
+        Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
+        if (gpuChanged)
+        {
+            ModelRuntime.ClearGpuFallback();
+        }
         _settings.TranscriberModel = TranscriptionModels.Find(settings.TranscriberModel)?.Id ?? TranscriptionModels.DefaultId;
         _settings.TranslatorModel = TranslationModels.Find(settings.TranslatorModel)?.Id ?? TranslationModels.DefaultId;
         _settings.TranslatorTarget = TranslationLanguages.Normalize(settings.TranslatorTarget);
+        _settings.TranslationProvider = string.Equals(settings.TranslationProvider, "opus", StringComparison.OrdinalIgnoreCase)
+            ? "opus" : "qwen";
         StartupRegistration.SetEnabled(settings.StartWithWindows);
         _settings.Save();
 
@@ -410,6 +431,14 @@ internal sealed partial class WebShellController
         if (_settings.FollowPlayingApps)
         {
             RefreshApps();
+        }
+
+        if (gpuChanged)
+        {
+            SpeechModelCache.DropAll();
+            TranslationModelCache.DropAll();
+            TranslationModelProbe.Clear();
+            RestartSpeechSessions();
         }
 
         string newModel = TranscriptionModels.Resolve(_settings.TranscriberModel);
@@ -427,6 +456,8 @@ internal sealed partial class WebShellController
 
         string newTranslatorModel = TranslationModels.Resolve(_settings.TranslatorModel);
         string newTranslatorTarget = TranslationLanguages.Normalize(_settings.TranslatorTarget);
+        bool providerChanged = !string.Equals(
+            oldTranslationProvider, _settings.TranslationProvider, StringComparison.OrdinalIgnoreCase);
         foreach (var entry in _nodes.Values.Where(entry =>
                      entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true))
         {
@@ -435,7 +466,7 @@ internal sealed partial class WebShellController
                                  string.Equals(entry.TranslatorModel, oldTranslatorModel, StringComparison.OrdinalIgnoreCase));
             bool targetChanged = !string.Equals(entry.TranslatorTarget, newTranslatorTarget, StringComparison.OrdinalIgnoreCase) &&
                                  string.Equals(entry.TranslatorTarget, oldTranslatorTarget, StringComparison.OrdinalIgnoreCase);
-            if (modelChanged || targetChanged)
+            if (modelChanged || targetChanged || providerChanged)
             {
                 ApplyTranslatorSettings(entry,
                     modelChanged ? newTranslatorModel : entry.TranslatorModel,
@@ -443,9 +474,49 @@ internal sealed partial class WebShellController
             }
         }
 
+        if (trayChanged)
+        {
+            _window.SyncTrayIcon();
+        }
+
         PublishSettings();
         PublishGraph();
         SetStatus("Settings saved.");
+    }
+
+    /// <summary>Reopens speech sessions so a backend change takes effect immediately.</summary>
+    private void RestartSpeechSessions()
+    {
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Modifier == null)
+            {
+                continue;
+            }
+
+            foreach (var transcriber in entry.Modifier.Processors.OfType<TranscriptionProcessor>())
+            {
+                TranscriptionRegistry.Stop(transcriber.TapId);
+                if (!string.IsNullOrEmpty(entry.TranscriberModel))
+                {
+                    TranscriptionRegistry.Ensure(transcriber.TapId, entry.TranscriberModel);
+                }
+            }
+
+            foreach (var translator in entry.Modifier.Processors.OfType<TranslatorProcessor>())
+            {
+                TranslationRegistry.Stop(translator.TapId);
+                if (!string.IsNullOrEmpty(entry.TranscriberModel))
+                {
+                    TranslationRegistry.Ensure(
+                        translator.TapId,
+                        entry.TranscriberModel,
+                        entry.TranslatorModel ?? "",
+                        entry.TranslatorTarget ?? TranslationLanguages.DefaultCode,
+                        _settings.TranslationProvider);
+                }
+            }
+        }
     }
 
     private void ApplyTranscriberModel(NodeEntry entry, string? modelId)
@@ -478,7 +549,8 @@ internal sealed partial class WebShellController
                     translator.TapId,
                     translatorSpeechModel,
                     entry.TranslatorModel ?? "",
-                    entry.TranslatorTarget ?? TranslationLanguages.DefaultCode);
+                    entry.TranslatorTarget ?? TranslationLanguages.DefaultCode,
+                    _settings.TranslationProvider);
             }
         }
     }
@@ -506,7 +578,8 @@ internal sealed partial class WebShellController
                     translator.TapId,
                     speechModel,
                     entry.TranslatorModel ?? "",
-                    entry.TranslatorTarget);
+                    entry.TranslatorTarget,
+                    _settings.TranslationProvider);
             }
         }
     }
@@ -695,7 +768,7 @@ internal sealed partial class WebShellController
         var transcriber = entry.Modifier.Processors.OfType<TranscriptionProcessor>().FirstOrDefault();
         if (transcriber == null) return;
 
-        var snapshot = TranscriptionRegistry.Snapshot(transcriber.TapId);
+        var snapshot = TranscriptionRegistry.Snapshot(transcriber.TapId, includeCues: true);
         string text = snapshot?.Transcript?.Trim() ?? "";
         if (text.Length == 0)
         {
@@ -706,18 +779,42 @@ internal sealed partial class WebShellController
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
             Title = "Export transcript",
-            Filter = "Text file (*.txt)|*.txt|All files (*.*)|*.*",
-            FileName = SanitizeFileName(entry.Title) + ".txt",
-            DefaultExt = "txt",
+            Filter = "SubRip subtitles (*.srt)|*.srt|WebVTT subtitles (*.vtt)|*.vtt|Text file (*.txt)|*.txt|All files (*.*)|*.*",
+            FileName = SanitizeFileName(entry.Title) + ".srt",
+            DefaultExt = "srt",
             AddExtension = true,
+            FilterIndex = 1,
         };
         if (dialog.ShowDialog(_window) != true) return;
 
-        File.WriteAllText(dialog.FileName,
-            $"{entry.Title}{Environment.NewLine}" +
-            $"{DateTime.Now:yyyy-MM-dd HH:mm}{Environment.NewLine}{Environment.NewLine}" +
-            text + Environment.NewLine);
-        SetStatus($"Transcript saved: {Path.GetFileName(dialog.FileName)}");
+        int filter = dialog.FilterIndex;
+        string extension = filter switch
+        {
+            1 => ".srt",
+            2 => ".vtt",
+            3 => ".txt",
+            _ => Path.GetExtension(dialog.FileName).ToLowerInvariant(),
+        };
+        string path = filter is 1 or 2 or 3
+            ? Path.ChangeExtension(dialog.FileName, extension)
+            : dialog.FileName;
+        if (extension is ".srt" or ".vtt")
+        {
+            var cues = snapshot?.Segments is { Count: > 0 } segments
+                ? segments
+                : new[] { new SubtitleCue(0, 1, text) };
+            File.WriteAllText(path,
+                extension == ".vtt" ? SubtitleExporter.Vtt(cues) : SubtitleExporter.Srt(cues));
+        }
+        else
+        {
+            File.WriteAllText(path,
+                $"{entry.Title}{Environment.NewLine}" +
+                $"{DateTime.Now:yyyy-MM-dd HH:mm}{Environment.NewLine}{Environment.NewLine}" +
+                text + Environment.NewLine);
+        }
+
+        SetStatus($"Transcript saved: {Path.GetFileName(path)}");
     }
 
     private void SetTranslatorTarget(string id, string target)
@@ -805,6 +902,74 @@ internal sealed partial class WebShellController
             _translationDownloadCancel = null;
             cancel.Dispose();
             PublishSettings();
+        }
+    }
+
+    private async void DownloadOpusTranslationModel(string modelId)
+    {
+        var model = OpusTranslationModels.Find(modelId);
+        if (model == null) return;
+        if (_translationDownloadCancel != null)
+        {
+            SetStatus("Another translation model is already downloading.", isError: true);
+            return;
+        }
+
+        var cancel = new CancellationTokenSource();
+        _translationDownloadCancel = cancel;
+        var progress = new Progress<TranslationModelProgress>(PublishTranslationProgress);
+        try
+        {
+            await OpusTranslationModels.DownloadAsync(modelId, progress, cancel.Token);
+            RestartTranslationNodes();
+            PublishSettings();
+            PublishGraph();
+            PublishTelemetry(force: true);
+            SetStatus($"{model.Name} installed.");
+        }
+        catch (OperationCanceledException)
+        {
+            SetStatus($"{model.Name} download cancelled.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"{model.Name} download failed: {ex.Message}", isError: true);
+        }
+        finally
+        {
+            _translationDownloadCancel = null;
+            cancel.Dispose();
+            PublishSettings();
+        }
+    }
+
+    private void DeleteOpusTranslationModel(string modelId)
+    {
+        var model = OpusTranslationModels.Find(modelId);
+        if (model == null) return;
+        try
+        {
+            OpusMtEngine.Drop(modelId);
+            OpusTranslationModels.Delete(modelId);
+            RestartTranslationNodes();
+            PublishSettings();
+            PublishGraph();
+            PublishTelemetry(force: true);
+            SetStatus($"{model.Name} removed.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not remove {model.Name}: {ex.Message}", isError: true);
+            AppLog.Error($"Could not delete OPUS-MT model '{modelId}'.", ex);
+        }
+    }
+
+    private void RestartTranslationNodes()
+    {
+        foreach (var entry in _nodes.Values.Where(entry =>
+                     entry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true))
+        {
+            ApplyTranslatorSettings(entry, entry.TranslatorModel, entry.TranslatorTarget);
         }
     }
 
@@ -905,7 +1070,9 @@ internal sealed partial class WebShellController
             return;
         }
 
-        if (TranslationLanguages.NeedsModel(target) && string.IsNullOrEmpty(translationModel))
+        if (TranslationLanguages.NeedsModel(target) &&
+            _settings.TranslationProvider != "opus" &&
+            string.IsNullOrEmpty(translationModel))
         {
             SetStatus("Install a translation model before retrying.", isError: true);
             return;
@@ -921,7 +1088,8 @@ internal sealed partial class WebShellController
                 translator.TapId,
                 speechModel,
                 entry.TranslatorModel ?? "",
-                target);
+                target,
+                _settings.TranslationProvider);
         }
 
         SetStatus($"{entry.Title}: translation restarted.");
@@ -935,7 +1103,7 @@ internal sealed partial class WebShellController
         var translator = entry.Modifier.Processors.OfType<TranslatorProcessor>().FirstOrDefault();
         if (translator == null) return;
 
-        var snapshot = TranslationRegistry.Snapshot(translator.TapId);
+        var snapshot = TranslationRegistry.Snapshot(translator.TapId, includeCues: true);
         string source = snapshot?.SourceText?.Trim() ?? "";
         string translated = snapshot?.TranslatedText?.Trim() ?? "";
         if (source.Length == 0 && translated.Length == 0)
@@ -947,20 +1115,50 @@ internal sealed partial class WebShellController
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
             Title = "Export translation",
-            Filter = "Text file (*.txt)|*.txt|All files (*.*)|*.*",
-            FileName = SanitizeFileName(entry.Title) + ".txt",
-            DefaultExt = "txt",
+            Filter = "SubRip subtitles (*.srt)|*.srt|WebVTT subtitles (*.vtt)|*.vtt|Text file (*.txt)|*.txt|All files (*.*)|*.*",
+            FileName = SanitizeFileName(entry.Title) + ".srt",
+            DefaultExt = "srt",
             AddExtension = true,
+            FilterIndex = 1,
         };
         if (dialog.ShowDialog(_window) != true) return;
 
-        string targetLabel = TranslationLanguages.Find(entry.TranslatorTarget)?.Label ?? entry.TranslatorTarget ?? "";
-        File.WriteAllText(dialog.FileName,
-            $"{entry.Title}{Environment.NewLine}" +
-            $"{DateTime.Now:yyyy-MM-dd HH:mm}{Environment.NewLine}{Environment.NewLine}" +
-            $"Original{Environment.NewLine}{source}{Environment.NewLine}{Environment.NewLine}" +
-            $"{targetLabel}{Environment.NewLine}{translated}{Environment.NewLine}");
-        SetStatus($"Translation saved: {Path.GetFileName(dialog.FileName)}");
+        int filter = dialog.FilterIndex;
+        string extension = filter switch
+        {
+            1 => ".srt",
+            2 => ".vtt",
+            3 => ".txt",
+            _ => Path.GetExtension(dialog.FileName).ToLowerInvariant(),
+        };
+        string path = filter is 1 or 2 or 3
+            ? Path.ChangeExtension(dialog.FileName, extension)
+            : dialog.FileName;
+        if (extension is ".srt" or ".vtt")
+        {
+            if (translated.Length == 0)
+            {
+                SetStatus("There is no translated text to export yet.", isError: true);
+                return;
+            }
+
+            var cues = snapshot?.TranslatedSegments is { Count: > 0 } segments
+                ? segments
+                : new[] { new SubtitleCue(0, 1, translated) };
+            File.WriteAllText(path,
+                extension == ".vtt" ? SubtitleExporter.Vtt(cues) : SubtitleExporter.Srt(cues));
+        }
+        else
+        {
+            string targetLabel = TranslationLanguages.Find(entry.TranslatorTarget)?.Label ?? entry.TranslatorTarget ?? "";
+            File.WriteAllText(path,
+                $"{entry.Title}{Environment.NewLine}" +
+                $"{DateTime.Now:yyyy-MM-dd HH:mm}{Environment.NewLine}{Environment.NewLine}" +
+                $"Original{Environment.NewLine}{source}{Environment.NewLine}{Environment.NewLine}" +
+                $"{targetLabel}{Environment.NewLine}{translated}{Environment.NewLine}");
+        }
+
+        SetStatus($"Translation saved: {Path.GetFileName(path)}");
     }
 
     private void OpenTranslationModelsFolder()
@@ -1004,6 +1202,9 @@ internal sealed partial class WebShellController
             $"Default model: {_settings.TranscriberModel}",
             $"Translation models: {installedTranslationCount} ({TranslationModels.FormatSize(installedTranslationBytes)})",
             $"Default translation: {_settings.TranslatorModel} -> {_settings.TranslatorTarget}",
+            $"GPU: {(ModelRuntime.GpuAvailable ? ModelRuntime.GpuDeviceName : ModelRuntime.GpuStatusError ?? "not available")}",
+            $"GPU fallback: {ModelRuntime.GpuFallbackReason ?? "none"}",
+            $"Output underruns: {_graph.Outputs.Where(output => !output.IsMonitor).Sum(output => output.Underruns)}",
             $"Nodes: {_nodes.Count} · links: {_links.Count} · running: {_running}",
         };
 

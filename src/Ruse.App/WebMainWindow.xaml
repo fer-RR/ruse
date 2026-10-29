@@ -5,7 +5,7 @@
         Title="Ruse — Audio Router"
         Icon="pack://application:,,,/Assets/ruse.ico"
         Width="1360" Height="800" MinWidth="900" MinHeight="560"
-        Background="#0C1016"
+        Background="#171E29"
         WindowStyle="None"
         ResizeMode="CanResize"
         WindowStartupLocation="CenterScreen"

@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading;
 using System.Windows;
 using Ruse.App.Audio;
 using Whisper.net;
@@ -20,8 +21,101 @@ public partial class App : Application
     /// <summary>The process whose audio --live-demo captures.</summary>
     public static uint LiveDemoProcessId { get; private set; }
 
+    private const string InstanceMutexName = "Ruse.App.SingleInstance";
+    private const string ActivateEventName = "Ruse.App.SingleInstance.Activate";
+    private Mutex? _instanceMutex;
+    private EventWaitHandle? _activateEvent;
+    private RegisteredWaitHandle? _activateRegistration;
+
+    private bool TryClaimInstance()
+    {
+        _instanceMutex = new Mutex(true, InstanceMutexName, out bool createdNew);
+        if (!createdNew)
+        {
+            try
+            {
+                using var activate = EventWaitHandle.OpenExisting(ActivateEventName);
+                activate.Set();
+            }
+            catch
+            {
+                // The first instance may still be starting up.
+            }
+
+            _instanceMutex.Dispose();
+            _instanceMutex = null;
+            return false;
+        }
+
+        _activateEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ActivateEventName);
+        _activateRegistration = ThreadPool.RegisterWaitForSingleObject(
+            _activateEvent,
+            (_, _) => Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (MainWindow is WebMainWindow window)
+                {
+                    window.RestoreFromTray();
+                }
+            })),
+            null,
+            Timeout.Infinite,
+            false);
+        return true;
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        _activateRegistration?.Unregister(null);
+        _activateEvent?.Dispose();
+        _activateEvent = null;
+
+        if (_instanceMutex != null)
+        {
+            try
+            {
+                _instanceMutex.ReleaseMutex();
+            }
+            catch
+            {
+            }
+
+            _instanceMutex.Dispose();
+            _instanceMutex = null;
+        }
+
+        base.OnExit(e);
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
+        int hostIndex = Array.FindIndex(e.Args, a => a.Equals("--vst3-host", StringComparison.OrdinalIgnoreCase));
+        if (hostIndex >= 0 && hostIndex + 3 < e.Args.Length)
+        {
+            string state = hostIndex + 4 < e.Args.Length ? e.Args[hostIndex + 4] : "";
+            Ruse.App.Diagnostics.AppLog.Initialize();
+            Vst3HostRunner.Run(
+                e.Args[hostIndex + 1],
+                e.Args[hostIndex + 2],
+                e.Args[hostIndex + 3],
+                string.IsNullOrEmpty(state) ? null : state);
+            Shutdown();
+            return;
+        }
+
+        // Diagnostic and probe modes are intentionally allowed to run alongside
+        // the app; only a normal launch claims the single-instance slot.
+        if (e.Args.Length == 0 && !TryClaimInstance())
+        {
+            Shutdown();
+            return;
+        }
+
+        if (e.Args.Contains("--gpu", StringComparer.OrdinalIgnoreCase))
+        {
+            ModelRuntime.UseGpu = true;
+            ModelRuntime.ConfigureNativeLibraries();
+        }
+
         int probeIndex = Array.FindIndex(e.Args, a => a.Equals("--model-probe", StringComparison.OrdinalIgnoreCase));
         if (probeIndex >= 0 && probeIndex + 2 < e.Args.Length)
         {
@@ -55,6 +149,44 @@ public partial class App : Application
             }
         }
 
+        int opusDownloadIndex = Array.FindIndex(e.Args, a => a.Equals("--opus-download-test", StringComparison.OrdinalIgnoreCase));
+        if (opusDownloadIndex >= 0 && opusDownloadIndex + 2 < e.Args.Length)
+        {
+            try
+            {
+                Task.Run(() => OpusTranslationModels.DownloadAsync(
+                    e.Args[opusDownloadIndex + 1], null, CancellationToken.None))
+                    .GetAwaiter().GetResult();
+                File.WriteAllText(e.Args[opusDownloadIndex + 2], "OK");
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[opusDownloadIndex + 2], "ERROR " + ex);
+                Environment.Exit(3);
+            }
+        }
+
+        int opusTestIndex = Array.FindIndex(e.Args, a => a.Equals("--opus-test", StringComparison.OrdinalIgnoreCase));
+        if (opusTestIndex >= 0 && opusTestIndex + 4 < e.Args.Length)
+        {
+            try
+            {
+                string translated = new OpusMtEngine().Translate(
+                    e.Args[opusTestIndex + 3],
+                    e.Args[opusTestIndex + 1],
+                    e.Args[opusTestIndex + 2],
+                    CancellationToken.None);
+                File.WriteAllText(e.Args[opusTestIndex + 4], translated);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[opusTestIndex + 4], "ERROR " + ex);
+                Environment.Exit(3);
+            }
+        }
+
         Ruse.App.Diagnostics.AppLog.Initialize();
 
         int translationE2EIndex = Array.FindIndex(e.Args, a => a.Equals("--translation-e2e-test", StringComparison.OrdinalIgnoreCase));
@@ -66,7 +198,9 @@ public partial class App : Application
                     e.Args[translationE2EIndex + 1],
                     e.Args[translationE2EIndex + 2],
                     e.Args[translationE2EIndex + 3],
-                    e.Args[translationE2EIndex + 4]);
+                    e.Args[translationE2EIndex + 4],
+                    180,
+                    e.Args.Contains("--opus", StringComparer.OrdinalIgnoreCase) ? "opus" : "qwen");
                 File.WriteAllText(e.Args[translationE2EIndex + 5], line);
                 Environment.Exit(0);
             }
@@ -89,6 +223,22 @@ public partial class App : Application
             catch (Exception ex)
             {
                 File.WriteAllText(e.Args[vst3TestIndex + 2], "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
+        int vst3IsolatedIndex = Array.FindIndex(e.Args, a => a.Equals("--vst3-isolated-test", StringComparison.OrdinalIgnoreCase));
+        if (vst3IsolatedIndex >= 0 && vst3IsolatedIndex + 2 < e.Args.Length)
+        {
+            try
+            {
+                string line = Vst3SelfTest.RunIsolated(e.Args[vst3IsolatedIndex + 1]);
+                File.WriteAllText(e.Args[vst3IsolatedIndex + 2], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[vst3IsolatedIndex + 2], "FAILED: " + ex);
                 Environment.Exit(3);
             }
         }
