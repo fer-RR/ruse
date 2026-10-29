@@ -10,18 +10,19 @@ ONNX Runtime OPUS-MT for translation, and OwnAudioVst for VST3. There is one UI;
 the old WPF workspace was removed.
 
 - Canonical repo: `C:\Users\ih_me\Projects\Ruse` (`main`, stale at `240d065`)
-- Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, `61b4d59` plus a
-  large uncommitted batch). Do not reset or clean it.
+- Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, clean at `113c428`).
+  Do not reset or clean it.
 - Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`
 - Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-win-x64-2026-10-29.zip`
-  (+ `.sha256`); self-contained win-x64, WebUI included, models/VSTs excluded.
+  (+ `.sha256`, SHA-256 `375249ac...fba9021f0`); self-contained win-x64,
+  WebUI included, models/VSTs excluded.
 - Runtime data: `%APPDATA%\Ruse` (`settings.json`, `session.ruse.json`,
   `chains.json`, `ruse.log`, `models\`).
 - Screenshots: `C:\Users\ih_me\OneDrive\Documentos\voicemet-screenshots`.
 
-Uncommitted batch: onboarding/splash, 9 locales, tray behavior, file player,
-translator, OPUS-MT provider, VST3 isolation, effects, workspace/sidebar
-cleanup, cable performance, package publish fix. Commit only when the user asks.
+Latest batch: onboarding/splash, 9 locales, tray behavior, file player,
+translator, OPUS-MT provider, VST3 isolation, effects, analysis taps,
+per-app capture fallback, workspace/sidebar cleanup, package publish fix.
 
 ## Build and test
 
@@ -106,6 +107,8 @@ src/Ruse.App/
 - Translation is chunked (roughly 2–12 s lag). VAD, sentence timestamps and
   SRT/VTT/TXT export are in place; cue timing is approximate.
 - Qwen 0.5B is approximate, 1.5B is the default, 3B is slower and needs RAM.
+- Bluetooth output could not be retested on the dev PC (no paired endpoint). The
+  engine mix is fixed at 48 kHz; use the Stereo endpoint, not Hands-Free/16 kHz.
 - Per-app capture needs Windows 10 build 20348 or later. Older builds hide the
   Applications list, show a banner, and use System audio instead. Existing app
   sources fail quietly once instead of retrying on every route change.
