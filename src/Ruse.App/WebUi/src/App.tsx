@@ -20,7 +20,7 @@ import RuseEdge from './components/RuseEdge';
 import RuseConnectionLine from './components/RuseConnectionLine';
 import Sidebar from './components/Sidebar';
 import { StatusBar, TitleBar, Toolbar } from './components/Chrome';
-import { ConfirmDialog, DeviceHelpDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog } from './components/Dialogs';
+import { ConfirmDialog, DeviceHelpDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog, TrayPromptDialog } from './components/Dialogs';
 import type { SettingsTab } from './components/Dialogs';
 import ChainEditorDialog from './components/ChainEditorDialog';
 import WelcomeWizard from './components/WelcomeWizard';
@@ -117,6 +117,7 @@ export default function App() {
   const [showDeviceHelp, setShowDeviceHelp] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [showClear, setShowClear] = useState(false);
+  const [trayPrompt, setTrayPrompt] = useState(false);
   const [renamePrompt, setRenamePrompt] = useState<RenamePrompt | null>(null);
   const [canvasMenu, setCanvasMenu] = useState<CanvasMenu | null>(null);
   const [chainEditor, setChainEditor] = useState<ChainEditorRequest | null>(null);
@@ -336,6 +337,7 @@ export default function App() {
       case 'alert': setAlert(payload as StatusMessage); break;
       case 'splash':
       case 'welcome': setWelcomeOpen(true); break;
+      case 'close-to-tray': setTrayPrompt(true); break;
     }
   }), []);
 
@@ -914,11 +916,12 @@ export default function App() {
             if (!raw) return;
             const item = JSON.parse(raw) as CatalogItem;
             const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-            const canInsert = item.kind === 'effect' || item.kind === 'chain';
+            const canInsert = item.kind === 'effect' || item.kind === 'chain' || item.kind === 'vst3';
             const linkId = canInsert ? findLinkAtPoint(position) : undefined;
+            const halfWidth = item.kind === 'vst3' ? 170 : 102;
             sendAdd(
               item,
-              linkId ? { x: position.x - 102, y: position.y - 60 } : findFreeSpot({ x: position.x, y: position.y }),
+              linkId ? { x: position.x - halfWidth, y: position.y - 60 } : findFreeSpot({ x: position.x, y: position.y }),
               linkId,
             );
           }}
@@ -1043,6 +1046,10 @@ export default function App() {
       </div>
       <StatusBar status={status} />
       {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
+      {trayPrompt && <TrayPromptDialog
+        onKeep={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: true }); }}
+        onQuit={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: false }); }}
+      />}
       {showClear && <ConfirmDialog title={t('Clear routing graph')} body={t('This removes every node and cable. The current session will be replaced when you close Ruse.')} confirmLabel={t('Clear graph')} onConfirm={() => { setShowClear(false); send('clear'); }} onClose={() => setShowClear(false)} />}
       {recorderRemoval && <ConfirmDialog
         title={t('Recording in progress')}

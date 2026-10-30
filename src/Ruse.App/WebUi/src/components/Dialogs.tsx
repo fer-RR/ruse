@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Activity, AudioLines, Cable, ChevronRight, Copy, FileText, FolderOpen, Headphones, Keyboard, LayoutGrid, Mic, MonitorSpeaker, SlidersHorizontal, Volume2, X } from 'lucide-react';
+import { Activity, AudioLines, Cable, ChevronRight, Copy, FileText, FolderOpen, Headphones, Keyboard, LayoutGrid, Mic, MonitorSpeaker, Puzzle, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { TRANSLATION_TARGETS } from '../languages';
@@ -98,6 +98,22 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }:
     <Modal title={title} onClose={onClose} className="small-modal">
       <p className="modal-copy">{body}</p>
       <div className="modal-actions"><button className="tool-button" onClick={onClose}>{t('Cancel')}</button><button className="danger-button" onClick={onConfirm}>{confirmLabel}</button></div>
+    </Modal>
+  );
+}
+
+export function TrayPromptDialog({ onKeep, onQuit }: {
+  onKeep: () => void;
+  onQuit: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Modal title={t('Close to tray')} onClose={onQuit} className="small-modal">
+      <p className="modal-copy">{t('Keep Ruse running in the notification area when the window is closed? Audio keeps routing while it is hidden. You can change this later in Settings.')}</p>
+      <div className="modal-actions">
+        <button className="tool-button" onClick={onQuit}>{t('Quit Ruse')}</button>
+        <button className="primary-button" onClick={onKeep}>{t('Keep in tray')}</button>
+      </div>
     </Modal>
   );
 }
@@ -244,6 +260,7 @@ const SETTINGS_TABS = [
   { id: 'behavior', label: 'Behavior', Icon: SlidersHorizontal },
   { id: 'workspace', label: 'Workspace', Icon: LayoutGrid },
   { id: 'speech', label: 'Speech & translation', Icon: AudioLines },
+  { id: 'plugins', label: 'VST3', Icon: Puzzle },
   { id: 'shortcuts', label: 'Shortcuts', Icon: Keyboard },
   { id: 'diagnostics', label: 'Info', Icon: Activity },
 ] as const;
@@ -259,6 +276,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<SettingsTab>(initialTab);
+  const [gpuAtOpen] = useState(settings.useGpu);
   const [speechOpen, setSpeechOpen] = useState(true);
   const [translationOpen, setTranslationOpen] = useState(true);
   useEffect(() => setTab(initialTab), [initialTab]);
@@ -308,7 +326,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                   {t('Last model load fell back to CPU: {reason}', { reason: settings.gpuFallbackReason })}
                 </p>
               )}
-              {settings.useGpu && (
+              {settings.useGpu !== gpuAtOpen && (
                 <p className="settings-note gpu-restart-note">
                   {t('You may need to restart Ruse for the GPU change to take effect.')}
                 </p>
@@ -407,6 +425,21 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
           </>
         )}
 
+        {tab === 'plugins' && (
+          <div className="settings-section">
+            <span className="eyebrow">{t('Plugins')}</span>
+            <ToggleSetting
+              label={t('Isolate VST3 plugins')}
+              description={t('Run each VST3 in a separate process so a crashing plugin cannot close Ruse. New VST3 nodes use this setting.')}
+              checked={settings.isolateVst3}
+              onChange={value => onChange({ ...settings, isolateVst3: value })}
+            />
+            <div className="settings-actions">
+              <button className="tool-button" onClick={() => send('vst3-rescan')}><FolderOpen size={14} /> {t('Rescan VST3 plugins')}</button>
+            </div>
+          </div>
+        )}
+
         {tab === 'behavior' && (
           <>
             <div className="settings-section">
@@ -415,18 +448,9 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <ToggleSetting label={t('Start routing on launch')} description={t('Start the restored graph after the workspace finishes loading.')} checked={settings.startRoutingOnLaunch} onChange={value => onChange({ ...settings, startRoutingOnLaunch: value })} />
               <ToggleSetting label={t('Start with Windows')} description={t('Add Ruse to your per-user Windows startup apps.')} checked={settings.startWithWindows} onChange={value => onChange({ ...settings, startWithWindows: value })} />
               <ToggleSetting label={t('Show welcome screen on launch')} description={t('Open the welcome screen with a guided setup shortcut when Ruse starts.')} checked={settings.showWelcomeScreen} onChange={value => onChange({ ...settings, showWelcomeScreen: value })} />
-              <ToggleSetting label={t('Minimize to tray')} description={t('Hide Ruse in the notification area when minimized; audio keeps routing.')} checked={settings.minimizeToTray} onChange={value => onChange({ ...settings, minimizeToTray: value })} />
+              <ToggleSetting label={t('Close to tray')} description={t('Hide Ruse in the notification area when the window is closed; audio keeps routing.')} checked={settings.minimizeToTray} onChange={value => onChange({ ...settings, minimizeToTray: value })} />
               <ToggleSetting label={t('Reattach apps when they play')} description={t('When an app source restarts, reconnect it to its existing route automatically.')} checked={settings.followPlayingApps} onChange={value => onChange({ ...settings, followPlayingApps: value })} />
               <label className="setting-row"><span><strong>{t('Auto-add new apps to')}</strong><small>{t('Add a source and connect it to this output when an app starts playing.')}</small></span><select disabled={!settings.followPlayingApps} value={settings.followOutputId} onChange={event => onChange({ ...settings, followOutputId: event.target.value })}><option value="">{t('Do not auto-add')}</option>{outputs.map(output => <option key={output.id} value={output.id}>{output.name}</option>)}</select></label>
-            </div>
-            <div className="settings-section">
-              <span className="eyebrow">{t('Plugins')}</span>
-              <ToggleSetting
-                label={t('Isolate VST3 plugins')}
-                description={t('Run each VST3 in a separate process so a crashing plugin cannot close Ruse. New VST3 nodes use this setting.')}
-                checked={settings.isolateVst3}
-                onChange={value => onChange({ ...settings, isolateVst3: value })}
-              />
             </div>
             <div className="settings-section">
               <span className="eyebrow">{t('Help')}</span>
@@ -450,11 +474,6 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <ToggleSetting label={t('Highlight muted nodes')} description={t('Use a red outline when a node is muted.')} checked={settings.highlightMutedNodes} onChange={value => onChange({ ...settings, highlightMutedNodes: value })} />
             </div>
             <div className="settings-section">
-              <span className="eyebrow">{t('Navigation')}</span>
-              <ToggleSetting label={t('Snap to grid')} description={t('Align dragged nodes to the 20 px canvas grid.')} checked={settings.snapToGrid} onChange={value => onChange({ ...settings, snapToGrid: value })} />
-              <label className="setting-row"><span><strong>{t('Mini-map')}</strong><small>{t('Show the overview only when part of the graph is off-screen.')}</small></span><select value={settings.minimapMode === 0 ? 2 : settings.minimapMode} onChange={event => onChange({ ...settings, minimapMode: Number(event.target.value) })}><option value={2}>{t('When needed')}</option><option value={1}>{t('Never')}</option></select></label>
-            </div>
-            <div className="settings-section">
               <span className="eyebrow">{t('Interface')}</span>
               <label className="setting-row">
                 <span><strong>{t('Theme')}</strong><small>{t('Choose the workspace colour scheme.')}</small></span>
@@ -469,6 +488,11 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                   {LANGUAGES.map(language => <option key={language.id} value={language.id}>{language.label}</option>)}
                 </select>
               </label>
+            </div>
+            <div className="settings-section">
+              <span className="eyebrow">{t('Navigation')}</span>
+              <ToggleSetting label={t('Snap to grid')} description={t('Align dragged nodes to the 20 px canvas grid.')} checked={settings.snapToGrid} onChange={value => onChange({ ...settings, snapToGrid: value })} />
+              <label className="setting-row"><span><strong>{t('Mini-map')}</strong><small>{t('Show the overview only when part of the graph is off-screen.')}</small></span><select value={settings.minimapMode === 0 ? 2 : settings.minimapMode} onChange={event => onChange({ ...settings, minimapMode: Number(event.target.value) })}><option value={2}>{t('When needed')}</option><option value={1}>{t('Never')}</option></select></label>
             </div>
           </>
         )}
@@ -512,9 +536,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 <button className="tool-button" onClick={() => send('open-log')}><FileText size={14} /> {t('Open log')}</button>
                 <button className="tool-button" onClick={() => send('open-log-folder')}><FolderOpen size={14} /> {t('Open data folder')}</button>
                 <button className="tool-button" onClick={() => send('copy-diagnostics')}><Copy size={14} /> {t('Copy diagnostics')}</button>
-                <button className="tool-button" onClick={() => send('vst3-rescan')}><FolderOpen size={14} /> {t('Rescan VST3 plugins')}</button>
               </div>
-              <p className="settings-note">{t('The interface runs in WebView2. Audio capture, mixing, ASIO and recording remain in the native engine.')}</p>
             </div>
             <div className="settings-section">
               <span className="eyebrow">{t('Licences')}</span>

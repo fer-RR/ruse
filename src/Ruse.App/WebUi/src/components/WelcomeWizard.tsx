@@ -169,7 +169,7 @@ export default function WelcomeWizard({ catalog, settings, onChange, onClose, on
       <div className="welcome-splash-hero">
         <span className="welcome-splash-logo"><RuseLogo size={54} /></span>
         <div>
-          <p className="wizard-kicker">{t('Sound routing, simplified')}</p>
+          <p className="wizard-kicker">{t('Sound routing, simplified')}{settings.appVersion ? ` \u00B7 ${settings.appVersion}` : ''}</p>
           <h2>{t('Send sound anywhere.')}</h2>
           <p>{t('Ruse sends the sound from one app, the whole PC, or a microphone to any speaker, headphones or virtual device. It makes a copy, so the original app keeps working normally.')}</p>
         </div>

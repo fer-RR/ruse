@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Ruse.App.Diagnostics;
 
 namespace Ruse.App.Audio;
 
@@ -199,6 +200,12 @@ public static class PresetSerializer
         {
             if (string.IsNullOrWhiteSpace(entry.PluginPath))
             {
+                return null;
+            }
+
+            if (!Vst3ProcessorFactory.IsTrustedIdentifier(entry.PluginPath))
+            {
+                AppLog.Warning($"Skipped VST3 '{entry.PluginPath}': not in a standard VST3 folder.");
                 return null;
             }
 

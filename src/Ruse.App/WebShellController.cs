@@ -1,4 +1,5 @@
 using System.IO;
+using System.Reflection;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Media;
@@ -51,6 +52,7 @@ internal sealed partial class WebShellController : IDisposable
     private TranslationModelProgress? _translationDownload;
     private long _lastTranslationPublish;
     private long _lastTranslationStatus;
+    private Action<bool>? _trayDecision;
 
     public WebShellController(WebMainWindow window)
     {
@@ -257,6 +259,7 @@ internal sealed partial class WebShellController : IDisposable
             case "chain-delete": DeleteChain(String(message, "name")); break;
             case "chain-open": OpenChainForNode(String(message, "id")); break;
             case "settings": ApplySettings(Payload<SettingsDto>(message) ?? new SettingsDto()); break;
+            case "close-to-tray-result": ResolveTrayDecision(Bool(message, "keep")); break;
             case "open-log": AppLog.OpenLog(); break;
             case "open-log-folder": AppLog.OpenLogFolder(); break;
             case "copy-diagnostics": CopyDiagnostics(); break;
@@ -442,6 +445,25 @@ internal sealed partial class WebShellController : IDisposable
         return warnings;
     }
 
+    /// <summary>Shows the prerelease tag in Settings and the welcome splash.</summary>
+    private static string AppVersionText
+    {
+        get
+        {
+            var assembly = typeof(WebShellController).Assembly;
+            string? text = assembly
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+                .InformationalVersion;
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                int metadata = text.IndexOf('+');
+                return metadata >= 0 ? text[..metadata] : text;
+            }
+
+            return assembly.GetName().Version?.ToString(3) ?? "dev";
+        }
+    }
+
     private void PublishSettings()
     {
         int installedCount = 0;
@@ -578,7 +600,7 @@ internal sealed partial class WebShellController : IDisposable
             InstalledTranslatorModelsSize = TranslationModels.FormatSize(installedTranslationBytes),
             InstalledOpusModelsCount = installedOpusCount,
             InstalledOpusModelsSize = TranslationModels.FormatSize(installedOpusBytes),
-            AppVersion = typeof(WebShellController).Assembly.GetName().Version?.ToString(3) ?? "dev",
+            AppVersion = AppVersionText,
             DotNetVersion = Environment.Version.ToString(),
             WebView2Version = string.IsNullOrEmpty(_webView2Version) ? "not initialized" : _webView2Version,
             RenderTier = System.Windows.Media.RenderCapability.Tier >> 16,
@@ -877,13 +899,33 @@ internal sealed partial class WebShellController : IDisposable
         _window.Background = new SolidColorBrush(color);
     }
 
-    /// <summary>Persists the answer to the first-minimize tray prompt.</summary>
+    /// <summary>Persists the answer to the first-close tray prompt.</summary>
     internal void SaveTrayPreference(bool minimizeToTray)
     {
         _settings.MinimizeToTray = minimizeToTray;
         _settings.TrayPromptShown = true;
         _settings.Save();
         PublishSettings();
+    }
+
+    /// <summary>Asks the web UI for the first-close tray choice.</summary>
+    internal bool RequestTrayDecision(Action<bool> response)
+    {
+        if (_disposed || _core == null)
+        {
+            return false;
+        }
+
+        _trayDecision = response;
+        Post("close-to-tray", new { });
+        return true;
+    }
+
+    private void ResolveTrayDecision(bool keep)
+    {
+        var response = _trayDecision;
+        _trayDecision = null;
+        response?.Invoke(keep);
     }
 
     private void RestoreWindowBounds()

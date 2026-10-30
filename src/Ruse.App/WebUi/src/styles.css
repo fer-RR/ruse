@@ -325,7 +325,7 @@ body.sidebar-resizing * { cursor: col-resize !important; }
 .ruse-frame-handle.se { top: 100%; left: 100%; cursor: nwse-resize; }
 .ruse-frame-handle.sw { top: 100%; left: 0; cursor: nesw-resize; }
 .ruse-frame-layer.alt .ruse-frame-handle { opacity: 1; pointer-events: auto; }
-.ruse-node { --accent: var(--blue); position: relative; width: 204px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-1); box-shadow: 0 5px 16px rgba(0, 0, 0, 0.25); color: var(--text); transition: border-color 120ms ease, box-shadow 120ms ease, filter 180ms ease; }
+.ruse-node { --accent: var(--blue); position: relative; width: max-content; min-width: 204px; max-width: 264px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface-1); box-shadow: 0 5px 16px rgba(0, 0, 0, 0.25); color: var(--text); transition: border-color 120ms ease, box-shadow 120ms ease, filter 180ms ease; }
 .ruse-node:not(.flowing):not(.disabled):not(.muted):not(.clipping):not(.recording) { filter: saturate(0.55); }
 .ruse-node::before { content: ""; position: absolute; z-index: 2; top: -1px; left: 10px; right: 10px; height: 2px; border-radius: 2px; background: var(--accent); }
 .ruse-node:hover { border-color: color-mix(in srgb, var(--accent) 42%, var(--line-strong)); }
@@ -386,14 +386,14 @@ select { min-height: 28px; padding: 3px 6px; font-size: 10px; }
 .field-label input { height: 38px; padding: 0 10px; font-size: 13px; }
 
 .parameter-list { display: flex; flex-direction: column; gap: 7px; padding: 8px 9px 9px; }
-.ruse-node.spectrum-node, .ruse-node.spectrogram-node { width: 368px; }
+.ruse-node.spectrum-node, .ruse-node.spectrogram-node { width: 460px; min-width: 460px; max-width: 460px; }
 .spectrum-view, .spectrogram-view { padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--inset); }
-.spectrum-view canvas { display: block; width: 100%; height: 160px; border-radius: 6px; background: #0a1018; }
-.spectrogram-view canvas { display: block; width: 100%; height: 198px; border-radius: 6px; background: #0a1018; }
+.spectrum-view canvas { display: block; width: 100%; height: 200px; border-radius: 6px; background: #0a1018; }
+.spectrogram-view canvas { display: block; width: 100%; height: 240px; border-radius: 6px; background: #0a1018; }
 .spectrum-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 5px; padding: 0 1px; color: var(--text-3); font-size: 9px; }
 .spectrum-meta strong { color: var(--text-2); font: 9px Consolas, monospace; font-weight: 500; }
 .spectrum-node .node-subtitle, .spectrogram-node .node-subtitle { color: var(--text-3); }
-.ruse-node.db-meter-vertical { width: 108px; }
+.ruse-node.db-meter-vertical { width: 108px; min-width: 108px; max-width: 108px; }
 .db-meter-vertical .node-icon { display: none; }
 .db-meter-vertical .node-header { gap: 4px; padding: 5px 5px 5px 7px; }
 .db-meter-vertical .node-power,
@@ -438,8 +438,8 @@ select { min-height: 28px; padding: 3px 6px; font-size: 10px; }
 .transcription-level > span { display: block; height: 100%; border-radius: 2px; background: var(--signal); transition: width 80ms linear; }
 .transcription-view.error .transcription-level > span { background: var(--danger); }
 .transcription-text { max-height: 112px; overflow: auto; overflow-anchor: none; color: var(--text-2); font-size: 11px; line-height: 1.5; user-select: text; }
-.ruse-node.transcriber-node { width: 320px; }
-.ruse-node.translator-node { width: 366px; }
+.ruse-node.transcriber-node { width: max-content; min-width: 320px; max-width: 400px; }
+.ruse-node.translator-node { width: max-content; min-width: 366px; max-width: 440px; }
 .transcriber-node .transcription-text { max-height: 200px; }
 .translator-node .translation-pane .transcription-text { max-height: 220px; }
 .transcription-placeholder { color: var(--text-3); }
@@ -460,7 +460,8 @@ select { min-height: 28px; padding: 3px 6px; font-size: 10px; }
 .translator-missing .small-button { min-height: 24px; padding: 0 7px; color: var(--amber); border-color: rgba(229, 173, 81, 0.3); background: rgba(229, 173, 81, 0.08); }
 .translator-hint { display: flex; align-items: center; gap: 6px; color: var(--text-3); font-size: 9px; line-height: 1.3; }
 .translator-hint > span { flex: 1; }
-.ruse-node.vst3-node { width: 340px; }
+.ruse-node.vst3-node { width: max-content; min-width: 340px; max-width: 420px; }
+.ruse-node.file-player-node, .ruse-node.recorder-node { width: max-content; min-width: 288px; max-width: 340px; }
 .vst3-node .parameter-list { max-height: 360px; overflow: auto; padding-right: 4px; }
 .vst3-controls { display: grid; gap: 5px; padding: 3px 0 2px; }
 .vst3-status { display: flex; align-items: center; gap: 6px; color: var(--text-3); font: 650 9px/1.2 Consolas, monospace; letter-spacing: 0.4px; text-transform: uppercase; }
@@ -504,7 +505,7 @@ select { min-height: 28px; padding: 3px 6px; font-size: 10px; }
 .file-player-loop { display: flex; align-items: center; gap: 4px; color: var(--text-3); font-size: 9px; }
 .file-player-loop input { margin: 0; accent-color: var(--amber); }
 .recorder-controls { display: grid; gap: 7px; padding: 0 10px 10px; }
-.recorder-format { display: flex; gap: 6px; }
+.recorder-format { display: flex; flex-wrap: wrap; gap: 6px; }
 .recorder-format select { flex: 1; min-width: 0; }
 .small-button { min-height: 28px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-2); color: var(--text-2); font-size: 10px; white-space: nowrap; }
 .small-button:hover { background: var(--surface-3); color: var(--text); }

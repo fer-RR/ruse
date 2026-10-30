@@ -13,10 +13,10 @@ the old WPF workspace was removed.
 - Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, clean; latest feature
   commit `113c428`).
   Do not reset or clean it.
-- Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`
-- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-win-x64-2026-10-29.zip`
-  (+ `.sha256`, SHA-256 `375249ac...fba9021f0`); self-contained win-x64,
-  WebUI included, models/VSTs excluded.
+- Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe` (version 0.2.0-beta.1)
+- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.2.0-beta.1-win-x64.zip`
+  (+ `.sha256`, SHA-256 `84c5e375...a5d0f519`); self-contained win-x64,
+  WebUI and LICENSE included, models/VSTs excluded.
 - Runtime data: `%APPDATA%\Ruse` (`settings.json`, `session.ruse.json`,
   `chains.json`, `ruse.log`, `models\`).
 - Screenshots: `C:\Users\ih_me\OneDrive\Documentos\voicemet-screenshots`.

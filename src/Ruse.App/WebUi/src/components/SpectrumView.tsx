@@ -93,9 +93,9 @@ export default function SpectrumView({
     context.fillStyle = 'rgba(255,255,255,0.38)';
     context.font = '9px Consolas, monospace';
     context.textBaseline = 'bottom';
-    for (const [label, frequency] of [['100', 100], ['1k', 1000], ['10k', 10000]] as const) {
+    for (const [label, frequency] of [['100', 100], ['1k', 1000], ['10k', 10000], ['20k', 20000]] as const) {
       const x = (Math.log(frequency / 20) / Math.log(1000)) * width;
-      context.fillText(label, Math.max(1, Math.min(width - 14, x)), height - 1);
+      context.fillText(label, Math.max(1, Math.min(width - 18, x)), height - 1);
     }
 
     if (!bands?.length) {
@@ -107,7 +107,7 @@ export default function SpectrumView({
 
   return (
     <div className="spectrum-view">
-      <canvas ref={ref} width={340} height={160} aria-label={t('Live spectrum')} />
+      <canvas ref={ref} width={428} height={200} aria-label={t('Live spectrum')} />
       <div className="spectrum-meta">
         <span>{t('20 Hz - 20 kHz')}</span>
         <strong>{formatHz(peakHz)}</strong>

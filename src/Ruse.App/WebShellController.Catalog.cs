@@ -571,6 +571,7 @@ internal sealed partial class WebShellController
     private void RefreshEffectsAndChains()
     {
         _catalog.Effects = AudioProcessorCatalog.All
+            .OrderBy(effect => effect.DisplayName, StringComparer.OrdinalIgnoreCase)
             .Select(effect =>
             {
                 var item = new CatalogItemDto

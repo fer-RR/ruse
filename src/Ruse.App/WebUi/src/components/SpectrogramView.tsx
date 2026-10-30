@@ -64,7 +64,7 @@ export default function SpectrogramView({
     context.putImageData(image, 0, 0);
     context.strokeStyle = 'rgba(255,255,255,0.08)';
     context.lineWidth = 1;
-    for (const db of [100, 1000, 10000]) {
+    for (const db of [100, 1000, 10000, 20000]) {
       const y = dataHeight - (Math.log(db / 20) / Math.log(1000)) * dataHeight;
       context.beginPath();
       context.moveTo(0, y);
@@ -75,7 +75,7 @@ export default function SpectrogramView({
     context.fillStyle = 'rgba(255,255,255,0.4)';
     context.font = '9px Consolas, monospace';
     context.textBaseline = 'bottom';
-    for (const [label, frequency] of [['100', 100], ['1k', 1000], ['10k', 10000]] as const) {
+    for (const [label, frequency] of [['100', 100], ['1k', 1000], ['10k', 10000], ['20k', 20000]] as const) {
       const y = dataHeight - (Math.log(frequency / 20) / Math.log(1000)) * dataHeight;
       context.fillText(label, 2, Math.max(8, Math.min(dataHeight - 1, y - 1)));
     }
@@ -87,7 +87,7 @@ export default function SpectrogramView({
 
   return (
     <div className="spectrogram-view">
-      <canvas ref={ref} width={340} height={198} aria-label={t('Live spectrogram')} />
+      <canvas ref={ref} width={428} height={240} aria-label={t('Live spectrogram')} />
       <div className="spectrum-meta">
         <span>{t('4 s window')}</span>
         <strong>{formatHz(peakHz)}</strong>

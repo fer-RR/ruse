@@ -352,6 +352,8 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isTranscriber ? 'transcriber-node' : '',
     data.isTranslator ? 'translator-node' : '',
     data.isVst3 ? 'vst3-node' : '',
+    data.isFilePlayer ? 'file-player-node' : '',
+    data.isRecorder ? 'recorder-node' : '',
     isSpectrum ? 'spectrum-node' : '',
     isSpectrogram ? 'spectrogram-node' : '',
     isDbMeter ? (dbVertical ? 'db-meter-node db-meter-vertical' : 'db-meter-node db-meter-horizontal') : '',

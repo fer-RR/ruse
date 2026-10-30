@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using System.Windows.Interop;
 using Ruse.App.Diagnostics;
 
 namespace Ruse.App;
@@ -11,7 +12,8 @@ public partial class WebMainWindow : Window
     private bool _closed;
     private bool _closeConfirmed;
     private bool _hiddenToTray;
-    private bool _trayPrompting;
+    private bool _exitFromTray;
+    private bool _trayPromptOpen;
     private TrayIcon? _tray;
     private WindowState _lastVisibleState = WindowState.Normal;
 
@@ -22,6 +24,7 @@ public partial class WebMainWindow : Window
         Loaded += OnLoaded;
         Closing += OnClosing;
         StateChanged += OnStateChanged;
+        Application.Current.SessionEnding += (_, _) => _exitFromTray = true;
         Closed += (_, _) =>
         {
             _closed = true;
@@ -35,7 +38,53 @@ public partial class WebMainWindow : Window
 
     private void OnClosing(object? sender, CancelEventArgs e)
     {
-        if (_closeConfirmed || !_controller.HasActiveRecording)
+        if (_closeConfirmed)
+        {
+            _controller.Shutdown();
+            return;
+        }
+
+        // The window X hides to the tray when the user asked for it; the tray
+        // menu's Exit sets _exitFromTray so it always quits for real. Headless
+        // self-test windows have no handle and must just shut down.
+        if (!_exitFromTray && IsLoaded)
+        {
+            if (!_controller.UserSettings.TrayPromptShown)
+            {
+                e.Cancel = true;
+                if (_trayPromptOpen)
+                {
+                    return;
+                }
+
+                _trayPromptOpen = true;
+                if (!_controller.RequestTrayDecision(ApplyTrayDecision))
+                {
+                    bool closeToTray = MessageBox.Show(
+                        "Keep Ruse running in the notification area when the window is closed?\n\n" +
+                        "Audio keeps routing while it is hidden. You can change this later in Settings.",
+                        "Ruse",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Question) == MessageBoxResult.Yes;
+                    ApplyTrayDecision(closeToTray);
+                }
+
+                return;
+            }
+
+            if (_controller.UserSettings.MinimizeToTray)
+            {
+                CreateTrayIcon();
+                if (_tray != null)
+                {
+                    e.Cancel = true;
+                    HideToTray();
+                    return;
+                }
+            }
+        }
+
+        if (!_controller.HasActiveRecording)
         {
             _controller.Shutdown();
             return;
@@ -46,6 +95,7 @@ public partial class WebMainWindow : Window
             "Ruse", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (answer != MessageBoxResult.Yes)
         {
+            _exitFromTray = false;
             e.Cancel = true;
             return;
         }
@@ -62,6 +112,11 @@ public partial class WebMainWindow : Window
 
     private void CreateTrayIcon()
     {
+        if (new WindowInteropHelper(this).Handle == IntPtr.Zero)
+        {
+            return;
+        }
+
         if (!_controller.UserSettings.MinimizeToTray ||
             !_controller.UserSettings.TrayPromptShown ||
             _tray != null)
@@ -94,41 +149,33 @@ public partial class WebMainWindow : Window
         {
             _lastVisibleState = WindowState;
             _hiddenToTray = false;
-            return;
         }
+    }
 
-        if (WindowState != WindowState.Minimized || _hiddenToTray || _trayPrompting)
+    private void HideToTray()
+    {
+        _hiddenToTray = true;
+        ShowInTaskbar = false;
+        Hide();
+    }
+
+    private void ApplyTrayDecision(bool keep)
+    {
+        _trayPromptOpen = false;
+        _controller.SaveTrayPreference(keep);
+        if (keep)
         {
-            return;
-        }
-
-        if (!_controller.UserSettings.TrayPromptShown)
-        {
-            _trayPrompting = true;
-            bool minimizeToTray = MessageBox.Show(
-                "Minimize Ruse to the notification area?\n\nAudio keeps routing while the window is hidden. You can change this later in Settings.",
-                "Ruse",
-                MessageBoxButton.YesNo,
-                MessageBoxImage.Question) == MessageBoxResult.Yes;
-            _trayPrompting = false;
-
-            _controller.SaveTrayPreference(minimizeToTray);
-            if (!minimizeToTray)
+            CreateTrayIcon();
+            if (_tray != null)
             {
-                return;
+                HideToTray();
             }
 
-            CreateTrayIcon();
-        }
-
-        if (!_controller.UserSettings.MinimizeToTray || _tray == null)
-        {
             return;
         }
 
-        _hiddenToTray = true;
-        Hide();
-        ShowInTaskbar = false;
+        _exitFromTray = true;
+        Close();
     }
 
     internal void RestoreFromTray()
@@ -147,6 +194,7 @@ public partial class WebMainWindow : Window
 
     private void ExitFromTray()
     {
+        _exitFromTray = true;
         if (_hiddenToTray)
         {
             RestoreFromTray();

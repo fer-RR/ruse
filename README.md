@@ -45,8 +45,9 @@ capture device to any output device, with an effect chain in between.
   `.ruse.json` file.
 - **Start with Windows** — an option in Settings adds or removes Ruse from the
   per-user startup apps.
-- **Minimize to tray** — minimizing hides Ruse in the notification area while
-  audio keeps routing; click the tray icon to restore it or use its menu to exit.
+- **Close to tray** — with the option on, closing the window hides Ruse in the
+  notification area while audio keeps routing; minimizing just minimizes. Click
+  the tray icon to restore it or use its menu to exit.
 - **Start routing on launch** — optionally start the restored graph after the
   window is ready. The compact Routing switch shows ON/OFF and glows green
   while running; turning it off stops the graph.
@@ -165,5 +166,5 @@ the driver runs at another rate.
 NAudio is MIT licensed and ships the effect suite (including the 10-band
 GraphicEqualizer) and the WASAPI/ASIO layers. Whisper.net, LLamaSharp and
 OwnAudioVst are MIT; the VST 3 SDK is MIT. Translation models are Qwen2.5 GGUF
-files under Apache-2.0. Ruse itself is a separate work. See
+files under Apache-2.0. Ruse itself is MIT licensed; see `LICENSE` and
 `THIRD-PARTY-NOTICES.md`.
