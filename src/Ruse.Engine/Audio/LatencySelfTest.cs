@@ -178,17 +178,22 @@ public static class LatencySelfTest
         // --- 5.1 (6ch) â†’ stereo: first two channels kept ---
         {
             var conv = new FormatConverter(6, 48000);
-            var input = new float[6 * 2];
-            input[0] = 0.5f; // L
+            var input = new float[6];
+            input[0] = 0.5f;  // L
             input[1] = -0.5f; // R
-            input[2] = 0.9f; // C
-            input[6] = 0.25f;
-            input[7] = -0.25f;
+            input[2] = 0.5f;  // C
+            input[3] = 0.25f; // LFE
+            input[4] = 0.25f; // BL
+            input[5] = -0.25f; // BR
             var output = new List<float>();
             conv.Convert(input, output);
-            if (output.Count != 4 || output[0] != 0.5f || output[1] != -0.5f || output[2] != 0.25f)
+            float expectedLeft = 0.5f + 0.5f * 0.70710678f + 0.25f * 0.5f + 0.25f * 0.70710678f;
+            float expectedRight = -0.5f + 0.5f * 0.70710678f + 0.25f * 0.5f - 0.25f * 0.70710678f;
+            if (output.Count != 2 ||
+                Math.Abs(output[0] - expectedLeft) > 1e-4f ||
+                Math.Abs(output[1] - expectedRight) > 1e-4f)
             {
-                failures.Add("5.1â†’stereo: channel selection incorrect");
+                failures.Add("5.1->stereo: downmix incorrect");
             }
         }
 
@@ -228,6 +233,40 @@ public static class LatencySelfTest
             if (Math.Abs(measuredHz - 1000) > 60)
             {
                 failures.Add($"stereo96: pitch wrong, measured {measuredHz:0} Hz (want ~1000)");
+            }
+        }
+
+        // --- 96k -> 48k across block boundaries ---
+        {
+            var conv = new FormatConverter(2, 96000);
+            var output = new List<float>();
+            const int blockFrames = 2400;
+            const int blocks = 8;
+            for (int b = 0; b < blocks; b++)
+            {
+                var block = new float[blockFrames * 2];
+                for (int f = 0; f < blockFrames; f++)
+                {
+                    int global = b * blockFrames + f;
+                    float s = MathF.Sin(2 * MathF.PI * 1000 * global / 96000f);
+                    block[f * 2] = s;
+                    block[f * 2 + 1] = s;
+                }
+
+                conv.Convert(block, output);
+            }
+
+            float maxError = 0;
+            int outFrames = output.Count / 2;
+            for (int f = 64; f < outFrames - 64; f++)
+            {
+                float expected = MathF.Sin(2 * MathF.PI * 1000 * f / 48000f);
+                maxError = Math.Max(maxError, MathF.Abs(output[f * 2] - expected));
+            }
+
+            if (maxError > 0.02f)
+            {
+                failures.Add($"stereo96 blocks: boundary/phase error {maxError:0.0000}");
             }
         }
 
@@ -281,7 +320,7 @@ public static class LatencySelfTest
     /// <summary>
     /// Verifies the modifier pipeline end-to-end at the graph level: a source
     /// routed through one or more modifiers must expose those processors, in
-    /// signal order, on the output's route â€” and removing a modifier must
+    /// signal order, on the output's route — and removing a modifier must
     /// clear them. Pure data-flow; no devices or threads involved.
     /// </summary>
     public static ModifierTestResult TestModifier()
@@ -602,6 +641,9 @@ public static class LatencySelfTest
             Title = "Mic",
             Kind = "Device",
             DeviceId = "dev-1",
+            OutputId = "out-1",
+            Color = "#FF8800",
+            Solo = true,
             X = 12,
             Y = 34,
             Volume = 0.8f,
@@ -613,6 +655,8 @@ public static class LatencySelfTest
             Title = "Virtual Mic",
             IsVirtual = true,
             MicHint = "Voicemeeter Out B1",
+            Color = "#22AA66",
+            Solo = true,
             X = 520,
             Y = 60,
             Volume = 0.9f,
@@ -631,6 +675,7 @@ public static class LatencySelfTest
         preset.Modifiers.Add(new PresetModifier
         {
             Title = "Gain",
+            Color = "#3366CC",
             X = 200,
             Y = 120,
             Processors =
@@ -665,6 +710,9 @@ public static class LatencySelfTest
         });
 
         preset.SourceModifiers.Add(new PresetSourceModifierLink { SourceIndex = 0, ModifierIndex = 0 });
+        preset.Sidechains.Add(new PresetSidechainLink { SourceIndex = 0, ModifierIndex = 0 });
+        preset.Sidechains.Add(new PresetSidechainLink { SourceModifierIndex = 2, ModifierIndex = 1 });
+        preset.MidiBindings.Add(new PresetMidiBinding { ModifierIndex = 0, ProcessorIndex = 0, ParameterIndex = 0, Channel = 0, Kind = "cc", Number = 7, Min = 0, Max = 1 });
         preset.ModifierLinks.Add(new PresetModifierLink { FromModifierIndex = 0, ToModifierIndex = 1 });
         preset.ModifierOutputs.Add(new PresetModifierOutputLink { ModifierIndex = 1, OutputIndex = 0 });
 
@@ -684,6 +732,8 @@ public static class LatencySelfTest
             back.Outputs.Count != 2 ||
             back.Modifiers.Count != 3 ||
             back.SourceModifiers.Count != 1 ||
+            back.Sidechains.Count != 2 ||
+            back.MidiBindings.Count != 1 ||
             back.ModifierLinks.Count != 1 ||
             back.ModifierOutputs.Count != 1)
         {
@@ -692,14 +742,29 @@ public static class LatencySelfTest
         else
         {
             if (back.Sources[0].Kind != "Device" || back.Sources[0].DeviceId != "dev-1" ||
-                Math.Abs(back.Sources[0].Volume - 0.8f) > 1e-6 || !back.Sources[0].Muted)
+                Math.Abs(back.Sources[0].Volume - 0.8f) > 1e-6 || !back.Sources[0].Muted ||
+                back.Sources[0].OutputId != "out-1" || back.Sources[0].Color != "#FF8800" ||
+                !back.Sources[0].Solo)
             {
                 failures.Add("source fields changed across save/load");
             }
 
-            if (back.Outputs[0].MicHint != "Voicemeeter Out B1" || !back.Outputs[0].IsVirtual)
+            if (back.Outputs[0].MicHint != "Voicemeeter Out B1" || !back.Outputs[0].IsVirtual ||
+                back.Outputs[0].Color != "#22AA66" || !back.Outputs[0].Solo)
             {
                 failures.Add("output fields changed across save/load");
+            }
+
+            if (back.Modifiers[0].Color != "#3366CC")
+            {
+                failures.Add("modifier color changed across save/load");
+            }
+
+            if (back.Sidechains[0].SourceIndex != 0 ||
+                back.Sidechains[1].SourceModifierIndex != 2 ||
+                back.Sidechains[1].ModifierIndex != 1)
+            {
+                failures.Add("modifier sidechain key changed across save/load");
             }
 
             if (!back.Outputs[1].IsFile ||
@@ -982,6 +1047,149 @@ public static class LatencySelfTest
 
     public sealed record EffectsTestResult(bool Passed, string Summary);
 
+    public static bool TestSendGain()
+    {
+        var graph = new AudioGraph { AutoRun = false };
+        var source = new SourceNode("send", SourceKind.Application);
+        var modifier = new ModifierNode("send");
+        modifier.Add(new GainProcessor());
+        var output = graph.AddOutputForTest(static (_, _) => { });
+        output.UseGraphEngine = true;
+        graph.AddSource(source);
+        graph.AddModifier(modifier);
+        graph.ConnectSourceToModifier(source, modifier);
+        graph.ConnectModifierToOutput(modifier, output, 1f);
+
+        var block = new float[240 * 2];
+        Array.Fill(block, 0.5f);
+        for (int i = 0; i < 4; i++)
+        {
+            source.WriteTestSamples(block);
+            graph.RenderEngineOnceForTest();
+        }
+
+        output.ClearEngineAudio();
+        source.WriteTestSamples(block);
+        graph.RenderEngineOnceForTest();
+        float full = output.DrainEngineLevelForTest(240);
+        graph.SetModifierOutputGain(modifier, output, 0.25f);
+        source.WriteTestSamples(block);
+        graph.RenderEngineOnceForTest();
+        output.ClearEngineAudio();
+        source.WriteTestSamples(block);
+        graph.RenderEngineOnceForTest();
+        float quiet = output.DrainEngineLevelForTest(240);
+        graph.Dispose();
+        return full > 0.4f && quiet is > 0.1f and < 0.3f && quiet < full * 0.6f;
+    }
+
+    public static bool TestParametricEqResponse()
+    {
+        var flat = new ParametricEqProcessor();
+        var boosted = new ParametricEqProcessor();
+        var gain = boosted.Parameters.First(parameter => parameter.Name == "Band 3 Gain");
+        var frequency = boosted.Parameters.First(parameter => parameter.Name == "Band 3 Frequency");
+        frequency.Set(1000f);
+        gain.Set(12f);
+
+        var block = new float[480 * 2];
+        for (int frame = 0; frame < 480; frame++)
+        {
+            float sample = 0.1f * MathF.Sin(2f * MathF.PI * 1000f * frame / 48000f);
+            block[frame * 2] = sample;
+            block[frame * 2 + 1] = sample;
+        }
+
+        double flatSum = 0;
+        double boostedSum = 0;
+        for (int index = 0; index < 100; index++)
+        {
+            var flatBlock = (float[])block.Clone();
+            var boostedBlock = (float[])block.Clone();
+            flat.Process(flatBlock, 480);
+            boosted.Process(boostedBlock, 480);
+            if (index >= 90)
+            {
+                for (int sample = 0; sample < block.Length; sample++)
+                {
+                    flatSum += flatBlock[sample] * flatBlock[sample];
+                    boostedSum += boostedBlock[sample] * boostedBlock[sample];
+                }
+            }
+        }
+
+        return boostedSum > flatSum * 2.0;
+    }
+
+    private static bool TestClipGuardEffect()
+    {
+        var guard = new ClipGuardProcessor();
+        var ceiling = guard.Parameters.First(parameter => parameter.Name == "Ceiling");
+        ceiling.Set(-6f);
+        var block = new float[480 * 2];
+        Array.Fill(block, 0.95f);
+        for (int index = 0; index < 20; index++)
+        {
+            guard.Process(block, 480);
+        }
+
+        float peak = 0f;
+        for (int index = 0; index < block.Length; index++)
+        {
+            peak = Math.Max(peak, Math.Abs(block[index]));
+        }
+
+        return peak <= 0.51f && guard.Engaged;
+    }
+
+    private static bool TestImpulseRestore()
+    {
+        string path = Path.Combine(Path.GetTempPath(), "ruse-ir-" + Guid.NewGuid().ToString("N") + ".wav");
+        try
+        {
+            using (var writer = new WaveFileWriter(path, new WaveFormat(48000, 16, 1)))
+            {
+                var impulse = new byte[480 * 2];
+                impulse[0] = 0x00;
+                impulse[1] = 0x40;
+                writer.Write(impulse, 0, impulse.Length);
+            }
+
+            var processor = new ConvolutionReverbProcessor();
+            processor.LoadImpulseResponse(path);
+            if (processor.ImpulseResponsePath != path)
+            {
+                return false;
+            }
+
+            var entry = PresetSerializer.SerializeProcessor(processor);
+            var restored = PresetSerializer.CreateProcessor(entry) as IImpulseResponseProcessor;
+            if (restored?.ImpulseResponsePath != path)
+            {
+                return false;
+            }
+
+            if (restored is not IAudioProcessor audio)
+            {
+                return false;
+            }
+
+            var block = new float[480 * 2];
+            block[0] = 0.5f;
+            block[1] = 0.5f;
+            audio.Process(block, 480);
+            return block.All(float.IsFinite);
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
     /// <summary>
     /// Exercises every registered modifier processor (including the NAudio.Effects
     /// suite): parameter round-trip, finite output while processing real audio,
@@ -994,9 +1202,26 @@ public static class LatencySelfTest
         const int frames = 240; // matches the mixer pump
         const int blocks = sampleRate / frames * 5; // 5 seconds of audio
 
+        const int expectedEffectCount = 48;
+        string[] requiredIds =
+        [
+            GainProcessor.Id,
+            HighPassProcessor.Id,
+            ParametricEqProcessor.Id,
+            GraphicEqualizerProcessor.Id,
+            ConvolutionReverbProcessor.Id,
+            SidechainDuckerProcessor.Id,
+            ClipGuardProcessor.Id,
+        ];
+
         var failures = new List<string>();
         var timings = new List<(string Name, double Ms)>();
         var seenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (AudioProcessorCatalog.All.Count != expectedEffectCount)
+        {
+            failures.Add($"catalog has {AudioProcessorCatalog.All.Count} effects, expected {expectedEffectCount}");
+        }
 
         foreach (var descriptor in AudioProcessorCatalog.All)
         {
@@ -1014,6 +1239,21 @@ public static class LatencySelfTest
             if (processor is not IParameterizedProcessor parameterized)
             {
                 continue;
+            }
+
+            // --- metadata defaults match the live initial values ---
+            foreach (var parameter in parameterized.Parameters)
+            {
+                float initial = parameter.Get();
+                float tolerance = parameter.IsInteger
+                    ? 0.51f
+                    : Math.Max(1e-4f, (parameter.Max - parameter.Min) * 0.001f);
+                if (Math.Abs(initial - parameter.Default) > tolerance)
+                {
+                    failures.Add(
+                        $"{descriptor.DisplayName}/{parameter.Name}: default {parameter.Default:0.###} " +
+                        $"but initial value {initial:0.###}");
+                }
             }
 
             // --- parameter round-trip ---
@@ -1132,6 +1372,38 @@ public static class LatencySelfTest
             }
         }
 
+        foreach (string required in requiredIds)
+        {
+            if (!seenIds.Contains(required))
+            {
+                failures.Add($"required effect '{required}' is missing");
+            }
+        }
+
+        var floatExtensible = new WaveFormatExtensible(
+            48000, 32, 2, AudioMediaSubtypes.MEDIASUBTYPE_IEEE_FLOAT, 32, 0);
+        var pcmExtensible = new WaveFormatExtensible(
+            48000, 16, 2, AudioMediaSubtypes.MEDIASUBTYPE_PCM, 16, 0);
+        if (!SourceNode.IsFloatFormat(floatExtensible) || SourceNode.IsFloatFormat(pcmExtensible))
+        {
+            failures.Add("extensible float/PCM format detection failed");
+        }
+
+        if (!TestParametricEqResponse())
+        {
+            failures.Add("parametric EQ did not boost a 1 kHz tone");
+        }
+
+        if (!TestClipGuardEffect())
+        {
+            failures.Add("clip guard effect did not limit");
+        }
+
+        if (!TestImpulseRestore())
+        {
+            failures.Add("convolution impulse response did not restore");
+        }
+
         bool passed = failures.Count == 0;
         var slowest = timings.OrderByDescending(t => t.Ms).FirstOrDefault();
         string cost = slowest.Name == null
@@ -1169,7 +1441,7 @@ public static class LatencySelfTest
         }
 
         long framesMixed = 0;
-        // Preallocated feed buffer â€” the harness must not allocate either, or it
+        // Preallocated feed buffer — the harness must not allocate either, or it
         // would pollute the allocation measurement of the engine.
         var feed = new float[480];
         Array.Fill(feed, 0.2f);
@@ -1334,9 +1606,11 @@ public static class LatencySelfTest
         string? fault = null;
         source.Faulted += (_, reason) => fault = reason;
 
-        var output = new OutputNode(device);
-        output.Inputs.Add(new OutputNode.Route { Source = source, Gain = 1f });
-        output.RefreshRoutes();
+        using var graph = new AudioGraph { AutoRun = false };
+        graph.AddSource(source);
+        var output = graph.AddOutput(device);
+        graph.Connect(source, output);
+        graph.StartEngine();
         output.Start();
         source.Start();
 
@@ -1361,10 +1635,8 @@ public static class LatencySelfTest
         double avgBuffered = samples > 0 ? bufferedSum / samples : 0;
         double expectedBytes = elapsed * sampleRate * channels * 4;
 
-        output.Stop();
-        output.Dispose();
-        source.Stop();
-        source.Dispose();
+        graph.StopEngine();
+        graph.Dispose();
 
         string summary =
             $"Device route on '{deviceName}': state {state}, low-latency {lowLatency}, " +
@@ -1376,6 +1648,137 @@ public static class LatencySelfTest
         return new DeviceRouteResult(
             deviceName, state, lowLatency, deviceLatency, bytes, expectedBytes,
             avgBuffered, captured, shortRead, meter, fault, summary);
+    }
+
+    public sealed record MonitorRouteResult(
+        string Device,
+        string SourceFormat,
+        string PlaybackState,
+        bool LowLatency,
+        double MaxBacklogMs,
+        double AverageBacklogMs,
+        double MaxEngineQueuePercent,
+        double MaxLatencyMs,
+        long CapturedFrames,
+        long SourceFrames,
+        long SkippedFrames,
+        long Underruns,
+        long ShortReadFrames,
+        double DriftPpm,
+        float SourceMeter,
+        bool ClickRisk,
+        string? Fault,
+        string Summary);
+
+    /// <summary>
+    /// Live clock/dropout monitor. Run it while music is playing from the target
+    /// process; it reports source fill, drift, output ring fill and underruns.
+    /// </summary>
+    public static MonitorRouteResult TestLiveMonitor(uint processId, double seconds, string outputMatch)
+    {
+        seconds = Math.Clamp(seconds, 1.0, 120.0);
+
+        using var enumerator = new NAudio.CoreAudioApi.MMDeviceEnumerator();
+        var devices = enumerator.EnumerateAudioEndPoints(
+            NAudio.CoreAudioApi.DataFlow.Render,
+            NAudio.CoreAudioApi.DeviceState.Active).ToList();
+        var device = string.IsNullOrWhiteSpace(outputMatch)
+            ? enumerator.GetDefaultAudioEndpoint(
+                NAudio.CoreAudioApi.DataFlow.Render,
+                NAudio.CoreAudioApi.Role.Multimedia)
+            : devices.FirstOrDefault(item =>
+                item.FriendlyName.Contains(outputMatch, StringComparison.OrdinalIgnoreCase))
+              ?? enumerator.GetDefaultAudioEndpoint(
+                  NAudio.CoreAudioApi.DataFlow.Render,
+                  NAudio.CoreAudioApi.Role.Multimedia);
+
+        string deviceName = device.FriendlyName;
+        using var graph = new AudioGraph { AutoRun = false };
+        var source = new SourceNode($"monitor {processId}", SourceKind.Application, processId);
+        string? fault = null;
+        source.Faulted += (_, reason) => fault = reason;
+        graph.AddSource(source);
+        var output = graph.AddOutput(device);
+        graph.Connect(source, output);
+        output.Start();
+        source.Start();
+        graph.StartEngine();
+
+        // Ignore device/engine startup underruns and capture-ramp offset.
+        Thread.Sleep(2000);
+        long baselineFrames = source.SourceFrames;
+        long baselineSkipped = source.SkippedFrames;
+        long baselineUnderruns = output.Underruns;
+        long baselineShortReads = output.ShortReadFrames;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        double maxBacklog = 0;
+        double sumBacklog = 0;
+        int samples = 0;
+        double maxQueue = 0;
+        double maxLatency = 0;
+        double maxEndpoint = 0;
+        double maxOutputBuffer = 0;
+        double maxEngineQueue = 0;
+        double maxChain = 0;
+
+        while (clock.Elapsed.TotalSeconds < seconds && fault == null)
+        {
+            Thread.Sleep(250);
+            double backlog = source.BufferedMs;
+            maxBacklog = Math.Max(maxBacklog, backlog);
+            sumBacklog += backlog;
+            samples++;
+            maxQueue = Math.Max(maxQueue, output.EngineQueuePercent);
+            double latency = output.EstimatedLatencyMs;
+            if (latency > maxLatency)
+            {
+                maxLatency = latency;
+                maxEndpoint = output.EndpointLatencyMs;
+                maxOutputBuffer = output.BufferedMs;
+                maxEngineQueue = output.EngineQueueMs;
+                maxChain = output.ChainLatencyMs;
+            }
+        }
+
+        double elapsed = Math.Max(clock.Elapsed.TotalSeconds, 0.001);
+        long captured = source.CapturedFrames;
+        long sourceFrames = source.SourceFrames;
+        long skipped = source.SkippedFrames - baselineSkipped;
+        long underruns = output.Underruns - baselineUnderruns;
+        long shortReads = output.ShortReadFrames - baselineShortReads;
+        double driftPpm = source.SampleRate > 0
+            ? (((sourceFrames - baselineFrames) / elapsed) / source.SampleRate - 1.0) * 1_000_000.0
+            : 0;
+        float meter = source.MeterLevel;
+        string state = output.PlaybackState;
+        bool lowLatency = output.LowLatencyActive;
+        double endpoint = output.EndpointLatencyMs;
+        double outputBuffer = output.BufferedMs;
+        double engineQueue = output.EngineQueueMs;
+        double chain = output.ChainLatencyMs;
+        double estimated = output.EstimatedLatencyMs;
+        bool clickRisk = skipped > 0 || underruns > 0 || shortReads > 0 || maxQueue > 80;
+
+        graph.StopEngine();
+        graph.Dispose();
+        source.Dispose();
+
+        string summary =
+            $"Monitor '{deviceName}': source {source.SampleRate} Hz/{source.Channels} ch, " +
+            $"state {state}, low-latency {lowLatency}, latency max {maxLatency:0.0} ms " +
+            $"(endpoint {maxEndpoint:0.0} + output buffer {maxOutputBuffer:0.0} + engine queue {maxEngineQueue:0.0} + chain {maxChain:0.0}; steady {estimated:0.0}), " +
+            $"backlog max/avg {maxBacklog:0.0}/{sumBacklog / Math.Max(1, samples):0.0} ms, " +
+            $"engine ring max {maxQueue:0.0}%, captured {captured} frames, raw {sourceFrames}, " +
+            $"skipped {skipped}, underruns {underruns}, short reads {shortReads}, " +
+            $"drift {driftPpm:+0.0;-0.0;0.0} ppm, meter {meter:0.000}, " +
+            $"click risk {(clickRisk ? "YES" : "no")}" +
+            (fault == null ? "." : $" | FAULT: {fault}");
+
+        return new MonitorRouteResult(
+            deviceName, $"{source.SampleRate} Hz/{source.Channels} ch", state, lowLatency,
+            maxBacklog, sumBacklog / Math.Max(1, samples), maxQueue, maxLatency,
+            captured, sourceFrames, skipped, underruns, shortReads, driftPpm, meter,
+            clickRisk, fault, summary);
     }
 
     public sealed record GraphRouteResult(
@@ -1393,7 +1796,7 @@ public static class LatencySelfTest
     /// <summary>
     /// Mirrors the UI scenario exactly: an application source is added to the
     /// graph, connected to a device output, and the graph starts both. This
-    /// exercises AudioGraph.Connect/EnsureRunning â€” the same path the window
+    /// exercises AudioGraph.Connect/EnsureRunning — the same path the window
     /// uses when a cable is dropped between two nodes.
     /// </summary>
     public static GraphRouteResult TestGraphRoute(uint processId, double seconds)
@@ -1455,7 +1858,7 @@ public static class LatencySelfTest
     /// Verifies that an effect node really is in the signal path and that
     /// removing it takes the audio with it. A source wired through a gain
     /// modifier into an output must be audible at the modifier's gain, and must
-    /// fall silent â€” with no leftover route â€” once the modifier is deleted.
+    /// fall silent — with no leftover route — once the modifier is deleted.
     /// </summary>
     public static ChainBreakResult TestChainBreak()
     {
@@ -1554,6 +1957,286 @@ public static class LatencySelfTest
             $"-> {(pass ? "PASS" : "FAIL")}";
 
         return new ChainBreakResult(levelWithEffect, levelAfterRemoval, routesAfter, summary);
+    }
+
+    /// <summary>Exercises the lock-free SPSC ring under concurrent producer/consumer load.</summary>
+    public static string TestRingBuffer()
+    {
+        const int total = 500_000;
+        const int capacity = 4096;
+        var ring = new FloatRingBuffer(capacity);
+        var received = new float[total];
+        int readCount = 0;
+        int writeCount = 0;
+        var failure = "";
+
+        var producer = new Thread(() =>
+        {
+            var block = new float[257];
+            try
+            {
+                while (writeCount < total)
+                {
+                    int n = Math.Min(block.Length, total - writeCount);
+                    for (int i = 0; i < n; i++)
+                    {
+                        block[i] = writeCount + i;
+                    }
+
+                    int written = ring.Write(block.AsSpan(0, n));
+                    writeCount += written;
+                    if (written == 0)
+                    {
+                        Thread.SpinWait(64);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                failure = ex.Message;
+            }
+        });
+
+        var consumer = new Thread(() =>
+        {
+            var block = new float[313];
+            try
+            {
+                while (readCount < total)
+                {
+                    int read = ring.Read(block);
+                    if (read == 0)
+                    {
+                        Thread.SpinWait(64);
+                        continue;
+                    }
+
+                    for (int i = 0; i < read; i++)
+                    {
+                        received[readCount++] = block[i];
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                failure = ex.Message;
+            }
+        });
+
+        producer.Start();
+        consumer.Start();
+        bool completed = producer.Join(TimeSpan.FromSeconds(10)) &&
+                         consumer.Join(TimeSpan.FromSeconds(10));
+        bool ordered = completed && failure.Length == 0;
+        for (int i = 0; ordered && i < total; i++)
+        {
+            if (received[i] != i)
+            {
+                ordered = false;
+                failure = $"sequence broke at {i}: {received[i]}";
+            }
+        }
+
+        return $"SPSC ring: {readCount}/{total} floats, capacity {capacity}, " +
+               $"ordered {(ordered ? "yes" : "no")}, failure {(failure.Length == 0 ? "none" : failure)} " +
+               $"-> {(ordered ? "PASS" : "FAIL")}";
+    }
+
+    public sealed record ClipGuardTestResult(bool Passed, string Summary);
+
+    /// <summary>Checks that hot transients are contained and the guard releases.</summary>
+    public static ClipGuardTestResult TestClipGuard()
+    {
+        const int channels = 2;
+        const int frames = 240;
+        var guard = new ClipGuard();
+        var block = new float[frames * channels];
+
+        Array.Fill(block, 2f);
+        guard.Process(block, frames);
+        float hotPeak = 0f;
+        for (int i = 0; i < block.Length; i++)
+        {
+            hotPeak = Math.Max(hotPeak, MathF.Abs(block[i]));
+        }
+
+        bool contained = hotPeak < 1f && hotPeak > 0.9f && guard.Engaged;
+
+        Array.Fill(block, 0.5f);
+        for (int i = 0; i < 400; i++)
+        {
+            Array.Fill(block, 0.5f);
+            guard.Process(block, frames);
+        }
+
+        Array.Fill(block, 0.5f);
+        guard.Process(block, frames);
+
+        float quietPeak = 0f;
+        for (int i = 0; i < block.Length; i++)
+        {
+            quietPeak = Math.Max(quietPeak, MathF.Abs(block[i]));
+        }
+
+        bool released = Math.Abs(quietPeak - 0.5f) < 0.01f && !guard.Engaged;
+        bool passed = contained && released;
+        return new ClipGuardTestResult(passed,
+            $"Clip guard: hot peak {hotPeak:0.000}, quiet peak {quietPeak:0.000}, " +
+            $"engaged {guard.Engaged} -> {(passed ? "PASS" : "FAIL")}");
+    }
+
+    public sealed record SidechainTestResult(bool Passed, string Summary);
+
+    /// <summary>
+    /// Checks the sidechain ducker envelope and that key links are registered
+    /// separately from audible source inputs.
+    /// </summary>
+    public static SidechainTestResult TestSidechain()
+    {
+        const int channels = 2;
+        const int frames = 240;
+
+        var ducker = new SidechainDuckerProcessor();
+        SetSidechainParameter(ducker, "Threshold", -30f);
+        SetSidechainParameter(ducker, "Duck", -20f);
+        SetSidechainParameter(ducker, "Attack", 0.5f);
+        SetSidechainParameter(ducker, "Release", 50f);
+
+        var signal = new float[frames * channels];
+        var key = new float[frames * channels];
+        for (int i = 0; i < frames; i++)
+        {
+            signal[i * channels] = 0.5f;
+            signal[(i * channels) + 1] = 0.5f;
+            key[i * channels] = 0.5f;
+            key[(i * channels) + 1] = 0.5f;
+        }
+
+        float open = RunDuckerBlock(ducker, signal, ReadOnlySpan<float>.Empty, frames);
+        for (int i = 0; i < 20; i++)
+        {
+            open = RunDuckerBlock(ducker, signal, key, frames);
+        }
+
+        for (int i = 0; i < 40; i++)
+        {
+            RunDuckerBlock(ducker, signal, ReadOnlySpan<float>.Empty, frames);
+        }
+
+        float released = RunDuckerBlock(ducker, signal, ReadOnlySpan<float>.Empty, frames);
+
+        bool envelopeOk = open < 0.12f && open > 0.03f && released > 0.45f;
+
+        var graph = new AudioGraph { AutoRun = false };
+        var main = new SourceNode("main", SourceKind.Application);
+        var keySource = new SourceNode("key", SourceKind.Application);
+        var modifier = new ModifierNode("Ducker");
+        modifier.Add(new SidechainDuckerProcessor());
+        graph.AddSource(main);
+        graph.AddSource(keySource);
+        graph.AddModifier(modifier);
+        graph.ConnectSourceToModifier(main, modifier);
+        graph.ConnectSourceToModifierSidechain(keySource, modifier);
+        bool wiringOk = modifier.Inputs.Count == 1 &&
+                        modifier.SidechainInputs.Count == 1 &&
+                        modifier.SidechainInputs[0] == keySource;
+        graph.DisconnectSourceFromModifierSidechain(keySource, modifier);
+        wiringOk &= modifier.SidechainInputs.Count == 0;
+
+        var chain = new ChainProcessor("key chain");
+        chain.Add(new SidechainDuckerProcessor());
+        bool chainOk = SidechainRouting.Supports(chain) &&
+                       SidechainRouting.Supports(new SidechainDuckerProcessor()) &&
+                       !SidechainRouting.Supports(new GainProcessor());
+
+        var engineGraph = new AudioGraph { AutoRun = false };
+        var mainEngineSource = new SourceNode("main engine", SourceKind.Application);
+        var keyEngineSource = new SourceNode("key engine", SourceKind.Application);
+        var engineDucker = new SidechainDuckerProcessor();
+        SetSidechainParameter(engineDucker, "Threshold", -30f);
+        SetSidechainParameter(engineDucker, "Duck", -20f);
+        SetSidechainParameter(engineDucker, "Attack", 0.5f);
+        SetSidechainParameter(engineDucker, "Release", 50f);
+        var engineModifier = new ModifierNode("Engine ducker");
+        engineModifier.Add(engineDucker);
+        var keyEngineModifier = new ModifierNode("Engine key chain");
+        keyEngineModifier.Add(new GainProcessor());
+        engineGraph.AddSource(mainEngineSource);
+        engineGraph.AddSource(keyEngineSource);
+        engineGraph.AddModifier(engineModifier);
+        engineGraph.AddModifier(keyEngineModifier);
+        var engineOutput = engineGraph.AddOutputForTest(static (_, _) => { });
+        engineOutput.UseGraphEngine = true;
+        engineGraph.ConnectSourceToModifier(mainEngineSource, engineModifier);
+        engineGraph.ConnectSourceToModifier(keyEngineSource, keyEngineModifier);
+        engineGraph.ConnectModifierToModifierSidechain(keyEngineModifier, engineModifier);
+        engineGraph.ConnectModifierToOutput(engineModifier, engineOutput);
+        engineGraph.RenderEngineOnceForTest();
+
+        var engineFeed = new float[frames * channels];
+        for (int i = 0; i < frames; i++)
+        {
+            engineFeed[i * channels] = 0.5f;
+            engineFeed[(i * channels) + 1] = 0.5f;
+        }
+
+        for (int i = 0; i < 10; i++)
+        {
+            mainEngineSource.WriteTestSamples(engineFeed);
+            keyEngineSource.WriteTestSamples(engineFeed);
+            engineGraph.RenderEngineOnceForTest();
+        }
+
+        engineOutput.ClearEngineAudio();
+        for (int i = 0; i < 10; i++)
+        {
+            mainEngineSource.WriteTestSamples(engineFeed);
+            keyEngineSource.WriteTestSamples(engineFeed);
+            engineGraph.RenderEngineOnceForTest();
+        }
+
+        float engineLevel = engineOutput.DrainEngineLevelForTest(frames);
+        bool engineOk = engineLevel > 0.03f && engineLevel < 0.12f;
+
+        bool passed = envelopeOk && wiringOk && chainOk && engineOk;
+        return new SidechainTestResult(passed,
+            $"Sidechain: ducked {open:0.000}, released {released:0.000}, " +
+            $"wiring {(wiringOk ? "ok" : "FAIL")}, chain {(chainOk ? "ok" : "FAIL")}, " +
+            $"engine {engineLevel:0.000} {(engineOk ? "ok" : "FAIL")} " +
+            $"-> {(passed ? "PASS" : "FAIL")}");
+    }
+
+    private static void SetSidechainParameter(IAudioProcessor processor, string name, float value)
+    {
+        if (processor is not IParameterizedProcessor parameterized)
+        {
+            return;
+        }
+
+        var parameter = parameterized.Parameters.FirstOrDefault(item => item.Name == name);
+        parameter?.Set(value);
+    }
+
+    private static float RunDuckerBlock(
+        SidechainDuckerProcessor ducker,
+        float[] signal,
+        ReadOnlySpan<float> key,
+        int frames)
+    {
+        for (int i = 0; i < signal.Length; i++)
+        {
+            signal[i] = 0.5f;
+        }
+
+        ducker.SetSidechain(key, frames);
+        ducker.Process(signal, frames);
+        double sum = 0;
+        for (int i = 0; i < signal.Length; i++)
+        {
+            sum += Math.Abs(signal[i]);
+        }
+
+        return (float)(sum / signal.Length);
     }
 
     /// <summary>
@@ -2200,11 +2883,12 @@ public static class LatencySelfTest
                             AudioFileFormat.Wav16 => 16,
                             AudioFileFormat.Wav24 => 24,
                             AudioFileFormat.Wav32Float => 32,
+                            AudioFileFormat.Flac => 24,
                             _ => 0,
                         };
 
                         bool formatOk = expectedBits == 0 ||
-                            (reader is WaveFileReader wav && wav.WaveFormat.BitsPerSample == expectedBits);
+                            reader.WaveFormat.BitsPerSample == expectedBits;
                         bool encodingOk = info.Format != AudioFileFormat.Wav32Float ||
                             (reader is WaveFileReader floatWav &&
                              floatWav.WaveFormat.Encoding == WaveFormatEncoding.IeeeFloat);
@@ -2249,6 +2933,7 @@ public static class LatencySelfTest
             {
                 using (var output = OutputNode.CreateForFile(nodePath, AudioFileFormat.Wav16))
                 {
+                    output.UseGraphEngine = false;
                     output.Start();
                     Thread.Sleep(350);
                     output.Stop();
@@ -2288,8 +2973,8 @@ public static class LatencySelfTest
                 graph.AddSource(source);
                 graph.Connect(source, output);
                 output.Start();
+                graph.StartEngine();
 
-                var subscription = output.Inputs[0].Subscription;
                 var block = new float[960 * 2]; // 20 ms
                 for (int part = 0; part < 14; part++)
                 {
@@ -2301,10 +2986,12 @@ public static class LatencySelfTest
                         block[frame * 2 + 1] = value;
                     }
 
-                    subscription.Write(block);
+                    source.WriteTestSamples(block);
                     Thread.Sleep(20);
                 }
 
+                Thread.Sleep(80);
+                graph.StopEngine();
                 output.Stop();
                 routeSeconds = output.RecordedSeconds;
                 routeDetail = output.RecordingError ?? string.Empty;

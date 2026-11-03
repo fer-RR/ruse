@@ -2,6 +2,7 @@ export type MessageHandler = (type: string, payload: unknown) => void;
 
 interface WebViewBridge {
   postMessage(message: unknown): void;
+  postMessageWithAdditionalObjects?(message: unknown, additionalObjects: ArrayLike<unknown>): void;
   addEventListener(type: 'message', handler: (event: { data: unknown }) => void): void;
   removeEventListener(type: 'message', handler: (event: { data: unknown }) => void): void;
 }

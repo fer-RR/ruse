@@ -15,6 +15,23 @@ public interface IAudioProcessor
     int LatencySamples => 0;
 }
 
+/// <summary>
+/// Receives a key signal that should drive this processor without being mixed
+/// into its audible output. Called on the audio thread before <see cref="IAudioProcessor.Process"/>.
+/// </summary>
+public interface ISidechainProcessor
+{
+    void SetSidechain(ReadOnlySpan<float> samples, int frames);
+}
+
+public static class SidechainRouting
+{
+    /// <summary>True when a processor (or a saved chain) can consume a key signal.</summary>
+    public static bool Supports(IAudioProcessor processor) =>
+        processor is ChainProcessor chain
+            ? chain.Processors.Any(Supports)
+            : processor is ISidechainProcessor;
+}
 /// <summary>A processor that feeds a display or transcription tap from a monitor.</summary>
 public interface ITapProcessor
 {
@@ -114,6 +131,78 @@ public static class AudioProcessorCatalog
             "Graphic EQ",
             "Ten-band ISO octave equalizer with click-free band changes.",
             () => new GraphicEqualizerProcessor()));
+
+        Register(new Descriptor(
+            ParametricEqProcessor.Id,
+            "Parametric EQ",
+            "Six-band parametric EQ with shelves and four peaking bands.",
+            () => new ParametricEqProcessor()));
+
+        Register(new Descriptor(
+            ConvolutionReverbProcessor.Id,
+            "Convolution reverb",
+            "Convolves the signal with a built-in room or a loaded impulse response.",
+            () => new ConvolutionReverbProcessor()));
+
+        Register(new Descriptor(
+            PolarityProcessor.Id,
+            "Polarity",
+            "Inverts the phase of the left, right or both channels.",
+            () => new PolarityProcessor()));
+
+        Register(new Descriptor(
+            ClipperProcessor.Id,
+            "Clipper",
+            "Hard-clips peaks at a ceiling, with 4x oversampling.",
+            () => new ClipperProcessor()));
+
+        Register(new Descriptor(
+            ClipGuardProcessor.Id,
+            "Clip guard",
+            "Soft-knee peak limiting with adjustable ceiling, attack and release.",
+            () => new ClipGuardProcessor()));
+
+        Register(new Descriptor(
+            VibratoProcessor.Id,
+            "Vibrato",
+            "Modulates pitch with a short, smoothly moving delay.",
+            () => new VibratoProcessor()));
+
+        Register(new Descriptor(
+            RingModulatorProcessor.Id,
+            "Ring mod",
+            "Multiplies the signal by a sine carrier for metallic tones.",
+            () => new RingModulatorProcessor()));
+
+        Register(new Descriptor(
+            HaasProcessor.Id,
+            "Haas widener",
+            "Delays one channel by a few milliseconds to widen the image.",
+            () => new HaasProcessor()));
+
+        Register(new Descriptor(
+            ExciterProcessor.Id,
+            "Exciter",
+            "Adds high-frequency harmonics for perceived brightness.",
+            () => new ExciterProcessor()));
+
+        Register(new Descriptor(
+            MidSideProcessor.Id,
+            "Mid/Side",
+            "Balances the centre and stereo difference, with width control.",
+            () => new MidSideProcessor()));
+
+        Register(new Descriptor(
+            LoudnessProcessor.Id,
+            "Loudness",
+            "Shows integrated, short-term, LRA and true-peak loudness.",
+            () => new LoudnessProcessor()));
+
+        Register(new Descriptor(
+            SidechainDuckerProcessor.Id,
+            "Sidechain ducker",
+            "Ducks this route when a separate key source passes the threshold.",
+            () => new SidechainDuckerProcessor()));
 
         NaudioEffects.RegisterAll();
     }

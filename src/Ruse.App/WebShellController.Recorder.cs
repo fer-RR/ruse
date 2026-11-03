@@ -1,10 +1,14 @@
 using System.IO;
 using Ruse.App.Audio;
+using Ruse.App.Diagnostics;
 
 namespace Ruse.App;
 
 internal sealed partial class WebShellController
 {
+    private const double RecorderSilenceThresholdDb = -60;
+    private readonly Dictionary<string, long> _recorderSilenceStarted = new();
+
     internal bool HasActiveRecording =>
         _nodes.Values.Any(entry => entry.Output?.IsRecording == true);
 
@@ -39,6 +43,39 @@ internal sealed partial class WebShellController
         return path;
     }
 
+    private void OpenRecorderFolder(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Output is not { IsFileRecorder: true } output)
+        {
+            return;
+        }
+
+        string path = output.RecordingPath;
+        string? folder = string.IsNullOrWhiteSpace(path) ? null : Path.GetDirectoryName(path);
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            folder = RecordingDirectory();
+            Directory.CreateDirectory(folder);
+        }
+
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                UseShellExecute = true,
+                Arguments = !string.IsNullOrWhiteSpace(path) && File.Exists(path)
+                    ? $"/select,\"{path}\""
+                    : $"\"{folder}\"",
+            };
+            System.Diagnostics.Process.Start(start);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Could not open the recording folder: {ex.Message}", isError: true);
+        }
+    }
+
     private bool StartRecorder(NodeEntry entry, OutputNode output)
     {
         if (output.IsRecording)
@@ -47,6 +84,7 @@ internal sealed partial class WebShellController
         }
 
         output.AutoStart = true;
+        _graph.AddOutputNode(output, invalidate: true);
 
         if (output.AutoSave)
         {
@@ -90,8 +128,10 @@ internal sealed partial class WebShellController
                 continue;
             }
 
+            double thresholdDb = Math.Clamp(output.RecorderStartThresholdDb, -80, 0);
             bool hasAudio = output.Inputs.Any(route =>
-                route.Source != null && route.Source.MeterLevel > 0.01f);
+                route.Source != null && !route.Source.Muted &&
+                Math.Max(route.Source.MeterDbLeft, route.Source.MeterDbRight) >= thresholdDb);
             if (!hasAudio)
             {
                 continue;
@@ -179,5 +219,93 @@ internal sealed partial class WebShellController
             ? "Auto save on; files use the recording date and time."
             : "Auto save off.");
         PublishGraph();
+    }
+
+    private void SetRecorderSilence(string id, double seconds)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Output is not { IsFileRecorder: true } output)
+        {
+            return;
+        }
+
+        output.RecorderSilenceStopSeconds = double.IsFinite(seconds)
+            ? Math.Clamp(seconds, 0, 3600)
+            : 0;
+        _recorderSilenceStarted.Remove(id);
+        PublishGraph();
+    }
+
+    private void SetRecorderThreshold(string id, double db)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Output is not { IsFileRecorder: true } output)
+        {
+            return;
+        }
+
+        output.RecorderStartThresholdDb = double.IsFinite(db)
+            ? Math.Clamp(db, -80, 0)
+            : -40;
+        PublishGraph();
+    }
+
+    private void CheckRecorderSilence()
+    {
+        if (!_graph.AutoRun)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        var active = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Output is not { IsFileRecorder: true, IsRecording: true } output)
+            {
+                continue;
+            }
+
+            active.Add(entry.Id);
+            double seconds = output.RecorderSilenceStopSeconds;
+            if (seconds <= 0)
+            {
+                _recorderSilenceStarted.Remove(entry.Id);
+                continue;
+            }
+
+            double levelDb = Math.Max(output.MeterDbLeft, output.MeterDbRight);
+            if (levelDb > RecorderSilenceThresholdDb)
+            {
+                _recorderSilenceStarted.Remove(entry.Id);
+                continue;
+            }
+
+            if (!_recorderSilenceStarted.TryGetValue(entry.Id, out long started))
+            {
+                _recorderSilenceStarted[entry.Id] = now;
+                continue;
+            }
+
+            if (now - started < seconds * 1000)
+            {
+                continue;
+            }
+
+            string path = output.RecordingPath;
+            output.Stop();
+            _recorderSilenceStarted.Remove(entry.Id);
+            _running = _graph.Outputs.Any(item => item.IsRunning);
+            SetStatus($"{entry.Title}: recording stopped after {seconds:0.#} s of silence.");
+            AppLog.Info($"Recording stopped after silence: {path}");
+            PublishGraph();
+            PublishTelemetry(force: true);
+        }
+
+        foreach (string id in _recorderSilenceStarted.Keys.ToArray())
+        {
+            if (!active.Contains(id))
+            {
+                _recorderSilenceStarted.Remove(id);
+            }
+        }
     }
 }

@@ -7,7 +7,7 @@ namespace Ruse.App;
 
 internal sealed partial class WebShellController
 {
-    private Preset BuildPreset()
+    private Preset BuildPreset(HashSet<string>? included = null, double offsetX = 0, double offsetY = 0)
     {
         var preset = new Preset { Name = "Ruse routing" };
         var sourceIndex = new Dictionary<string, int>();
@@ -16,6 +16,11 @@ internal sealed partial class WebShellController
 
         foreach (var entry in _nodes.Values)
         {
+            if (included != null && !included.Contains(entry.Id))
+            {
+                continue;
+            }
+
             if (entry.Source != null)
             {
                 sourceIndex[entry.Id] = preset.Sources.Count;
@@ -27,9 +32,15 @@ internal sealed partial class WebShellController
                     ProcessName = entry.Source.ProcessName,
                     DeviceId = entry.Source.DeviceId,
                     FilePath = entry.Source.FilePath,
+                    OutputId = entry.Source.SelectedOutputId,
+                    Color = entry.Color,
+                    Solo = entry.Source.Solo,
                     FileLoop = entry.Source.FileLoop,
-                    X = entry.X,
-                    Y = entry.Y,
+                    ToneFrequency = entry.Source.ToneFrequency,
+                    ToneWaveform = entry.Source.ToneWave.ToString(),
+                    ToneLevelDb = entry.Source.ToneLevelDb,
+                    X = entry.X + offsetX,
+                    Y = entry.Y + offsetY,
                     Width = entry.Width,
                     Height = entry.Height,
                     Volume = entry.Source.Gain,
@@ -50,8 +61,12 @@ internal sealed partial class WebShellController
                     FileFormat = entry.Output.IsFileRecorder ? entry.Output.RecordingFormat.ToString() : null,
                     RecordingMode = entry.Output.RecorderMode.ToString(),
                     AutoSave = entry.Output.AutoSave,
-                    X = entry.X,
-                    Y = entry.Y,
+                    RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds,
+                    RecorderStartThresholdDb = entry.Output.RecorderStartThresholdDb,
+                    Color = entry.Color,
+                    Solo = entry.Output.Solo,
+                    X = entry.X + offsetX,
+                    Y = entry.Y + offsetY,
                     Width = entry.Width,
                     Height = entry.Height,
                     Volume = entry.Output.Volume,
@@ -65,11 +80,14 @@ internal sealed partial class WebShellController
                 {
                     Title = entry.Title,
                     Enabled = entry.Modifier.Enabled,
+                    Parallel = entry.Modifier.Parallel,
+                    Send = entry.Modifier.Send,
+                    Color = entry.Color,
                     TranscriberModel = entry.TranscriberModel,
                     TranslatorTarget = entry.TranslatorTarget,
                     TranslatorModel = entry.TranslatorModel,
-                    X = entry.X,
-                    Y = entry.Y,
+                    X = entry.X + offsetX,
+                    Y = entry.Y + offsetY,
                     Width = entry.Width,
                     Height = entry.Height,
                     Processors = entry.Modifier.Processors.Select(PresetSerializer.SerializeProcessor).ToList(),
@@ -88,7 +106,28 @@ internal sealed partial class WebShellController
                     SourceIndex = directSource,
                     OutputIndex = directOutput,
                     Gain = link.Gain,
+                    Enabled = link.Enabled,
                 });
+            }
+            else if (link.Kind == "sidechain" &&
+                     modifierIndex.TryGetValue(link.To, out int keyModifier))
+            {
+                if (sourceIndex.TryGetValue(link.From, out int keySource))
+                {
+                    preset.Sidechains.Add(new PresetSidechainLink
+                    {
+                        SourceIndex = keySource,
+                        ModifierIndex = keyModifier,
+                    });
+                }
+                else if (modifierIndex.TryGetValue(link.From, out int keyModifierSource))
+                {
+                    preset.Sidechains.Add(new PresetSidechainLink
+                    {
+                        SourceModifierIndex = keyModifierSource,
+                        ModifierIndex = keyModifier,
+                    });
+                }
             }
             else if (link.Kind == "source-modifier" &&
                      sourceIndex.TryGetValue(link.From, out int linkedSource) &&
@@ -108,6 +147,8 @@ internal sealed partial class WebShellController
                 {
                     ModifierIndex = outputModifier,
                     OutputIndex = linkedOutput,
+                    Gain = link.Gain,
+                    Enabled = link.Enabled,
                 });
             }
             else if (link.Kind == "modifier-modifier" &&
@@ -122,6 +163,10 @@ internal sealed partial class WebShellController
             }
         }
 
+        if (included == null)
+        SaveMidiBindings(preset, modifierIndex);
+
+        if (included == null)
         foreach (var frame in _frames)
         {
             preset.Frames.Add(new PresetFrame
@@ -138,10 +183,15 @@ internal sealed partial class WebShellController
         return preset;
     }
 
-    private void ApplyPreset(Preset preset, bool autoRun)
+    private void ApplyPreset(Preset preset, bool autoRun, bool insert = false, double offsetX = 0, double offsetY = 0, bool trustRecorderPaths = false)
     {
-        ClearGraph();
-        _graph.AutoRun = autoRun;
+        if (!insert)
+        {
+            ClearGraph();
+            _graph.AutoRun = autoRun;
+        }
+
+        if (!insert)
         _frames.AddRange(preset.Frames.Select(frame => new FrameDto
         {
             Id = string.IsNullOrWhiteSpace(frame.Id) ? Guid.NewGuid().ToString("N") : frame.Id,
@@ -154,6 +204,7 @@ internal sealed partial class WebShellController
         var sources = new List<NodeEntry?>();
         var outputs = new List<NodeEntry?>();
         var modifiers = new List<NodeEntry?>();
+        int disarmedRecorders = 0;
 
         foreach (var saved in preset.Sources)
         {
@@ -162,11 +213,22 @@ internal sealed partial class WebShellController
                 var kind = Enum.TryParse<SourceKind>(saved.Kind, out var parsed) ? parsed : SourceKind.Application;
                 var source = new SourceNode(saved.Title, kind, saved.ProcessId, saved.DeviceId,
                     processName: saved.ProcessName, filePath: saved.FilePath, fileLoop: saved.FileLoop);
-                source.Gain = saved.Volume;
+                if (kind == SourceKind.Tone)
+                {
+                    var wave = Enum.TryParse<ToneWaveform>(saved.ToneWaveform, ignoreCase: true, out var toneWave)
+                        ? toneWave
+                        : ToneWaveform.Sine;
+                    source.SetTone(saved.ToneFrequency, wave, saved.ToneLevelDb);
+                }
+
+                source.Gain = float.IsFinite(saved.Volume) ? Math.Clamp(saved.Volume, 0f, 4f) : 1f;
                 source.Muted = saved.Muted;
-                var sourceEntry = RegisterSource(source, saved.X, saved.Y);
+                source.Solo = saved.Solo;
+                source.SelectedOutputId = saved.OutputId;
+                var sourceEntry = RegisterSource(source, saved.X + offsetX, saved.Y + offsetY);
                 sourceEntry.Width = saved.Width;
                 sourceEntry.Height = saved.Height;
+                sourceEntry.Color = NormalizeNodeColor(saved.Color);
                 sources.Add(sourceEntry);
             }
             catch (Exception ex)
@@ -184,8 +246,15 @@ internal sealed partial class WebShellController
                 string? micHint = null;
                 if (saved.IsFile)
                 {
-                    output = OutputNode.CreateForFile(saved.FilePath ?? string.Empty, AudioFileFormats.Parse(saved.FileFormat));
-                    output.AutoStart = false;
+                    // Recorder paths in imported presets are untrusted. Session and
+                    // template libraries are local and keep their chosen destination.
+                    string recorderPath = trustRecorderPaths ? saved.FilePath ?? string.Empty : string.Empty;
+                    output = OutputNode.CreateForFile(recorderPath, AudioFileFormats.Parse(saved.FileFormat));
+                    output.AutoStart = trustRecorderPaths;
+                    if (!trustRecorderPaths)
+                    {
+                        disarmedRecorders++;
+                    }
                 }
                 else if (AsioCatalog.IsAsioId(saved.DeviceId))
                 {
@@ -204,19 +273,28 @@ internal sealed partial class WebShellController
                     output = new OutputNode(enumerator.GetDevice(saved.DeviceId));
                 }
 
-                output.Volume = saved.Volume;
+                output.Volume = float.IsFinite(saved.Volume) ? Math.Clamp(saved.Volume, 0f, 2f) : 1f;
                 output.Muted = saved.Muted;
+                output.Solo = saved.Solo;
                 output.RecorderMode = Enum.TryParse<RecorderMode>(saved.RecordingMode, true, out var mode)
                     ? mode
                     : RecorderMode.Off;
                 output.AutoSave = saved.AutoSave;
-                if (!output.AutoSave && output.RecorderMode != RecorderMode.Off)
+                output.RecorderSilenceStopSeconds = double.IsFinite(saved.RecorderSilenceStopSeconds)
+                    ? Math.Clamp(saved.RecorderSilenceStopSeconds, 0, 3600)
+                    : 0;
+                output.RecorderStartThresholdDb = double.IsFinite(saved.RecorderStartThresholdDb)
+                    ? Math.Clamp(saved.RecorderStartThresholdDb, -80, 0)
+                    : -40;
+                if (!trustRecorderPaths && saved.IsFile)
                 {
                     output.RecorderMode = RecorderMode.Off;
+                    output.AutoSave = false;
                 }
-                var outputEntry = RegisterOutput(output, saved.X, saved.Y, micHint);
+                var outputEntry = RegisterOutput(output, saved.X + offsetX, saved.Y + offsetY, micHint);
                 outputEntry.Width = saved.Width;
                 outputEntry.Height = saved.Height;
+                outputEntry.Color = NormalizeNodeColor(saved.Color);
                 outputs.Add(outputEntry);
             }
             catch (Exception ex)
@@ -241,8 +319,10 @@ internal sealed partial class WebShellController
             }
 
             modifier.Enabled = saved.Enabled;
+            modifier.Parallel = saved.Parallel;
+            modifier.Send = float.IsFinite(saved.Send) ? Math.Clamp(saved.Send, 0f, 1f) : 0.5f;
             bool isChain = modifier.Processors.Any(processor => processor is ChainProcessor);
-            var modifierEntry = RegisterModifier(modifier, saved.X, saved.Y,
+            var modifierEntry = RegisterModifier(modifier, saved.X + offsetX, saved.Y + offsetY,
                 flavor: isChain ? "chain" : "effect",
                 subtitle: isChain ? "Saved chain" : "Processing",
                 transcriberModel: saved.TranscriberModel,
@@ -250,6 +330,7 @@ internal sealed partial class WebShellController
                 translatorModel: saved.TranslatorModel);
             modifierEntry.Width = saved.Width;
             modifierEntry.Height = saved.Height;
+            modifierEntry.Color = NormalizeNodeColor(saved.Color);
             modifiers.Add(modifierEntry);
         }
 
@@ -257,7 +338,27 @@ internal sealed partial class WebShellController
         {
             if (Resolve(sources, route.SourceIndex) is { } source && Resolve(outputs, route.OutputIndex) is { } output)
             {
-                ConnectEntries(source, output, route.Gain);
+                var link = ConnectEntries(source, output, route.Gain, publish: false);
+                link.Enabled = route.Enabled;
+                ApplyLinkRouting(link, publish: false);
+            }
+        }
+
+        foreach (var link in preset.Sidechains)
+        {
+            if (Resolve(modifiers, link.ModifierIndex) is not { } modifier)
+            {
+                continue;
+            }
+
+            if (link.SourceModifierIndex is int keyModifierIndex &&
+                Resolve(modifiers, keyModifierIndex) is { } keyModifier)
+            {
+                ConnectEntries(keyModifier, modifier, kind: "sidechain");
+            }
+            else if (Resolve(sources, link.SourceIndex) is { } source)
+            {
+                ConnectEntries(source, modifier, kind: "sidechain");
             }
         }
 
@@ -281,11 +382,27 @@ internal sealed partial class WebShellController
         {
             if (Resolve(modifiers, link.ModifierIndex) is { } modifier && Resolve(outputs, link.OutputIndex) is { } output)
             {
-                ConnectEntries(modifier, output);
+                var created = ConnectEntries(modifier, output, link.Gain, publish: false);
+                created.Enabled = link.Enabled;
+                ApplyLinkRouting(created, publish: false);
             }
         }
 
-        if (autoRun)
+        if (!insert)
+        {
+            RestoreMidiBindings(preset, modifiers);
+        }
+
+        if (disarmedRecorders > 0)
+        {
+            AppLog.Warning($"Disarmed {disarmedRecorders} recorder(s) imported from a preset.");
+        }
+
+        if (insert)
+        {
+            PublishGraph();
+        }
+        else if (autoRun)
         {
             StartRouting();
         }
@@ -301,7 +418,7 @@ internal sealed partial class WebShellController
 
     private void SaveSession()
     {
-        if (App.DemoMode || (_nodes.Count == 0 && _frames.Count == 0))
+        if (App.DemoMode || App.LiveDemoMode || (_nodes.Count == 0 && _frames.Count == 0))
         {
             return;
         }
@@ -320,8 +437,9 @@ internal sealed partial class WebShellController
                 return;
             }
 
-            ApplyPreset(Preset.FromJson(File.ReadAllText(AppSettings.SessionPath)), autoRun: false);
-            SetStatus("Restored last session · routing is idle.");
+            ApplyPreset(Preset.FromJson(File.ReadAllText(AppSettings.SessionPath)), autoRun: false,
+                trustRecorderPaths: true);
+            SetStatus("Restored last session — routing is idle.");
         }
         catch (Exception ex)
         {
@@ -373,8 +491,8 @@ internal sealed partial class WebShellController
         if (dialog.ShowDialog(_window) != true) return;
 
         ClearHistory();
-        ApplyPreset(Preset.FromJson(File.ReadAllText(dialog.FileName)), autoRun: true);
-        SetStatus($"Preset loaded: {Path.GetFileName(dialog.FileName)}");
+        ApplyPreset(Preset.FromJson(File.ReadAllText(dialog.FileName)), autoRun: false);
+        SetStatus($"Preset loaded: {Path.GetFileName(dialog.FileName)}. Press Start routing to run it.");
     }
 
     private void ApplySettings(SettingsDto settings)
@@ -408,11 +526,34 @@ internal sealed partial class WebShellController
         }
 
         _settings.ShowDiagnostics = settings.ShowDiagnostics;
+        bool audioEngineChanged =
+            _settings.AudioAutoMode != settings.AudioAutoMode ||
+            Math.Abs(_settings.AudioBlockSizeMs - settings.AudioBlockSizeMs) > 0.001 ||
+            !string.Equals(_settings.OutputBufferMode, settings.OutputBufferMode, StringComparison.OrdinalIgnoreCase) ||
+            _settings.OutputBufferManualMs != settings.OutputBufferManualMs ||
+            !string.Equals(_settings.EngineCushionMode, settings.EngineCushionMode, StringComparison.OrdinalIgnoreCase) ||
+            _settings.EngineCushionManualMs != settings.EngineCushionManualMs ||
+            _settings.ElasticRing != settings.ElasticRing;
+        _settings.AudioAutoMode = settings.AudioAutoMode;
+        _settings.AudioBlockSizeMs = Math.Clamp(settings.AudioBlockSizeMs, 2.5, 10.0);
+        _settings.OutputBufferMode = settings.OutputBufferMode ?? "balanced";
+        _settings.OutputBufferManualMs = Math.Clamp(settings.OutputBufferManualMs, 2, 40);
+        _settings.EngineCushionMode = settings.EngineCushionMode ?? "auto";
+        _settings.EngineCushionManualMs = Math.Clamp(settings.EngineCushionManualMs, 2, 50);
+        _settings.ElasticRing = settings.ElasticRing;
+        _settings.AggressiveOutputCushion = settings.AggressiveOutputCushion;
+        OutputNode.AggressiveCushion = _settings.AggressiveOutputCushion;
+        _settings.ClipGuard = settings.ClipGuard;
+        OutputNode.ClipGuardEnabled = _settings.ClipGuard;
+        _settings.LowLatencyWasapi = settings.LowLatencyWasapi;
+        OutputNode.LowLatencyWasapi = _settings.LowLatencyWasapi;
         bool gpuChanged = _settings.UseGpu != settings.UseGpu;
         _settings.UseGpu = settings.UseGpu;
         ModelRuntime.UseGpu = _settings.UseGpu;
         _settings.IsolateVst3 = settings.IsolateVst3;
         Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
+        _settings.MidiEnabled = settings.MidiEnabled;
+        _settings.MidiInputDevice = settings.MidiInputDevice ?? "";
         if (gpuChanged)
         {
             ModelRuntime.ClearGpuFallback();
@@ -424,6 +565,8 @@ internal sealed partial class WebShellController
             ? "opus" : "qwen";
         StartupRegistration.SetEnabled(settings.StartWithWindows);
         _settings.Save();
+        ConfigureAudioEngine();
+        ConfigureMidi();
 
         // App-follow should notice a newly playing app as it starts, not up to
         // four seconds later when the first sound is already gone.
@@ -481,7 +624,15 @@ internal sealed partial class WebShellController
 
         PublishSettings();
         PublishGraph();
-        SetStatus("Settings saved.");
+        if (audioEngineChanged && _running)
+        {
+            StopRouting();
+            StartRouting();
+        }
+        else
+        {
+            SetStatus("Settings saved.");
+        }
     }
 
     /// <summary>Reopens speech sessions so a backend change takes effect immediately.</summary>
@@ -1204,8 +1355,8 @@ internal sealed partial class WebShellController
             $"Default translation: {_settings.TranslatorModel} -> {_settings.TranslatorTarget}",
             $"GPU: {(ModelRuntime.GpuAvailable ? ModelRuntime.GpuDeviceName : ModelRuntime.GpuStatusError ?? "not available")}",
             $"GPU fallback: {ModelRuntime.GpuFallbackReason ?? "none"}",
-            $"Output underruns: {_graph.Outputs.Where(output => !output.IsMonitor).Sum(output => output.Underruns)}",
-            $"Nodes: {_nodes.Count} · links: {_links.Count} · running: {_running}",
+            $"Output underruns: {_graph.Outputs.Sum(output => output.Underruns)}",
+            $"Nodes: {_nodes.Count} — links: {_links.Count} — running: {_running}",
         };
 
         try

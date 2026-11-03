@@ -26,6 +26,7 @@ export const demoCatalog: CatalogSnapshot = {
     { id: 'demo-chain', kind: 'chain', name: 'Broadcast voice', subtitle: 'High-pass · Compressor', details: 'Saved voice processing chain' },
   ],
   vst3Plugins: [],
+  frameTemplates: [],
   defaultOutputId: 'demo-headphones',
   defaultOutputName: 'Headphones',
   perAppCaptureAvailable: true,
@@ -79,6 +80,7 @@ export const demoSettings: SettingsModel = {
   showWelcomeScreen: true,
   minimizeToTray: true,
   showDiagnostics: false,
+  aggressiveOutputCushion: false,
   useGpu: false,
   isolateVst3: true,
   transcriberModel: '',
@@ -107,18 +109,18 @@ export function createDemoTelemetry(time: number): TelemetrySnapshot {
   for (const node of demoGraph.nodes) {
     const phase = time / 700 + node.id.length;
     const spectrum = node.isSpectrum
-      ? Array.from({ length: 64 }, (_, index) => {
-          const peak = 40 * Math.exp(-Math.pow((index - 36) / 7, 2));
-          const harmonics = 9 * Math.exp(-Math.pow((index - 22) / 5, 2)) +
-                            6 * Math.exp(-Math.pow((index - 48) / 6, 2));
+      ? Array.from({ length: 128 }, (_, index) => {
+          const peak = 40 * Math.exp(-Math.pow((index - 72) / 14, 2));
+          const harmonics = 9 * Math.exp(-Math.pow((index - 44) / 10, 2)) +
+                            6 * Math.exp(-Math.pow((index - 96) / 12, 2));
           return -80 + peak + harmonics + Math.abs(Math.sin(phase + index * 0.31)) * 4;
         })
       : undefined;
     const spectrogram = node.isSpectrogram
-      ? Array.from({ length: 96 * 64 }, (_, index) => {
-          const column = Math.floor(index / 64);
-          const band = index % 64;
-          const peak = 210 * Math.exp(-Math.pow((band - 36) / 7, 2));
+      ? Array.from({ length: 128 * 128 }, (_, index) => {
+          const column = Math.floor(index / 128);
+          const band = index % 128;
+          const peak = 210 * Math.exp(-Math.pow((band - 72) / 14, 2));
           const pulse = 28 * Math.abs(Math.sin(phase * 0.8 + column * 0.2));
           return Math.max(0, Math.min(255, Math.round(peak + pulse - 26)));
         })
@@ -131,7 +133,7 @@ export function createDemoTelemetry(time: number): TelemetrySnapshot {
       recordingStatus: node.isRecorder ? 'REC' : undefined,
       recordingSeconds: node.isRecorder ? Math.floor(time / 1000) : undefined,
       ...(spectrum ? { spectrum, spectrumPeakHz: 1000 } : {}),
-      ...(spectrogram ? { spectrogram, spectrogramColumns: 96, spectrogramPeakHz: 1000 } : {}),
+      ...(spectrogram ? { spectrogram, spectrogramColumns: 128, spectrogramPeakHz: 1000 } : {}),
     };
   }
 

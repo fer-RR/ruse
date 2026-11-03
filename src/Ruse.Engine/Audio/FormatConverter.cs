@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace Ruse.App.Audio;
 
 /// <summary>
@@ -5,33 +7,38 @@ namespace Ruse.App.Audio;
 /// into the mixer's canonical format: 48 kHz stereo interleaved float.
 ///
 /// Channel mapping:
-///   mono    â†’ duplicated to L/R
-///   stereo  â†’ passthrough
-///   >2 ch   â†’ first two channels (L/R) kept, extras dropped
+///   mono    -> duplicated to L/R
+///   stereo  -> passthrough
+///   3-6 ch  -> ITU-style L/R downmix (center and surrounds included)
+///   >6 ch   -> first six channels use the 5.1 downmix; extra channels are ignored
 ///
-/// Sample-rate conversion uses linear interpolation, which is adequate for
-/// routing/monitoring at these ratios and adds no allocation per callback.
+/// Sample-rate conversion uses a precomputed windowed-sinc polyphase kernel.
+/// The kernel is band-limited for downsampling, and all work is allocation-free
+/// after construction so it can run on capture/ASIO threads.
 /// </summary>
 public sealed class FormatConverter
 {
     public const int TargetSampleRate = 48000;
     public const int TargetChannels = 2;
 
+    private const int Taps = 63;
+    private const int Phases = 512;
+    private const int Center = Taps / 2;
+    private const float Surround = 0.70710678f;
+    private const float Lfe = 0.5f;
+
     private readonly int _srcChannels;
     private readonly double _ratio;      // srcRate / targetRate
     private readonly bool _needsResample;
-    private readonly bool _needsRemap;
+    private readonly float[] _coefficients;
+
+    // Streaming resampler history. Only used when rates differ.
+    private float[] _history;
+    private int _historyFrames;
+    private double _position;
 
     /// <summary>Rate the converter produces.</summary>
     public int TargetRate { get; }
-
-    // Fractional position into the source stream, in source frames.
-    private double _srcPos;
-
-    // Carries the last source frame of the previous block so interpolation can
-    // span block boundaries without a glitch.
-    private float[] _prevFrame = new float[0];
-    private bool _hasPrev;
 
     public FormatConverter(int sourceChannels, int sourceSampleRate, int targetSampleRate = TargetSampleRate)
     {
@@ -39,7 +46,20 @@ public sealed class FormatConverter
         TargetRate = targetSampleRate > 0 ? targetSampleRate : TargetSampleRate;
         _ratio = (double)sourceSampleRate / TargetRate;
         _needsResample = sourceSampleRate != TargetRate;
-        _needsRemap = _srcChannels != TargetChannels;
+
+        if (_needsResample)
+        {
+            double cutoff = Math.Min(1.0, (double)TargetRate / Math.Max(1, sourceSampleRate)) * 0.97;
+            _coefficients = BuildCoefficients(cutoff);
+            _history = new float[16384 * TargetChannels];
+            _historyFrames = Center;
+            _position = Center;
+        }
+        else
+        {
+            _coefficients = Array.Empty<float>();
+            _history = Array.Empty<float>();
+        }
     }
 
     /// <summary>
@@ -63,100 +83,186 @@ public sealed class FormatConverter
 
         if (!_needsResample)
         {
-            // Same rate: just remap channels straight through.
-            for (int f = 0; f < srcFrames; f++)
+            int outputCount = startCount + (srcFrames * TargetChannels);
+            destination.EnsureCapacity(outputCount);
+            CollectionsMarshal.SetCount(destination, outputCount);
+            var target = CollectionsMarshal.AsSpan(destination).Slice(startCount);
+            if (_srcChannels == 2)
             {
-                MapFrame(source.Slice(f * _srcChannels, _srcChannels), destination);
+                for (int f = 0; f < srcFrames; f++)
+                {
+                    int sourceIndex = f * 2;
+                    int targetIndex = f * 2;
+                    target[targetIndex] = source[sourceIndex];
+                    target[targetIndex + 1] = source[sourceIndex + 1];
+                }
+            }
+            else
+            {
+                for (int f = 0; f < srcFrames; f++)
+                {
+                    Downmix(source.Slice(f * _srcChannels, _srcChannels), out float left, out float right);
+                    target[f * 2] = left;
+                    target[f * 2 + 1] = right;
+                }
             }
 
-            return (destination.Count - startCount) / TargetChannels;
+            return srcFrames;
         }
 
-        // Resample with linear interpolation over [prevFrame .. current block].
-        // Virtual source index -1 refers to _prevFrame.
-        int totalVirtualFrames = srcFrames + (_hasPrev ? 1 : 0);
-
-        while (_srcPos < totalVirtualFrames - 1)
+        destination.EnsureCapacity(startCount + (int)(srcFrames / _ratio * TargetChannels) + 8);
+        AppendHistory(source, srcFrames);
+        while (_position + Center < _historyFrames)
         {
-            int i0 = (int)Math.Floor(_srcPos);
-            double frac = _srcPos - i0;
-            int i1 = i0 + 1;
-
-            GetVirtualFrame(source, srcFrames, i0, out var a);
-            GetVirtualFrame(source, srcFrames, i1, out var b);
-
-            for (int c = 0; c < TargetChannels; c++)
+            int baseFrame = (int)Math.Floor(_position) - Center;
+            double fraction = _position - Math.Floor(_position);
+            int phase = (int)(fraction * Phases + 0.5);
+            if (phase >= Phases)
             {
-                int sc = MapChannelIndex(c);
-                float sample = (float)(a[sc] * (1 - frac) + b[sc] * frac);
-                destination.Add(sample);
+                phase = 0;
+                baseFrame++;
             }
 
-            _srcPos += _ratio;
+            int coefficient = phase * Taps;
+            float left = 0f, right = 0f;
+            int sampleIndex = baseFrame * TargetChannels;
+            for (int k = 0; k < Taps; k++)
+            {
+                float h = _coefficients[coefficient + k];
+                left += _history[sampleIndex] * h;
+                right += _history[sampleIndex + 1] * h;
+                sampleIndex += TargetChannels;
+            }
+
+            destination.Add(left);
+            destination.Add(right);
+            _position += _ratio;
         }
 
-        // Consume integer frames that are fully behind the read cursor.
-        int consumed = (int)Math.Floor(_srcPos);
-        if (consumed > 0)
-        {
-            int keepFrameIndex = consumed - (_hasPrev ? 1 : 0);
-            SaveLastFrame(source, srcFrames, keepFrameIndex);
-            _srcPos -= consumed;
-        }
-        else
-        {
-            SaveLastFrame(source, srcFrames, srcFrames - 1);
-        }
-
+        DropConsumedHistory();
         return (destination.Count - startCount) / TargetChannels;
     }
 
-    private int MapChannelIndex(int outChannel)
+    private void AppendHistory(ReadOnlySpan<float> source, int srcFrames)
     {
-        if (_srcChannels == 1)
+        int needed = (_historyFrames + srcFrames) * TargetChannels;
+        if (needed > _history.Length)
         {
-            return 0; // mono duplicated
+            int newFrames = Math.Max(_historyFrames + srcFrames,
+                Math.Max(16384, _history.Length / TargetChannels * 2));
+            Array.Resize(ref _history, newFrames * TargetChannels);
         }
 
-        return outChannel; // stereo passthrough / >2 keeps first two
+        int write = _historyFrames * TargetChannels;
+        for (int f = 0; f < srcFrames; f++)
+        {
+            Downmix(source.Slice(f * _srcChannels, _srcChannels), out float left, out float right);
+            _history[write++] = left;
+            _history[write++] = right;
+        }
+
+        _historyFrames += srcFrames;
     }
 
-    private void MapFrame(ReadOnlySpan<float> frame, List<float> destination)
+    private void DropConsumedHistory()
     {
-        if (_srcChannels == 1)
+        int drop = (int)Math.Floor(_position) - Center;
+        if (drop <= 0)
         {
-            destination.Add(frame[0]);
-            destination.Add(frame[0]);
-        }
-        else
-        {
-            destination.Add(frame[0]);
-            destination.Add(frame[1]);
-        }
-    }
-
-    private void GetVirtualFrame(ReadOnlySpan<float> source, int srcFrames, int virtualIndex, out ReadOnlySpan<float> frame)
-    {
-        if (_hasPrev && virtualIndex == 0)
-        {
-            frame = _prevFrame;
             return;
         }
 
-        int real = _hasPrev ? virtualIndex - 1 : virtualIndex;
-        real = Math.Clamp(real, 0, srcFrames - 1);
-        frame = source.Slice(real * _srcChannels, _srcChannels);
-    }
-
-    private void SaveLastFrame(ReadOnlySpan<float> source, int srcFrames, int frameIndex)
-    {
-        frameIndex = Math.Clamp(frameIndex, 0, srcFrames - 1);
-        if (_prevFrame.Length != _srcChannels)
+        drop = Math.Min(drop, _historyFrames);
+        int remaining = _historyFrames - drop;
+        if (remaining > 0)
         {
-            _prevFrame = new float[_srcChannels];
+            Array.Copy(_history, drop * TargetChannels, _history, 0, remaining * TargetChannels);
         }
 
-        source.Slice(frameIndex * _srcChannels, _srcChannels).CopyTo(_prevFrame);
-        _hasPrev = true;
+        _historyFrames = remaining;
+        _position -= drop;
+    }
+
+    private void Downmix(ReadOnlySpan<float> frame, out float left, out float right)
+    {
+        if (_srcChannels <= 1)
+        {
+            left = right = frame[0];
+            return;
+        }
+
+        left = frame[0];
+        right = frame[1];
+
+        if (_srcChannels >= 3)
+        {
+            float center = frame[2] * Surround;
+            left += center;
+            right += center;
+        }
+
+        if (_srcChannels >= 6)
+        {
+            float lfe = frame[3] * Lfe;
+            left += lfe;
+            right += lfe;
+            left += frame[4] * Surround;
+            right += frame[5] * Surround;
+        }
+        else if (_srcChannels == 5)
+        {
+            left += frame[3] * Surround;
+            right += frame[4] * Surround;
+        }
+        else if (_srcChannels == 4)
+        {
+            left += frame[2] * Surround;
+            right += frame[3] * Surround;
+        }
+
+        if (_srcChannels >= 8)
+        {
+            left += frame[6] * 0.5f;
+            right += frame[7] * 0.5f;
+        }
+    }
+
+    private static float[] BuildCoefficients(double cutoff)
+    {
+        var table = new float[Phases * Taps];
+        var window = new double[Taps];
+        for (int k = 0; k < Taps; k++)
+        {
+            double x = 2.0 * Math.PI * k / (Taps - 1);
+            window[k] = 0.42 - 0.5 * Math.Cos(x) + 0.08 * Math.Cos(2.0 * x);
+        }
+
+        for (int phase = 0; phase < Phases; phase++)
+        {
+            double fraction = (double)phase / Phases;
+            double sum = 0.0;
+            int offset = phase * Taps;
+            for (int k = 0; k < Taps; k++)
+            {
+                double x = (k - Center - fraction) * cutoff;
+                double sinc = Math.Abs(x) < 1e-9 ? 1.0 : Math.Sin(Math.PI * x) / (Math.PI * x);
+                double value = sinc * window[k];
+                table[offset + k] = (float)value;
+                sum += value;
+            }
+
+            if (Math.Abs(sum) < 1e-12)
+            {
+                continue;
+            }
+
+            float inverse = (float)(1.0 / sum);
+            for (int k = 0; k < Taps; k++)
+            {
+                table[offset + k] *= inverse;
+            }
+        }
+
+        return table;
     }
 }

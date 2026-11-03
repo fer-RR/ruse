@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using Ruse.App.Diagnostics;
 
 namespace Ruse.App;
@@ -12,6 +13,7 @@ internal sealed record TranscriberModel(
     int SizeMb,
     string Url,
     string? Note = null,
+    string? Sha256 = null,
     int VramMb = 0);
 
 internal sealed record TranscriberModelProgress(
@@ -24,6 +26,19 @@ internal static class TranscriptionModels
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static readonly HttpClient Http = new();
+    private static readonly IReadOnlyDictionary<string, string> Hashes = new Dictionary<string, string>
+    {
+        ["ggml-tiny.en.bin"] = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+        ["ggml-base.en.bin"] = "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+        ["ggml-small.en.bin"] = "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
+        ["ggml-medium.en.bin"] = "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
+        ["ggml-tiny.bin"] = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+        ["ggml-base.bin"] = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+        ["ggml-small.bin"] = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+        ["ggml-medium.bin"] = "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+        ["ggml-large-v3-turbo.bin"] = "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+        ["ggml-large-v3.bin"] = "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
+    };
 
     public static IReadOnlyList<TranscriberModel> All { get; } = new[]
     {
@@ -110,10 +125,14 @@ internal static class TranscriptionModels
             progress?.Report(new TranscriberModelProgress(id, "downloading", 0, $"Downloading {model.Name}"));
             long total = 0;
             long copied = 0;
+            string? expectedHash = null;
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             using (var response = await Http.GetAsync(model.Url, HttpCompletionOption.ResponseHeadersRead, token))
             {
                 response.EnsureSuccessStatusCode();
                 total = response.Content.Headers.ContentLength ?? 0;
+                expectedHash = ModelIntegrity.NormalizeSha256(model.Sha256) ??
+                               ModelIntegrity.FromETag(response.Headers.ETag);
                 await using var input = await response.Content.ReadAsStreamAsync(token);
                 await using var output = File.Create(temp);
                 var buffer = new byte[81920];
@@ -122,6 +141,7 @@ internal static class TranscriptionModels
                 while ((read = await input.ReadAsync(buffer, token)) > 0)
                 {
                     await output.WriteAsync(buffer.AsMemory(0, read), token);
+                    hash.AppendData(buffer, 0, read);
                     copied += read;
                     if (total > 0)
                     {
@@ -131,7 +151,7 @@ internal static class TranscriptionModels
                             lastPercent = percent;
                             progress?.Report(new TranscriberModelProgress(
                                 id, "downloading", percent,
-                                $"Downloading {model.Name} · {percent}%"));
+                                $"Downloading {model.Name} — {percent}%"));
                         }
                     }
                 }
@@ -141,6 +161,8 @@ internal static class TranscriptionModels
             {
                 throw new InvalidDataException("The download was incomplete. Try again.");
             }
+
+            ModelIntegrity.Verify(ModelIntegrity.Finish(hash), expectedHash, model.Name);
 
             if (!IsValidModelFile(temp))
             {
@@ -194,7 +216,8 @@ internal static class TranscriptionModels
 
     private static TranscriberModel Model(string id, string language, string name, string tier, int sizeMb, string file, string note, int vramMb = 0) =>
         new(id, language, name, tier, sizeMb,
-            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + file, note, vramMb);
+            "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + file, note,
+            Hashes.TryGetValue(file, out string? sha256) ? sha256 : null, vramMb);
 
     private static void TryDelete(string path)
     {

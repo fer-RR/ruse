@@ -30,6 +30,7 @@ internal sealed partial class WebShellController : IDisposable
     private readonly Dictionary<string, long> _nodeClipHoldUntil = new();
     private readonly DispatcherTimer _telemetryTimer;
     private readonly DispatcherTimer _appsTimer;
+    private readonly DispatcherTimer _devicesTimer;
     private CoreWebView2? _core;
     private string _webView2Version = "";
     private CatalogDto _catalog = new();
@@ -61,13 +62,19 @@ internal sealed partial class WebShellController : IDisposable
         ModelRuntime.UseGpu = _settings.UseGpu;
         ModelRuntime.ConfigureNativeLibraries();
         Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
+        OutputNode.AggressiveCushion = _settings.AggressiveOutputCushion;
+        OutputNode.ClipGuardEnabled = _settings.ClipGuard;
+        OutputNode.LowLatencyWasapi = _settings.LowLatencyWasapi;
+        ConfigureAudioEngine();
         _telemetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
-        _telemetryTimer.Tick += (_, _) => { CheckArmedRecorders(); PublishTelemetry(); };
+        _telemetryTimer.Tick += (_, _) => { CheckArmedRecorders(); CheckRecorderSilence(); PublishTelemetry(); FlushMidiParameterChanges(); };
         _appsTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(_settings.FollowPlayingApps ? 750 : 4000),
         };
         _appsTimer.Tick += (_, _) => RefreshApps();
+        _devicesTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _devicesTimer.Tick += (_, _) => RefreshDevicesIfChanged();
     }
 
     public async Task InitializeAsync(WebView2 webView)
@@ -116,6 +123,7 @@ internal sealed partial class WebShellController : IDisposable
             "ui.ruse", webRoot, CoreWebView2HostResourceAccessKind.Allow);
 
         SubgraphLibrary.Load();
+        FrameTemplateLibrary.Load();
         RefreshCatalog();
         if (App.LiveDemoMode)
         {
@@ -130,15 +138,17 @@ internal sealed partial class WebShellController : IDisposable
             TryLoadSession();
         }
 
+        InitializeMidi();
         RestoreWindowBounds();
         _core.Navigate("https://ui.ruse/index.html");
         _telemetryTimer.Start();
         _appsTimer.Start();
+        _devicesTimer.Start();
     }
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        if (_disposed)
+        if (_disposed || !IsTrustedUiSource(e.Source))
         {
             return;
         }
@@ -146,6 +156,21 @@ internal sealed partial class WebShellController : IDisposable
         try
         {
             var message = JsonSerializer.Deserialize<BridgeMessage>(e.WebMessageAsJson, _json);
+            if (message?.Type == "file-drop")
+            {
+                var paths = e.AdditionalObjects
+                    .OfType<CoreWebView2File>()
+                    .Select(file => file.Path)
+                    .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                    .ToList();
+                if (paths.Count > 0)
+                {
+                    AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), paths[0]);
+                }
+
+                return;
+            }
+
             if (message != null)
             {
                 HandleMessage(message);
@@ -156,6 +181,11 @@ internal sealed partial class WebShellController : IDisposable
             ShowError("The UI command failed: " + ex.Message, ex);
         }
     }
+
+    private static bool IsTrustedUiSource(string? source) =>
+        Uri.TryCreate(source, UriKind.Absolute, out var uri) &&
+        uri.Scheme == Uri.UriSchemeHttps &&
+        string.Equals(uri.Host, "ui.ruse", StringComparison.OrdinalIgnoreCase);
 
     private void HandleMessage(BridgeMessage message)
     {
@@ -179,9 +209,10 @@ internal sealed partial class WebShellController : IDisposable
                 break;
             case "refresh": RefreshCatalog(); break;
             case "add": AddFromMessage(message); break;
-            case "add-file-player": AddFilePlayer(); break;
+            case "add-file-player": AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), String(message, "path")); break;
             case "file-player-file": ChooseFilePlayerFile(String(message, "id")); break;
             case "file-player-loop": SetFilePlayerLoop(String(message, "id"), Bool(message, "value")); break;
+            case "file-player-output": SetFilePlayerOutput(String(message, "id"), String(message, "outputId")); break;
             case "file-player-start": StartFilePlayer(String(message, "id")); break;
             case "file-player-stop": StopFilePlayer(String(message, "id")); break;
             case "file-player-pause": PauseFilePlayer(String(message, "id")); break;
@@ -198,14 +229,30 @@ internal sealed partial class WebShellController : IDisposable
             case "undo": Undo(); break;
             case "redo": Redo(); break;
             case "remove": RemoveNode(String(message, "id")); break;
-            case "connect": ConnectNodes(String(message, "from"), String(message, "to")); break;
+            case "connect": ConnectNodes(String(message, "from"), String(message, "to"), String(message, "kind"), (float)Number(message, "gain", 1), Bool(message, "enabled", true)); break;
             case "disconnect": DisconnectLink(String(message, "id")); break;
+            case "link-gain": SetLinkGain(String(message, "id"), (float)Number(message, "value", 1)); break;
+            case "link-enabled": SetLinkEnabled(String(message, "id"), Bool(message, "value")); break;
             case "disconnect-node": DisconnectNode(String(message, "id")); break;
             case "frames": SetFrames(Payload<FramesPayload>(message)); break;
+            case "save-frame-template": SaveFrameTemplate(Payload<FrameRefPayload>(message)); break;
+            case "insert-template": InsertFrameTemplate(Payload<TemplateInsertPayload>(message)); break;
+            case "template-delete": DeleteFrameTemplate(String(message, "name")); break;
             case "gain": SetNodeGain(String(message, "id"), (float)Number(message, "value", 1)); break;
             case "mute": SetNodeMute(String(message, "id"), Bool(message, "value")); break;
+            case "solo": SetNodeSolo(String(message, "id"), Bool(message, "value")); break;
+            case "node-color": SetNodeColor(String(message, "id"), String(message, "color")); break;
+            case "midi-learn": StartMidiLearn(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
+            case "midi-unbind": ClearMidiBinding(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
+            case "midi-refresh": _midi.RefreshDevices(); PublishSettings(); break;
             case "param": SetParameter(message); break;
             case "effect-enabled": SetEffectEnabled(String(message, "id"), Bool(message, "value")); break;
+            case "parallel": SetModifierParallel(String(message, "id"), Bool(message, "value")); break;
+            case "send": SetModifierSend(String(message, "id"), (float)Number(message, "value", 0.5)); break;
+            case "tone": SetTone(String(message, "id"), (float)Number(message, "frequency", 1000), String(message, "waveform"), (float)Number(message, "level", -18)); break;
+            case "ir-file": ChooseImpulseResponse(String(message, "id")); break;
+            case "ir-clear": ClearImpulseResponse(String(message, "id")); break;
+            case "loudness-reset": ResetLoudness(String(message, "id")); break;
             case "db-meter-orientation": SetDbMeterOrientation(String(message, "id"), Bool(message, "vertical")); break;
             case "transcriber-model": SetTranscriberModel(String(message, "id"), String(message, "model")); break;
             case "transcriber-download": DownloadTranscriberModel(String(message, "id")); break;
@@ -234,7 +281,6 @@ internal sealed partial class WebShellController : IDisposable
                 break;
             case "master-gain":
                 OutputNode.MasterGain = (float)Number(message, "value", 1);
-                PublishTelemetry(force: true);
                 break;
             case "master-mute":
                 OutputNode.MasterMuted = Bool(message, "value");
@@ -251,9 +297,12 @@ internal sealed partial class WebShellController : IDisposable
             case "save-preset": SavePresetDialog(); break;
             case "load-preset": LoadPresetDialog(); break;
             case "recorder-file": ChooseRecorderFile(String(message, "id"), String(message, "format", "Wav24")); break;
+            case "recorder-open-folder": OpenRecorderFolder(String(message, "id")); break;
             case "recorder-format": SetRecorderFormat(String(message, "id"), String(message, "format", "Wav24")); break;
             case "recorder-mode": SetRecorderMode(String(message, "id"), String(message, "mode", "Off")); break;
             case "recorder-autosave": SetRecorderAutoSave(String(message, "id"), Bool(message, "value")); break;
+            case "recorder-silence": SetRecorderSilence(String(message, "id"), Number(message, "value")); break;
+            case "recorder-threshold": SetRecorderThreshold(String(message, "id"), Number(message, "value")); break;
             case "recorder-stop": StopRecorder(String(message, "id")); break;
             case "chain-save": SaveChain(message); break;
             case "chain-delete": DeleteChain(String(message, "name")); break;
@@ -307,6 +356,16 @@ internal sealed partial class WebShellController : IDisposable
     {
         return message.Payload.TryGetProperty(name, out var value) &&
                value.ValueKind == JsonValueKind.True;
+    }
+
+    private static bool Bool(BridgeMessage message, string name, bool fallback)
+    {
+        if (!message.Payload.TryGetProperty(name, out var value))
+        {
+            return fallback;
+        }
+
+        return value.ValueKind == JsonValueKind.True;
     }
 
     private void Post(string type, object payload)
@@ -374,6 +433,7 @@ internal sealed partial class WebShellController : IDisposable
                 To = link.To,
                 Kind = link.Kind,
                 Gain = link.Gain,
+                Enabled = link.Enabled,
             }).ToList(),
             Frames = _frames.Select(frame => new FrameDto
             {
@@ -407,7 +467,7 @@ internal sealed partial class WebShellController : IDisposable
 
         foreach (var outputNode in _graph.Outputs)
         {
-            if (outputNode.IsMonitor || outputNode.IsFileRecorder ||
+            if (outputNode.IsFileRecorder ||
                 !outputs.TryGetValue(outputNode, out var outputEntry))
             {
                 continue;
@@ -563,8 +623,23 @@ internal sealed partial class WebShellController : IDisposable
             ShowWelcomeScreen = _settings.ShowWelcomeScreen,
             MinimizeToTray = _settings.MinimizeToTray,
             ShowDiagnostics = _settings.ShowDiagnostics,
+            AggressiveOutputCushion = _settings.AggressiveOutputCushion,
+            ClipGuard = _settings.ClipGuard,
+            LowLatencyWasapi = _settings.LowLatencyWasapi,
+            AudioAutoMode = _settings.AudioAutoMode,
+            AudioBlockSizeMs = _settings.AudioBlockSizeMs,
+            OutputBufferMode = _settings.OutputBufferMode,
+            OutputBufferManualMs = _settings.OutputBufferManualMs,
+            EngineCushionMode = _settings.EngineCushionMode,
+            EngineCushionManualMs = _settings.EngineCushionManualMs,
+            ElasticRing = _settings.ElasticRing,
             UseGpu = _settings.UseGpu,
             IsolateVst3 = _settings.IsolateVst3,
+            MidiEnabled = _settings.MidiEnabled,
+            MidiInputDevice = _settings.MidiInputDevice,
+            MidiOpen = _midi.IsOpen,
+            MidiError = _midi.LastError,
+            MidiInputs = _midi.Devices.Select(device => new MidiInputDto { Name = device.Name }).ToList(),
             GpuAvailable = ModelRuntime.GpuAvailable,
             GpuDeviceName = ModelRuntime.GpuDeviceName,
             GpuStatusError = ModelRuntime.GpuStatusError,
@@ -647,6 +722,10 @@ internal sealed partial class WebShellController : IDisposable
             if (entry.Source != null)
             {
                 meter.Level = entry.Source.Muted ? 0 : Meter(entry.Source.MeterLevel);
+                meter.LevelLeft = entry.Source.Muted ? 0 : Meter(entry.Source.MeterLevelLeft);
+                meter.LevelRight = entry.Source.Muted ? 0 : Meter(entry.Source.MeterLevelRight);
+                meter.MeterDbLeft = entry.Source.Muted ? -60f : entry.Source.MeterDbLeft;
+                meter.MeterDbRight = entry.Source.Muted ? -60f : entry.Source.MeterDbRight;
                 meter.Clipping = !entry.Source.Muted && entry.Source.Clipping;
                 meter.FilePlaying = entry.Source.Kind == SourceKind.File &&
                                     entry.Source.IsRunning &&
@@ -658,7 +737,12 @@ internal sealed partial class WebShellController : IDisposable
             else if (entry.Output != null)
             {
                 meter.Level = Meter(entry.Output.MeterLevel);
+                meter.LevelLeft = Meter(entry.Output.MeterLevelLeft);
+                meter.LevelRight = Meter(entry.Output.MeterLevelRight);
+                meter.MeterDbLeft = entry.Output.MeterDbLeft;
+                meter.MeterDbRight = entry.Output.MeterDbRight;
                 meter.Clipping = entry.Output.Clipping;
+                meter.ClipGuardActive = entry.Output.ClipGuardActive;
                 if (entry.Output.IsFileRecorder)
                 {
                     meter.RecordingStatus = RecorderStatus(entry.Output);
@@ -669,6 +753,8 @@ internal sealed partial class WebShellController : IDisposable
             else
             {
                 meter.Level = Meter(ModifierLevel(entry.Id, sourceLevels, modifierLevels, new HashSet<string>()));
+                meter.LevelLeft = meter.Level;
+                meter.LevelRight = meter.Level;
                 meter.Clipping = ModifierClipping(entry.Id, sourceClipping, outputClipping,
                     new HashSet<string>(), new HashSet<string>());
                 if (entry.Modifier is { } modifier)
@@ -695,6 +781,18 @@ internal sealed partial class WebShellController : IDisposable
                     {
                         meter.Db = DbMeterProcessor.GetDb(dbMeter.TapId);
                         meter.PeakDb = DbMeterProcessor.GetPeakDb(dbMeter.TapId);
+                        meter.DbLeft = DbMeterProcessor.GetDbLeft(dbMeter.TapId);
+                        meter.DbRight = DbMeterProcessor.GetDbRight(dbMeter.TapId);
+                        meter.PeakDbLeft = DbMeterProcessor.GetPeakDbLeft(dbMeter.TapId);
+                        meter.PeakDbRight = DbMeterProcessor.GetPeakDbRight(dbMeter.TapId);
+                    }
+
+                    if (modifier.Enabled && modifier.Processors.OfType<LoudnessProcessor>().FirstOrDefault() is { } loudness)
+                    {
+                        meter.LoudnessIntegrated = LoudnessProcessor.GetIntegratedLufs(loudness.TapId);
+                        meter.LoudnessShortTerm = LoudnessProcessor.GetShortTermLufs(loudness.TapId);
+                        meter.LoudnessRange = LoudnessProcessor.GetLoudnessRange(loudness.TapId);
+                        meter.LoudnessTruePeak = LoudnessProcessor.GetTruePeakDb(loudness.TapId);
                     }
 
                     if (modifier.Enabled && modifier.Processors.OfType<TranslatorProcessor>().FirstOrDefault() is { } translator)
@@ -977,13 +1075,16 @@ internal sealed partial class WebShellController : IDisposable
             }
 
             _settings.Save();
-            if (_nodes.Count == 0 && _frames.Count == 0)
+            if (!App.LiveDemoMode)
             {
-                DeleteSession();
-            }
-            else
-            {
-                SaveSession();
+                if (_nodes.Count == 0 && _frames.Count == 0)
+                {
+                    DeleteSession();
+                }
+                else
+                {
+                    SaveSession();
+                }
             }
         }
         catch (Exception ex)
@@ -1002,6 +1103,7 @@ internal sealed partial class WebShellController : IDisposable
         _disposed = true;
         _telemetryTimer.Stop();
         _appsTimer.Stop();
+        _devicesTimer.Stop();
         _modelDownloadCancel?.Cancel();
         _modelDownloadCancel?.Dispose();
         _translationDownloadCancel?.Cancel();
@@ -1010,6 +1112,9 @@ internal sealed partial class WebShellController : IDisposable
         TranslationRegistry.StopAll();
         SpeechModelCache.DropAll();
         TranslationModelCache.DropAll();
+        _midi.MessageReceived -= OnMidiMessageReceived;
+        _midi.Dispose();
+        DisposeInactiveOutputs();
         _graph.Dispose();
     }
 
@@ -1021,6 +1126,7 @@ internal sealed partial class WebShellController : IDisposable
         public required string Title { get; set; }
         public required string Subtitle { get; set; }
         public required string Accent { get; init; }
+        public string? Color { get; set; }
         public double X { get; set; }
         public double Y { get; set; }
         public double? Width { get; set; }
@@ -1034,6 +1140,8 @@ internal sealed partial class WebShellController : IDisposable
         public SourceNode? Source { get; init; }
         public OutputNode? Output { get; init; }
         public ModifierNode? Modifier { get; init; }
+        public int Vst3Latency { get; set; } = -1;
+        public bool Vst3Ready { get; set; }
     }
 
     internal sealed class LinkEntry
@@ -1043,5 +1151,6 @@ internal sealed partial class WebShellController : IDisposable
         public required string To { get; init; }
         public required string Kind { get; init; }
         public float Gain { get; set; } = 1;
+        public bool Enabled { get; set; } = true;
     }
 }

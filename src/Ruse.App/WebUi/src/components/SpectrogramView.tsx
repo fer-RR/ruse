@@ -1,7 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { useI18n } from '../i18n';
 
-const BANDS = 64;
+const BANDS = 128;
+const FREQUENCY_REFS = [
+  [20000, '20k'], [10000, '10k'], [5000, '5k'], [2000, '2k'],
+  [1000, '1k'], [500, '500'], [250, '250'], [100, '100'],
+] as const;
 
 function formatHz(value: number | undefined): string {
   if (!value || !Number.isFinite(value)) return '';
@@ -26,7 +30,7 @@ function color(value: number): [number, number, number] {
 
 export default function SpectrogramView({
   values,
-  columns = 96,
+  columns = 128,
   peakHz,
 }: {
   values?: number[];
@@ -64,8 +68,8 @@ export default function SpectrogramView({
     context.putImageData(image, 0, 0);
     context.strokeStyle = 'rgba(255,255,255,0.08)';
     context.lineWidth = 1;
-    for (const db of [100, 1000, 10000, 20000]) {
-      const y = dataHeight - (Math.log(db / 20) / Math.log(1000)) * dataHeight;
+    for (const [frequency] of FREQUENCY_REFS) {
+      const y = dataHeight - (Math.log(frequency / 20) / Math.log(1000)) * dataHeight;
       context.beginPath();
       context.moveTo(0, y);
       context.lineTo(width, y);
@@ -75,7 +79,7 @@ export default function SpectrogramView({
     context.fillStyle = 'rgba(255,255,255,0.4)';
     context.font = '9px Consolas, monospace';
     context.textBaseline = 'bottom';
-    for (const [label, frequency] of [['100', 100], ['1k', 1000], ['10k', 10000], ['20k', 20000]] as const) {
+    for (const [frequency, label] of FREQUENCY_REFS) {
       const y = dataHeight - (Math.log(frequency / 20) / Math.log(1000)) * dataHeight;
       context.fillText(label, 2, Math.max(8, Math.min(dataHeight - 1, y - 1)));
     }

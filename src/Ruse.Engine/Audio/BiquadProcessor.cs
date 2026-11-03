@@ -37,6 +37,9 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
     private float _cachedQ = float.NaN;
 
     private double _b0, _b1, _b2, _a1, _a2;
+    private double _targetB0, _targetB1, _targetB2, _targetA1, _targetA2;
+    private bool _coefficientsInitialized;
+    private bool _rampCoefficients;
 
     // Per-channel delay memory: x1/x2 are the input history, y1/y2 the output.
     private double _x1L, _x2L, _y1L, _y2L;
@@ -208,18 +211,32 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
                 break;
         }
 
-        _b0 = b0 / a0;
-        _b1 = b1 / a0;
-        _b2 = b2 / a0;
-        _a1 = a1 / a0;
-        _a2 = a2 / a0;
+        _targetB0 = b0 / a0;
+        _targetB1 = b1 / a0;
+        _targetB2 = b2 / a0;
+        _targetA1 = a1 / a0;
+        _targetA2 = a2 / a0;
+
+        if (!_coefficientsInitialized)
+        {
+            _b0 = _targetB0;
+            _b1 = _targetB1;
+            _b2 = _targetB2;
+            _a1 = _targetA1;
+            _a2 = _targetA2;
+            _coefficientsInitialized = true;
+            _rampCoefficients = false;
+            return;
+        }
+
+        _rampCoefficients =
+            _b0 != _targetB0 || _b1 != _targetB1 || _b2 != _targetB2 ||
+            _a1 != _targetA1 || _a2 != _targetA2;
     }
 
     public void Process(Span<float> samples, int frames)
     {
         UpdateCoefficients();
-
-        double b0 = _b0, b1 = _b1, b2 = _b2, a1 = _a1, a2 = _a2;
 
         int samplesPerFrame = frames > 0 ? samples.Length / frames : 2;
         if (samplesPerFrame < 1)
@@ -227,12 +244,27 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
             return;
         }
 
+        bool ramp = _rampCoefficients && frames > 0;
+        double stepB0 = ramp ? (_targetB0 - _b0) / frames : 0;
+        double stepB1 = ramp ? (_targetB1 - _b1) / frames : 0;
+        double stepB2 = ramp ? (_targetB2 - _b2) / frames : 0;
+        double stepA1 = ramp ? (_targetA1 - _a1) / frames : 0;
+        double stepA2 = ramp ? (_targetA2 - _a2) / frames : 0;
+
         for (int f = 0; f < frames; f++)
         {
-            int i = f * samplesPerFrame;
+            if (ramp)
+            {
+                _b0 += stepB0;
+                _b1 += stepB1;
+                _b2 += stepB2;
+                _a1 += stepA1;
+                _a2 += stepA2;
+            }
 
+            int i = f * samplesPerFrame;
             double xL = samples[i];
-            double yL = (b0 * xL) + (b1 * _x1L) + (b2 * _x2L) - (a1 * _y1L) - (a2 * _y2L);
+            double yL = (_b0 * xL) + (_b1 * _x1L) + (_b2 * _x2L) - (_a1 * _y1L) - (_a2 * _y2L);
             _x2L = _x1L;
             _x1L = xL;
             _y2L = _y1L;
@@ -242,13 +274,23 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
             if (samplesPerFrame > 1 && i + 1 < samples.Length)
             {
                 double xR = samples[i + 1];
-                double yR = (b0 * xR) + (b1 * _x1R) + (b2 * _x2R) - (a1 * _y1R) - (a2 * _y2R);
+                double yR = (_b0 * xR) + (_b1 * _x1R) + (_b2 * _x2R) - (_a1 * _y1R) - (_a2 * _y2R);
                 _x2R = _x1R;
                 _x1R = xR;
                 _y2R = _y1R;
                 _y1R = yR;
                 samples[i + 1] = (float)yR;
             }
+        }
+
+        if (ramp)
+        {
+            _b0 = _targetB0;
+            _b1 = _targetB1;
+            _b2 = _targetB2;
+            _a1 = _targetA1;
+            _a2 = _targetA2;
+            _rampCoefficients = false;
         }
 
         if (!double.IsFinite(_y1L) || !double.IsFinite(_y2L) ||
@@ -267,5 +309,7 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
         _cachedFrequency = float.NaN;
         _cachedGain = float.NaN;
         _cachedQ = float.NaN;
+        _coefficientsInitialized = false;
+        _rampCoefficients = false;
     }
 }

@@ -7,7 +7,7 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
 {
     public const string Id = "spectrogram";
     public const string TapParameterName = "__tap";
-    public const int Columns = 96;
+    public const int Columns = 128;
 
     private static readonly ConcurrentDictionary<int, SpectrogramTap> Taps = new();
     private static int _nextTapId = Random.Shared.Next(1, 1_000_000);
@@ -35,6 +35,7 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
                 Name = "Contrast",
                 Min = 0.5f,
                 Max = 2.5f,
+                Default = 1f,
                 Get = () => _contrast,
                 Set = value => _contrast = Math.Clamp(value, 0.5f, 2.5f),
                 Unit = "x",
@@ -44,6 +45,7 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
                 Name = "Floor",
                 Min = -100f,
                 Max = -30f,
+                Default = -80f,
                 Get = () => _floor,
                 Set = value => _floor = Math.Clamp(value, -100f, -30f),
                 Unit = "dB",
@@ -53,6 +55,7 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
                 Name = "Ceiling",
                 Min = -40f,
                 Max = 0f,
+                Default = 0f,
                 Get = () => _ceiling,
                 Set = value => _ceiling = Math.Clamp(value, -40f, 0f),
                 Unit = "dB",

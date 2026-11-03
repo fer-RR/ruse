@@ -154,29 +154,4 @@ public static class AppLog
         }
     }
 
-    /// <summary>The most recent entries, newest last.</summary>
-    public static IReadOnlyList<string> Recent(int count)
-    {
-        try
-        {
-            if (!File.Exists(LogPath))
-            {
-                return Array.Empty<string>();
-            }
-
-            var lines = File.ReadAllLines(LogPath);
-            int start = Math.Max(0, lines.Length - count);
-            var result = new List<string>();
-            for (int i = start; i < lines.Length; i++)
-            {
-                result.Add(lines[i]);
-            }
-
-            return result;
-        }
-        catch
-        {
-            return Array.Empty<string>();
-        }
-    }
 }

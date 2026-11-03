@@ -6,7 +6,7 @@ import {
 import type { Connection, Edge, EdgeChange, NodeChange } from '@xyflow/react';
 import {
   AlertTriangle, ArrowUpDown, ChevronLeft, ChevronRight, Copy, Info, LayoutGrid, Maximize2,
-  Minus, Pencil, Plus, Trash2, Unplug, Volume2, VolumeX, X,
+  LayoutTemplate, Minus, Pencil, Plus, Trash2, Unplug, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { isHosted, send, subscribe } from './bridge';
 import { createDemoTelemetry, demoCatalog, demoGraph, demoSettings } from './demo';
@@ -24,6 +24,7 @@ import { ConfirmDialog, DeviceHelpDialog, DuplicateAudioDialog, PromptDialog, Re
 import type { SettingsTab } from './components/Dialogs';
 import ChainEditorDialog from './components/ChainEditorDialog';
 import WelcomeWizard from './components/WelcomeWizard';
+import MixerPanel from './components/MixerPanel';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
   CatalogItem, CatalogSnapshot, ChainEditorRequest, FrameModel, GraphSnapshot, HistorySnapshot,
@@ -35,7 +36,7 @@ const edgeTypes = { ruseEdge: RuseEdge };
 const FRAME_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const;
 type FrameHandle = typeof FRAME_HANDLES[number];
 const emptyCatalog: CatalogSnapshot = {
-  apps: [], outputs: [], inputs: [], virtuals: [], effects: [], chains: [], vst3Plugins: [],
+  apps: [], outputs: [], inputs: [], virtuals: [], effects: [], chains: [], vst3Plugins: [], frameTemplates: [],
   defaultOutputId: '', defaultOutputName: '', perAppCaptureAvailable: true,
 };
 const initialSettings: SettingsModel = demoSettings;
@@ -111,6 +112,11 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
     () => localStorage.getItem('ruse.sidebarCollapsed') === '1',
   );
+  const [mixerOpen, setMixerOpen] = useState(() => localStorage.getItem('ruse.mixerOpen') === '1');
+  const [mixerWidth, setMixerWidth] = useState(() => {
+    const saved = Number(localStorage.getItem('ruse.mixerWidth'));
+    return saved >= 240 && saved <= 520 ? saved : 320;
+  });
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('behavior');
   const [showAudioHelp, setShowAudioHelp] = useState(false);
@@ -122,6 +128,7 @@ export default function App() {
   const [canvasMenu, setCanvasMenu] = useState<CanvasMenu | null>(null);
   const [chainEditor, setChainEditor] = useState<ChainEditorRequest | null>(null);
   const [renameLibrary, setRenameLibrary] = useState<CatalogItem | null>(null);
+  const [libraryRemoval, setLibraryRemoval] = useState<CatalogItem | null>(null);
   const [aliases, setAliases] = useState<Record<string, string>>(() => {
     try {
       return JSON.parse(localStorage.getItem('ruse.libraryAliases') ?? '{}') as Record<string, string>;
@@ -151,9 +158,24 @@ export default function App() {
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
   useEffect(() => { framesRef.current = frames; }, [frames]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+  const applyDiagnostics = useCallback((show: boolean) => {
+    const next = { ...settingsRef.current, showDiagnostics: show };
+    settingsRef.current = next;
+    setSettings(next);
+    send('settings', next);
+  }, []);
+  const toggleDiagnostics = useCallback(() => {
+    applyDiagnostics(!settingsRef.current.showDiagnostics);
+  }, [applyDiagnostics]);
+  const closeMixer = useCallback(() => setMixerOpen(false), []);
   useEffect(() => { sidebarCollapsedRef.current = sidebarCollapsed; }, [sidebarCollapsed]);
   useEffect(() => { localStorage.setItem('ruse.sidebarWidth', String(sidebarWidth)); }, [sidebarWidth]);
   useEffect(() => { localStorage.setItem('ruse.sidebarCollapsed', sidebarCollapsed ? '1' : '0'); }, [sidebarCollapsed]);
+  useEffect(() => { localStorage.setItem('ruse.mixerOpen', mixerOpen ? '1' : '0'); }, [mixerOpen]);
+  useEffect(() => {
+    localStorage.setItem('ruse.mixerWidth', String(mixerWidth));
+    workspaceRef.current?.style.setProperty('--mixer-width', `${mixerWidth}px`);
+  }, [mixerWidth]);
   useLayoutEffect(() => {
     workspaceRef.current?.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
   }, [sidebarWidth]);
@@ -373,6 +395,9 @@ export default function App() {
           y = pending.y;
         }
       }
+      const fileOutputs = graph.nodes
+        .filter(node => node.kind === 'output' && !node.isRecorder)
+        .map(node => ({ id: node.id, name: node.title }));
       return {
         id: model.id,
         type: 'ruseNode',
@@ -381,6 +406,9 @@ export default function App() {
         zIndex: existing?.zIndex ?? ++zCounter.current,
         data: {
           ...model,
+          fileOutputs,
+          showDiagnostics: settingsRef.current.showDiagnostics,
+          midiEnabled: settingsRef.current.midiEnabled === true,
           highlightMuted: settingsRef.current.highlightMutedNodes,
           transcriberModels: settingsRef.current.transcriberModels,
           translatorModels: settingsRef.current.translatorModels,
@@ -421,14 +449,17 @@ export default function App() {
 
   useEffect(() => {
     setNodes(current => {
-      const exists = current.some(node => node.id === DIAGNOSTICS_NODE_ID);
+      const flagged = current.map(node => node.data.showDiagnostics === settings.showDiagnostics
+        ? node
+        : { ...node, data: { ...node.data, showDiagnostics: settings.showDiagnostics } });
+      const exists = flagged.some(node => node.id === DIAGNOSTICS_NODE_ID);
       if (settings.showDiagnostics && !exists) {
-        return [...current, { ...createDiagnosticsNode(), zIndex: ++zCounter.current }];
+        return [...flagged, { ...createDiagnosticsNode(), zIndex: ++zCounter.current }];
       }
       if (!settings.showDiagnostics && exists) {
-        return current.filter(node => node.id !== DIAGNOSTICS_NODE_ID);
+        return flagged.filter(node => node.id !== DIAGNOSTICS_NODE_ID);
       }
-      return current;
+      return flagged;
     });
   }, [settings.showDiagnostics, setNodes]);
 
@@ -443,6 +474,12 @@ export default function App() {
       ? { ...node, data: { ...node.data, translatorModels: settings.translatorModels } }
       : node));
   }, [settings.translatorModels, setNodes]);
+
+  useEffect(() => {
+    setNodes(current => current.map(node => node.data.midiEnabled === (settings.midiEnabled === true)
+      ? node
+      : { ...node, data: { ...node.data, midiEnabled: settings.midiEnabled === true } }));
+  }, [settings.midiEnabled, setNodes]);
 
   useEffect(() => {
     const openSettings = (event: Event) => {
@@ -475,15 +512,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const closeDiagnostics = () => {
-      const next = { ...settingsRef.current, showDiagnostics: false };
-      settingsRef.current = next;
-      setSettings(next);
-      send('settings', next);
-    };
+    const closeDiagnostics = () => applyDiagnostics(false);
     window.addEventListener('ruse-close-diagnostics', closeDiagnostics);
     return () => window.removeEventListener('ruse-close-diagnostics', closeDiagnostics);
-  }, []);
+  }, [applyDiagnostics]);
 
   useEffect(() => {
     setNodes(current => current.map(node => ({
@@ -507,8 +539,9 @@ export default function App() {
       source: link.from,
       target: link.to,
       sourceHandle: 'out',
-      targetHandle: 'in',
+      targetHandle: link.kind === 'sidechain' ? 'sidechain' : 'in',
       type: 'ruseEdge',
+      data: { kind: link.kind },
       animated: false,
       interactionWidth: 22,
       style: { stroke: source?.accent ?? '#5B8DEF', strokeWidth: 2, opacity: 0.84 },
@@ -564,6 +597,26 @@ export default function App() {
     setNodes(current => current.map(node => node.id === id ? { ...node, zIndex } : node));
   };
 
+  const focusMixerNode = useCallback((id: string) => {
+    const target = nodesRef.current.find(node => node.id === id);
+    if (!target) return;
+
+    const currentTop = nodesRef.current.reduce((top, node) => Math.max(top, node.zIndex ?? 0), 0);
+    zCounter.current = Math.max(zCounter.current, currentTop) + 1;
+    const zIndex = zCounter.current;
+    setNodes(current => current.map(node => {
+      if (node.id === id) return { ...node, zIndex, selected: true };
+      return node.selected ? { ...node, selected: false } : node;
+    }));
+
+    const width = target.measured?.width ?? 204;
+    const height = target.measured?.height ?? 140;
+    flow.setCenter(target.position.x + width / 2, target.position.y + height / 2, {
+      zoom: flow.getZoom(),
+      duration: 220,
+    });
+  }, [flow, setNodes]);
+
   const findFreeSpot = (position: { x: number; y: number }) => {
     const others = nodesRef.current.map(node => ({
       id: node.id,
@@ -580,6 +633,15 @@ export default function App() {
     const position = bounds
       ? flow.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
       : { x: 60 + graph.nodes.length * 30, y: 60 + graph.nodes.length * 30 };
+    if (item.kind === 'template') {
+      send('insert-template', {
+        id: item.id,
+        x: Math.round((position.x - 180) / 20) * 20,
+        y: Math.round((position.y - 120) / 20) * 20,
+      });
+      return;
+    }
+
     sendAdd(item, findFreeSpot({ x: position.x - 102, y: position.y - 60 }));
   };
 
@@ -619,7 +681,11 @@ export default function App() {
 
   const onConnect = (connection: Connection) => {
     if (connection.source && connection.target) {
-      send('connect', { from: connection.source, to: connection.target });
+      send('connect', {
+        from: connection.source,
+        to: connection.target,
+        kind: connection.targetHandle === 'sidechain' ? 'sidechain' : '',
+      });
     }
   };
 
@@ -628,6 +694,10 @@ export default function App() {
     const source = connection.source ? nodeById.get(connection.source) : undefined;
     const target = connection.target ? nodeById.get(connection.target) : undefined;
     if (!source || !target || source.id === target.id) return false;
+    if (connection.targetHandle === 'sidechain') {
+      return (source.kind === 'source' || source.kind === 'modifier') &&
+             target.kind === 'modifier' && target.supportsSidechain === true;
+    }
     return (source.kind === 'source' && target.kind !== 'source') ||
            (source.kind === 'modifier' && target.kind !== 'source');
   }, [nodeById]);
@@ -695,6 +765,35 @@ export default function App() {
   };
 
   const fitGraph = () => flow.fitView({ padding: 0.18, duration: 180 });
+  const modalOpen = showSettings || showAudioHelp || showDeviceHelp || welcomeOpen ||
+    showClear || trayPrompt || renamePrompt != null || chainEditor != null ||
+    renameLibrary != null || libraryRemoval != null || canvasMenu != null;
+
+  useEffect(() => {
+    if (!canvasMenu) return;
+    document.querySelector<HTMLElement>('.context-menu [role="menuitem"]')?.focus();
+  }, [canvasMenu]);
+
+  const onContextMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
+    if (items.length === 0) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setCanvasMenu(null);
+      return;
+    }
+
+    const current = items.indexOf(document.activeElement as HTMLButtonElement);
+    let next = current;
+    if (event.key === 'ArrowDown') next = current < 0 ? 0 : (current + 1) % items.length;
+    else if (event.key === 'ArrowUp') next = current < 0 ? items.length - 1 : (current - 1 + items.length) % items.length;
+    else if (event.key === 'Home') next = 0;
+    else if (event.key === 'End') next = items.length - 1;
+    else return;
+    event.preventDefault();
+    items[next].focus();
+  };
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
@@ -702,9 +801,10 @@ export default function App() {
       const textInput = target instanceof HTMLInputElement &&
         !['range', 'checkbox', 'radio', 'button', 'submit'].includes(target.type);
       const editing = textInput || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable;
+      if (modalOpen) return;
       if (event.key === 'F1') {
         event.preventDefault();
-        setSettingsTab('shortcuts');
+        setSettingsTab('diagnostics');
         setShowSettings(true);
         return;
       }
@@ -716,6 +816,9 @@ export default function App() {
       } else if (modifier && event.key.toLowerCase() === 'y') {
         event.preventDefault();
         send('redo');
+      } else if (modifier && event.shiftKey && event.key.toLowerCase() === 'd') {
+        event.preventDefault();
+        toggleDiagnostics();
       } else if (modifier && event.key.toLowerCase() === 'd') {
         event.preventDefault();
         duplicateSelected();
@@ -727,6 +830,12 @@ export default function App() {
         } else {
           window.dispatchEvent(new CustomEvent('ruse-focus-search'));
         }
+      } else if (modifier && event.key.toLowerCase() === 'l') {
+        event.preventDefault();
+        setSidebarCollapsed(value => !value);
+      } else if (modifier && event.key.toLowerCase() === 'm') {
+        event.preventDefault();
+        setMixerOpen(value => !value);
       } else if (modifier && event.key.toLowerCase() === 's') {
         event.preventDefault();
         send('save-preset');
@@ -745,7 +854,7 @@ export default function App() {
         window.dispatchEvent(new CustomEvent('ruse-focus-section', { detail: { label: sections[event.key] } }));
       } else if (event.key === '?' || (event.key === '/' && event.shiftKey)) {
         event.preventDefault();
-        setSettingsTab('shortcuts');
+        setSettingsTab('diagnostics');
         setShowSettings(true);
       } else if (event.key.toLowerCase() === 'f') {
         fitGraph();
@@ -765,7 +874,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [flow]);
+  }, [flow, toggleDiagnostics, modalOpen]);
 
   const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -794,6 +903,28 @@ export default function App() {
     window.addEventListener('pointercancel', finish);
   };
 
+  const startMixerResize = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = mixerWidth;
+    let nextWidth = startWidth;
+    document.body.classList.add('mixer-resizing');
+    const move = (moveEvent: PointerEvent) => {
+      nextWidth = Math.min(520, Math.max(240, startWidth - (moveEvent.clientX - startX)));
+      workspaceRef.current?.style.setProperty('--mixer-width', `${nextWidth}px`);
+    };
+    const finish = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      document.body.classList.remove('mixer-resizing');
+      setMixerWidth(nextWidth);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  }, [mixerWidth]);
+
   const anyNodeOffscreen = useStore(state => {
     if (!state.width || !state.height) return false;
     const [tx, ty, zoomValue] = state.transform;
@@ -810,7 +941,11 @@ export default function App() {
         node.position.y > bottom;
     });
   });
-  const showMiniMap = nodes.length > 0 && settings.minimapMode !== 1 && anyNodeOffscreen;
+  const graphNodeCount = useMemo(
+    () => nodes.filter(node => !(node.data as { diagnostics?: boolean }).diagnostics).length,
+    [nodes],
+  );
+  const showMiniMap = graphNodeCount > 0 && settings.minimapMode !== 1 && anyNodeOffscreen;
   const running = ui.running || graph.running;
   const audioPlaying = catalog.apps.some(item => item.active === true);
   const primaryWarning = graph.warnings?.find(warning => warning.severity === 'warning') ?? graph.warnings?.[0];
@@ -825,6 +960,9 @@ export default function App() {
     () => new Set(graph.nodes.filter(node => node.deviceId).map(node => node.deviceId!)),
     [graph.nodes],
   );
+  const mixerSources = useMemo(() => graph.nodes.filter(node => node.kind === 'source'), [graph.nodes]);
+  const mixerOutputs = useMemo(() => graph.nodes.filter(node => node.kind === 'output'), [graph.nodes]);
+  const mixerModifiers = useMemo(() => graph.nodes.filter(node => node.kind === 'modifier'), [graph.nodes]);
   const menuNode = canvasMenu?.kind === 'node' ? nodes.find(node => node.id === canvasMenu.id) : undefined;
   const menuLink = canvasMenu?.kind === 'edge' ? graph.links.find(link => link.id === canvasMenu.id) : undefined;
   const menuDbVertical = menuNode?.data.isDbMeter
@@ -856,12 +994,16 @@ export default function App() {
         onMicMute={() => send('mic-mute', { value: !ui.micMuted })}
         onDeviceHelp={() => setShowDeviceHelp(true)}
         onSettings={() => { setSettingsTab('behavior'); setShowSettings(true); }}
+        mixerOpen={mixerOpen}
+        onMixer={() => setMixerOpen(value => !value)}
+        diagnosticsOpen={settings.showDiagnostics}
+        onDiagnostics={toggleDiagnostics}
       />
       {alert && <div className={`alert-bar ${alert.isError ? 'error' : ''}` }><span>{alert.text}</span><div className="alert-actions"><button onClick={() => send('open-log') }>{t('Open log')}</button><button onClick={() => setAlert(null) }>{t('Dismiss')}</button></div></div>}
       {!catalog.perAppCaptureAvailable && (
         <div className="routing-warning-bar info" role="status">
           <Info size={15} />
-          <span className="routing-warning-copy">{t('Per-app capture needs Windows 10 build 20348 or later. Use System audio instead.')}</span>
+          <span className="routing-warning-copy">{t('Per-app capture needs Windows 11 or Windows Server 2022. Use System audio or a virtual cable instead.')}</span>
         </div>
       )}
       {warningVisible && primaryWarning && (
@@ -873,7 +1015,7 @@ export default function App() {
           <button className="routing-warning-dismiss" title={t('Dismiss warning')} aria-label={t('Dismiss warning')} onClick={() => setDismissedWarning(warningSignature)}><X size={14} /></button>
         </div>
       )}
-      <div ref={workspaceRef} className={`workspace ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+      <div ref={workspaceRef} className={`workspace ${sidebarCollapsed ? 'sidebar-collapsed' : ''} ${mixerOpen ? 'mixer-open' : ''}`}>
         {sidebarCollapsed ? (
           <aside className="sidebar-rail" aria-label={t('Library')} title={t('Show library')} onClick={() => setSidebarCollapsed(false)}>
             <button className="sidebar-rail-button" title={t('Show library')} aria-label={t('Show library')} onClick={(event) => { event.stopPropagation(); setSidebarCollapsed(false); }}>
@@ -890,6 +1032,7 @@ export default function App() {
               usedDeviceIds={usedDeviceIds}
               onAdd={quickAdd}
               onRename={setRenameLibrary}
+              onDelete={setLibraryRemoval}
               onNewChain={() => setChainEditor({ name: 'My chain', elements: [] })}
               onRescanPlugins={() => send('vst3-rescan')}
               onEditChain={item => setChainEditor({
@@ -912,10 +1055,30 @@ export default function App() {
           onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }}
           onDrop={event => {
             event.preventDefault();
+            const files = Array.from(event.dataTransfer.files ?? []);
+            if (files.length > 0) {
+              const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+              const spot = findFreeSpot({ x: position.x - 102, y: position.y - 60 });
+              window.chrome?.webview?.postMessageWithAdditionalObjects?.(
+                { type: 'file-drop', payload: { x: spot.x, y: spot.y } },
+                files,
+              );
+              return;
+            }
+
             const raw = event.dataTransfer.getData('application/ruse-item');
             if (!raw) return;
             const item = JSON.parse(raw) as CatalogItem;
             const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+            if (item.kind === 'template') {
+              send('insert-template', {
+                id: item.id,
+                x: Math.round((position.x - 180) / 20) * 20,
+                y: Math.round((position.y - 100) / 20) * 20,
+              });
+              return;
+            }
+
             const canInsert = item.kind === 'effect' || item.kind === 'chain' || item.kind === 'vst3';
             const linkId = canInsert ? findLinkAtPoint(position) : undefined;
             const halfWidth = item.kind === 'vst3' ? 170 : 102;
@@ -974,7 +1137,8 @@ export default function App() {
               setCanvasMenu({ x: event.clientX, y: event.clientY, kind: 'pane', flowX: position.x, flowY: position.y });
             }}
             onPaneClick={() => setCanvasMenu(null)}
-            onMove={(_event, viewport) => setZoom(viewport.zoom)}
+            onMove={(_event, viewport) => setZoom(current =>
+              Math.round(current * 100) === Math.round(viewport.zoom * 100) ? current : viewport.zoom)}
             isValidConnection={isValidConnection}
             minZoom={0.25}
             maxZoom={2.5}
@@ -1001,12 +1165,19 @@ export default function App() {
                         onDoubleClick={event => { event.stopPropagation(); setFrameRename(frame); }}
                       >{frame.name || t('Group')}</span>
                       <button
+                        className="ruse-frame-remove ruse-frame-save"
+                        title={t('Save as template')}
+                        aria-label={t('Save {name} as template', { name: frame.name })}
+                        onPointerDown={event => event.stopPropagation()}
+                        onClick={event => { event.stopPropagation(); send('save-frame-template', { id: frame.id }); }}
+                      ><LayoutTemplate size={11} /></button>
+                      <button
                         className="ruse-frame-remove"
                         title={t('Remove group')}
                         aria-label={t('Remove {name}', { name: frame.name })}
                         onPointerDown={event => event.stopPropagation()}
-                        onClick={() => requestRemoveFrame(frame)}
-                      >×</button>
+                        onClick={event => { event.stopPropagation(); requestRemoveFrame(frame); }}
+                      ><X size={11} /></button>
                     </div>
                     {FRAME_HANDLES.map(handle => (
                       <div
@@ -1018,7 +1189,7 @@ export default function App() {
                   </div>
                 ))}
               </div>
-            </ViewportPortal>            <Panel position="top-left" className="graph-caption"><span>{t('Routing canvas')}</span><strong>{t('{nodes} nodes · {cables} cables', { nodes: nodes.length, cables: edges.length })}</strong></Panel>
+            </ViewportPortal>            <Panel position="top-left" className="graph-caption"><span>{t('Routing canvas')}</span><strong>{t('{nodes} nodes · {cables} cables', { nodes: graphNodeCount, cables: edges.length })}</strong></Panel>
             <Panel position="bottom-left" className="canvas-controls">
               <button title={t('Zoom out')} aria-label={t('Zoom out')} onClick={() => flow.zoomOut({ duration: 120 }) }><Minus size={14} /></button>
               <button title={t('Reset zoom')} aria-label={t('Reset zoom')} onClick={() => flow.zoomTo(1, { duration: 160 }) }>{Math.round(zoom * 100)}%</button>
@@ -1034,7 +1205,7 @@ export default function App() {
               maskColor="rgba(7, 10, 14, 0.76)"
             />}
           </ReactFlow>
-          {nodes.length === 0 && <div className="graph-empty">
+          {graphNodeCount === 0 && <div className="graph-empty">
             <span className="eyebrow">{t('Start with a signal')}</span>
             <h2>{t('Build your first route')}</h2>
             <p>{t('Add a source and an output, then drag from OUT to IN. Processing nodes sit between them.')}</p>
@@ -1043,9 +1214,18 @@ export default function App() {
             <small>{t('Or drag anything from the library onto the canvas.')}</small>
           </div>}
         </main>
+        {mixerOpen && <MixerPanel
+          sources={mixerSources}
+          outputs={mixerOutputs}
+          modifiers={mixerModifiers}
+          links={graph.links}
+          onClose={closeMixer}
+          onResizeStart={startMixerResize}
+          onFocusNode={focusMixerNode}
+        />}
       </div>
       <StatusBar status={status} />
-      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} vstPlugins={catalog.vst3Plugins} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
       {trayPrompt && <TrayPromptDialog
         onKeep={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: true }); }}
         onQuit={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: false }); }}
@@ -1098,6 +1278,16 @@ export default function App() {
         }}
         onClose={() => setRenameLibrary(null)}
       />}
+      {libraryRemoval && <ConfirmDialog
+        title={t('Delete {name}', { name: libraryRemoval.name })}
+        body={t('This removes it from the library. Nodes already on the canvas are not affected.')}
+        confirmLabel={t('Delete')}
+        onConfirm={() => {
+          send(libraryRemoval.kind === 'chain' ? 'chain-delete' : 'template-delete', { name: libraryRemoval.name });
+          setLibraryRemoval(null);
+        }}
+        onClose={() => setLibraryRemoval(null)}
+      />}
       {chainEditor && <ChainEditorDialog
         request={chainEditor}
         effects={catalog.effects.filter(item => item.id !== 'transcriber' && item.id !== 'translator')}
@@ -1117,28 +1307,28 @@ export default function App() {
         onClose={() => setChainEditor(null)}
       />}
       {canvasMenu && <div className="context-layer" onPointerDown={event => { if (event.target === event.currentTarget) setCanvasMenu(null); } }>
-        <div className="context-menu" role="menu" style={{ left: menuLeft, top: menuTop } }>
+        <div className="context-menu" role="menu" onKeyDown={onContextMenuKeyDown} style={{ left: menuLeft, top: menuTop } }>
           {canvasMenu.kind === 'node' && menuNode && <>
-            <button onClick={() => { setRenamePrompt({ id: menuNode.id, title: menuNode.data.title }); setCanvasMenu(null); } }><Pencil size={14} /> {t('Rename')}</button>
-            <button onClick={() => { send('duplicate', { id: menuNode.id }); setCanvasMenu(null); } }><Copy size={14} /> {t('Duplicate')} <kbd>Ctrl D</kbd></button>
-            <button onClick={() => { send('mute', { id: menuNode.id, value: !menuNode.data.muted }); setCanvasMenu(null); } }>{menuNode.data.muted ? <Volume2 size={14} /> : <VolumeX size={14} />} {menuNode.data.muted ? t('Unmute node') : t('Mute node')} <kbd>M</kbd></button>
-            {menuNode.data.isDbMeter && <button onClick={() => { send('db-meter-orientation', { id: menuNode.id, vertical: !menuDbVertical }); setCanvasMenu(null); } }><ArrowUpDown size={14} /> {menuDbVertical ? t('Make horizontal') : t('Make vertical')}</button>}
-            <button onClick={() => { send('disconnect-node', { id: menuNode.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect routes')}</button>
-            <div className="menu-separator" />
-            <button className="danger" onClick={() => { send('remove', { id: menuNode.id }); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Remove node')} <kbd>Del</kbd></button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { setRenamePrompt({ id: menuNode.id, title: menuNode.data.title }); setCanvasMenu(null); } }><Pencil size={14} /> {t('Rename')}</button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { send('duplicate', { id: menuNode.id }); setCanvasMenu(null); } }><Copy size={14} /> {t('Duplicate')} <kbd>Ctrl D</kbd></button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { send('mute', { id: menuNode.id, value: !menuNode.data.muted }); setCanvasMenu(null); } }>{menuNode.data.muted ? <Volume2 size={14} /> : <VolumeX size={14} />} {menuNode.data.muted ? t('Unmute node') : t('Mute node')} <kbd>M</kbd></button>
+            {menuNode.data.isDbMeter && <button role="menuitem" tabIndex={-1} onClick={() => { send('db-meter-orientation', { id: menuNode.id, vertical: !menuDbVertical }); setCanvasMenu(null); } }><ArrowUpDown size={14} /> {menuDbVertical ? t('Make horizontal') : t('Make vertical')}</button>}
+            <button role="menuitem" tabIndex={-1} onClick={() => { send('disconnect-node', { id: menuNode.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect routes')}</button>
+            <div className="menu-separator" role="separator" />
+            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('remove', { id: menuNode.id }); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Remove node')} <kbd>Del</kbd></button>
           </>}
           {canvasMenu.kind === 'edge' && menuLink && <>
-            <button className="danger" onClick={() => { send('disconnect', { id: menuLink.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect cable')}</button>
+            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('disconnect', { id: menuLink.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect cable')}</button>
           </>}
           {canvasMenu.kind === 'pane' && <>
-            <button onClick={() => {
+            <button role="menuitem" tabIndex={-1} onClick={() => {
               if (canvasMenu.flowX != null && canvasMenu.flowY != null) sendAdd(systemItem, findFreeSpot({ x: canvasMenu.flowX, y: canvasMenu.flowY }));
               setCanvasMenu(null);
             } }><Plus size={14} /> {t('Add system audio')}</button>
-            <button onClick={() => { fitGraph(); setCanvasMenu(null); } }><Maximize2 size={14} /> {t('Fit graph')} <kbd>F</kbd></button>
-            <button onClick={tidyGraph }><LayoutGrid size={14} /> {t('Tidy up')}</button>
-            <div className="menu-separator" />
-            <button className="danger" onClick={() => { setShowClear(true); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Clear graph')}</button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { fitGraph(); setCanvasMenu(null); } }><Maximize2 size={14} /> {t('Fit graph')} <kbd>F</kbd></button>
+            <button role="menuitem" tabIndex={-1} onClick={tidyGraph }><LayoutGrid size={14} /> {t('Tidy up')}</button>
+            <div className="menu-separator" role="separator" />
+            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { setShowClear(true); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Clear graph')}</button>
           </>}
         </div>
       </div>}

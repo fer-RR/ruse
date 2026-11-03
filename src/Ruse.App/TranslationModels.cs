@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using Ruse.App.Diagnostics;
 
 namespace Ruse.App;
@@ -12,6 +13,7 @@ internal sealed record TranslationModel(
     string Url,
     string License,
     string Note,
+    string? Sha256 = null,
     int VramMb = 0);
 
 internal sealed record TranslationModelProgress(
@@ -25,6 +27,12 @@ internal static class TranslationModels
     private const long MinimumSize = 50L * 1024 * 1024;
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static readonly HttpClient Http = CreateHttpClient();
+    private static readonly IReadOnlyDictionary<string, string> Hashes = new Dictionary<string, string>
+    {
+        ["qwen2.5-0.5b-instruct-q4_k_m.gguf"] = "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+        ["qwen2.5-1.5b-instruct-q4_k_m.gguf"] = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+        ["qwen2.5-3b-instruct-q4_k_m.gguf"] = "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
+    };
 
     public static IReadOnlyList<TranslationModel> All { get; } = new[]
     {
@@ -91,10 +99,14 @@ internal static class TranslationModels
             progress?.Report(new TranslationModelProgress(id, "downloading", 0, $"Downloading {model.Name}"));
             long total = 0;
             long copied = 0;
+            string? expectedHash = null;
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             using (var response = await Http.GetAsync(model.Url, HttpCompletionOption.ResponseHeadersRead, token))
             {
                 response.EnsureSuccessStatusCode();
                 total = response.Content.Headers.ContentLength ?? 0;
+                expectedHash = ModelIntegrity.NormalizeSha256(model.Sha256) ??
+                               ModelIntegrity.FromETag(response.Headers.ETag);
                 await using var input = await response.Content.ReadAsStreamAsync(token);
                 await using var output = File.Create(temp);
                 var buffer = new byte[81920];
@@ -103,6 +115,7 @@ internal static class TranslationModels
                 while ((read = await input.ReadAsync(buffer, token)) > 0)
                 {
                     await output.WriteAsync(buffer.AsMemory(0, read), token);
+                    hash.AppendData(buffer, 0, read);
                     copied += read;
                     if (total > 0)
                     {
@@ -112,7 +125,7 @@ internal static class TranslationModels
                             lastPercent = percent;
                             progress?.Report(new TranslationModelProgress(
                                 id, "downloading", percent,
-                                $"Downloading {model.Name} · {percent}%"));
+                                $"Downloading {model.Name} — {percent}%"));
                         }
                     }
                 }
@@ -122,6 +135,8 @@ internal static class TranslationModels
             {
                 throw new InvalidDataException("The download was incomplete. Try again.");
             }
+
+            ModelIntegrity.Verify(ModelIntegrity.Finish(hash), expectedHash, model.Name);
 
             if (!IsValidModelFile(temp))
             {
@@ -197,7 +212,9 @@ internal static class TranslationModels
         int vramMb = 0) =>
         new(id, name, tier, sizeMb,
             $"https://huggingface.co/{repo}/resolve/main/{file}",
-            license, note, vramMb);
+            license, note,
+            Hashes.TryGetValue(file, out string? sha256) ? sha256 : null,
+            vramMb);
 
     private static HttpClient CreateHttpClient()
     {

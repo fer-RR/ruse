@@ -1,5 +1,6 @@
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using Ruse.App.Diagnostics;
 
 namespace Ruse.App;
@@ -205,6 +206,8 @@ internal static class OpusTranslationModels
         using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token);
         response.EnsureSuccessStatusCode();
         long length = response.Content.Headers.ContentLength ?? 0;
+        string? expectedHash = ModelIntegrity.FromETag(response.Headers.ETag);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         await using var input = await response.Content.ReadAsStreamAsync(token);
         await using var output = File.Create(target);
         var buffer = new byte[81920];
@@ -214,6 +217,7 @@ internal static class OpusTranslationModels
         while ((read = await input.ReadAsync(buffer, token)) > 0)
         {
             await output.WriteAsync(buffer.AsMemory(0, read), token);
+            hash.AppendData(buffer, 0, read);
             copied += read;
             int filePercent = length > 0 ? (int)Math.Clamp(copied * 100 / length, 0, 100) : 0;
             int percent = (int)Math.Clamp(
@@ -231,6 +235,8 @@ internal static class OpusTranslationModels
         {
             throw new InvalidDataException("The download was incomplete. Try again.");
         }
+
+        ModelIntegrity.Verify(ModelIntegrity.Finish(hash), expectedHash, display.Name);
     }
 
     private static IEnumerable<(string Remote, string Local)> RequiredFiles(OpusTranslationModel model)

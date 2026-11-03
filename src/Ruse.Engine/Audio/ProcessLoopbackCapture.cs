@@ -5,7 +5,8 @@ namespace Ruse.App.Audio;
 
 /// <summary>
 /// Captures the rendered audio of a single process (and its children) using the
-/// Windows process-loopback activation API (Windows 10 build 20348+).
+/// Windows process-loopback activation API (Windows 11 / Windows Server 2022,
+/// build 20348+).
 /// </summary>
 public sealed class ProcessLoopbackCapture : IDisposable
 {
@@ -45,12 +46,12 @@ public sealed class ProcessLoopbackCapture : IDisposable
     }
 
     // Reused packet buffer + event args so the capture thread doesn't allocate
-    // a fresh byte[]/WaveInEventArgs for every packet (steady state: zero alloc).
+    // a fresh byte[]/packet-args object for every packet (steady state: zero alloc).
     private byte[] _packetBuffer = new byte[16384];
-    private WaveInEventArgs? _packetArgs;
+    private readonly AudioPacketEventArgs _packetArgs = new();
 
     public WaveFormat? WaveFormat { get; private set; }
-    public event EventHandler<WaveInEventArgs>? DataAvailable;
+    public event EventHandler<AudioPacketEventArgs>? DataAvailable;
     public event EventHandler<StoppedEventArgs>? RecordingStopped;
 
     public uint ProcessId { get; }
@@ -91,6 +92,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
 
     private void CaptureThread()
     {
+        using var mmcss = MmcssScope.Enter();
         Exception? error = null;
         try
         {
@@ -110,7 +112,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
     {
         // The endpoint format is not discoverable (process-loopback clients do
         // not implement GetMixFormat/IsFormatSupported), so it is supplied
-        // explicitly â€” the same approach as Microsoft's Application Loopback
+        // explicitly — the same approach as Microsoft's Application Loopback
         // sample. Try the engine's native rate first, then the CD rate that the
         // sample documents as always safe. Each attempt activates a fresh
         // client, because a failed Initialize can leave the interface unusable.
@@ -278,7 +280,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
                 {
                     int grown = Math.Max(count, _packetBuffer.Length * 2);
                     _packetBuffer = new byte[grown];
-                    _packetArgs = null;
+                    _packetArgs.Set(_packetBuffer, 0);
                 }
 
                 var buffer = _packetBuffer;
@@ -291,7 +293,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
                     Marshal.Copy(data, buffer, 0, count);
                 }
 
-                _packetArgs = new WaveInEventArgs(buffer, count);
+                _packetArgs.Set(buffer, count);
                 DataAvailable?.Invoke(this, _packetArgs);
             }
 

@@ -11,6 +11,7 @@ public enum SourceKind
     SystemLoopback,
     Asio,
     File,
+    Tone,
 }
 
 /// <summary>A capture source with per-consumer audio copies.</summary>
@@ -18,9 +19,14 @@ public sealed class SourceNode : IDisposable
 {
     private IDisposable? _capture;
     private volatile float _meterLevel;
+    private volatile float _meterLevelLeft;
+    private volatile float _meterLevelRight;
+    private volatile float _meterDbLeft = -60f;
+    private volatile float _meterDbRight = -60f;
     private volatile bool _clipping;
     private int _sourceChannels;
     private int _sourceSampleRate;
+    private int _sourceBitsPerSample = 32;
     private double _fileDurationSeconds;
 
     // Every consumer of this source (each output route) takes its own copy of
@@ -28,17 +34,18 @@ public sealed class SourceNode : IDisposable
     // between them instead of both hearing it.
     private readonly List<Subscription> _subscriptions = new();
     private readonly object _subscriptionLock = new();
+    private Subscription[] _subscriptionSnapshot = Array.Empty<Subscription>();
 
     // Everything is normalized to the mixer's 48 kHz stereo format before it
     // reaches the subscribers, so mixed sources never drift out of pitch/channel.
     private FormatConverter? _converter;
-    private readonly List<float> _convertScratch = new(8192);
+    private readonly List<float> _convertScratch = new(16384);
 
     // WASAPI endpoints deliver the mix format (32-bit float), while the process
     // loopback endpoint is fed a 16-bit PCM WAVEFORMATEX. Both reach the same
     // converter, but they need different decoding on the way in.
     private bool _sourceIsFloat = true;
-    private float[] _pcmScratch = new float[0];
+    private float[] _pcmScratch = new float[16384];
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public SourceKind Kind { get; }
@@ -64,11 +71,22 @@ public sealed class SourceNode : IDisposable
 
     public float Gain { get; set; } = 1.0f;
     public bool Muted { get; set; }
+    public bool Solo { get; set; }
+    public string? SelectedOutputId { get; set; }
     public float MeterLevel => _meterLevel;
+    public float MeterLevelLeft => _meterLevelLeft;
+    public float MeterLevelRight => _meterLevelRight;
+    public float MeterDbLeft => _meterDbLeft;
+    public float MeterDbRight => _meterDbRight;
     public bool Clipping => _clipping;
 
     /// <summary>Total stereo frames captured since <see cref="Start"/> (diagnostics).</summary>
     public long CapturedFrames { get; private set; }
+
+    /// <summary>Raw source frames accepted before conversion (diagnostics/drift).</summary>
+    public long SourceFrames => Interlocked.Read(ref _sourceFrames);
+
+    private long _sourceFrames;
 
     /// <summary>Bytes allocated by the capture thread while decoding (diagnostics).</summary>
     public long CaptureAllocatedBytes { get; private set; }
@@ -77,6 +95,10 @@ public sealed class SourceNode : IDisposable
 
     public int Channels => _sourceChannels;
     public int SampleRate => _sourceSampleRate;
+    public int BitsPerSample => _sourceBitsPerSample;
+
+    /// <summary>True when a device capture is actually using IAudioClient3 low-latency mode.</summary>
+    public bool CaptureLowLatencyActive => _capture is DeviceCapture capture && capture.LowLatencyActive;
 
     public SourceNode(string title, SourceKind kind, uint? processId = null, string? deviceId = null,
         string? asioDriver = null, int[]? asioChannels = null, string? processName = null,
@@ -97,6 +119,22 @@ public sealed class SourceNode : IDisposable
     }
 
     public bool FileLoop { get; private set; }
+
+    public float ToneFrequency { get; private set; } = 1000f;
+    public ToneWaveform ToneWave { get; private set; } = ToneWaveform.Sine;
+    public float ToneLevelDb { get; private set; } = -18f;
+
+    /// <summary>Updates the test signal. Takes effect immediately when running.</summary>
+    public void SetTone(float frequency, ToneWaveform waveform, float levelDb)
+    {
+        ToneFrequency = Math.Clamp(frequency, 20f, 20000f);
+        ToneWave = waveform;
+        ToneLevelDb = Math.Clamp(levelDb, -60f, 0f);
+        if (_capture is ToneGeneratorCapture tone)
+        {
+            tone.Set(ToneFrequency, ToneWave, ToneLevelDb);
+        }
+    }
 
     public bool HasFile => Kind == SourceKind.File &&
         !string.IsNullOrWhiteSpace(FilePath) && File.Exists(FilePath);
@@ -190,7 +228,11 @@ public sealed class SourceNode : IDisposable
         /// <summary>How much audio is kept when the stale head is dropped.</summary>
         private const double KeepMs = 50;
 
+        private const int FadeFrames = 240;
         private readonly FloatRingBuffer _buffer = new(1_000_000);
+        private int _fadeRemaining;
+        private float _lastLeft;
+        private float _lastRight;
         private SourceNode? _owner;
 
         internal Subscription(SourceNode owner) => _owner = owner;
@@ -213,12 +255,42 @@ public sealed class SourceNode : IDisposable
             int maxFrames = (int)(StaleLimitMs * FormatConverter.TargetSampleRate / 1000.0);
             int keepFrames = (int)(KeepMs * FormatConverter.TargetSampleRate / 1000.0);
             int available = _buffer.AvailableToRead / 2;
+            bool skipped = false;
             if (available > maxFrames)
             {
                 SkippedFrames += _buffer.Skip((available - keepFrames) * 2) / 2;
+                skipped = true;
             }
 
-            return _buffer.Read(destination);
+            int read = _buffer.Read(destination);
+            if (read <= 0)
+            {
+                return read;
+            }
+
+            if (skipped)
+            {
+                _fadeRemaining = FadeFrames;
+            }
+
+            if (_fadeRemaining > 0)
+            {
+                int frames = read / 2;
+                int fade = Math.Min(frames, _fadeRemaining);
+                for (int f = 0; f < fade; f++)
+                {
+                    float t = 1f - (_fadeRemaining - f) / (float)FadeFrames;
+                    int i = f * 2;
+                    destination[i] = _lastLeft + (destination[i] - _lastLeft) * t;
+                    destination[i + 1] = _lastRight + (destination[i + 1] - _lastRight) * t;
+                }
+
+                _fadeRemaining -= fade;
+            }
+
+            _lastLeft = destination[read - 2];
+            _lastRight = destination[read - 1];
+            return read;
         }
 
         public void Dispose()
@@ -236,6 +308,7 @@ public sealed class SourceNode : IDisposable
         lock (_subscriptionLock)
         {
             _subscriptions.Add(subscription);
+            _subscriptionSnapshot = _subscriptions.ToArray();
         }
 
         return subscription;
@@ -246,18 +319,17 @@ public sealed class SourceNode : IDisposable
         lock (_subscriptionLock)
         {
             _subscriptions.Remove(subscription);
+            _subscriptionSnapshot = _subscriptions.ToArray();
         }
     }
 
     /// <summary>Hands a block of converted audio to every consumer.</summary>
     private void Publish(ReadOnlySpan<float> samples)
     {
-        lock (_subscriptionLock)
+        var subscriptions = Volatile.Read(ref _subscriptionSnapshot);
+        for (int i = 0; i < subscriptions.Length; i++)
         {
-            for (int i = 0; i < _subscriptions.Count; i++)
-            {
-                _subscriptions[i].Write(samples);
-            }
+            subscriptions[i].Write(samples);
         }
     }
 
@@ -304,6 +376,9 @@ public sealed class SourceNode : IDisposable
                 break;
             case SourceKind.File:
                 StartFileCapture();
+                break;
+            case SourceKind.Tone:
+                StartToneCapture();
                 break;
         }
     }
@@ -354,7 +429,7 @@ public sealed class SourceNode : IDisposable
     {
         if (!ProcessLoopbackCapture.IsSupported)
         {
-            throw new PlatformNotSupportedException("Per-application capture requires Windows 10 build 20348 or later.");
+            throw new PlatformNotSupportedException("Per-application capture requires Windows 11 or Windows Server 2022.");
         }
 
         var capture = new ProcessLoopbackCapture(ProcessId!.Value);
@@ -368,18 +443,59 @@ public sealed class SourceNode : IDisposable
 
         capture.DataAvailable += OnDataAvailable;
         WireStopEvents(capture);
-        capture.Start();
         _capture = capture;
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            _capture = null;
+            capture.DataAvailable -= OnDataAvailable;
+            capture.Dispose();
+            throw;
+        }
     }
 
     private void StartDeviceCapture()
     {
         var capture = new DeviceCapture(DeviceId!);
-        SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate);
+        SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate,
+            isFloat: IsFloatFormat(capture.WaveFormat),
+            bitsPerSample: capture.WaveFormat.BitsPerSample);
         capture.DataAvailable += OnDataAvailable;
-        capture.Start();
         WireStopEvents(capture);
         _capture = capture;
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            _capture = null;
+            capture.DataAvailable -= OnDataAvailable;
+            capture.Dispose();
+            throw;
+        }
+    }
+
+    private void StartToneCapture()
+    {
+        var capture = new ToneGeneratorCapture(ToneFrequency, ToneWave, ToneLevelDb);
+        SetSourceFormat(FormatConverter.TargetChannels, FormatConverter.TargetSampleRate);
+        capture.DataAvailable += OnDataAvailable;
+        _capture = capture;
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            _capture = null;
+            capture.DataAvailable -= OnDataAvailable;
+            capture.Dispose();
+            throw;
+        }
     }
 
     private void StartFileCapture()
@@ -391,10 +507,21 @@ public sealed class SourceNode : IDisposable
 
         var capture = new AudioFileCapture(FilePath, FileLoop);
         _fileDurationSeconds = capture.DurationSeconds;
-        SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate);
+        SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate,
+            bitsPerSample: capture.WaveFormat.BitsPerSample);
         capture.DataAvailable += OnDataAvailable;
-        capture.Start();
         _capture = capture;
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            _capture = null;
+            capture.DataAvailable -= OnDataAvailable;
+            capture.Dispose();
+            throw;
+        }
     }
 
     private void StartAsioCapture()
@@ -406,6 +533,12 @@ public sealed class SourceNode : IDisposable
 
         var capture = new AsioCapture(AsioDriver, AsioChannels);
         capture.DataAvailable += OnAsioData;
+        WireStopEvents(capture);
+
+        // ASIO delivers float at the driver's own rate; the converter brings it
+        // to the mixer's 48 kHz stereo format like every other source.
+        SetSourceFormat(capture.ChannelCount, capture.SampleRate, bitsPerSample: 32);
+        _capture = capture;
 
         try
         {
@@ -413,22 +546,19 @@ public sealed class SourceNode : IDisposable
         }
         catch
         {
+            _capture = null;
             capture.DataAvailable -= OnAsioData;
             capture.Dispose();
             throw;
         }
-
-        // ASIO delivers float at the driver's own rate; the converter brings it
-        // to the mixer's 48 kHz stereo format like every other source.
-        SetSourceFormat(capture.ChannelCount, capture.SampleRate);
-
-        _capture = capture;
     }
+
+    private readonly AudioPacketEventArgs _asioArgs = new();
 
     private void OnAsioData(AsioCapture capture, byte[] data)
     {
-        var args = new WaveInEventArgs(data, data.Length);
-        OnDataAvailable(this, args);
+        _asioArgs.Set(data, data.Length);
+        OnDataAvailable(this, _asioArgs);
     }
 
     private void StartSystemLoopback()
@@ -442,20 +572,33 @@ public sealed class SourceNode : IDisposable
             .WithDevice(device)
             .WithSharedMode()
             .WithEventSync()
+            .WithBufferLength(20)
             .WithLoopbackCapture()
             .Build();
 
-        SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate);
+        SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate,
+            isFloat: IsFloatFormat(capture.WaveFormat),
+            bitsPerSample: capture.WaveFormat.BitsPerSample);
         capture.DataAvailable += OnLoopbackData;
-        capture.StartRecording();
         WireStopEvents(capture);
         _capture = capture;
+        try
+        {
+            capture.StartRecording();
+        }
+        catch
+        {
+            _capture = null;
+            capture.DataAvailable -= OnLoopbackData;
+            capture.Dispose();
+            throw;
+        }
     }
 
-    // WasapiRecorder delivers a span; bridge it to the WaveInEventArgs shape the
+    // WasapiRecorder delivers a span; bridge it to the reusable packet shape the
     // rest of the pipeline uses, with a reusable buffer to avoid per-packet allocs.
     private byte[] _loopbackBuffer = new byte[16384];
-    private WaveInEventArgs? _loopbackArgs;
+    private readonly AudioPacketEventArgs _loopbackArgs = new();
 
     private void OnLoopbackData(ReadOnlySpan<byte> buffer, AudioClientBufferFlags flags, long devicePosition, long qpcPosition)
     {
@@ -467,7 +610,6 @@ public sealed class SourceNode : IDisposable
         if (_loopbackBuffer.Length < buffer.Length)
         {
             _loopbackBuffer = new byte[Math.Max(buffer.Length, _loopbackBuffer.Length * 2)];
-            _loopbackArgs = null;
         }
 
         if ((flags & AudioClientBufferFlags.Silent) != 0)
@@ -479,19 +621,25 @@ public sealed class SourceNode : IDisposable
             buffer.CopyTo(_loopbackBuffer);
         }
 
-        _loopbackArgs = new WaveInEventArgs(_loopbackBuffer, buffer.Length);
+        _loopbackArgs.Set(_loopbackBuffer, buffer.Length);
         OnDataAvailable(this, _loopbackArgs);
     }
 
-    private void SetSourceFormat(int channels, int sampleRate, bool isFloat = true)
+    internal static bool IsFloatFormat(WaveFormat format) =>
+        format.Encoding == WaveFormatEncoding.IeeeFloat ||
+        (format is WaveFormatExtensible extensible &&
+         extensible.SubFormat == AudioMediaSubtypes.MEDIASUBTYPE_IEEE_FLOAT);
+
+    private void SetSourceFormat(int channels, int sampleRate, bool isFloat = true, int bitsPerSample = 0)
     {
         _sourceChannels = channels;
         _sourceSampleRate = sampleRate;
         _sourceIsFloat = isFloat;
+        _sourceBitsPerSample = bitsPerSample > 0 ? bitsPerSample : isFloat ? 32 : 16;
         _converter = new FormatConverter(channels, sampleRate);
     }
 
-    private void OnDataAvailable(object? sender, WaveInEventArgs e)
+    private void OnDataAvailable(object? sender, AudioPacketEventArgs e)
     {
         long allocBefore = GC.GetAllocatedBytesForCurrentThread();
         try
@@ -504,7 +652,7 @@ public sealed class SourceNode : IDisposable
         }
     }
 
-    private void Decode(object? sender, WaveInEventArgs e)
+    private void Decode(object? sender, AudioPacketEventArgs e)
     {
         if (e.BytesRecorded <= 0)
         {
@@ -516,12 +664,14 @@ public sealed class SourceNode : IDisposable
         if (sender is ProcessLoopbackCapture plc && plc.WaveFormat != null &&
             (plc.WaveFormat.Channels != _sourceChannels ||
              plc.WaveFormat.SampleRate != _sourceSampleRate ||
-             (plc.WaveFormat.Encoding != WaveFormatEncoding.IeeeFloat) != _sourceIsFloat))
+             plc.WaveFormat.BitsPerSample != _sourceBitsPerSample ||
+             IsFloatFormat(plc.WaveFormat) != _sourceIsFloat))
         {
             SetSourceFormat(
                 plc.WaveFormat.Channels,
                 plc.WaveFormat.SampleRate,
-                isFloat: plc.WaveFormat.Encoding == WaveFormatEncoding.IeeeFloat);
+                isFloat: IsFloatFormat(plc.WaveFormat),
+                bitsPerSample: plc.WaveFormat.BitsPerSample);
         }
 
         var converter = _converter;
@@ -539,18 +689,54 @@ public sealed class SourceNode : IDisposable
         else
         {
             // 16-bit PCM â†’ float, in place, without allocating.
-            int sampleCount = e.BytesRecorded / 2;
+            int bytesPerSample = Math.Max(1, _sourceBitsPerSample / 8);
+            int sampleCount = e.BytesRecorded / bytesPerSample;
             if (_pcmScratch.Length < sampleCount)
             {
                 _pcmScratch = new float[Math.Max(sampleCount, 4096)];
             }
 
-            for (int i = 0; i < sampleCount; i++)
+            switch (_sourceBitsPerSample)
             {
-                _pcmScratch[i] = BitConverter.ToInt16(e.Buffer, i * 2) * (1f / 32768f);
+                case 8:
+                    for (int i = 0; i < sampleCount; i++)
+                    {
+                        _pcmScratch[i] = (e.Buffer[i] - 128) * (1f / 128f);
+                    }
+                    break;
+                case 24:
+                    for (int i = 0; i < sampleCount; i++)
+                    {
+                        int offset = i * 3;
+                        int value = e.Buffer[offset] | (e.Buffer[offset + 1] << 8) | (e.Buffer[offset + 2] << 16);
+                        if ((value & 0x800000) != 0)
+                        {
+                            value |= unchecked((int)0xFF000000);
+                        }
+                        _pcmScratch[i] = value * (1f / 8388608f);
+                    }
+                    break;
+                case 32:
+                    for (int i = 0; i < sampleCount; i++)
+                    {
+                        _pcmScratch[i] = BitConverter.ToInt32(e.Buffer, i * 4) * (1f / 2147483648f);
+                    }
+                    break;
+                default:
+                    for (int i = 0; i < sampleCount; i++)
+                    {
+                        _pcmScratch[i] = BitConverter.ToInt16(e.Buffer, i * 2) * (1f / 32768f);
+                    }
+                    break;
             }
 
             samples = _pcmScratch.AsSpan(0, sampleCount);
+        }
+
+        int sourceFrames = samples.Length / _sourceChannels;
+        if (sourceFrames > 0)
+        {
+            Interlocked.Add(ref _sourceFrames, sourceFrames);
         }
 
         _convertScratch.Clear();
@@ -566,19 +752,33 @@ public sealed class SourceNode : IDisposable
         // Interleaved stereo -> frames.
         CapturedFrames += _convertScratch.Count / 2;
 
-        // Meter and clip flag on the converted signal.
-        float sum = 0;
+        // Meter and clip flag on the converted stereo signal.
+        double sumLeft = 0;
+        double sumRight = 0;
         float peak = 0;
-        for (int i = 0; i < _convertScratch.Count; i++)
+        int frames = _convertScratch.Count / 2;
+        for (int i = 0; i + 1 < _convertScratch.Count; i += 2)
         {
-            float sample = _convertScratch[i];
-            sum += sample * sample;
-            peak = Math.Max(peak, Math.Abs(sample));
+            float left = _convertScratch[i];
+            float right = _convertScratch[i + 1];
+            sumLeft += left * left;
+            sumRight += right * right;
+            peak = Math.Max(peak, Math.Max(Math.Abs(left), Math.Abs(right)));
         }
 
-        float rms = MathF.Sqrt(sum / _convertScratch.Count);
-        float meter = Math.Min(1.0f, rms * 3f);
-        _meterLevel = float.IsFinite(meter) ? meter : 0f;
+        float meterLeft = frames > 0 ? Math.Min(1.0f, MathF.Sqrt((float)(sumLeft / frames)) * 3f) : 0f;
+        float meterRight = frames > 0 ? Math.Min(1.0f, MathF.Sqrt((float)(sumRight / frames)) * 3f) : 0f;
+        float dbLeft = frames > 0
+            ? (float)(20.0 * Math.Log10(Math.Max(1e-6, Math.Sqrt(sumLeft / frames))))
+            : -60f;
+        float dbRight = frames > 0
+            ? (float)(20.0 * Math.Log10(Math.Max(1e-6, Math.Sqrt(sumRight / frames))))
+            : -60f;
+        _meterLevelLeft = float.IsFinite(meterLeft) ? meterLeft : 0f;
+        _meterLevelRight = float.IsFinite(meterRight) ? meterRight : 0f;
+        _meterLevel = Math.Max(_meterLevelLeft, _meterLevelRight);
+        _meterDbLeft = float.IsFinite(dbLeft) ? dbLeft : -60f;
+        _meterDbRight = float.IsFinite(dbRight) ? dbRight : -60f;
         _clipping = float.IsFinite(peak) && peak > 1f;
     }
 
@@ -588,12 +788,10 @@ public sealed class SourceNode : IDisposable
         get
         {
             double worst = 0;
-            lock (_subscriptionLock)
+            var subscriptions = Volatile.Read(ref _subscriptionSnapshot);
+            for (int i = 0; i < subscriptions.Length; i++)
             {
-                for (int i = 0; i < _subscriptions.Count; i++)
-                {
-                    worst = Math.Max(worst, _subscriptions[i].BufferedMs);
-                }
+                worst = Math.Max(worst, subscriptions[i].BufferedMs);
             }
 
             return worst;
@@ -606,12 +804,10 @@ public sealed class SourceNode : IDisposable
         get
         {
             long total = 0;
-            lock (_subscriptionLock)
+            var subscriptions = Volatile.Read(ref _subscriptionSnapshot);
+            for (int i = 0; i < subscriptions.Length; i++)
             {
-                for (int i = 0; i < _subscriptions.Count; i++)
-                {
-                    total += _subscriptions[i].SkippedFrames;
-                }
+                total += subscriptions[i].SkippedFrames;
             }
 
             return total;
@@ -656,10 +852,18 @@ public sealed class SourceNode : IDisposable
                 file.DataAvailable -= OnDataAvailable;
                 file.Dispose();
                 break;
+            case ToneGeneratorCapture tone:
+                tone.DataAvailable -= OnDataAvailable;
+                tone.Dispose();
+                break;
         }
 
         _capture = null;
         _meterLevel = 0;
+        _meterLevelLeft = 0;
+        _meterLevelRight = 0;
+        _meterDbLeft = -60f;
+        _meterDbRight = -60f;
         _clipping = false;
         CapturedFrames = 0;
     }
@@ -676,6 +880,7 @@ public sealed class SourceNode : IDisposable
             }
 
             _subscriptions.Clear();
+            _subscriptionSnapshot = Array.Empty<Subscription>();
         }
     }
 }

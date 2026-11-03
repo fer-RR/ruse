@@ -6,7 +6,8 @@ namespace Ruse.App.Audio;
 /// <summary>Runs a VST3 plugin in an isolated child process for the main shell.</summary>
 public static class Vst3HostRunner
 {
-    public static void Run(string audioPipeName, string controlPipeName, string identifier, string? stateBase64 = null)
+    public static void Run(string audioPipeName, string controlPipeName, string identifier,
+        string? stateBase64 = null, string? handshakeToken = null)
     {
         try
         {
@@ -37,6 +38,15 @@ public static class Vst3HostRunner
                 {
                     switch (request.Command)
                     {
+                        case "hello":
+                            response.Ok = !string.IsNullOrEmpty(handshakeToken) &&
+                                          string.Equals(request.Name, handshakeToken, StringComparison.Ordinal);
+                            if (!response.Ok)
+                            {
+                                response.Error = "Handshake failed.";
+                            }
+
+                            break;
                         case "info":
                             response.Ok = true;
                             response.Info = BuildInfo(processor);
@@ -95,6 +105,7 @@ public static class Vst3HostRunner
 
     private static void AudioLoop(NamedPipeClientStream stream, Vst3Processor processor)
     {
+        using var mmcss = MmcssScope.Enter();
         var buffer = new float[8192];
         try
         {

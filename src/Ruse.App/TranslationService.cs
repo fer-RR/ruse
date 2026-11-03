@@ -122,6 +122,7 @@ internal sealed class TranslationSession : IDisposable
     private async Task RunAsync()
     {
         WhisperProcessor? processor = null;
+        bool speechAcquired = false;
         bool translationAcquired = false;
         try
         {
@@ -158,6 +159,8 @@ internal sealed class TranslationSession : IDisposable
                 SetStatus("Transcription error");
                 return;
             }
+
+            speechAcquired = true;
 
             if (_provider == "opus")
             {
@@ -258,14 +261,7 @@ internal sealed class TranslationSession : IDisposable
             }
             finally
             {
-                try
-                {
-                    if (processor != null) await processor.DisposeAsync();
-                }
-                finally
-                {
-                    SpeechModelCache.Release(_speechModelId);
-                }
+                if (processor != null) await processor.DisposeAsync();
             }
         }
         catch (OperationCanceledException)
@@ -279,6 +275,11 @@ internal sealed class TranslationSession : IDisposable
         }
         finally
         {
+            if (speechAcquired)
+            {
+                SpeechModelCache.Release(_speechModelId);
+            }
+
             if (translationAcquired)
             {
                 TranslationModelCache.Release(_translationModelId);

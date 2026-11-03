@@ -16,12 +16,14 @@ internal sealed partial class WebShellController
     private IReadOnlyList<AsioDriverInfo> _asioDrivers = Array.Empty<AsioDriverInfo>();
     private IReadOnlyList<PluginDescriptor> _vst3Descriptors = Array.Empty<PluginDescriptor>();
     private Task? _vst3ScanTask;
+    private string _lastDeviceSignature = "";
 
     private void RefreshCatalog()
     {
         try
         {
             RefreshDevices();
+            RememberDeviceSignature();
             RefreshApps(publish: false, force: true);
             RefreshEffectsAndChains();
             Post("catalog", _catalog);
@@ -33,6 +35,79 @@ internal sealed partial class WebShellController
         }
 
         QueueVst3Scan();
+    }
+
+    private void RememberDeviceSignature()
+    {
+        try
+        {
+            _lastDeviceSignature = DeviceSignature();
+        }
+        catch
+        {
+        }
+    }
+
+    private static string DeviceSignature()
+    {
+        using var enumerator = new MMDeviceEnumerator();
+        var ids = new List<string>();
+        foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+        {
+            ids.Add("o:" + device.ID);
+        }
+
+        foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
+        {
+            ids.Add("i:" + device.ID);
+        }
+
+        try
+        {
+            using var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            ids.Add("d:" + defaultDevice.ID);
+        }
+        catch
+        {
+        }
+
+        ids.Sort(StringComparer.Ordinal);
+        return string.Join("|", ids);
+    }
+
+    private void RefreshDevicesIfChanged()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        string signature;
+        try
+        {
+            signature = DeviceSignature();
+        }
+        catch
+        {
+            return;
+        }
+
+        if (string.Equals(signature, _lastDeviceSignature, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _lastDeviceSignature = signature;
+        try
+        {
+            RefreshDevices();
+            Post("catalog", _catalog);
+            SetStatus("Audio devices refreshed.");
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning("Device refresh failed: " + ex.Message);
+        }
     }
 
     private void QueueVst3Scan()
@@ -259,7 +334,7 @@ internal sealed partial class WebShellController
         _catalog.PerAppCaptureAvailable = ProcessLoopbackCapture.IsSupported;
         _catalog.PerAppCaptureMessage = _catalog.PerAppCaptureAvailable
             ? ""
-            : "Per-app capture needs Windows 10 build 20348 or later. Use System audio instead.";
+            : "Per-app capture needs Windows 11 or Windows Server 2022. Use System audio or a virtual cable instead.";
         if (!_catalog.PerAppCaptureAvailable)
         {
             _catalog.Apps = new List<CatalogItemDto>();
@@ -358,11 +433,11 @@ internal sealed partial class WebShellController
         var outputEntry = FindOutputByDevice(target.Id);
         if (outputEntry == null)
         {
-            double y = 120 + _nodes.Values.Count(entry => entry.Source != null) * 160;
+            var position = FindFreeNodePosition(640, 120, 240, 180);
             outputEntry = _catalog.Virtuals.Any(item =>
                 string.Equals(item.Id, target.Id, StringComparison.OrdinalIgnoreCase))
-                ? AddVirtualOutput(target.Id, 640, y)
-                : AddDeviceOutput(target.Id, 640, y);
+                ? AddVirtualOutput(target.Id, position.X, position.Y)
+                : AddDeviceOutput(target.Id, position.X, position.Y);
             if (outputEntry == null)
             {
                 return false;
@@ -392,7 +467,8 @@ internal sealed partial class WebShellController
             {
                 var source = new SourceNode(app.Name, SourceKind.Application, processId,
                     processName: app.ProcessName);
-                var entry = RegisterSource(source, 60, 120 + index * 160);
+                var position = FindFreeNodePosition(60, 120 + index * 160, 220, 180);
+                var entry = RegisterSource(source, position.X, position.Y);
                 ConnectEntries(entry, outputEntry, publish: false);
                 index++;
                 changed = true;
@@ -406,6 +482,37 @@ internal sealed partial class WebShellController
 
         return changed;
     }
+    private (double X, double Y) FindFreeNodePosition(double x, double y, double width, double height)
+    {
+        const double gap = 24;
+        const int columns = 32;
+        const int rows = 64;
+        for (int column = 0; column < columns; column++)
+        {
+            double candidateX = x + column * (width + gap);
+            for (int row = 0; row < rows; row++)
+            {
+                double candidateY = y + row * (height + gap);
+                bool overlaps = _nodes.Values.Any(entry =>
+                {
+                    double nodeWidth = entry.Width ?? 204;
+                    double nodeHeight = entry.Height ?? 140;
+                    return candidateX < entry.X + nodeWidth + gap &&
+                           candidateX + width + gap > entry.X &&
+                           candidateY < entry.Y + nodeHeight + gap &&
+                           candidateY + height + gap > entry.Y;
+                });
+
+                if (!overlaps)
+                {
+                    return (candidateX, candidateY);
+                }
+            }
+        }
+
+        return (x, y);
+    }
+
     private (string Id, string Name) DefaultRenderEndpoint()
     {
         try
@@ -606,6 +713,8 @@ internal sealed partial class WebShellController
                     Parameters = new Dictionary<string, float>(element.Parameters),
                 }).ToList(),
             }).ToList();
+
+        _catalog.FrameTemplates = BuildFrameTemplateCatalog();
     }
 
     private static List<ParameterDto> BuildParameterDtos(IParameterizedProcessor parameterized)

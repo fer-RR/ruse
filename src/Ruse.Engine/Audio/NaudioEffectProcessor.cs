@@ -1,3 +1,4 @@
+using NAudio.Dsp;
 using NAudio.Effects;
 using NAudio.Wave;
 
@@ -17,12 +18,48 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
     private readonly AudioEffect _effect;
     private readonly AudioParameter[] _parameters;
 
+    private Func<float>? _rateGet;
+    private Action<float>? _rateSet;
+    private Action<double, NoteDivision>? _syncToTempo;
+    private float _rateMin = 0.05f;
+    private float _rateMax = 10f;
+    private float _rateDefault = 1f;
+    private volatile bool _tempoSync;
+    private volatile float _tempo = 120f;
+    private volatile int _division = 2;
+    private volatile bool _syncDirty;
+
     public NaudioEffectProcessor(string typeId, string displayName, AudioEffect effect)
     {
         TypeId = typeId;
         DisplayName = displayName;
         _effect = effect;
         _effect.Configure(WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels));
+
+        if (_effect is ChorusEffect chorus)
+        {
+            _rateGet = () => chorus.RateHz;
+            _rateSet = value => chorus.RateHz = value;
+            _syncToTempo = (bpm, division) => chorus.SyncToTempo(bpm, division);
+        }
+        else if (_effect is FlangerEffect flanger)
+        {
+            _rateGet = () => flanger.RateHz;
+            _rateSet = value => flanger.RateHz = value;
+            _syncToTempo = (bpm, division) => flanger.SyncToTempo(bpm, division);
+        }
+        else if (_effect is PhaserEffect phaser)
+        {
+            _rateGet = () => phaser.RateHz;
+            _rateSet = value => phaser.RateHz = value;
+            _syncToTempo = (bpm, division) => phaser.SyncToTempo(bpm, division);
+        }
+        else if (_effect is TremoloEffect tremolo)
+        {
+            _rateGet = () => tremolo.RateHz;
+            _rateSet = value => tremolo.RateHz = value;
+            _syncToTempo = (bpm, division) => tremolo.SyncToTempo(bpm, division);
+        }
 
         var mapped = new List<AudioParameter>();
 
@@ -33,6 +70,33 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
                 // Meters are display-only, so they are left out.
                 if (parameter.Kind == EffectParameterKind.Meter)
                 {
+                    continue;
+                }
+
+                // The modulation effects expose a RateHz property and a
+                // SyncToTempo helper. Replace the generic Rate control with a
+                // custom one so manual rate edits turn sync off.
+                if (_rateGet != null && string.Equals(parameter.Name, "Rate", StringComparison.Ordinal))
+                {
+                    _rateMin = parameter.Minimum;
+                    _rateMax = parameter.Maximum;
+                    _rateDefault = parameter.DefaultValue;
+                    mapped.Add(new AudioParameter
+                    {
+                        Name = "Rate",
+                        Min = _rateMin,
+                        Max = _rateMax,
+                        Default = _rateDefault,
+                        Unit = "Hz",
+                        Logarithmic = true,
+                        Get = () => _rateGet(),
+                        Set = value =>
+                        {
+                            _rateSet?.Invoke(Math.Clamp(value, _rateMin, _rateMax));
+                            _tempoSync = false;
+                            _syncDirty = false;
+                        },
+                    });
                     continue;
                 }
 
@@ -93,17 +157,103 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
             }
         }
 
-        // Bypass/Mix live on AudioEffect and are deliberately excluded from the
-        // generic parameter list, so expose them explicitly.
+        // Mix lives on AudioEffect and is deliberately excluded from the
+        // generic parameter list, so expose it explicitly. Bypass is handled by
+        // the effect node's enabled state; a second checkbox was redundant.
         mapped.Add(new AudioParameter
         {
             Name = "Mix",
             Min = 0f,
             Max = 1f,
-            Default = 1f,
+            Default = _effect.Mix,
             Get = () => _effect.Mix,
             Set = v => _effect.Mix = v,
         });
+
+        // The limiter's oversampling factor is a property, not a generic
+        // parameter, so it needs an explicit control. True peak detection is
+        // only meaningful when the detector can see inter-sample peaks.
+        if (_effect is LimiterEffect limiter)
+        {
+            mapped.Add(new AudioParameter
+            {
+                Name = "Oversample",
+                Min = 0f,
+                Max = 2f,
+                Default = limiter.OversampleFactor switch
+                {
+                    1 => 0f,
+                    2 => 1f,
+                    _ => 2f,
+                },
+                IsChoice = true,
+                IsInteger = true,
+                Options = new[] { "1x", "2x", "4x" },
+                Get = () => limiter.OversampleFactor switch
+                {
+                    1 => 0f,
+                    2 => 1f,
+                    _ => 2f,
+                },
+                Set = v => limiter.OversampleFactor = v < 0.5f ? 1 : v < 1.5f ? 2 : 4,
+            });
+        }
+
+        if (_rateGet != null)
+        {
+            mapped.Add(new AudioParameter
+            {
+                Name = "Tempo Sync",
+                Min = 0f,
+                Max = 1f,
+                Default = 0f,
+                IsToggle = true,
+                Get = () => _tempoSync ? 1f : 0f,
+                Set = value =>
+                {
+                    _tempoSync = value >= 0.5f;
+                    _syncDirty = _tempoSync;
+                },
+            });
+
+            mapped.Add(new AudioParameter
+            {
+                Name = "Tempo",
+                Min = 40f,
+                Max = 300f,
+                Default = 120f,
+                Unit = "BPM",
+                Get = () => _tempo,
+                Set = value =>
+                {
+                    _tempo = Math.Clamp(value, 40f, 300f);
+                    _syncDirty = true;
+                },
+            });
+
+            mapped.Add(new AudioParameter
+            {
+                Name = "Division",
+                Min = 0f,
+                Max = 11f,
+                Default = 2f,
+                IsChoice = true,
+                IsInteger = true,
+                Options = new[]
+                {
+                    "Whole", "Half", "Quarter", "Eighth", "Sixteenth", "1/32",
+                    "Dotted Half", "Dotted Quarter", "Dotted Eighth",
+                    "Triplet Quarter", "Triplet Eighth", "Triplet 16th",
+                },
+                Get = () => _division,
+                Set = value =>
+                {
+                    _division = Math.Clamp((int)MathF.Round(value), 0, 11);
+                    _syncDirty = true;
+                },
+            });
+        }
+
 
         _parameters = mapped.ToArray();
     }
@@ -140,7 +290,32 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
     /// <summary>Look-ahead/block latency introduced by the effect, in samples.</summary>
     public int LatencySamples => _effect.LatencySamples;
 
-    public void Process(Span<float> samples, int frames) => _effect.Process(samples);
+    public void Process(Span<float> samples, int frames)
+    {
+        if (_tempoSync && _syncDirty && _syncToTempo != null)
+        {
+            _syncToTempo.Invoke(_tempo, ToNoteDivision(_division));
+            _syncDirty = false;
+        }
+
+        _effect.Process(samples);
+    }
 
     public void Reset() => _effect.Reset();
+
+    private static NoteDivision ToNoteDivision(int index) => index switch
+    {
+        0 => NoteDivision.Whole,
+        1 => NoteDivision.Half,
+        2 => NoteDivision.Quarter,
+        3 => NoteDivision.Eighth,
+        4 => NoteDivision.Sixteenth,
+        5 => NoteDivision.ThirtySecond,
+        6 => NoteDivision.DottedHalf,
+        7 => NoteDivision.DottedQuarter,
+        8 => NoteDivision.DottedEighth,
+        9 => NoteDivision.TripletQuarter,
+        10 => NoteDivision.TripletEighth,
+        _ => NoteDivision.TripletSixteenth,
+    };
 }

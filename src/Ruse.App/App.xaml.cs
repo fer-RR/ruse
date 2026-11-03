@@ -11,6 +11,8 @@ namespace Ruse.App;
 /// </summary>
 public partial class App : Application
 {
+    static App() => LocalizationResolver.Install();
+
     /// <summary>True when launched with --demo; the Web UI builds a sample graph.</summary>
     public static bool DemoMode { get; private set; }
 
@@ -92,12 +94,14 @@ public partial class App : Application
         if (hostIndex >= 0 && hostIndex + 3 < e.Args.Length)
         {
             string state = hostIndex + 4 < e.Args.Length ? e.Args[hostIndex + 4] : "";
+            string handshake = hostIndex + 5 < e.Args.Length ? e.Args[hostIndex + 5] : "";
             Ruse.App.Diagnostics.AppLog.Initialize();
             Vst3HostRunner.Run(
                 e.Args[hostIndex + 1],
                 e.Args[hostIndex + 2],
                 e.Args[hostIndex + 3],
-                string.IsNullOrEmpty(state) ? null : state);
+                string.IsNullOrEmpty(state) ? null : state,
+                handshake);
             Shutdown();
             return;
         }
@@ -243,6 +247,45 @@ public partial class App : Application
             }
         }
 
+        int vst3BenchIndex = Array.FindIndex(e.Args, a => a.Equals("--vst3-bench-test", StringComparison.OrdinalIgnoreCase));
+        if (vst3BenchIndex >= 0 && vst3BenchIndex + 2 < e.Args.Length)
+        {
+            try
+            {
+                string line = Vst3SelfTest.Benchmark(
+                    e.Args[vst3BenchIndex + 1],
+                    GetIntArg(e.Args, "--blocks", 2000));
+                File.WriteAllText(e.Args[vst3BenchIndex + 2], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[vst3BenchIndex + 2], "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
+        int cableTestIndex = Array.FindIndex(e.Args, a => a.Equals("--cable-test", StringComparison.OrdinalIgnoreCase));
+        if (cableTestIndex >= 0 && cableTestIndex + 3 < e.Args.Length)
+        {
+            try
+            {
+                string line = CableSelfTest.Run(
+                    e.Args[cableTestIndex + 1],
+                    e.Args[cableTestIndex + 2],
+                    GetDoubleArg(e.Args, "--seconds", 8),
+                    GetStringArg(e.Args, "--render-match", "CABLE Input"),
+                    GetStringArg(e.Args, "--capture-match", "CABLE Output"));
+                File.WriteAllText(e.Args[cableTestIndex + 3], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[cableTestIndex + 3], "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
         int vst3RouteIndex = Array.FindIndex(e.Args, a => a.Equals("--vst3-route-test", StringComparison.OrdinalIgnoreCase));
         if (vst3RouteIndex >= 0 && vst3RouteIndex + 2 < e.Args.Length)
         {
@@ -304,7 +347,9 @@ public partial class App : Application
             string chainLine;
             try
             {
-                chainLine = $"Ruse chain test: {LatencySelfTest.TestChainProcessor()}";
+                var chain = LatencySelfTest.TestChainProcessor();
+                var chainBreak = LatencySelfTest.TestChainBreak();
+                chainLine = $"Ruse chain test: {chain} | break {chainBreak.Summary}";
             }
             catch (Exception ex)
             {
@@ -362,10 +407,50 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--transparency-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string outputDirectory = GetStringArg(e.Args, "--transparency-test", "");
+            if (string.IsNullOrWhiteSpace(outputDirectory))
+            {
+                outputDirectory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "Ruse-transparency");
+            }
+
+            var result = TransparencySelfTest.Run(outputDirectory);
+            WriteResult("transparency-test.txt",
+                $"Ruse transparency test: {result.Summary}{Environment.NewLine}" +
+                $"{result.Report}{Environment.NewLine}" +
+                $"report: {outputDirectory}");
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Contains("--effects-test", StringComparer.OrdinalIgnoreCase))
         {
             var r = LatencySelfTest.TestEffects();
             WriteResult("effects-test.txt", $"Ruse effects test: {r.Summary}");
+            Shutdown();
+            return;
+        }
+
+        if (e.Args.Contains("--ring-test", StringComparer.OrdinalIgnoreCase))
+        {
+            WriteResult("ring-test.txt", "Ruse ring test: " + LatencySelfTest.TestRingBuffer());
+            Shutdown();
+            return;
+        }
+
+        if (e.Args.Contains("--clip-guard-test", StringComparer.OrdinalIgnoreCase))
+        {
+            var r = LatencySelfTest.TestClipGuard();
+            WriteResult("clip-guard-test.txt", $"Ruse clip guard test: {r.Summary}");
+            Shutdown();
+            return;
+        }
+
+        if (e.Args.Contains("--sidechain-test", StringComparer.OrdinalIgnoreCase))
+        {
+            var r = LatencySelfTest.TestSidechain();
+            WriteResult("sidechain-test.txt", $"Ruse sidechain test: {r.Summary}");
             Shutdown();
             return;
         }
@@ -418,6 +503,39 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--monitor-test", StringComparer.OrdinalIgnoreCase))
+        {
+            uint pid = (uint)GetIntArg(e.Args, "--pid", 0);
+            double seconds = GetDoubleArg(e.Args, "--seconds", 30.0);
+            string outputMatch = GetStringArg(e.Args, "--output-match", "");
+            double blockMs = GetDoubleArg(e.Args, "--block-ms", 0);
+            if (blockMs > 0)
+            {
+                int blockFrames = AudioEngineConfig.FramesForMs(blockMs);
+                double cushionMs = GetDoubleArg(e.Args, "--engine-cushion-ms", blockMs * 2);
+                AudioEngineConfig.Configure(
+                    blockFrames,
+                    Math.Max(blockFrames, AudioEngineConfig.CushionFramesForMs(cushionMs)),
+                    2,
+                    0);
+            }
+
+            string monitorLine;
+            try
+            {
+                var r = LatencySelfTest.TestLiveMonitor(pid, seconds, outputMatch);
+                monitorLine = $"Ruse monitor test: {r.Summary}";
+            }
+            catch (Exception ex)
+            {
+                monitorLine = $"Ruse monitor test FAILED: {ex}";
+            }
+
+            WriteResult("monitor-test.txt", monitorLine);
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Contains("--graph-test", StringComparer.OrdinalIgnoreCase))
         {
             uint pid = (uint)GetIntArg(e.Args, "--pid", 0);
@@ -455,23 +573,6 @@ public partial class App : Application
             return;
         }
 
-        if (e.Args.Contains("--chain-test", StringComparer.OrdinalIgnoreCase))
-        {
-            string chainLine;
-            try
-            {
-                var r = LatencySelfTest.TestChainBreak();
-                chainLine = $"Ruse chain test: {r.Summary}";
-            }
-            catch (Exception ex)
-            {
-                chainLine = $"Ruse chain test FAILED: {ex}";
-            }
-
-            WriteResult("chain-test.txt", chainLine);
-            Shutdown();
-            return;
-        }
 
         if (e.Args.Contains("--sessions", StringComparer.OrdinalIgnoreCase))
         {
@@ -708,6 +809,14 @@ public partial class App : Application
                double.TryParse(args[i + 1], System.Globalization.NumberStyles.Float,
                    System.Globalization.CultureInfo.InvariantCulture, out double v)
             ? v
+            : fallback;
+    }
+
+    private static string GetStringArg(string[] args, string name, string fallback)
+    {
+        int i = Array.FindIndex(args, a => a.Equals(name, StringComparison.OrdinalIgnoreCase));
+        return i >= 0 && i + 1 < args.Length && !string.IsNullOrWhiteSpace(args[i + 1])
+            ? args[i + 1]
             : fallback;
     }
 

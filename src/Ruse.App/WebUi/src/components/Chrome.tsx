@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import {
-  CircleHelp, FolderOpen, LayoutGrid, MicOff, Minus, RefreshCw,
-  Redo2, Save, Settings, Square, Trash2, Undo2, Volume2, VolumeX, X,
+  CircleHelp, FolderOpen, LayoutGrid, MicOff, Minus, RefreshCw, SlidersHorizontal,
+  Redo2, Save, Settings, Square, Trash2, Undo2, Volume2, VolumeX, X, Activity,
 } from 'lucide-react';
 import { send } from '../bridge';
 import { useI18n } from '../i18n';
@@ -69,18 +69,19 @@ export function TitleBar() {
   );
 }
 
-function ToolButton({ icon, children, title, onClick, danger = false, active = false }: {
+function ToolButton({ icon, children, title, onClick, danger = false, active = false, accent = false }: {
   icon: ReactNode;
   children: ReactNode;
   title: string;
   onClick: () => void;
   danger?: boolean;
   active?: boolean;
+  accent?: boolean;
 }) {
-  return <button className={`tool-button ${danger ? 'danger' : ''} ${active ? 'active' : ''}`} title={title} onClick={onClick}>{icon}<span>{children}</span></button>;
+  return <button className={`tool-button ${danger ? 'danger' : ''} ${active ? 'active' : ''} ${accent && active ? 'accent' : ''}`} title={title} onClick={onClick}>{icon}<span>{children}</span></button>;
 }
 
-export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, undoLabel, redoLabel, onTransport, onRefresh, onSave, onLoad, onClear, onUndo, onRedo, onTidy, onMicMute, onDeviceHelp, onSettings }: {
+export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, undoLabel, redoLabel, onTransport, onRefresh, onSave, onLoad, onClear, onUndo, onRedo, onTidy, onMicMute, onDeviceHelp, onSettings, mixerOpen, onMixer, diagnosticsOpen, onDiagnostics }: {
   running: boolean;
   audioPlaying: boolean;
   micMuted: boolean;
@@ -99,6 +100,10 @@ export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, und
   onMicMute: () => void;
   onDeviceHelp: () => void;
   onSettings: () => void;
+  mixerOpen: boolean;
+  onMixer: () => void;
+  diagnosticsOpen: boolean;
+  onDiagnostics: () => void;
 }) {
   const { t } = useI18n();
   return (
@@ -111,6 +116,7 @@ export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, und
         <button className="toolbar-icon" disabled={!canUndo} title={canUndo ? t('Undo {label}', { label: t(undoLabel) }) : t('Nothing to undo')} aria-label={t('Undo')} onClick={onUndo}><Undo2 size={15} /></button>
         <button className="toolbar-icon" disabled={!canRedo} title={canRedo ? t('Redo {label}', { label: t(redoLabel) }) : t('Nothing to redo')} aria-label={t('Redo')} onClick={onRedo}><Redo2 size={15} /></button>
         <button className="toolbar-icon" title={t('Tidy up the graph')} aria-label={t('Tidy up the graph')} onClick={onTidy}><LayoutGrid size={15} /></button>
+        <ToolButton icon={<SlidersHorizontal size={14} />} title={mixerOpen ? t('Hide mixer') : t('Show mixer')} onClick={onMixer} active={mixerOpen} accent>{t('Mixer')}</ToolButton>
       </div>
       <span className="toolbar-separator" />
       <div className="toolbar-group" aria-label={t('Workspace actions')}>
@@ -122,6 +128,7 @@ export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, und
       <div className="toolbar-spacer" />
       <div className="toolbar-group" aria-label={t('Application actions')}>
         <ToolButton icon={<MicOff size={14} />} title={micMuted ? t('Unmute every microphone input') : t('Mute every microphone input')} onClick={onMicMute} active={micMuted}>{micMuted ? t('Mics muted') : t('Mute mics')}</ToolButton>
+        <ToolButton icon={<Activity size={14} />} title={diagnosticsOpen ? t('Hide diagnostics') : t('Show live diagnostics')} onClick={onDiagnostics} active={diagnosticsOpen} accent>{t('Diagnostics')}</ToolButton>
         <ToolButton icon={<Settings size={14} />} title={t('Settings')} onClick={onSettings}>{t('Settings')}</ToolButton>
         <button className="toolbar-icon" title={t('Device guide')} aria-label={t('Device guide')} onClick={onDeviceHelp}><CircleHelp size={15} /></button>
       </div>

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { RefObject } from 'react';
 import {
   AppWindow, AudioLines, Check, ChevronDown, FileAudio, Headphones,
-  Layers3, Mic, Pencil, Plus, Puzzle, Radio, Search, SlidersHorizontal, Speaker, X,
+  Layers3, Mic, Pencil, Plus, Puzzle, Radio, Search, SlidersHorizontal, Speaker, Trash2, X,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { catalogKey } from '../library';
@@ -12,6 +12,11 @@ import type { CatalogItem, CatalogSnapshot } from '../types';
 const systemItem: CatalogItem = {
   id: 'system', kind: 'system', name: 'System audio', subtitle: 'Windows loopback',
   details: 'Capture everything playing through the default output',
+};
+
+const toneItem: CatalogItem = {
+  id: 'tone', kind: 'tone', name: 'Test tone', subtitle: 'Sine, square, saw, noise',
+  details: 'Generate a test signal for routing and level checks',
 };
 
 const recorderItem: CatalogItem = {
@@ -30,6 +35,7 @@ function ItemIcon({ item }: { item: CatalogItem }) {
   switch (item.kind) {
     case 'app': return <AppWindow {...props} />;
     case 'system': return <AudioLines {...props} />;
+    case 'tone': return <AudioLines {...props} />;
     case 'input': return item.virtual ? <Radio {...props} /> : <Mic {...props} />;
     case 'output': {
       const name = item.name.toLowerCase();
@@ -46,12 +52,13 @@ function ItemIcon({ item }: { item: CatalogItem }) {
   }
 }
 
-function LibraryItem({ item, name, onAdd, onEdit, onRename, onCanvas }: {
+function LibraryItem({ item, name, onAdd, onEdit, onRename, onDelete, onCanvas }: {
   item: CatalogItem;
   name: string;
   onAdd: (item: CatalogItem) => void;
   onEdit?: (item: CatalogItem) => void;
   onRename?: (item: CatalogItem) => void;
+  onDelete?: (item: CatalogItem) => void;
   onCanvas?: boolean;
 }) {
   const { t } = useI18n();
@@ -74,7 +81,11 @@ function LibraryItem({ item, name, onAdd, onEdit, onRename, onCanvas }: {
         event.dataTransfer.setData('application/ruse-item', JSON.stringify(item));
         event.dataTransfer.effectAllowed = 'copy';
       }}
-      onDoubleClick={event => { if (event.target === event.currentTarget && !onCanvas) onAdd(item); }}
+      onDoubleClick={event => {
+        if (onCanvas) return;
+        if ((event.target as HTMLElement).closest('button')) return;
+        onAdd(item);
+      }}
       onKeyDown={event => {
         if (event.target !== event.currentTarget) return;
         if (!onCanvas && (event.key === 'Enter' || event.key === ' ')) {
@@ -99,6 +110,9 @@ function LibraryItem({ item, name, onAdd, onEdit, onRename, onCanvas }: {
             </button>}
             {onRename && <button className="library-add" title={t('Rename {name}', { name })} aria-label={t('Rename {name}', { name })} onClick={event => { event.stopPropagation(); onRename(item); }}>
               <Pencil size={13} />
+            </button>}
+            {onDelete && <button className="library-add library-delete" title={t('Delete {name}', { name })} aria-label={t('Delete {name}', { name })} onClick={event => { event.stopPropagation(); onDelete(item); }}>
+              <Trash2 size={13} />
             </button>}
             <button className="library-add" title={t('Add {name}', { name })} aria-label={t('Add {name}', { name })} onClick={event => { event.stopPropagation(); onAdd(item); }}>
               <Plus size={14} />
@@ -127,13 +141,14 @@ const VIEWS: ReadonlyArray<{ id: View; label: string }> = [
   { id: 'processing', label: 'Processing' },
 ];
 
-export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onNewChain, onEditChain, onRescanPlugins }: {
+export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onDelete, onNewChain, onEditChain, onRescanPlugins }: {
   catalog: CatalogSnapshot;
   searchRef: RefObject<HTMLInputElement | null>;
   aliases: Record<string, string>;
   usedDeviceIds: Set<string>;
   onAdd: (item: CatalogItem) => void;
   onRename: (item: CatalogItem) => void;
+  onDelete: (item: CatalogItem) => void;
   onNewChain: () => void;
   onEditChain: (item: CatalogItem) => void;
   onRescanPlugins: () => void;
@@ -167,7 +182,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     const physicalOutputs = catalog.outputs.filter(item => item.provider !== 'ASIO');
     const asioOutputs = catalog.outputs.filter(item => item.provider === 'ASIO');
     return {
-      applications: { label: 'Applications', items: [systemItem, ...catalog.apps] },
+      applications: { label: 'Applications', items: [systemItem, toneItem, ...catalog.apps] },
       physicalOutputs: { label: 'Speakers & headphones', items: physicalOutputs },
       physicalInputs: { label: 'Microphones & inputs', items: physicalInputs },
       recording: { label: 'Record & Play', items: [recorderItem, filePlayerItem] },
@@ -178,6 +193,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
       effects: { label: 'Effects', items: catalog.effects },
       plugins: { label: 'VST3 plugins', items: catalog.vst3Plugins },
       chains: { label: 'Saved chains', items: catalog.chains },
+      templates: { label: 'Frame templates', items: catalog.frameTemplates },
     };
   }, [catalog]);
 
@@ -202,7 +218,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     },
     {
       title: 'Processing',
-      sections: [catalogSections.effects, catalogSections.plugins, catalogSections.chains],
+      sections: [catalogSections.effects, catalogSections.plugins, catalogSections.chains, catalogSections.templates],
     },
   ], [catalogSections]);
 
@@ -218,7 +234,8 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     catalogSections.effects,
     catalogSections.plugins,
     catalogSections.chains,
-  ].filter(section => section.items.length > 0), [catalogSections]);
+    catalogSections.templates,
+  ].filter(section => section.items.length > 0 || section.label === 'Saved chains'), [catalogSections]);
 
   useEffect(() => {
     const focusSection = (event: Event) => {
@@ -250,7 +267,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
         ? section.items.filter(item =>
             `${displayName(item)} ${t(item.name)} ${t(item.subtitle)} ${t(item.details)}`.toLowerCase().includes(normalized))
         : section.items,
-    })).filter(section => section.items.length > 0),
+    })).filter(section => section.items.length > 0 || (!normalized && section.label === 'Saved chains')),
   }));
 
   const visible = normalized
@@ -338,6 +355,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
                       onAdd={onAdd}
                       onRename={onRename}
                       onEdit={item.kind === 'chain' ? onEditChain : undefined}
+                      onDelete={item.kind === 'chain' || item.kind === 'template' ? onDelete : undefined}
                       onCanvas={isOnCanvas(item)}
                     />)}
                     {section.label === 'Saved chains' && <button className="new-chain-button" onClick={onNewChain}><Plus size={13} /> {t('New chain')}</button>}

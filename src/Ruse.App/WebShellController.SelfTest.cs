@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.IO;
 using System.Text.Json;
 using NAudio.Wave;
@@ -31,7 +32,7 @@ internal sealed partial class WebShellController
         spectrum.SetTapId(SpectrumProcessor.NextTapId());
         spectrum.Process(fftTone, fftFrames);
         var bands = SpectrumProcessor.GetBands(spectrum.TapId);
-        Check("spectrum tap", bands is { Length: 64 } &&
+        Check("spectrum tap", bands is { Length: 128 } &&
                               bands.Max() > -60f &&
                               SpectrumProcessor.GetPeakHz(spectrum.TapId) is > 900f and < 1100f);
         SpectrumProcessor.RemoveTap(spectrum.TapId);
@@ -40,14 +41,14 @@ internal sealed partial class WebShellController
         spectrogram.SetTapId(SpectrogramProcessor.NextTapId());
         spectrogram.Process(fftTone, fftFrames);
         var columns = SpectrogramProcessor.GetColumns(spectrogram.TapId);
-        Check("spectrogram tap", columns is { Length: 96 * 64 } &&
+        Check("spectrogram tap", columns is { Length: 128 * 128 } &&
                                  columns.Any(value => value > 0));
         SpectrogramProcessor.RemoveTap(spectrogram.TapId);
 
         var dbMeter = new DbMeterProcessor();
         dbMeter.SetTapId(DbMeterProcessor.NextTapId());
         var quiet = new float[480 * 2];
-        for (int block = 0; block < 40; block++)
+        for (int block = 0; block < 160; block++)
         {
             for (int frame = 0; frame < 480; frame++)
             {
@@ -65,6 +66,50 @@ internal sealed partial class WebShellController
         float silentDb = DbMeterProcessor.GetDb(dbMeter.TapId);
         Check("db meter low signal", lowDb is > -90f and < -45f && silentDb < lowDb);
         DbMeterProcessor.RemoveTap(dbMeter.TapId);
+
+        var stereoMeter = new DbMeterProcessor();
+        stereoMeter.SetTapId(DbMeterProcessor.NextTapId());
+        var stereoBlock = new float[480 * 2];
+        for (int frame = 0; frame < 480; frame++)
+        {
+            stereoBlock[frame * 2] = 0.4f;
+            stereoBlock[frame * 2 + 1] = 0.02f;
+        }
+
+        for (int block = 0; block < 20; block++)
+        {
+            stereoMeter.Process(stereoBlock, 480);
+        }
+
+        Check("db meter stereo",
+            DbMeterProcessor.GetDbLeft(stereoMeter.TapId) >
+            DbMeterProcessor.GetDbRight(stereoMeter.TapId) + 6f &&
+            DbMeterProcessor.GetPeakDbLeft(stereoMeter.TapId) >
+            DbMeterProcessor.GetPeakDbRight(stereoMeter.TapId) + 6f);
+        DbMeterProcessor.RemoveTap(stereoMeter.TapId);
+
+        var loudness = new LoudnessProcessor();
+        loudness.SetTapId(LoudnessProcessor.NextTapId());
+        var loudnessBlock = new float[480 * 2];
+        for (int frame = 0; frame < 480; frame++)
+        {
+            float sample = 0.25f * MathF.Sin(2f * MathF.PI * 1000f * frame / 48000f);
+            loudnessBlock[frame * 2] = sample;
+            loudnessBlock[frame * 2 + 1] = sample;
+        }
+
+        for (int block = 0; block < 160; block++)
+        {
+            loudness.Process(loudnessBlock, 480);
+        }
+
+        Check("loudness tap",
+            LoudnessProcessor.GetMomentaryLufs(loudness.TapId) > -40f &&
+            LoudnessProcessor.GetIntegratedLufs(loudness.TapId) > -40f &&
+            LoudnessProcessor.GetTruePeakDb(loudness.TapId) > -12f);
+        LoudnessProcessor.RemoveTap(loudness.TapId);
+        Check("loudness tap cleanup",
+            LoudnessProcessor.GetMomentaryLufs(loudness.TapId) <= -119f);
 
         var transcriber = new TranscriptionProcessor();
         transcriber.SetTapId(TranscriptionProcessor.NextTapId());
@@ -214,6 +259,18 @@ internal sealed partial class WebShellController
             MinimizeToTray = true,
             TrayPromptShown = true,
             ShowWelcomeScreen = false,
+            AggressiveOutputCushion = true,
+            MidiEnabled = true,
+            MidiInputDevice = "Test MIDI",
+            ClipGuard = false,
+            LowLatencyWasapi = false,
+            AudioAutoMode = false,
+            AudioBlockSizeMs = 7.5,
+            OutputBufferMode = "manual",
+            OutputBufferManualMs = 15,
+            EngineCushionMode = "manual",
+            EngineCushionManualMs = 20,
+            ElasticRing = true,
         };
         var appSettingsJson = JsonSerializer.Serialize(appSettings);
         var appSettingsBack = JsonSerializer.Deserialize<AppSettings>(appSettingsJson) ?? new AppSettings();
@@ -225,7 +282,19 @@ internal sealed partial class WebShellController
             !appSettingsBack.ConnectorAnimation &&
             appSettingsBack.MinimizeToTray &&
             appSettingsBack.TrayPromptShown &&
-            !appSettingsBack.ShowWelcomeScreen);
+            !appSettingsBack.ShowWelcomeScreen &&
+            appSettingsBack.AggressiveOutputCushion &&
+            appSettingsBack.MidiEnabled &&
+            appSettingsBack.MidiInputDevice == "Test MIDI" &&
+            !appSettingsBack.ClipGuard &&
+            !appSettingsBack.LowLatencyWasapi &&
+            !appSettingsBack.AudioAutoMode &&
+            Math.Abs(appSettingsBack.AudioBlockSizeMs - 7.5) < 0.001 &&
+            appSettingsBack.OutputBufferMode == "manual" &&
+            appSettingsBack.OutputBufferManualMs == 15 &&
+            appSettingsBack.EngineCushionMode == "manual" &&
+            appSettingsBack.EngineCushionManualMs == 20 &&
+            appSettingsBack.ElasticRing);
 
         var settingsDto = new SettingsDto
         {
@@ -238,6 +307,18 @@ internal sealed partial class WebShellController
             ShowWelcomeScreen = false,
             GpuAvailable = true,
             GpuDeviceName = "Test GPU",
+            AggressiveOutputCushion = true,
+            MidiEnabled = true,
+            MidiInputDevice = "Test MIDI",
+            ClipGuard = false,
+            LowLatencyWasapi = false,
+            AudioAutoMode = false,
+            AudioBlockSizeMs = 7.5,
+            OutputBufferMode = "manual",
+            OutputBufferManualMs = 15,
+            EngineCushionMode = "manual",
+            EngineCushionManualMs = 20,
+            ElasticRing = true,
         };
         var settingsJson = JsonSerializer.Serialize(settingsDto, _json);
         var settingsBack = JsonSerializer.Deserialize<SettingsDto>(settingsJson, _json) ?? new SettingsDto();
@@ -250,7 +331,47 @@ internal sealed partial class WebShellController
             settingsBack.MinimizeToTray &&
             !settingsBack.ShowWelcomeScreen &&
             settingsBack.GpuAvailable &&
-            settingsBack.GpuDeviceName == "Test GPU");
+            settingsBack.GpuDeviceName == "Test GPU" &&
+            settingsBack.AggressiveOutputCushion &&
+            settingsBack.MidiEnabled &&
+            settingsBack.MidiInputDevice == "Test MIDI" &&
+            !settingsBack.ClipGuard &&
+            !settingsBack.LowLatencyWasapi &&
+            !settingsBack.AudioAutoMode &&
+            Math.Abs(settingsBack.AudioBlockSizeMs - 7.5) < 0.001 &&
+            settingsBack.OutputBufferMode == "manual" &&
+            settingsBack.OutputBufferManualMs == 15 &&
+            settingsBack.EngineCushionMode == "manual" &&
+            settingsBack.EngineCushionManualMs == 20 &&
+            settingsBack.ElasticRing);
+
+        var midiModifier = new ModifierNode("MIDI test");
+        var midiGain = new GainProcessor();
+        midiModifier.Add(midiGain);
+        var midiEntry = RegisterModifier(midiModifier, 0, 0);
+        _midiLearnTarget = new MidiLearnTarget(midiEntry.Id, 0, 0);
+        ApplyMidiMessage(new MidiInputEvent(0, MidiInputKind.ControlChange, 7, 127));
+        bool midiBound = _midiBindings.Any(binding =>
+            binding.NodeId == midiEntry.Id && binding.Kind == MidiInputKind.ControlChange && binding.Number == 7);
+        ApplyMidiMessage(new MidiInputEvent(0, MidiInputKind.ControlChange, 7, 0));
+        bool midiApplied = midiGain.Gain < 0.01f;
+        _midiBindings.Clear();
+        _midiLearnTarget = null;
+        RemoveEntryInternal(midiEntry.Id);
+        Check("MIDI learn and CC control", midiBound && midiApplied);
+
+        bool previousCushion = OutputNode.AggressiveCushion;
+        using (var cushionNode = OutputNode.CreateForTest(static (_, _) => { }))
+        {
+            OutputNode.AggressiveCushion = false;
+            double safeCushion = cushionNode.TargetCushionMs;
+            OutputNode.AggressiveCushion = true;
+            double aggressiveCushion = cushionNode.TargetCushionMs;
+            Check("aggressive cushion target", aggressiveCushion < safeCushion &&
+                                                aggressiveCushion >= 3);
+        }
+
+        OutputNode.AggressiveCushion = previousCushion;
 
         var catalogJson = JsonSerializer.Serialize(new CatalogDto
         {
@@ -261,11 +382,35 @@ internal sealed partial class WebShellController
             catalogJson.Contains("\"perAppCaptureAvailable\":false", StringComparison.Ordinal) &&
             SourceNode.SupportsApplicationCapture == ProcessLoopbackCapture.IsSupported);
 
+        Check("web origin", IsTrustedUiSource("https://ui.ruse/index.html") &&
+                            !IsTrustedUiSource("https://example.com/") &&
+                            !IsTrustedUiSource("http://ui.ruse/index.html"));
+
+        Check("model checksums",
+            TranscriptionModels.All.All(model => model.Sha256 is { Length: 64 }) &&
+            TranslationModels.All.All(model => model.Sha256 is { Length: 64 }) &&
+            ModelIntegrity.NormalizeSha256(
+                "W/\"921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f\"") ==
+            "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f" &&
+            ModelIntegrity.NormalizeSha256("not-a-hash") == null);
+
         var telemetryJson = JsonSerializer.Serialize(new NodeTelemetryDto { UsesGpu = false }, _json);
         Check("gpu telemetry contract", telemetryJson.Contains("\"usesGpu\":false", StringComparison.Ordinal));
 
         var diagnosticsJson = JsonSerializer.Serialize(new DiagnosticsDto { OutputUnderruns = 2 }, _json);
         Check("underrun diagnostics contract", diagnosticsJson.Contains("\"outputUnderruns\":2", StringComparison.Ordinal));
+
+        var formatJson = JsonSerializer.Serialize(new NodeDto { SampleRate = 44100, BitsPerSample = 16 }, _json);
+        Check("node audio format contract",
+            formatJson.Contains("\"sampleRate\":44100", StringComparison.Ordinal) &&
+            formatJson.Contains("\"bitsPerSample\":16", StringComparison.Ordinal));
+
+        var sendJson = JsonSerializer.Serialize(new LinkDto { Gain = 0.5f, Enabled = false }, _json);
+        Check("send contract",
+            sendJson.Contains("\"gain\":0.5", StringComparison.Ordinal) &&
+            sendJson.Contains("\"enabled\":false", StringComparison.Ordinal));
+
+        Check("send gain audio", LatencySelfTest.TestSendGain());
 
         var vulkan = VulkanProbe.Query();
         Check("vulkan probe",
@@ -289,20 +434,17 @@ internal sealed partial class WebShellController
             tapModifier.Add(tap);
             _graph.AddModifier(tapModifier);
             _graph.ConnectSourceToModifier(tapSource.Source!, tapModifier);
-            Check("standalone tap monitor", tapModifier.Outputs.Any(output => output.IsMonitor) &&
-                                            _graph.Outputs.Any(output => output.IsMonitor) &&
-                                            tapModifier.Outputs.Any(output => output.Inputs.Count > 0));
+            _graph.StartEngine();
+            Check("standalone tap worker", _graph.TapWorkerCount == 1);
 
-            var monitor = tapModifier.Outputs.First(output => output.IsMonitor);
-            monitor.Start();
             tapSource.Source!.WriteTestSamples(tone);
-            Thread.Sleep(160);
+            Thread.Sleep(200);
             int monitored = TranscriptionProcessor.ReadAvailable(tap.TapId, tapBytes);
             Check("standalone tap audio", monitored > 0);
-            monitor.Stop();
+            _graph.StopEngine();
 
             _graph.RemoveModifier(tapModifier);
-            Check("tap monitor cleanup", _graph.Outputs.All(output => !output.IsMonitor));
+            Check("tap worker cleanup", _graph.TapWorkerCount == 0);
             _graph.RemoveSource(tapSource.Source!);
             _nodes.Remove(tapSource.Id);
             TranscriptionProcessor.RemoveTap(tap.TapId);
@@ -310,6 +452,76 @@ internal sealed partial class WebShellController
         finally
         {
             _graph.AutoRun = autoRun;
+        }
+
+        bool singlePassAutoRun = _graph.AutoRun;
+        _graph.AutoRun = false;
+        string singlePassPath = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(), $"ruse-single-pass-{Guid.NewGuid():N}.wav");
+        try
+        {
+            var singleSource = new SourceNode("Single-pass source", SourceKind.Application, 12345);
+            _graph.AddSource(singleSource);
+            var counter = new CountingSharedProcessor();
+            var singleModifier = new ModifierNode("Single-pass chain");
+            singleModifier.Add(counter);
+            var singleSpectrum = new SpectrumProcessor();
+            singleSpectrum.SetTapId(SpectrumProcessor.NextTapId());
+            singleModifier.Add(singleSpectrum);
+            _graph.AddModifier(singleModifier);
+            _graph.ConnectSourceToModifier(singleSource, singleModifier);
+            var singleOutput = _graph.AddOutputForFile(singlePassPath, AudioFileFormat.Wav16);
+            _graph.ConnectModifierToOutput(singleModifier, singleOutput);
+            singleOutput.Start();
+            _graph.StartEngine();
+
+            const int blocks = 60;
+            var block = new float[240 * 2];
+            for (int part = 0; part < blocks; part++)
+            {
+                for (int frame = 0; frame < 240; frame++)
+                {
+                    float value = (float)(0.3 * Math.Sin(
+                        2 * Math.PI * 440 * (part * 240 + frame) / 48000.0));
+                    block[frame * 2] = value;
+                    block[frame * 2 + 1] = value;
+                }
+
+                singleSource.WriteTestSamples(block);
+                Thread.Sleep(5);
+            }
+
+            Thread.Sleep(120);
+            _graph.StopEngine();
+            singleOutput.Stop();
+
+            // With a tap monitor this used to run the shared processor twice;
+            // compare the calls with the blocks that actually reached the file.
+            int renderedBlocks = Math.Max(1, (int)Math.Round(
+                singleOutput.RecordedSeconds * 48000.0 / 240.0));
+            Check($"shared processor runs once ({counter.Calls}/{renderedBlocks})",
+                counter.Calls >= renderedBlocks - 8 && counter.Calls <= renderedBlocks + 8);
+            Check("single-pass recording",
+                singleOutput.RecordedSeconds > 0.15 && string.IsNullOrEmpty(singleOutput.RecordingError));
+
+            _graph.RemoveOutput(singleOutput);
+            _graph.RemoveModifier(singleModifier);
+            _graph.RemoveSource(singleSource);
+            SpectrumProcessor.RemoveTap(singleSpectrum.TapId);
+        }
+        finally
+        {
+            _graph.AutoRun = singlePassAutoRun;
+            try
+            {
+                if (System.IO.File.Exists(singlePassPath))
+                {
+                    System.IO.File.Delete(singlePassPath);
+                }
+            }
+            catch
+            {
+            }
         }
 
         bool warningAutoRun = _graph.AutoRun;
@@ -353,7 +565,7 @@ internal sealed partial class WebShellController
         Check("redo add", _nodes.Count == 1);
 
         var output = RegisterOutput(
-            OutputNode.CreateForFile(string.Empty, AudioFileFormat.Wav24), 320, 40);
+            OutputNode.CreateForTest(static (_, _) => { }), 320, 40);
         PushAddNode(output);
         var link = ConnectEntries(source, output, publish: false);
         PushConnect(link);
@@ -410,6 +622,174 @@ internal sealed partial class WebShellController
         DeleteChain(chain.Name);
         Check("chain delete", SubgraphLibrary.Chains.All(item => item.Name != chain.Name));
 
+        var included = new HashSet<string>(_nodes.Keys);
+        var content = BuildPreset(included, 100, 200);
+        var template = new FrameTemplate
+        {
+            Name = "Web parity frame",
+            Width = 480,
+            Height = 320,
+            Content = content,
+        };
+        FrameTemplateLibrary.Store(template);
+        FrameTemplateLibrary.Load();
+        var loadedTemplate = FrameTemplateLibrary.Find(template.Name);
+        Check("frame template save",
+            loadedTemplate != null &&
+            loadedTemplate.NodeCount == _nodes.Count &&
+            loadedTemplate.Content.Sources.Count == content.Sources.Count &&
+            loadedTemplate.Content.Sources.All(source => source.X >= 100 && source.Y >= 200));
+        if (loadedTemplate != null)
+        {
+            DeleteFrameTemplate(loadedTemplate.Name);
+        }
+
+        Check("frame template delete", FrameTemplateLibrary.Find(template.Name) == null);
+
+        var savedFrame = new FrameDto
+        {
+            Id = "self-test-frame",
+            Name = "Web parity frame group",
+            X = 0,
+            Y = 0,
+            Width = 800,
+            Height = 800,
+        };
+        _frames.Add(savedFrame);
+        SaveFrameTemplate(new FrameRefPayload { Id = savedFrame.Id });
+        var savedTemplate = FrameTemplateLibrary.Find(savedFrame.Name);
+        Check("frame template capture",
+            savedTemplate != null &&
+            savedTemplate.NodeCount == _nodes.Count &&
+            savedTemplate.Content.Sources.All(source => source.X < savedFrame.Width));
+        if (savedTemplate != null)
+        {
+            FrameTemplateLibrary.Remove(savedTemplate);
+        }
+
+        var insertTemplate = new FrameTemplate
+        {
+            Name = "Web parity insert",
+            Width = 300,
+            Height = 200,
+            Content = new Preset
+            {
+                Modifiers =
+                {
+                    new PresetModifier
+                    {
+                        Title = "Template gain",
+                        Processors = { new PresetProcessor { TypeId = GainProcessor.Id } },
+                    },
+                },
+            },
+        };
+        FrameTemplateLibrary.Store(insertTemplate);
+        int nodesBeforeInsert = _nodes.Count;
+        InsertFrameTemplate(new TemplateInsertPayload { Id = insertTemplate.Name, X = 1200, Y = 1200 });
+        Check("frame template insert",
+            _nodes.Count == nodesBeforeInsert + 1 &&
+            _frames.Any(frame => frame.Name == insertTemplate.Name &&
+                                 Math.Abs(frame.X - 1200) < 0.5 &&
+                                 Math.Abs(frame.Y - 1200) < 0.5));
+        FrameTemplateLibrary.Remove(insertTemplate);
+
+        var unsafePreset = new Preset
+        {
+            Outputs =
+            {
+                new PresetOutput
+                {
+                    IsFile = true,
+                    FilePath = Path.Combine(Path.GetTempPath(), "ruse-untrusted-recorder.wav"),
+                    RecordingMode = "On",
+                    AutoSave = true,
+                },
+            },
+        };
+        ApplyPreset(unsafePreset, autoRun: false);
+        var importedRecorder = _nodes.Values
+            .Select(entry => entry.Output)
+            .FirstOrDefault(output => output?.IsFileRecorder == true);
+        Check("imported recorder disarmed",
+            importedRecorder != null &&
+            string.IsNullOrEmpty(importedRecorder.RecordingPath) &&
+            importedRecorder.RecorderMode == RecorderMode.Off &&
+            !importedRecorder.AutoSave &&
+            !importedRecorder.AutoStart);
+
+        var oversizedHeader = new byte[12];
+        BinaryPrimitives.WriteInt32LittleEndian(oversizedHeader, Vst3HostProtocol.CommandProcess);
+        BinaryPrimitives.WriteInt32LittleEndian(oversizedHeader.AsSpan(4), int.MaxValue);
+        BinaryPrimitives.WriteInt32LittleEndian(oversizedHeader.AsSpan(8), int.MaxValue);
+        bool oversizedRejected = false;
+        try
+        {
+            using var oversizedStream = new MemoryStream(oversizedHeader);
+            Vst3HostProtocol.ReadAudio(oversizedStream, new float[8], out _, out _, out _);
+        }
+        catch (InvalidDataException)
+        {
+            oversizedRejected = true;
+        }
+
+        Check("vst3 block bounds", oversizedRejected);
+
+        var eqNode = new ModifierNode("EQ test");
+        eqNode.Add(new GraphicEqualizerProcessor());
+        var eqEntry = RegisterModifier(eqNode, 1400, 1400);
+        var eqDto = CreateNodeDto(eqEntry);
+        Check("graphic eq flag", eqDto.IsGraphicEq && eqDto.Parameters.Count == 10);
+
+        bool bridgeAutoRun = _graph.AutoRun;
+        _graph.AutoRun = false;
+        try
+        {
+            var bridgeSource = RegisterSource(
+                new SourceNode("Bridge test source", SourceKind.Application, 12345), 40, 1400);
+            var bridgeModifierNode = new ModifierNode("Bridge test effect");
+            bridgeModifierNode.Add(new GainProcessor());
+            var bridgeModifier = RegisterModifier(bridgeModifierNode, 240, 1400);
+            var bridgeOutput = RegisterOutput(
+                OutputNode.CreateForTest(static (_, _) => { }), 440, 1400);
+            ConnectEntries(bridgeSource, bridgeModifier);
+            ConnectEntries(bridgeModifier, bridgeOutput);
+
+            RemoveNode(bridgeModifier.Id);
+            Check("remove effect bridges chain",
+                !_nodes.ContainsKey(bridgeModifier.Id) &&
+                _links.Any(link => link.From == bridgeSource.Id && link.To == bridgeOutput.Id));
+
+            Undo();
+            Check("undo remove effect",
+                _nodes.ContainsKey(bridgeModifier.Id) &&
+                _links.Any(link => link.From == bridgeSource.Id && link.To == bridgeModifier.Id) &&
+                _links.Any(link => link.From == bridgeModifier.Id && link.To == bridgeOutput.Id) &&
+                !_links.Any(link => link.From == bridgeSource.Id && link.To == bridgeOutput.Id));
+
+            Redo();
+            Check("redo remove effect",
+                !_nodes.ContainsKey(bridgeModifier.Id) &&
+                _links.Any(link => link.From == bridgeSource.Id && link.To == bridgeOutput.Id));
+            Undo();
+
+            var sendLink = _links.First(link => link.Kind == "modifier-output");
+            SetLinkGain(sendLink.Id, 0.5f);
+            Check("send gain applied",
+                _nodes[bridgeModifier.Id].Modifier!.OutputGains.TryGetValue(bridgeOutput.Output!, out float sendGain) &&
+                Math.Abs(sendGain - 0.5f) < 1e-6);
+
+            SetLinkEnabled(sendLink.Id, false);
+            Check("send disabled",
+                Math.Abs(_nodes[bridgeModifier.Id].Modifier!.OutputGains[bridgeOutput.Output!]) < 1e-6);
+            Undo();
+            Undo();
+        }
+        finally
+        {
+            _graph.AutoRun = bridgeAutoRun;
+        }
+
         ClearGraph();
         ClearHistory();
         return $"web parity: {string.Join(", ", checks)} -> {(pass ? "PASS" : "FAIL")}";
@@ -419,5 +799,21 @@ internal sealed partial class WebShellController
     {
         var payload = System.Text.Json.JsonSerializer.SerializeToElement(chain, _json);
         SaveChain(new BridgeMessage { Type = "chain-save", Payload = payload });
+    }
+
+    private sealed class CountingSharedProcessor : IAudioProcessor, ISharedProcessor
+    {
+        private int _calls;
+
+        public int Calls => Volatile.Read(ref _calls);
+        public string TypeId => "test-shared";
+        public string DisplayName => "Test shared";
+
+        public void Process(Span<float> samples, int frames) =>
+            Interlocked.Increment(ref _calls);
+
+        public void Reset()
+        {
+        }
     }
 }

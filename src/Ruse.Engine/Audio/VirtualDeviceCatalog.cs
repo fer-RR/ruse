@@ -9,7 +9,7 @@ public sealed class VirtualOutputInfo
     public required string CaptureFriendlyName { get; init; }
     public required string Provider { get; init; }
 
-    public string Description => $"{RenderFriendlyName}  â†’  select \"{CaptureFriendlyName}\" as mic in apps";
+    public string Description => $"{RenderFriendlyName}  →  select \"{CaptureFriendlyName}\" as mic in apps";
 }
 
 /// <summary>

@@ -20,11 +20,16 @@ const titleLevels = new Map<string, number>();
 const titleActive = new Map<string, boolean>();
 let nodeTitles: Record<string, string> = {};
 
-function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefined): boolean {
+export function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefined): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   return a.level === b.level &&
+    a.levelLeft === b.levelLeft &&
+    a.levelRight === b.levelRight &&
+    a.meterDbLeft === b.meterDbLeft &&
+    a.meterDbRight === b.meterDbRight &&
     a.clipping === b.clipping &&
+    a.clipGuardActive === b.clipGuardActive &&
     a.filePlaying === b.filePlaying &&
     a.filePaused === b.filePaused &&
     a.filePositionSeconds === b.filePositionSeconds &&
@@ -34,6 +39,10 @@ function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefined): b
     a.recordingError === b.recordingError &&
     a.db === b.db &&
     a.peakDb === b.peakDb &&
+    a.dbLeft === b.dbLeft &&
+    a.dbRight === b.dbRight &&
+    a.peakDbLeft === b.peakDbLeft &&
+    a.peakDbRight === b.peakDbRight &&
     a.dbMeterVertical === b.dbMeterVertical &&
     a.transcriptionStatus === b.transcriptionStatus &&
     a.transcript === b.transcript &&
@@ -50,7 +59,11 @@ function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefined): b
     a.spectrumPeakHz === b.spectrumPeakHz &&
     sameArray(a.spectrogram, b.spectrogram) &&
     a.spectrogramPeakHz === b.spectrogramPeakHz &&
-    a.spectrogramColumns === b.spectrogramColumns;
+    a.spectrogramColumns === b.spectrogramColumns &&
+    a.loudnessIntegrated === b.loudnessIntegrated &&
+    a.loudnessShortTerm === b.loudnessShortTerm &&
+    a.loudnessRange === b.loudnessRange &&
+    a.loudnessTruePeak === b.loudnessTruePeak;
 }
 
 function sameArray(a?: number[], b?: number[]): boolean {

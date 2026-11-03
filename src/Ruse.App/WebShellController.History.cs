@@ -49,7 +49,14 @@ internal sealed partial class WebShellController
         string? TranscriberModel,
         string? TranslatorTarget,
         string? TranslatorModel,
-        bool FileLoop);
+        bool FileLoop,
+        float ToneFrequency = 1000f,
+        ToneWaveform ToneWave = ToneWaveform.Sine,
+        float ToneLevelDb = -18f,
+        bool Parallel = false,
+        float Send = 0.5f,
+        double RecorderSilenceStopSeconds = 0,
+        double RecorderStartThresholdDb = -40);
 
     private void PushAction(string label, Action undo, Action redo, string? coalesceKey = null)
     {
@@ -146,6 +153,9 @@ internal sealed partial class WebShellController
                 DeviceId = entry.Source.DeviceId,
                 FilePath = entry.Source.FilePath,
                 FileLoop = entry.Source.FileLoop,
+                ToneFrequency = entry.Source.ToneFrequency,
+                ToneWave = entry.Source.ToneWave,
+                ToneLevelDb = entry.Source.ToneLevelDb,
                 AsioDriver = entry.Source.AsioDriver,
                 AsioChannels = entry.Source.AsioChannels.ToArray(),
                 Volume = entry.Source.Gain,
@@ -164,6 +174,8 @@ internal sealed partial class WebShellController
                 FileFormat = entry.Output.RecordingFormat,
                 RecorderMode = entry.Output.RecorderMode.ToString(),
                 AutoSave = entry.Output.AutoSave,
+                RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds,
+                RecorderStartThresholdDb = entry.Output.RecorderStartThresholdDb,
                 Volume = entry.Output.Volume,
                 Muted = entry.Output.Muted,
             };
@@ -175,6 +187,8 @@ internal sealed partial class WebShellController
             {
                 Processors = entry.Modifier.Processors.Select(PresetSerializer.SerializeProcessor).ToList(),
                 Enabled = entry.Modifier.Enabled,
+                Parallel = entry.Modifier.Parallel,
+                Send = entry.Modifier.Send,
                 TranscriberModel = entry.TranscriberModel,
                 TranslatorTarget = entry.TranslatorTarget,
                 TranslatorModel = entry.TranslatorModel,
@@ -200,6 +214,11 @@ internal sealed partial class WebShellController
                     processName: snapshot.ProcessName,
                     filePath: snapshot.FilePath,
                     fileLoop: snapshot.FileLoop);
+                if (snapshot.SourceKind == SourceKind.Tone)
+                {
+                    source.SetTone(snapshot.ToneFrequency, snapshot.ToneWave, snapshot.ToneLevelDb);
+                }
+
                 source.Gain = snapshot.Volume;
                 source.Muted = snapshot.Muted;
                 var sourceEntry = RegisterSource(source, snapshot.X, snapshot.Y, snapshot.Id);
@@ -215,7 +234,8 @@ internal sealed partial class WebShellController
                 if (snapshot.IsFile)
                 {
                     output = OutputNode.CreateForFile(snapshot.FilePath ?? string.Empty, snapshot.FileFormat);
-                    output.AutoStart = false;
+                    output.AutoStart = !string.Equals(
+                        snapshot.RecorderMode, nameof(RecorderMode.Off), StringComparison.OrdinalIgnoreCase);
                 }
                 else if (snapshot.IsVirtual)
                 {
@@ -240,6 +260,8 @@ internal sealed partial class WebShellController
                 output.RecorderMode = Enum.TryParse<RecorderMode>(snapshot.RecorderMode, true, out var mode)
                     ? mode : RecorderMode.Off;
                 output.AutoSave = snapshot.AutoSave;
+                output.RecorderSilenceStopSeconds = snapshot.RecorderSilenceStopSeconds;
+                output.RecorderStartThresholdDb = snapshot.RecorderStartThresholdDb;
                 var outputEntry = RegisterOutput(output, snapshot.X, snapshot.Y, micHint, snapshot.Id);
                 outputEntry.Width = snapshot.Width;
                 outputEntry.Height = snapshot.Height;
@@ -261,6 +283,8 @@ internal sealed partial class WebShellController
                 }
 
                 modifier.Enabled = snapshot.Enabled;
+                modifier.Parallel = snapshot.Parallel;
+                modifier.Send = snapshot.Send;
                 var modifierEntry = RegisterModifier(modifier, snapshot.X, snapshot.Y,
                     snapshot.Flavor, snapshot.Subtitle, snapshot.Id, snapshot.TranscriberModel,
                     snapshot.TranslatorTarget, snapshot.TranslatorModel);
@@ -285,6 +309,7 @@ internal sealed partial class WebShellController
         To = link.To,
         Kind = link.Kind,
         Gain = link.Gain,
+        Enabled = link.Enabled,
     };
 
     private void RestoreLink(LinkEntry link)
@@ -296,7 +321,9 @@ internal sealed partial class WebShellController
             return;
         }
 
-        ConnectEntries(from, to, link.Gain, publish: false, linkId: link.Id);
+        var created = ConnectEntries(from, to, link.Gain, publish: false, linkId: link.Id, kind: link.Kind);
+        created.Enabled = link.Enabled;
+        ApplyLinkRouting(created, publish: false);
     }
 
     private void RestoreLinks(IEnumerable<LinkEntry> links)
@@ -319,23 +346,6 @@ internal sealed partial class WebShellController
             redo: () =>
             {
                 RestoreNodeSnapshot(snapshot);
-                PublishGraph();
-            });
-    }
-
-    private void PushRemoveNode(NodeEntry entry, List<LinkEntry> links)
-    {
-        var snapshot = CaptureNode(entry);
-        PushAction("Remove node",
-            undo: () =>
-            {
-                RestoreNodeSnapshot(snapshot);
-                RestoreLinks(links);
-                PublishGraph();
-            },
-            redo: () =>
-            {
-                RemoveEntryInternal(entry.Id);
                 PublishGraph();
             });
     }

@@ -91,6 +91,7 @@ internal sealed class TranscriptionSession : IDisposable
     private async Task RunAsync()
     {
         WhisperProcessor? processor = null;
+        bool speechAcquired = false;
         try
         {
             string? path = TranscriptionModels.GetInstalledPath(ModelId);
@@ -120,6 +121,7 @@ internal sealed class TranscriptionSession : IDisposable
                 return;
             }
 
+            speechAcquired = true;
             try
             {
                 processor = factory.CreateBuilder()
@@ -134,14 +136,7 @@ internal sealed class TranscriptionSession : IDisposable
             }
             finally
             {
-                try
-                {
-                    if (processor != null) await processor.DisposeAsync();
-                }
-                finally
-                {
-                    SpeechModelCache.Release(ModelId);
-                }
+                if (processor != null) await processor.DisposeAsync();
             }
         }
         catch (OperationCanceledException)
@@ -152,6 +147,13 @@ internal sealed class TranscriptionSession : IDisposable
             lock (_textLock) _error = ex.Message;
             SetStatus("Transcription error");
             AppLog.Error("Offline transcription failed.", ex);
+        }
+        finally
+        {
+            if (speechAcquired)
+            {
+                SpeechModelCache.Release(ModelId);
+            }
         }
     }
 

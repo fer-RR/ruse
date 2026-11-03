@@ -86,12 +86,18 @@ public static class Vst3HostProtocol
             return false;
         }
 
-        int samples = frames * channels;
-        if (samples < 0 || samples > destination.Length)
+        if (frames <= 0 || channels <= 0)
+        {
+            throw new InvalidDataException("Invalid VST3 audio block dimensions.");
+        }
+
+        long samples64 = (long)frames * channels;
+        if (samples64 > destination.Length)
         {
             throw new InvalidDataException("Invalid VST3 audio block size.");
         }
 
+        int samples = (int)samples64;
         ReadExactly(stream, MemoryMarshal.AsBytes(destination[..samples]));
         return true;
     }

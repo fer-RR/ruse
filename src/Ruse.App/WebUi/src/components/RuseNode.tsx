@@ -1,10 +1,10 @@
 import { memo, useEffect, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Handle, Position } from '@xyflow/react';
+import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
-  AppWindow, AudioLines, FileAudio, Languages, Layers3, Mic, MonitorSpeaker, Play, Power, Puzzle, Radio,
-  Settings, SlidersHorizontal, Square, Volume2, VolumeX, X,
+  AppWindow, AudioLines, ChevronDown, ChevronUp, FileAudio, Languages, Layers3, Mic, MonitorSpeaker,
+  Play, Power, Puzzle, Radio, Settings, SlidersHorizontal, Square, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
 import type { RuseFlowNode } from '../flow';
@@ -13,11 +13,16 @@ import { TRANSLATION_TARGETS, translationTarget } from '../languages';
 import { useNodeActive, useNodeTelemetry } from '../telemetry';
 import type { NodeTelemetry } from '../types';
 import DiagnosticsNode from './DiagnosticsNode';
+import IrControls from './IrControls';
+import LoudnessView from './LoudnessView';
 import ParameterControl from './ParameterControl';
+import ParametricEqView from './ParametricEqView';
+import ToneControls from './ToneControls';
 import TranscriptionView from './TranscriptionView';
 import TranslationView from './TranslationView';
 import SpectrumView from './SpectrumView';
 import SpectrogramView from './SpectrogramView';
+import GraphicEqualizerView from './GraphicEqualizerView';
 
 const RECORD_FORMATS = [
   ['Wav24', 'WAV \u00B7 24-bit'],
@@ -37,6 +42,7 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'output': return <MonitorSpeaker {...props} />;
     case 'virtual': return <Radio {...props} />;
     case 'file': return <FileAudio {...props} />;
+    case 'tone': return <AudioLines {...props} />;
     case 'recorder': return <FileAudio {...props} />;
     case 'translator': return <Languages {...props} />;
     case 'vst3': return <Puzzle {...props} />;
@@ -116,6 +122,20 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
         />
         <span>{formatTime(duration)}</span>
       </div>
+      {node.fileOutputs && node.fileOutputs.length > 0 && (
+        <label className="file-player-output">
+          <span>{t('Output')}</span>
+          <select
+            value={node.fileOutputId ?? ''}
+            onChange={event => send('file-player-output', { id: node.id, outputId: event.target.value })}
+          >
+            <option value="">{t('None')}</option>
+            {node.fileOutputs.map(output => (
+              <option key={output.id} value={output.id}>{output.name}</option>
+            ))}
+          </select>
+        </label>
+      )}
       <div className="file-player-actions">
         {playing || paused ? (
           <button className="small-button" onClick={() => send(playing ? 'file-player-pause' : 'file-player-resume', { id: node.id })}>
@@ -157,7 +177,7 @@ function Vst3Controls({ node }: { node: RuseFlowNode['data'] }) {
       </div>
       {(node.vst3Vendor || node.vst3Version) && (
         <div className="vst3-meta">
-          {node.vst3Vendor}{node.vst3Version ? ` Â· ${node.vst3Version}` : ''}
+          {node.vst3Vendor}{node.vst3Version ? ` · ${node.vst3Version}` : ''}
         </div>
       )}
       <div className="vst3-actions">
@@ -227,7 +247,17 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
   const mode = node.recorderMode ?? 'Off';
   const autoSave = node.recorderAutoSave === true;
   const recording = telemetry?.recordingStatus === 'REC';
+  const armed = mode === 'Armed' && !recording;
   const fileName = node.recordingPath ? node.recordingPath.split(/[\\/]/).pop() : t('No file selected');
+  const silenceSeconds = node.recorderSilenceStopSeconds ?? 0;
+  const startThresholdDb = node.recorderStartThresholdDb ?? -40;
+  const [advanced, setAdvanced] = useState(false);
+  const updateNodeInternals = useUpdateNodeInternals();
+
+  useEffect(() => {
+    updateNodeInternals(node.id);
+  }, [advanced, node.id, updateNodeInternals]);
+
   return (
     <div className="recorder-controls nodrag">
       <div className="recorder-mode" role="group" aria-label={t('Recorder mode')}>
@@ -262,15 +292,74 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
           {node.recordingPath ? t('Change') : t('Choose file')}
         </button>
       </div>
-      <div className="recorder-path" title={node.recordingPath}>
-        {autoSave && !node.recordingPath ? t('Auto save Â· Music/Ruse Recordings') : fileName}
-      </div>
-      <div className={`recorder-state ${recording ? 'recording' : ''} ${telemetry?.recordingError ? 'error' : ''}`}>
+      {node.recordingPath ? (
+        <button
+          type="button"
+          className="recorder-path link nodrag"
+          title={t('Open destination folder')}
+          onClick={() => send('recorder-open-folder', { id: node.id })}
+        >
+          {fileName}
+        </button>
+      ) : (
+        <div className="recorder-path" title={node.recordingPath}>
+          {autoSave ? t('Auto save · Music/Ruse Recordings') : fileName}
+        </div>
+      )}
+      <div className={`recorder-state ${recording ? 'recording' : ''} ${armed ? 'armed' : ''} ${telemetry?.recordingError ? 'error' : ''}`}>
         <span className="status-dot" />
         <span>{telemetry?.recordingStatus ?? mode.toUpperCase()}</span>
         {recording && <span>{formatTime(telemetry?.recordingSeconds ?? 0)}</span>}
       </div>
       {telemetry?.recordingError && <div className="node-error">{telemetry.recordingError}</div>}
+      <button
+        type="button"
+        className="recorder-advanced-toggle"
+        aria-expanded={advanced}
+        onClick={() => setAdvanced(value => !value)}
+      >
+        {advanced ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        <span>{t('Advanced')}</span>
+      </button>
+      {advanced && (
+        <div className="recorder-advanced">
+          <label className="recorder-advanced-row">
+            <span>{t('Stop after silence')}</span>
+            <span className="recorder-advanced-value">
+              <input
+                type="number"
+                min={0}
+                max={3600}
+                step={1}
+                value={silenceSeconds}
+                onChange={event => send('recorder-silence', {
+                  id: node.id,
+                  value: Number(event.target.value),
+                })}
+              />
+              <span>{t('seconds')}</span>
+            </span>
+          </label>
+          <label className="recorder-advanced-row">
+            <span>{t('Start threshold')}</span>
+            <span className="recorder-advanced-value">
+              <input
+                type="number"
+                min={-80}
+                max={0}
+                step={1}
+                value={startThresholdDb}
+                onChange={event => send('recorder-threshold', {
+                  id: node.id,
+                  value: Number(event.target.value),
+                })}
+              />
+              <span>dB</span>
+            </span>
+          </label>
+          <div className="recorder-advanced-hint">{t('While armed, start above this level')}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -281,22 +370,46 @@ function formatTime(seconds: number): string {
   return `${minutes}:${String(whole % 60).padStart(2, '0')}`;
 }
 
-function DbMeterView({ db, peakDb, vertical }: { db?: number; peakDb?: number; vertical: boolean }) {
-  const value = Number.isFinite(db) ? Math.max(-60, Math.min(0, db!)) : -60;
-  const peak = Number.isFinite(peakDb) ? Math.max(-60, Math.min(0, peakDb!)) : -60;
-  const silent = !Number.isFinite(db) || value <= -59.9;
-  const label = silent ? '-\u221E' : value.toFixed(1);
-  const fill = silent ? 0 : (value + 60) / 60 * 100;
-  const peakFill = peak <= -59.9 ? 0 : (peak + 60) / 60 * 100;
+function DbMeterView({ db, peakDb, dbLeft, dbRight, peakDbLeft, peakDbRight, vertical }: {
+  db?: number;
+  peakDb?: number;
+  dbLeft?: number;
+  dbRight?: number;
+  peakDbLeft?: number;
+  peakDbRight?: number;
+  vertical: boolean;
+}) {
+  const clampDb = (value?: number) => Number.isFinite(value) ? Math.max(-60, Math.min(0, value!)) : -60;
+  const leftValue = clampDb(dbLeft ?? db);
+  const rightValue = clampDb(dbRight ?? db);
+  const leftPeak = clampDb(peakDbLeft ?? peakDb);
+  const rightPeak = clampDb(peakDbRight ?? peakDb);
+  const stereo = dbLeft != null || dbRight != null;
+  const channels = stereo
+    ? [{ label: 'L', value: leftValue, peak: leftPeak }, { label: 'R', value: rightValue, peak: rightPeak }]
+    : [{ label: '', value: leftValue, peak: leftPeak }];
+  const label = (value: number) => value <= -59.9 ? '-\u221E' : value.toFixed(1);
+  const fill = (value: number) => value <= -59.9 ? 0 : (value + 60) / 60 * 100;
+  const peakFill = (value: number) => value <= -59.9 ? 0 : (value + 60) / 60 * 100;
+
   if (vertical) {
     return (
       <div className="db-meter-view vertical">
-        <div className="db-meter-readout vertical"><strong>{label}</strong><span>dBFS</span></div>
-        <div className="db-meter-vertical-body">
-          <div className="db-meter-column">
-            <span style={{ height: `${fill}%` }} />
-            <i style={{ bottom: `${peakFill}%` }} />
-          </div>
+        <div className={`db-meter-readout vertical ${stereo ? 'stereo' : ''}`}>
+          {stereo
+            ? <><span>L</span><strong>{label(leftValue)}</strong><span>R</span><strong>{label(rightValue)}</strong></>
+            : <><strong>{label(leftValue)}</strong><span>dBFS</span></>}
+        </div>
+        <div className={`db-meter-vertical-body ${stereo ? 'stereo' : ''}`}>
+          {channels.map(channel => (
+            <div className="db-meter-channel" key={channel.label || 'mono'}>
+              <div className="db-meter-column">
+                <span style={{ height: `${fill(channel.value)}%` }} />
+                <i style={{ bottom: `${peakFill(channel.peak)}%` }} />
+              </div>
+              {channel.label && <small>{channel.label}</small>}
+            </div>
+          ))}
           <div className="db-meter-scale vertical">
             <span>0</span><span>-6</span><span>-12</span><span>-18</span><span>-24</span>
             <span>-30</span><span>-36</span><span>-42</span><span>-48</span><span>-54</span><span>-60</span>
@@ -308,15 +421,28 @@ function DbMeterView({ db, peakDb, vertical }: { db?: number; peakDb?: number; v
 
   return (
     <div className="db-meter-view horizontal">
-      <div className="db-meter-readout"><strong>{label}</strong><span>dBFS</span></div>
-      <div className="db-meter-track">
-        <span style={{ width: `${fill}%` }} />
-        <i style={{ left: `${peakFill}%` }} />
+      <div className="db-meter-readout">
+        <strong>{label(stereo ? Math.max(leftValue, rightValue) : leftValue)}</strong><span>dBFS</span>
       </div>
+      {channels.map(channel => (
+        <div className="db-meter-channel-row" key={channel.label || 'mono'}>
+          {channel.label && <small>{channel.label}</small>}
+          <div className="db-meter-track">
+            <span style={{ width: `${fill(channel.value)}%` }} />
+            <i style={{ left: `${peakFill(channel.peak)}%` }} />
+          </div>
+        </div>
+      ))}
       <div className="db-meter-scale"><span>-60</span><span>-48</span><span>-36</span><span>-24</span><span>-12</span><span>0</span></div>
     </div>
   );
+}function formatRate(rate: number): string {
+  if (!Number.isFinite(rate) || rate <= 0) return '';
+  return rate >= 1000
+    ? `${(rate / 1000).toFixed(rate % 1000 === 0 ? 0 : 1)}k`
+    : `${Math.round(rate)}`;
 }
+
 function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const { t } = useI18n();
   const telemetry = useNodeTelemetry(data.id);
@@ -327,8 +453,12 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
 
   const isModifier = data.kind === 'modifier';
   const isDbMeter = data.isDbMeter === true;
+  const isLoudness = data.isLoudness === true;
   const isSpectrum = data.isSpectrum === true;
   const isSpectrogram = data.isSpectrogram === true;
+  const isParametricEq = data.isParametricEq === true;
+  const canParallel = isModifier && !isDbMeter && !isLoudness && !isSpectrum && !isSpectrogram &&
+    !data.isTranscriber && !data.isTranslator && !data.isVst3 && !data.isGraphicEq;
   const dbVertical = isDbMeter && (telemetry?.dbMeterVertical ?? true);
   const enabled = data.enabled !== false;
   const recording = telemetry?.recordingStatus === 'REC';
@@ -338,6 +468,8 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     : installedModels[0]?.id ?? '';
   const spectrumFloor = data.parameters.find(parameter => parameter.name === 'Floor')?.value ?? -80;
   const spectrumCeiling = data.parameters.find(parameter => parameter.name === 'Ceiling')?.value ?? 0;
+  const formatRateValue = data.sampleRate && data.sampleRate > 0 ? data.sampleRate : 48000;
+  const formatBits = data.bitsPerSample ?? 32;
   const flowing = enabled && active;
   const classes = [
     'ruse-node',
@@ -346,6 +478,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     selected ? 'selected' : '',
     data.muted && data.highlightMuted ? 'muted' : '',
     telemetry?.clipping ? 'clipping' : '',
+    telemetry?.clipGuardActive ? 'guarded' : '',
     data.duplicateRisk ? (data.warningSeverity === 'info' ? 'copy' : 'duplicate') : '',
     recording ? 'recording' : '',
     flowing ? 'flowing' : '',
@@ -353,16 +486,22 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isTranslator ? 'translator-node' : '',
     data.isVst3 ? 'vst3-node' : '',
     data.isFilePlayer ? 'file-player-node' : '',
+    data.isToneGenerator ? 'tone-node' : '',
     data.isRecorder ? 'recorder-node' : '',
     isSpectrum ? 'spectrum-node' : '',
     isSpectrogram ? 'spectrogram-node' : '',
+    data.isGraphicEq ? 'graphic-eq-node' : '',
+    isParametricEq ? 'parametric-eq-node' : '',
+    data.isConvolutionReverb ? 'convolution-node' : '',
     isDbMeter ? (dbVertical ? 'db-meter-node db-meter-vertical' : 'db-meter-node db-meter-horizontal') : '',
+    isLoudness ? 'loudness-node' : '',
     enabled ? '' : 'disabled',
   ].filter(Boolean).join(' ');
 
   return (
     <div className={classes} style={{ '--accent': data.accent } as CSSProperties}>
       {data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
+      {data.supportsSidechain && <Handle id="sidechain" type="target" position={Position.Left} className="ruse-handle sidechain-handle" style={{ top: '72%' }} />}
       <header className="node-header">
         <span className="node-icon"><FlavorIcon flavor={data.flavor} /></span>
         <strong
@@ -376,9 +515,18 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         {recording && <span className="node-badge rec-badge">REC</span>}
         {data.duplicateRisk && <span className={`node-badge ${data.warningSeverity === 'info' ? 'copy-badge' : 'warn-badge'}`} title={data.duplicateWarning}>{data.warningSeverity === 'info' ? 'COPY' : 'DUP'}</span>}
         {telemetry?.clipping && <span className="node-badge clip-badge">CLIP</span>}
+        {telemetry?.clipGuardActive && <span className="node-badge guard-badge" title={t('Clip guard active')}>GUARD</span>}
         {(data.isTranscriber || data.isTranslator) && typeof telemetry?.usesGpu === 'boolean' && (
           <span className={`node-badge ${telemetry.usesGpu ? 'gpu-badge' : 'cpu-badge'}`}>{telemetry.usesGpu ? 'GPU' : 'CPU'}</span>
         )}
+        {data.showDiagnostics && (data.kind === 'source' || data.kind === 'output') ? (
+          <span
+            className="node-badge format-badge"
+            title={`${(formatRateValue / 1000).toFixed(1)} kHz / ${formatBits}-bit`}
+          >
+            {formatRate(formatRateValue)} · {formatBits}-bit
+          </span>
+        ) : null}
         {isModifier && <button className={`node-power nodrag ${enabled ? '' : 'off'}`} title={enabled ? t('Bypass effect') : t('Enable effect')} aria-label={enabled ? t('Bypass effect') : t('Enable effect')} onClick={() => send('effect-enabled', { id: data.id, value: !enabled })}>
           <Power size={13} />
         </button>}
@@ -392,11 +540,19 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
           <X size={13} />
         </button>
       </header>
-      {!isDbMeter && <div className="node-subtitle">{t(data.subtitle)}</div>}
-      {!isDbMeter && data.micHint && <div className="node-hint" title={data.micHint}>{t('Use {name} as the microphone', { name: data.micHint })}</div>}
-      {isDbMeter ? (
+      {!isDbMeter && !isLoudness && <div className="node-subtitle">{t(data.subtitle)}</div>}
+      {!isDbMeter && !isLoudness && data.micHint && <div className="node-hint" title={data.micHint}>{t('Use {name} as the microphone', { name: data.micHint })}</div>}
+      {isLoudness ? (
+        <LoudnessView
+          id={data.id}
+          integrated={telemetry?.loudnessIntegrated}
+          shortTerm={telemetry?.loudnessShortTerm}
+          lra={telemetry?.loudnessRange}
+          truePeak={telemetry?.loudnessTruePeak}
+        />
+      ) : isDbMeter ? (
         <div className="db-meter-body">
-          <DbMeterView db={telemetry?.db} peakDb={telemetry?.peakDb} vertical={dbVertical} />
+          <DbMeterView db={telemetry?.db} peakDb={telemetry?.peakDb} dbLeft={telemetry?.dbLeft} dbRight={telemetry?.dbRight} peakDbLeft={telemetry?.peakDbLeft} peakDbRight={telemetry?.peakDbRight} vertical={dbVertical} />
         </div>
       ) : isModifier ? (
         <div className="parameter-list">
@@ -411,6 +567,11 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             values={telemetry?.spectrogram}
             columns={telemetry?.spectrogramColumns}
             peakHz={telemetry?.spectrogramPeakHz}
+          />}
+          {data.isGraphicEq && <GraphicEqualizerView
+            nodeId={data.id}
+            parameters={data.parameters}
+            accent={data.accent}
           />}
           {data.isVst3 && <Vst3Controls node={data} />}
           {data.isTranslator && <TranslatorControls node={data} />}
@@ -454,10 +615,40 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
           {data.flavor === 'chain' && !!(data.chainElements?.length) && <div className="chain-chips">
             {data.chainElements.map((name, index) => <span className="chain-chip" key={`${name}-${index}`}>{name}</span>)}
           </div>}
-          {data.parameters
+          {data.isConvolutionReverb && <IrControls node={data} />}
+          {canParallel && (
+            <div className="parallel-controls nodrag">
+              <label className="parallel-toggle">
+                <input
+                  type="checkbox"
+                  checked={data.isParallel === true}
+                  onChange={event => send('parallel', { id: data.id, value: event.target.checked })}
+                />
+                <span>{t('Parallel send')}</span>
+              </label>
+              {data.isParallel && (
+                <label className="parallel-send">
+                  <span>{t('Send')}</span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    value={data.send ?? 0.5}
+                    onChange={event => send('send', { id: data.id, value: Number(event.target.value) })}
+                  />
+                  <span>{Math.round((data.send ?? 0.5) * 100)}%</span>
+                </label>
+              )}
+            </div>
+          )}
+          {data.isParametricEq && <ParametricEqView node={data} />}
+          {!data.isGraphicEq && !data.isParametricEq && data.parameters
             .map(parameter => (
             <ParameterControl
               key={`${parameter.processorIndex}-${parameter.parameterIndex}`}
+              nodeId={data.id}
+              midiEnabled={data.midiEnabled === true}
               parameter={parameter}
               value={parameter.value}
               onChange={value => send('param', {
@@ -475,6 +666,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
       ) : (
         <>
           {data.isFilePlayer && <FilePlayerControls node={data} telemetry={telemetry} />}
+          {data.isToneGenerator && <ToneControls node={data} />}
           <VolumeControl id={data.id} value={data.volume} muted={data.muted} />
           {data.isRecorder && <RecorderControls node={data} telemetry={telemetry} />}
         </>

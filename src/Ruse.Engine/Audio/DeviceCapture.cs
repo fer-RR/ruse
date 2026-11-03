@@ -11,7 +11,7 @@ public sealed class DeviceCapture : IDisposable
     private readonly WasapiRecorder _capture;
     private readonly string _deviceFriendlyName;
 
-    public event EventHandler<WaveInEventArgs>? DataAvailable;
+    public event EventHandler<AudioPacketEventArgs>? DataAvailable;
     public event EventHandler<StoppedEventArgs>? RecordingStopped;
 
     public WaveFormat WaveFormat => _capture.WaveFormat;
@@ -42,10 +42,10 @@ public sealed class DeviceCapture : IDisposable
     }
 
     // The new recorder hands us a span, but the rest of the pipeline (and the
-    // process-loopback capture) speaks WaveInEventArgs, so bridge the two here
+    // process-loopback capture) speaks packet events, so bridge the two here
     // using a reusable buffer to keep the steady state allocation-free.
     private byte[] _packetBuffer = new byte[16384];
-    private WaveInEventArgs? _packetArgs;
+    private readonly AudioPacketEventArgs _packetArgs = new();
 
     private void OnRecorderData(ReadOnlySpan<byte> buffer, AudioClientBufferFlags flags, long devicePosition, long qpcPosition)
     {
@@ -57,7 +57,7 @@ public sealed class DeviceCapture : IDisposable
         if (_packetBuffer.Length < buffer.Length)
         {
             _packetBuffer = new byte[Math.Max(buffer.Length, _packetBuffer.Length * 2)];
-            _packetArgs = null;
+            _packetArgs.Set(_packetBuffer, 0);
         }
 
         if ((flags & AudioClientBufferFlags.Silent) != 0)
@@ -69,7 +69,7 @@ public sealed class DeviceCapture : IDisposable
             buffer.CopyTo(_packetBuffer);
         }
 
-        _packetArgs = new WaveInEventArgs(_packetBuffer, buffer.Length);
+        _packetArgs.Set(_packetBuffer, buffer.Length);
         DataAvailable?.Invoke(this, _packetArgs);
     }
 
@@ -83,6 +83,7 @@ public sealed class DeviceCapture : IDisposable
             .WithDevice(device)
             .WithSharedMode()
             .WithEventSync()
+            .WithBufferLength(20)
             .WithLowLatency()
             .Build();
     }

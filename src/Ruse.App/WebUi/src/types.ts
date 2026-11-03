@@ -1,6 +1,6 @@
 export type NodeKind = 'source' | 'output' | 'modifier';
-export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output';
-export type CatalogKind = 'app' | 'system' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'recorder' | 'vst3';
+export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output' | 'sidechain';
+export type CatalogKind = 'app' | 'system' | 'tone' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'recorder' | 'vst3' | 'template';
 
 export interface ChainElement {
   typeId: string;
@@ -37,6 +37,7 @@ export interface CatalogSnapshot {
   effects: CatalogItem[];
   chains: CatalogItem[];
   vst3Plugins: CatalogItem[];
+  frameTemplates: CatalogItem[];
   defaultOutputId: string;
   defaultOutputName: string;
   perAppCaptureAvailable: boolean;
@@ -56,6 +57,8 @@ export interface ParameterModel {
   isInteger: boolean;
   isChoice: boolean;
   options: string[];
+  midiBinding?: string;
+  midiLearning?: boolean;
 }
 
 export interface NodeModel {
@@ -69,16 +72,39 @@ export interface NodeModel {
   y: number;
   volume: number;
   muted: boolean;
+  solo?: boolean;
+  color?: string;
+  supportsSidechain?: boolean;
   micHint?: string;
   deviceId?: string;
+  sampleRate?: number;
+  bitsPerSample?: number;
+  showDiagnostics?: boolean;
+  midiEnabled?: boolean;
   parameters: ParameterModel[];
   enabled?: boolean;
   isSpectrum?: boolean;
   isSpectrogram?: boolean;
+  isGraphicEq?: boolean;
+  isParametricEq?: boolean;
+  eqBandTypes?: string[];
+  isConvolutionReverb?: boolean;
+  irPath?: string;
+  irName?: string;
+  irError?: string;
+  isParallel?: boolean;
+  send?: number;
   isFilePlayer?: boolean;
   filePath?: string;
+  fileOutputId?: string;
+  fileOutputs?: Array<{ id: string; name: string }>;
   fileLoop?: boolean;
+  isToneGenerator?: boolean;
+  toneFrequency?: number;
+  toneWaveform?: string;
+  toneLevelDb?: number;
   isDbMeter?: boolean;
+  isLoudness?: boolean;
   isTranscriber?: boolean;
   transcriberModel?: string;
   isTranslator?: boolean;
@@ -100,6 +126,8 @@ export interface NodeModel {
   recordingFormat: string;
   recorderMode?: string;
   recorderAutoSave?: boolean;
+  recorderSilenceStopSeconds?: number;
+  recorderStartThresholdDb?: number;
   chainName?: string;
   chainElements?: string[];
   duplicateRisk?: boolean;
@@ -113,6 +141,7 @@ export interface LinkModel {
   to: string;
   kind: LinkKind;
   gain: number;
+  enabled?: boolean;
 }
 
 export interface GraphWarning {
@@ -151,7 +180,12 @@ export interface FirstRouteResult {
 
 export interface NodeTelemetry {
   level: number;
+  levelLeft?: number;
+  levelRight?: number;
+  meterDbLeft?: number;
+  meterDbRight?: number;
   clipping: boolean;
+  clipGuardActive?: boolean;
   filePlaying?: boolean;
   filePaused?: boolean;
   filePositionSeconds?: number;
@@ -166,7 +200,15 @@ export interface NodeTelemetry {
   spectrogramColumns?: number;
   db?: number;
   peakDb?: number;
+  dbLeft?: number;
+  dbRight?: number;
+  peakDbLeft?: number;
+  peakDbRight?: number;
   dbMeterVertical?: boolean;
+  loudnessIntegrated?: number;
+  loudnessShortTerm?: number;
+  loudnessRange?: number;
+  loudnessTruePeak?: number;
   transcriptionStatus?: string;
   transcript?: string;
   partialTranscript?: string;
@@ -194,10 +236,22 @@ export interface DiagnosticInfo {
   sourceCount: number;
   sourcesRunning: number;
   worstBacklogMs: number;
+  sourceFillRateMsPerSec: number;
+  outputRingFillPercent: number;
+  underrunsPerMinute: number;
+  skippedFramesPerMinute: number;
+  latencyMeanMs: number;
+  latencyStdDevMs: number;
+  estimatedDriftPpm: number;
   skippedFrames: number;
   outputCount: number;
   outputsRunning: number;
   worstLatencyMs: number;
+  engineBlockMs: number;
+  outputTargetMs: number;
+  outputBufferedMs: number;
+  endpointLatencyMs: number;
+  engineQueueMs: number;
   chainLatencyMs: number;
   shortReadFrames: number;
   outputUnderruns: number;
@@ -288,8 +342,23 @@ export interface SettingsModel {
   showWelcomeScreen: boolean;
   minimizeToTray: boolean;
   showDiagnostics: boolean;
+  aggressiveOutputCushion: boolean;
+  clipGuard?: boolean;
+  lowLatencyWasapi?: boolean;
+  audioAutoMode?: boolean;
+  audioBlockSizeMs?: number;
+  outputBufferMode?: string;
+  outputBufferManualMs?: number;
+  engineCushionMode?: string;
+  engineCushionManualMs?: number;
+  elasticRing?: boolean;
   useGpu: boolean;
   isolateVst3: boolean;
+  midiEnabled?: boolean;
+  midiInputDevice?: string;
+  midiOpen?: boolean;
+  midiError?: string;
+  midiInputs?: Array<{ name: string }>;
   gpuAvailable?: boolean;
   gpuDeviceName?: string;
   gpuStatusError?: string;

@@ -37,6 +37,14 @@ internal sealed partial class WebShellController
                 entry = RegisterSource(new SourceNode("System audio", SourceKind.SystemLoopback), x, y);
                 SetStatus("Added system audio.");
                 break;
+            case "tone":
+            {
+                var tone = new SourceNode("Test tone", SourceKind.Tone);
+                tone.SetTone(1000f, ToneWaveform.Sine, -18f);
+                entry = RegisterSource(tone, x, y);
+                SetStatus("Added a test tone.");
+                break;
+            }
             case "input": entry = AddDeviceInput(id, x, y); break;
             case "output": entry = AddDeviceOutput(id, x, y); break;
             case "virtual": entry = AddVirtualOutput(id, x, y); break;
@@ -74,14 +82,33 @@ internal sealed partial class WebShellController
         PublishGraph();
     }
 
-    private void AddFilePlayer(double x = 80, double y = 120)
+    private void AddFilePlayer(double x = 80, double y = 120, string? path = null)
     {
         var source = new SourceNode("File player", SourceKind.File);
         var entry = RegisterSource(source, x, y);
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            try
+            {
+                source.SetFile(path, loop: false);
+                entry.Title = Path.GetFileNameWithoutExtension(path);
+                source.Title = entry.Title;
+                SetStatus($"File loaded: {Path.GetFileName(path)}. Press Start to play.");
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning($"Could not load dropped file '{path}': {ex.Message}");
+                SetStatus($"Could not load '{Path.GetFileName(path)}'.", isError: true);
+            }
+        }
+
         PushAddNode(entry);
         PublishGraph();
         PublishTelemetry(force: true);
-        SetStatus("Added a file player. Choose a file to load audio.");
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            SetStatus("Added a file player. Choose a file to load audio.");
+        }
     }
 
     private void ChooseFilePlayerFile(string id)
@@ -120,6 +147,117 @@ internal sealed partial class WebShellController
         }
 
         source.SetFileLoop(loop);
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private void SetTone(string id, float frequency, string waveform, float levelDb)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Source is not { Kind: SourceKind.Tone } source)
+        {
+            return;
+        }
+
+        ToneWaveform wave = Enum.TryParse<ToneWaveform>(waveform, ignoreCase: true, out var parsed)
+            ? parsed
+            : source.ToneWave;
+        float oldFrequency = source.ToneFrequency;
+        ToneWaveform oldWave = source.ToneWave;
+        float oldLevel = source.ToneLevelDb;
+        source.SetTone(frequency, wave, levelDb);
+        PushAction("Change test tone",
+            undo: () => ApplyTone(id, oldFrequency, oldWave, oldLevel, publish: true),
+            redo: () => ApplyTone(id, frequency, wave, levelDb, publish: true),
+            coalesceKey: $"tone:{id}");
+    }
+
+    private void ApplyTone(string id, float frequency, ToneWaveform waveform, float levelDb, bool publish)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Source is not { Kind: SourceKind.Tone } source)
+        {
+            return;
+        }
+
+        source.SetTone(frequency, waveform, levelDb);
+        if (publish) PublishGraph();
+    }
+
+    private void ChooseImpulseResponse(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null ||
+            entry.Modifier.Processors.OfType<IImpulseResponseProcessor>().FirstOrDefault() is not { } processor)
+        {
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose an impulse response",
+            Filter = "Impulse responses|*.wav;*.aif;*.aiff;*.flac;*.mp3|All files|*.*",
+            CheckFileExists = true,
+            FileName = processor.ImpulseResponsePath ?? "",
+        };
+        if (dialog.ShowDialog(_window) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            processor.LoadImpulseResponse(dialog.FileName);
+            SetStatus($"Impulse response loaded: {processor.ImpulseResponseName}.");
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not load the impulse response: " + ex.Message, ex);
+        }
+
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private void ClearImpulseResponse(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null ||
+            entry.Modifier.Processors.OfType<IImpulseResponseProcessor>().FirstOrDefault() is not { } processor)
+        {
+            return;
+        }
+
+        processor.ClearImpulseResponse();
+        SetStatus("Using the built-in room impulse response.");
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private void SetFilePlayerOutput(string id, string outputId)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        var existing = _links
+            .Where(link => link.Kind == "direct" && link.From == entry.Id)
+            .ToList();
+        foreach (var link in existing)
+        {
+            _links.Remove(link);
+            if (_nodes.TryGetValue(link.To, out var outputEntry) && outputEntry.Output != null)
+            {
+                _graph.Disconnect(source, outputEntry.Output);
+            }
+        }
+
+        source.SelectedOutputId = string.IsNullOrWhiteSpace(outputId) ? null : outputId;
+        if (!string.IsNullOrWhiteSpace(outputId) &&
+            _nodes.TryGetValue(outputId, out var target) && target.Output != null)
+        {
+            ConnectEntries(entry, target, publish: false);
+        }
+
         PublishGraph();
         PublishTelemetry(force: true);
     }
@@ -502,6 +640,10 @@ internal sealed partial class WebShellController
         {
             dbMeter.SetTapId(DbMeterProcessor.NextTapId());
         }
+        else if (processor is LoudnessProcessor loudness)
+        {
+            loudness.SetTapId(LoudnessProcessor.NextTapId());
+        }
         else if (processor is TranscriptionProcessor transcriber)
         {
             transcriber.SetTapId(TranscriptionProcessor.NextTapId());
@@ -517,10 +659,11 @@ internal sealed partial class WebShellController
             x,
             y,
             flavor: processor is TranslatorProcessor ? "translator" :
-                processor is SpectrumProcessor or SpectrogramProcessor ? "analysis" : "effect",
+                processor is SpectrumProcessor or SpectrogramProcessor or LoudnessProcessor ? "analysis" : "effect",
             subtitle: processor is TranslatorProcessor ? "Speech translation" :
                 processor is SpectrumProcessor ? "FFT spectrum" :
-                processor is SpectrogramProcessor ? "FFT history" : null,
+                processor is SpectrogramProcessor ? "FFT history" :
+                processor is LoudnessProcessor ? "LUFS and true peak" : null,
             transcriberModel: _settings.TranscriberModel,
             translatorTarget: processor is TranslatorProcessor ? _settings.TranslatorTarget : null,
             translatorModel: processor is TranslatorProcessor ? _settings.TranslatorModel : null);
@@ -615,6 +758,7 @@ internal sealed partial class WebShellController
                 SourceKind.Device => "mic",
                 SourceKind.Asio => "asio",
                 SourceKind.File => "file",
+                SourceKind.Tone => "tone",
                 _ => "system",
             },
             Title = source.Title,
@@ -624,6 +768,7 @@ internal sealed partial class WebShellController
                 SourceKind.Device => "Input device",
                 SourceKind.Asio => "ASIO input",
                 SourceKind.File => "Audio file",
+                SourceKind.Tone => "Test tone",
                 _ => "System audio",
             },
             Accent = source.Kind switch
@@ -632,6 +777,7 @@ internal sealed partial class WebShellController
                 SourceKind.SystemLoopback => "#65D6D0",
                 SourceKind.Asio => "#F0DC5A",
                 SourceKind.File => "#F08CB8",
+                SourceKind.Tone => "#F0DC5A",
                 _ => IsVirtualCapture(source.Title) ? "#7D5BD6" : "#F0DC5A",
             },
             X = x,
@@ -647,7 +793,12 @@ internal sealed partial class WebShellController
 
     private NodeEntry RegisterOutput(OutputNode output, double x, double y, string? micHint = null, string? id = null)
     {
-        _graph.Outputs.Add(output);
+        // A file recorder with no destination cannot carry audio yet. Keep it
+        // out of the render graph until it is connected or actually recording.
+        if (!output.IsFileRecorder)
+        {
+            _graph.AddOutputNode(output);
+        }
         string flavor = output.IsFileRecorder ? "recorder" : micHint != null ? "virtual" : AsioCatalog.IsAsioId(output.DeviceId) ? "asio" : "output";
         var entry = new NodeEntry
         {
@@ -694,6 +845,11 @@ internal sealed partial class WebShellController
         foreach (var dbMeter in modifier.Processors.OfType<DbMeterProcessor>())
         {
             dbMeter.SetTapId(dbMeter.TapId > 0 ? dbMeter.TapId : DbMeterProcessor.NextTapId());
+        }
+
+        foreach (var loudness in modifier.Processors.OfType<LoudnessProcessor>())
+        {
+            loudness.SetTapId(loudness.TapId > 0 ? loudness.TapId : LoudnessProcessor.NextTapId());
         }
 
         bool hasTranscriber = modifier.Processors.OfType<TranscriptionProcessor>().Any();
@@ -790,10 +946,18 @@ internal sealed partial class WebShellController
         }
 
         // The plugin may have loaded after the chain was built; its latency is
-        // only known now. The same-template fast path keeps the VST instance.
-        foreach (var output in _graph.Outputs)
+        // only known now. Polling fires while it loads, so rebuild only when the
+        // reported latency actually changes instead of on every status tick.
+        int latency = vst.LatencySamples;
+        bool latencyChanged = latency != entry.Vst3Latency;
+        entry.Vst3Latency = latency;
+        entry.Vst3Ready = vst.IsReady;
+        if (latencyChanged)
         {
-            _graph.RebuildRouteProcessors(output);
+            foreach (var output in _graph.Outputs)
+            {
+                _graph.RebuildRouteProcessors(output);
+            }
         }
 
         PublishGraph();
@@ -834,6 +998,11 @@ internal sealed partial class WebShellController
             foreach (var dbMeter in entry.Modifier.Processors.OfType<DbMeterProcessor>())
             {
                 used.Add(dbMeter.TapId);
+            }
+
+            foreach (var loudness in entry.Modifier.Processors.OfType<LoudnessProcessor>())
+            {
+                used.Add(loudness.TapId);
             }
         }
 
@@ -886,6 +1055,18 @@ internal sealed partial class WebShellController
 
             used.Add(dbMeter.TapId);
         }
+
+        foreach (var loudness in modifier.Processors.OfType<LoudnessProcessor>())
+        {
+            if (loudness.TapId <= 0 || used.Contains(loudness.TapId))
+            {
+                loudness.SetTapId(LoudnessProcessor.NextTapId());
+            }
+
+            used.Add(loudness.TapId);
+        }
+
+        _graph.RefreshModifiers();
     }
 
     private void OnNodeFault(string id, string reason)
@@ -913,7 +1094,8 @@ internal sealed partial class WebShellController
             Flavor = entry.Flavor,
             Title = entry.Title,
             Subtitle = entry.Subtitle,
-            Accent = entry.Accent,
+            Accent = string.IsNullOrWhiteSpace(entry.Color) ? entry.Accent : entry.Color,
+            Color = entry.Color,
             X = entry.X,
             Y = entry.Y,
             MicHint = entry.MicHint,
@@ -923,30 +1105,62 @@ internal sealed partial class WebShellController
         {
             dto.Volume = entry.Source.Gain;
             dto.Muted = entry.Source.Muted;
+            dto.Solo = entry.Source.Solo;
             dto.DeviceId = entry.Source.DeviceId;
+            dto.SampleRate = entry.Source.SampleRate > 0 ? entry.Source.SampleRate : 48000;
+            dto.BitsPerSample = entry.Source.SampleRate > 0 ? entry.Source.BitsPerSample : 32;
             dto.IsFilePlayer = entry.Source.Kind == SourceKind.File;
             dto.FilePath = entry.Source.FilePath;
+            dto.FileOutputId = entry.Source.SelectedOutputId;
             dto.FileLoop = entry.Source.FileLoop;
+            dto.IsToneGenerator = entry.Source.Kind == SourceKind.Tone;
+            dto.ToneFrequency = entry.Source.ToneFrequency;
+            dto.ToneWaveform = entry.Source.ToneWave.ToString();
+            dto.ToneLevelDb = entry.Source.ToneLevelDb;
         }
         else if (entry.Output != null)
         {
             dto.Volume = entry.Output.Volume;
             dto.Muted = entry.Output.Muted;
+            dto.Solo = entry.Output.Solo;
             dto.DeviceId = entry.Output.DeviceId;
+            dto.SampleRate = entry.Output.EndpointSampleRate;
             dto.IsRecorder = entry.Output.IsFileRecorder;
             dto.RecordingPath = entry.Output.RecordingPath;
             dto.RecordingFormat = entry.Output.RecordingFormat.ToString();
             dto.RecorderMode = entry.Output.RecorderMode.ToString();
             dto.RecorderAutoSave = entry.Output.AutoSave;
+            dto.RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds;
+            dto.RecorderStartThresholdDb = entry.Output.RecorderStartThresholdDb;
         }
         else if (entry.Modifier != null)
         {
             dto.Enabled = entry.Modifier.Enabled;
+            dto.IsParallel = entry.Modifier.Parallel;
+            dto.Send = entry.Modifier.Send;
             dto.IsSpectrum = entry.Modifier.Processors.OfType<SpectrumProcessor>().Any();
             dto.IsSpectrogram = entry.Modifier.Processors.OfType<SpectrogramProcessor>().Any();
+            dto.IsGraphicEq = entry.Modifier.Processors.Count == 1 &&
+                entry.Modifier.Processors[0] is GraphicEqualizerProcessor;
+            dto.IsParametricEq = entry.Modifier.Processors.OfType<ParametricEqProcessor>().Any();
+            if (dto.IsParametricEq)
+            {
+                dto.EqBandTypes = ParametricEqProcessor.BandTypes.ToList();
+            }
+
+            if (entry.Modifier.Processors.OfType<IImpulseResponseProcessor>().FirstOrDefault() is { } impulse)
+            {
+                dto.IsConvolutionReverb = true;
+                dto.IrPath = impulse.ImpulseResponsePath;
+                dto.IrName = impulse.ImpulseResponseName;
+                dto.IrError = impulse.ImpulseResponseError;
+            }
+
             dto.IsDbMeter = entry.Modifier.Processors.OfType<DbMeterProcessor>().Any();
+            dto.IsLoudness = entry.Modifier.Processors.OfType<LoudnessProcessor>().Any();
             dto.IsTranscriber = entry.Modifier.Processors.OfType<TranscriptionProcessor>().Any();
             dto.IsTranslator = entry.Modifier.Processors.OfType<TranslatorProcessor>().Any();
+            dto.SupportsSidechain = entry.Modifier.Processors.Any(SidechainRouting.Supports);
             dto.TranscriberModel = entry.TranscriberModel;
             dto.TranslatorTarget = entry.TranslatorTarget;
             dto.TranslatorModel = entry.TranslatorModel;
@@ -996,6 +1210,8 @@ internal sealed partial class WebShellController
                         IsInteger = parameter.IsInteger,
                         IsChoice = parameter.IsChoice,
                         Options = parameter.Options,
+                        MidiBinding = MidiBindingLabel(entry.Id, processorIndex, parameterIndex),
+                        MidiLearning = IsMidiLearning(entry.Id, processorIndex, parameterIndex),
                     });
                 }
             }
@@ -1067,6 +1283,40 @@ internal sealed partial class WebShellController
         if (publish) PublishGraph();
     }
 
+    private void SetNodeSolo(string id, bool solo)
+    {
+        if (!_nodes.TryGetValue(id, out var entry)) return;
+        if (entry.Source != null) entry.Source.Solo = solo;
+        if (entry.Output != null) entry.Output.Solo = solo;
+        PublishGraph();
+    }
+
+    private void SetNodeColor(string id, string color)
+    {
+        if (!_nodes.TryGetValue(id, out var entry)) return;
+        string? normalized = NormalizeNodeColor(color);
+        if (string.IsNullOrWhiteSpace(color))
+        {
+            entry.Color = null;
+        }
+        else if (normalized == null)
+        {
+            return;
+        }
+        else
+        {
+            entry.Color = normalized;
+        }
+
+        PublishGraph();
+    }
+
+    private static string? NormalizeNodeColor(string? color) =>
+        !string.IsNullOrWhiteSpace(color) && color.Length == 7 && color[0] == '#' &&
+        color.Skip(1).All(Uri.IsHexDigit)
+            ? color.ToUpperInvariant()
+            : null;
+
     private void SetParameter(BridgeMessage message)
     {
         string id = String(message, "id");
@@ -1081,7 +1331,14 @@ internal sealed partial class WebShellController
             return;
         }
 
+        if (!float.IsFinite(value))
+        {
+            return;
+        }
+
         var parameter = parameterized.Parameters[parameterIndex];
+        value = Math.Clamp(value, parameter.Min, parameter.Max);
+        if (parameter.IsInteger) value = MathF.Round(value);
         float old = parameter.Get();
         parameter.Set(value);
         string key = $"param:{id}:{processorIndex}:{parameterIndex}";
@@ -1101,7 +1358,15 @@ internal sealed partial class WebShellController
             return;
         }
 
-        parameterized.Parameters[parameterIndex].Set(value);
+        if (!float.IsFinite(value))
+        {
+            return;
+        }
+
+        var parameter = parameterized.Parameters[parameterIndex];
+        value = Math.Clamp(value, parameter.Min, parameter.Max);
+        if (parameter.IsInteger) value = MathF.Round(value);
+        parameter.Set(value);
         if (publish) PublishGraph();
     }
 
@@ -1122,10 +1387,75 @@ internal sealed partial class WebShellController
         entry.Modifier.Enabled = enabled;
         foreach (var output in _graph.Outputs)
         {
-            _graph.RebuildRouteProcessors(output);
+            // The graph renderer reads Modifier.Enabled every block and
+            // crossfades wet/dry in place. Recompiling would reset that fade
+            // and make the bypass click. Only non-graph outputs need their
+            // cloned chains rebuilt.
+            if (!output.UsesGraphEngine)
+            {
+                _graph.RebuildRouteProcessors(output);
+            }
         }
 
         if (publish) PublishGraph();
+    }
+
+    private void SetModifierParallel(string id, bool parallel)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
+        bool old = entry.Modifier.Parallel;
+        ApplyModifierParallel(id, parallel, publish: true);
+        PushAction(parallel ? "Enable parallel send" : "Disable parallel send",
+            undo: () => ApplyModifierParallel(id, old, publish: true),
+            redo: () => ApplyModifierParallel(id, parallel, publish: true));
+    }
+
+    private void ApplyModifierParallel(string id, bool parallel, bool publish)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
+        entry.Modifier.Parallel = parallel;
+        _graph.RefreshModifiers();
+        if (publish) PublishGraph();
+    }
+
+    private void SetModifierSend(string id, float value)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
+        float old = entry.Modifier.Send;
+        float send = Math.Clamp(value, 0f, 1f);
+        ApplyModifierSend(id, send, publish: true);
+        PushAction("Change send amount",
+            undo: () => ApplyModifierSend(id, old, publish: true),
+            redo: () => ApplyModifierSend(id, send, publish: true),
+            coalesceKey: $"send:{id}");
+    }
+
+    private void ApplyModifierSend(string id, float value, bool publish)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
+        float send = Math.Clamp(value, 0f, 1f);
+        entry.Modifier.Send = send;
+        if (entry.Modifier.ParallelChain != null)
+        {
+            entry.Modifier.ParallelChain.Send = send;
+        }
+        else if (entry.Modifier.Parallel)
+        {
+            _graph.RefreshModifiers();
+        }
+
+        if (publish) PublishGraph();
+    }
+
+    private void ResetLoudness(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
+        foreach (var loudness in entry.Modifier.Processors.OfType<LoudnessProcessor>())
+        {
+            LoudnessProcessor.ResetTap(loudness.TapId);
+        }
+
+        PublishTelemetry(force: true);
     }
 
     private void SetDbMeterOrientation(string id, bool vertical)
@@ -1169,7 +1499,7 @@ internal sealed partial class WebShellController
         if (publish) PublishGraph();
     }
 
-    private void ConnectNodes(string fromId, string toId)
+    private void ConnectNodes(string fromId, string toId, string kind = "", float gain = 1, bool enabled = true)
     {
         if (!_nodes.TryGetValue(fromId, out var from) || !_nodes.TryGetValue(toId, out var to) || fromId == toId)
         {
@@ -1177,22 +1507,116 @@ internal sealed partial class WebShellController
             return;
         }
 
-        if (_links.Any(link => link.From == fromId && link.To == toId))
+        bool sidechain = string.Equals(kind, "sidechain", StringComparison.OrdinalIgnoreCase);
+        if (sidechain &&
+            ((from.Source == null && from.Modifier == null) || to.Modifier == null ||
+             !to.Modifier.Processors.Any(SidechainRouting.Supports)))
+        {
+            SetStatus("Connect a source or effect output to a modifier that supports sidechain input.", isError: true);
+            return;
+        }
+
+        if (_links.Any(link => link.From == fromId && link.To == toId &&
+                               (sidechain
+                                   ? link.Kind == "sidechain"
+                                   : link.Kind != "sidechain")))
         {
             SetStatus("Those nodes are already connected.", isError: true);
             return;
         }
 
-        var link = ConnectEntries(from, to, publish: false);
+        var link = ConnectEntries(from, to, gain: gain, publish: false, kind: sidechain ? "sidechain" : null);
+        link.Enabled = enabled;
+        ApplyLinkRouting(link, publish: false);
         PushConnect(link);
-        SetStatus($"Connected {from.Title} to {to.Title}.");
+        SetStatus(sidechain
+            ? $"Connected {from.Title} as a sidechain key."
+            : $"Connected {from.Title} to {to.Title}.");
         PublishGraph();
     }
 
-    private LinkEntry ConnectEntries(NodeEntry from, NodeEntry to, float gain = 1, bool publish = false, string? linkId = null)
+    private void SetLinkGain(string id, float value)
     {
-        string kind;
-        if (from.Source != null && to.Output != null)
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        float old = link.Gain;
+        bool enabled = link.Enabled;
+        ApplyLinkSettings(id, value, enabled, publish: true);
+        PushAction("Change send gain",
+            undo: () => ApplyLinkSettings(id, old, enabled, publish: true),
+            redo: () => ApplyLinkSettings(id, value, enabled, publish: true),
+            coalesceKey: $"send-gain:{id}");
+    }
+
+    private void SetLinkEnabled(string id, bool enabled)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        float gain = link.Gain;
+        bool old = link.Enabled;
+        ApplyLinkSettings(id, gain, enabled, publish: true);
+        PushAction(enabled ? "Enable send" : "Mute send",
+            undo: () => ApplyLinkSettings(id, gain, old, publish: true),
+            redo: () => ApplyLinkSettings(id, gain, enabled, publish: true));
+    }
+
+    private void ApplyLinkSettings(string id, float gain, bool enabled, bool publish)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        link.Gain = Math.Clamp(gain, 0f, 1.5f);
+        link.Enabled = enabled;
+        ApplyLinkRouting(link, publish);
+    }
+
+    private void ApplyLinkRouting(LinkEntry link, bool publish)
+    {
+        float gain = link.Enabled ? link.Gain : 0f;
+        if (_nodes.TryGetValue(link.From, out var from) && _nodes.TryGetValue(link.To, out var to))
+        {
+            if (link.Kind == "direct" && from.Source != null && to.Output != null)
+            {
+                _graph.SetRouteGain(from.Source, to.Output, gain);
+            }
+            else if (link.Kind == "modifier-output" && from.Modifier != null && to.Output != null)
+            {
+                _graph.SetModifierOutputGain(from.Modifier, to.Output, gain);
+            }
+        }
+
+        if (publish) PublishGraph();
+    }
+
+    private LinkEntry ConnectEntries(NodeEntry from, NodeEntry to, float gain = 1, bool publish = false, string? linkId = null, string? kind = null)
+    {
+        if (to.Output != null)
+        {
+            // Inactive file recorders join the graph lazily, on first route.
+            _graph.AddOutputNode(to.Output);
+        }
+
+        if (kind == "sidechain")
+        {
+            if (to.Modifier == null ||
+                !to.Modifier.Processors.Any(SidechainRouting.Supports))
+            {
+                throw new InvalidOperationException($"Cannot use {from.Title} as a sidechain key for {to.Title}.");
+            }
+
+            if (from.Source != null)
+            {
+                _graph.ConnectSourceToModifierSidechain(from.Source, to.Modifier);
+            }
+            else if (from.Modifier != null)
+            {
+                _graph.ConnectModifierToModifierSidechain(from.Modifier, to.Modifier);
+            }
+            else
+            {
+                throw new InvalidOperationException($"Cannot use {from.Title} as a sidechain key for {to.Title}.");
+            }
+        }
+        else if (from.Source != null && to.Output != null)
         {
             kind = "direct";
             _graph.Connect(from.Source, to.Output, gain);
@@ -1205,7 +1629,7 @@ internal sealed partial class WebShellController
         else if (from.Modifier != null && to.Output != null)
         {
             kind = "modifier-output";
-            _graph.ConnectModifierToOutput(from.Modifier, to.Output);
+            _graph.ConnectModifierToOutput(from.Modifier, to.Output, gain);
         }
         else if (from.Modifier != null && to.Modifier != null)
         {
@@ -1222,7 +1646,7 @@ internal sealed partial class WebShellController
             Id = linkId ?? Guid.NewGuid().ToString("N"),
             From = from.Id,
             To = to.Id,
-            Kind = kind,
+            Kind = kind!,
             Gain = gain,
         };
         _links.Add(link);
@@ -1255,6 +1679,12 @@ internal sealed partial class WebShellController
             {
                 case "direct" when from.Source != null && to.Output != null:
                     _graph.Disconnect(from.Source, to.Output);
+                    break;
+                case "sidechain" when from.Source != null && to.Modifier != null:
+                    _graph.DisconnectSourceFromModifierSidechain(from.Source, to.Modifier);
+                    break;
+                case "sidechain" when from.Modifier != null && to.Modifier != null:
+                    _graph.DisconnectModifierFromModifierSidechain(from.Modifier, to.Modifier);
                     break;
                 case "source-modifier" when from.Source != null && to.Modifier != null:
                     _graph.DisconnectSourceFromModifier(from.Source, to.Modifier);
@@ -1300,11 +1730,65 @@ internal sealed partial class WebShellController
     private void RemoveNode(string id)
     {
         if (!_nodes.TryGetValue(id, out var entry)) return;
+        var snapshot = CaptureNode(entry);
         var links = _links.Where(link => link.From == id || link.To == id).Select(CloneLink).ToList();
+        var upstream = entry.Modifier == null
+            ? new List<LinkEntry>()
+            : links.Where(link => link.To == id && link.Kind != "sidechain").ToList();
+        var downstream = entry.Modifier == null
+            ? new List<LinkEntry>()
+            : links.Where(link => link.From == id && link.Kind != "sidechain").ToList();
+        var bridges = new List<LinkEntry>();
+
         RemoveEntryInternal(id);
-        PushRemoveNode(entry, links);
+        CreateBridges(upstream, downstream, bridges);
+
+        PushAction("Remove node",
+            undo: () =>
+            {
+                foreach (var bridge in bridges) RemoveLinkInternal(bridge);
+                bridges.Clear();
+                RestoreNodeSnapshot(snapshot);
+                RestoreLinks(links);
+                PublishGraph();
+            },
+            redo: () =>
+            {
+                RemoveEntryInternal(entry.Id);
+                CreateBridges(upstream, downstream, bridges);
+                PublishGraph();
+            });
+
         SetStatus($"Removed {entry.Title}.");
         PublishGraph();
+    }
+
+    /// <summary>
+    /// Keeps a chain intact when its middle node is removed: every upstream
+    /// node is joined to every downstream node that the removed node fed.
+    /// </summary>
+    private void CreateBridges(List<LinkEntry> upstream, List<LinkEntry> downstream, List<LinkEntry> bridges)
+    {
+        bridges.Clear();
+        foreach (var incoming in upstream)
+        {
+            if (!_nodes.TryGetValue(incoming.From, out var from)) continue;
+
+            foreach (var outgoing in downstream)
+            {
+                if (!_nodes.TryGetValue(outgoing.To, out var to) || from.Id == to.Id) continue;
+                if (_links.Any(link => link.From == from.Id && link.To == to.Id && link.Kind != "sidechain")) continue;
+
+                try
+                {
+                    bridges.Add(ConnectEntries(from, to, incoming.Gain));
+                }
+                catch
+                {
+                    // A stale endpoint should not prevent removing the node.
+                }
+            }
+        }
     }
 
     private void RemoveEntryInternal(string id)
@@ -1319,31 +1803,9 @@ internal sealed partial class WebShellController
         if (entry.Output != null) _graph.RemoveOutput(entry.Output);
         if (entry.Modifier != null)
         {
-            foreach (var transcriber in entry.Modifier.Processors.OfType<TranscriptionProcessor>())
+            foreach (var processor in entry.Modifier.Processors)
             {
-                TranscriptionRegistry.Stop(transcriber.TapId);
-                TranscriptionProcessor.RemoveTap(transcriber.TapId);
-            }
-
-            foreach (var translator in entry.Modifier.Processors.OfType<TranslatorProcessor>())
-            {
-                TranslationRegistry.Stop(translator.TapId);
-                TranscriptionProcessor.RemoveTap(translator.TapId);
-            }
-
-            foreach (var spectrum in entry.Modifier.Processors.OfType<SpectrumProcessor>())
-            {
-                SpectrumProcessor.RemoveTap(spectrum.TapId);
-            }
-
-            foreach (var spectrogram in entry.Modifier.Processors.OfType<SpectrogramProcessor>())
-            {
-                SpectrogramProcessor.RemoveTap(spectrogram.TapId);
-            }
-
-            foreach (var dbMeter in entry.Modifier.Processors.OfType<DbMeterProcessor>())
-            {
-                DbMeterProcessor.RemoveTap(dbMeter.TapId);
+                CleanupTapProcessor(processor);
             }
 
             _graph.RemoveModifier(entry.Modifier);
@@ -1351,74 +1813,141 @@ internal sealed partial class WebShellController
 
         _nodes.Remove(id);
         _nodeClipHoldUntil.Remove(id);
+        _midiBindings.RemoveAll(binding => binding.NodeId == id);
+        if (_midiLearnTarget?.NodeId == id)
+        {
+            _midiLearnTarget = null;
+        }
+    }
+
+    private static void CleanupTapProcessor(IAudioProcessor processor)
+    {
+        switch (processor)
+        {
+            case TranscriptionProcessor transcriber:
+                TranscriptionRegistry.Stop(transcriber.TapId);
+                TranscriptionProcessor.RemoveTap(transcriber.TapId);
+                break;
+            case TranslatorProcessor translator:
+                TranslationRegistry.Stop(translator.TapId);
+                TranscriptionProcessor.RemoveTap(translator.TapId);
+                break;
+            case SpectrumProcessor spectrum:
+                SpectrumProcessor.RemoveTap(spectrum.TapId);
+                break;
+            case SpectrogramProcessor spectrogram:
+                SpectrogramProcessor.RemoveTap(spectrogram.TapId);
+                break;
+            case DbMeterProcessor dbMeter:
+                DbMeterProcessor.RemoveTap(dbMeter.TapId);
+                break;
+            case LoudnessProcessor loudness:
+                LoudnessProcessor.RemoveTap(loudness.TapId);
+                break;
+            case ChainProcessor chain:
+                foreach (var inner in chain.Processors)
+                {
+                    CleanupTapProcessor(inner);
+                }
+                break;
+            case ParallelChainProcessor parallel:
+                foreach (var inner in parallel.Processors)
+                {
+                    CleanupTapProcessor(inner);
+                }
+                break;
+        }
     }
 
     private void ClearGraph()
     {
         _graph.AutoRun = false;
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Modifier == null)
+            {
+                continue;
+            }
+
+            foreach (var processor in entry.Modifier.Processors)
+            {
+                CleanupTapProcessor(processor);
+            }
+        }
+
         TranscriptionRegistry.StopAll();
         TranslationRegistry.StopAll();
+        DisposeInactiveOutputs();
         _graph.Dispose();
         _graph = new AudioGraph { AutoRun = false };
         _nodes.Clear();
         _links.Clear();
         _frames.Clear();
+        ClearMidiBindings();
         _running = false;
         PublishTelemetry();
+    }
+
+    /// <summary>Disposes recorders that are not in the render graph yet.</summary>
+    private void DisposeInactiveOutputs()
+    {
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Output is { } output && !_graph.Outputs.Contains(output))
+            {
+                output.Dispose();
+            }
+        }
     }
 
     private void StartRouting()
     {
         _graph.AutoRun = true;
+        _graph.StartEngine();
         int started = 0;
         int recordings = 0;
         int armed = 0;
         int unarmed = 0;
         int playersWithoutFile = 0;
+
+        // Start outputs before sources. Output initialization can take hundreds
+        // of milliseconds; starting capture first leaves a permanent source
+        // backlog that later shows up as stale skips and clicks.
         foreach (var entry in _nodes.Values)
         {
+            if (entry.Output is not { IsRunning: false } output)
+            {
+                continue;
+            }
+
             try
             {
-                if (entry.Source is { IsRunning: false } source)
+                if (output.IsFileRecorder)
                 {
-                    if (source.Kind == SourceKind.File && !source.HasFile)
+                    if (!output.AutoStart)
                     {
-                        playersWithoutFile++;
                         continue;
                     }
 
-                    source.Start();
-                    started++;
-                }
-                else if (entry.Output is { IsRunning: false } output)
-                {
-                    if (output.IsFileRecorder)
+                    if (output.RecorderMode == RecorderMode.On)
                     {
-                        if (!output.AutoStart)
-                        {
-                            continue;
-                        }
-
-                        if (output.RecorderMode == RecorderMode.On)
-                        {
-                            if (StartRecorder(entry, output)) recordings++;
-                            else if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
-                        }
-                        else if (output.RecorderMode == RecorderMode.Armed)
-                        {
-                            armed++;
-                            if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
-                        }
-                        else if (!output.AutoSave && !output.HasRecordingPath)
-                        {
-                            unarmed++;
-                        }
-
-                        continue;
+                        if (StartRecorder(entry, output)) recordings++;
+                        else if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
+                    }
+                    else if (output.RecorderMode == RecorderMode.Armed)
+                    {
+                        armed++;
+                        if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
+                    }
+                    else if (!output.AutoSave && !output.HasRecordingPath)
+                    {
+                        unarmed++;
                     }
 
-                    output.Start();
+                    continue;
                 }
+
+                output.Start();
             }
             catch (Exception ex)
             {
@@ -1426,9 +1955,32 @@ internal sealed partial class WebShellController
             }
         }
 
-        _graph.EnsureMonitorsRunning();
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Source is not { IsRunning: false } source)
+            {
+                continue;
+            }
+
+            try
+            {
+                if (source.Kind == SourceKind.File && !source.HasFile)
+                {
+                    playersWithoutFile++;
+                    continue;
+                }
+
+                source.Start();
+                started++;
+            }
+            catch (Exception ex)
+            {
+                ShowError($"Could not start '{entry.Title}': {ex.Message}", ex);
+            }
+        }
+        _graph.StartEngine();
         _running = _graph.Outputs.Any(output => output.IsRunning);
-        int outputCount = _graph.Outputs.Count(output => !output.IsMonitor);
+        int outputCount = _graph.Outputs.Count;
         string recordingNote = recordings > 0 ? $", {recordings} recording(s)" : string.Empty;
         string armedNote = armed > 0 ? $", {armed} armed" : string.Empty;
         string unarmedNote = unarmed > 0 ? $"; {unarmed} recorder(s) need a file" : string.Empty;
@@ -1445,6 +1997,7 @@ internal sealed partial class WebShellController
         var recorders = _nodes.Values.Select(entry => entry.Output)
             .Where(output => output?.IsRecording == true).Cast<OutputNode>().ToList();
         _graph.AutoRun = false;
+        _graph.StopEngine();
         foreach (var source in _graph.Sources) source.Stop();
         foreach (var output in _graph.Outputs) output.Stop();
 

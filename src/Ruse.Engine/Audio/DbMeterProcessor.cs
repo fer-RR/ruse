@@ -31,6 +31,7 @@ public sealed class DbMeterProcessor : IAudioProcessor, IParameterizedProcessor,
                 Name = "Orientation",
                 Min = 0,
                 Max = 1,
+                Default = 1,
                 IsChoice = true,
                 IsInteger = true,
                 Options = new[] { "Horizontal", "Vertical" },
@@ -67,6 +68,10 @@ public sealed class DbMeterProcessor : IAudioProcessor, IParameterizedProcessor,
 
     public static float GetDb(int id) => Taps.TryGetValue(id, out var tap) ? tap.Db : -120f;
     public static float GetPeakDb(int id) => Taps.TryGetValue(id, out var tap) ? tap.PeakDb : -120f;
+    public static float GetDbLeft(int id) => Taps.TryGetValue(id, out var tap) ? tap.DbLeft : -120f;
+    public static float GetDbRight(int id) => Taps.TryGetValue(id, out var tap) ? tap.DbRight : -120f;
+    public static float GetPeakDbLeft(int id) => Taps.TryGetValue(id, out var tap) ? tap.PeakDbLeft : -120f;
+    public static float GetPeakDbRight(int id) => Taps.TryGetValue(id, out var tap) ? tap.PeakDbRight : -120f;
     public static int NextTapId() => Interlocked.Increment(ref _nextTapId);
     public static void RemoveTap(int id) => Taps.TryRemove(id, out _);
 }
@@ -75,66 +80,108 @@ internal sealed class DbMeterTap
 {
     private const float MinimumDb = -100f;
     private readonly object _lock = new();
-    private float _db = MinimumDb;
-    private float _peakDb = MinimumDb;
-    private long _peakTick;
+    private float _dbLeft = MinimumDb;
+    private float _dbRight = MinimumDb;
+    private float _peakDbLeft = MinimumDb;
+    private float _peakDbRight = MinimumDb;
+    private long _peakTickLeft;
+    private long _peakTickRight;
     private long _lastWrite;
 
-    public float Db { get { lock (_lock) return _db; } }
+    public float Db { get { lock (_lock) return Math.Max(_dbLeft, _dbRight); } }
+    public float DbLeft { get { lock (_lock) return _dbLeft; } }
+    public float DbRight { get { lock (_lock) return _dbRight; } }
     public float PeakDb
     {
         get
         {
             lock (_lock)
             {
-                DecayPeak(Environment.TickCount64);
-                return _peakDb;
+                long now = Environment.TickCount64;
+                DecayPeak(ref _peakDbLeft, ref _peakTickLeft, now);
+                DecayPeak(ref _peakDbRight, ref _peakTickRight, now);
+                return Math.Max(_peakDbLeft, _peakDbRight);
             }
         }
     }
 
+    public float PeakDbLeft { get { lock (_lock) return _peakDbLeft; } }
+    public float PeakDbRight { get { lock (_lock) return _peakDbRight; } }
+
     public void Write(ReadOnlySpan<float> samples, int frames)
     {
-        if (frames <= 0 || samples.Length == 0) return;
-        double sum = 0;
-        float peak = 0;
-        for (int i = 0; i < samples.Length; i++)
+        if (frames <= 0 || samples.Length < 2) return;
+        int sampleCount = Math.Min(samples.Length, frames * 2);
+        int channelFrames = sampleCount / 2;
+        if (channelFrames <= 0) return;
+
+        double sumLeft = 0;
+        double sumRight = 0;
+        float peakLeft = 0;
+        float peakRight = 0;
+        for (int i = 0; i + 1 < sampleCount; i += 2)
         {
-            float value = samples[i];
-            sum += value * value;
-            peak = Math.Max(peak, Math.Abs(value));
+            float left = samples[i];
+            float right = samples[i + 1];
+            sumLeft += left * left;
+            sumRight += right * right;
+            peakLeft = Math.Max(peakLeft, Math.Abs(left));
+            peakRight = Math.Max(peakRight, Math.Abs(right));
         }
 
-        float rms = (float)Math.Sqrt(sum / samples.Length);
-        float target = rms <= 0.000001f ? MinimumDb : 20f * MathF.Log10(rms);
-        float peakDb = peak <= 0.000001f ? MinimumDb : 20f * MathF.Log10(peak);
+        float targetLeft = ToDb(sumLeft / channelFrames);
+        float targetRight = ToDb(sumRight / channelFrames);
+        float peakDbLeft = ToDb(peakLeft);
+        float peakDbRight = ToDb(peakRight);
         long now = Environment.TickCount64;
         lock (_lock)
         {
             float elapsed = _lastWrite == 0 ? 5f : Math.Clamp(now - _lastWrite, 1f, 100f);
             _lastWrite = now;
-            target = Math.Clamp(target, MinimumDb, 6f);
-            float time = target > _db ? 40f : 260f;
-            float coefficient = 1f - MathF.Exp(-elapsed / time);
-            _db += (target - _db) * coefficient;
-            if (peakDb > _peakDb)
-            {
-                _peakDb = Math.Clamp(peakDb, MinimumDb, 6f);
-                _peakTick = now;
-            }
-            else
-            {
-                DecayPeak(now);
-            }
+            Smooth(ref _dbLeft, targetLeft, elapsed);
+            Smooth(ref _dbRight, targetRight, elapsed);
+            UpdatePeak(ref _peakDbLeft, ref _peakTickLeft, peakDbLeft, _dbLeft, now);
+            UpdatePeak(ref _peakDbRight, ref _peakTickRight, peakDbRight, _dbRight, now);
         }
     }
 
-    private void DecayPeak(long now)
+    private static float ToDb(double meanSquare)
     {
-        if (_peakTick == 0) return;
-        long elapsed = now - _peakTick;
+        if (meanSquare <= 0.000000000001)
+        {
+            return MinimumDb;
+        }
+
+        return Math.Clamp(20f * MathF.Log10(MathF.Sqrt((float)meanSquare)), MinimumDb, 6f);
+    }
+
+    private static void Smooth(ref float current, float target, float elapsed)
+    {
+        target = Math.Clamp(target, MinimumDb, 6f);
+        float time = target > current ? 40f : 260f;
+        float coefficient = 1f - MathF.Exp(-elapsed / time);
+        current += (target - current) * coefficient;
+    }
+
+    private static void UpdatePeak(ref float peak, ref long tick, float target, float level, long now)
+    {
+        if (target > peak)
+        {
+            peak = target;
+            tick = now;
+        }
+        else
+        {
+            DecayPeak(ref peak, ref tick, now, level);
+        }
+    }
+
+    private static void DecayPeak(ref float peak, ref long tick, long now, float level = MinimumDb)
+    {
+        if (tick == 0) return;
+        long elapsed = now - tick;
         if (elapsed < 900) return;
-        _peakDb = Math.Max(_db, _peakDb - (elapsed - 900) * 0.018f);
-        _peakTick = now;
+        peak = Math.Max(level, peak - (elapsed - 900) * 0.018f);
+        tick = now;
     }
 }

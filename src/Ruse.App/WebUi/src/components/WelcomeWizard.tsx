@@ -200,6 +200,16 @@ export default function WelcomeWizard({ catalog, settings, onChange, onClose, on
           <p>{t('We will pick a sound, choose where it comes out, and test the connection together. You can skip it and explore the canvas on your own.')}</p>
         </div>
       </div>
+
+      {!catalog.perAppCaptureAvailable && (
+        <div className="welcome-splash-note">
+          <Cable size={18} />
+          <div>
+            <strong>{t('Windows 10: use a virtual cable')}</strong>
+            <p>{t("On Windows 10, per-app capture isn't available. Install VB-CABLE from VB-Audio, set the app's output to the cable, then add the cable as a microphone/input in Ruse.")}</p>
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -239,7 +249,7 @@ export default function WelcomeWizard({ catalog, settings, onChange, onClose, on
             {apps.map(item => (
               <Choice key={item.id} item={item} selected={sourceItem?.id === item.id} onSelect={() => selectSource(item)} icon={<SourceIcon item={item} />} subtitle={item.active ? t('Playing now') : t(item.subtitle)} />
             ))}
-            {apps.length === 0 && <p className="wizard-empty">{catalog.perAppCaptureAvailable ? t('No applications found. Start playback, then refresh.') : t('Per-app capture needs Windows 10 build 20348 or later. Use System audio instead.')}</p>}
+            {apps.length === 0 && <p className="wizard-empty">{catalog.perAppCaptureAvailable ? t('No applications found. Start playback, then refresh.') : t('Per-app capture needs Windows 11 or Windows Server 2022. Use System audio or a virtual cable instead.')}</p>}
           </div>
         </>
       )}

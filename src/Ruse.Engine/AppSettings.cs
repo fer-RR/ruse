@@ -58,6 +58,12 @@ public sealed class AppSettings
     /// <summary>Run speech and translation model inference on the GPU when a Vulkan driver is available.</summary>
     public bool UseGpu { get; set; }
 
+    /// <summary>Accept MIDI notes and control changes for parameter learning.</summary>
+    public bool MidiEnabled { get; set; }
+
+    /// <summary>Selected MIDI input device name.</summary>
+    public string MidiInputDevice { get; set; } = "";
+
     /// <summary>Run VST3 plugins in a child process so a plugin crash cannot close Ruse.</summary>
     public bool IsolateVst3 { get; set; } = true;
 
@@ -74,6 +80,36 @@ public sealed class AppSettings
 
     /// <summary>Show the live engine/UI diagnostics overlay for troubleshooting.</summary>
     public bool ShowDiagnostics { get; set; }
+
+    /// <summary>Ask WASAPI for an IAudioClient3 low-latency shared stream.</summary>
+    public bool LowLatencyWasapi { get; set; } = true;
+
+    /// <summary>Limit output peaks before hard clipping.</summary>
+    public bool ClipGuard { get; set; } = true;
+
+    /// <summary>Use automatic audio timing choices (5 ms blocks, balanced buffer).</summary>
+    public bool AudioAutoMode { get; set; } = true;
+
+    /// <summary>Manual engine block size in ms (2.5/5/7.5/10).</summary>
+    public double AudioBlockSizeMs { get; set; } = 5.0;
+
+    /// <summary>Manual device buffer profile: low, balanced, safe or manual.</summary>
+    public string OutputBufferMode { get; set; } = "balanced";
+
+    /// <summary>Manual device buffer size in ms when the profile is manual.</summary>
+    public int OutputBufferManualMs { get; set; } = 10;
+
+    /// <summary>Engine cushion profile: auto (2 blocks) or manual.</summary>
+    public string EngineCushionMode { get; set; } = "auto";
+
+    /// <summary>Manual engine cushion size in ms when the profile is manual.</summary>
+    public int EngineCushionManualMs { get; set; } = 10;
+
+    /// <summary>Start with one block and grow the engine ring only after underruns.</summary>
+    public bool ElasticRing { get; set; }
+
+    /// <summary>Target one endpoint period of output cushion instead of two.</summary>
+    public bool AggressiveOutputCushion { get; set; }
 
     /// <summary>Start the restored graph automatically once the window is ready.</summary>
     public bool StartRoutingOnLaunch { get; set; }

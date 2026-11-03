@@ -103,6 +103,84 @@ internal static class Vst3SelfTest
                $"editor={processor.HasEditor}; rms={rms:0.0000}; state={state}";
     }
 
+    public static string Benchmark(string identifier, int blocks = 2000, int warmup = 200,
+        int timeoutSeconds = 60)
+    {
+        blocks = Math.Clamp(blocks, 100, 20000);
+        warmup = Math.Clamp(warmup, 10, 5000);
+        var isolated = Measure(new IsolatedVst3Processor(identifier), blocks, warmup, timeoutSeconds);
+        var inProcess = Measure(new Vst3Processor(identifier), blocks, warmup, timeoutSeconds);
+        return $"isolated: {Format(isolated)} | in-process: {Format(inProcess)} | " +
+               $"ipc overhead: {isolated.Mean - inProcess.Mean:0.0} us/block | " +
+               $"blocks={blocks}, frames=240, budget=5000 us";
+    }
+
+    private static Measurement Measure(IVst3Processor processor, int blocks, int warmup,
+        int timeoutSeconds)
+    {
+        using (processor)
+        {
+            DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+            while (!processor.IsReady && processor.Error == null && DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(25);
+            }
+
+            if (!processor.IsReady)
+            {
+                throw new InvalidOperationException(
+                    $"Plugin did not become ready: {processor.Error ?? "timeout"}");
+            }
+
+            const int frames = 240;
+            var block = new float[frames * 2];
+            for (int frame = 0; frame < frames; frame++)
+            {
+                float sample = 0.2f * MathF.Sin(2f * MathF.PI * 440f * frame / 48000f);
+                block[frame * 2] = sample;
+                block[frame * 2 + 1] = sample;
+            }
+
+            for (int i = 0; i < warmup; i++)
+            {
+                processor.Process(block, frames);
+            }
+
+            var samples = new double[blocks];
+            for (int i = 0; i < blocks; i++)
+            {
+                long start = System.Diagnostics.Stopwatch.GetTimestamp();
+                processor.Process(block, frames);
+                long end = System.Diagnostics.Stopwatch.GetTimestamp();
+                samples[i] = (end - start) * 1_000_000.0 /
+                             System.Diagnostics.Stopwatch.Frequency;
+            }
+
+            Array.Sort(samples);
+            double mean = samples.Average();
+            double p50 = Percentile(samples, 0.50);
+            double p95 = Percentile(samples, 0.95);
+            double p99 = Percentile(samples, 0.99);
+            return new Measurement(mean, p50, p95, p99, samples[^1]);
+        }
+    }
+
+    private static double Percentile(double[] sorted, double percentile)
+    {
+        double position = (sorted.Length - 1) * percentile;
+        int lower = (int)Math.Floor(position);
+        int upper = Math.Min(sorted.Length - 1, lower + 1);
+        double fraction = position - lower;
+        return sorted[lower] + (sorted[upper] - sorted[lower]) * fraction;
+    }
+
+    private static string Format(Measurement measurement) =>
+        $"avg={measurement.Mean:0.0}us p50={measurement.P50:0.0}us " +
+        $"p95={measurement.P95:0.0}us p99={measurement.P99:0.0}us max={measurement.Max:0.0}us";
+
+    private readonly record struct Measurement(double Mean, double P50, double P95,
+        double P99, double Max);
+
     public static string RunEditor(string identifier, int timeoutSeconds = 60)
     {
         using var vst = new Vst3Processor(identifier);

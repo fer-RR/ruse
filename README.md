@@ -5,59 +5,92 @@ capture device to any output device, with an effect chain in between.
 
 ## What it does
 
-- **Offline transcription** — a pass-through node streams the route to OpenAI Whisper (Whisper.net / whisper.cpp).
+- **Offline transcription** â€” a pass-through node streams the route to OpenAI Whisper (Whisper.net / whisper.cpp).
   It shows sentence cues with timestamps and exports SRT, VTT or plain text.
   The small English model downloads on first use and then runs without a network.
-- **Offline translation** — a pass-through node translates speech into English with Whisper, or into Portuguese, Spanish, French, German, Italian, Japanese, Korean or Simplified Chinese with a local Qwen2.5 GGUF model. Optional OPUS-MT ONNX models can replace Qwen for supported pairs. It also exports timed SRT/VTT cues. Audio and text stay on the PC.
-- **Per-application capture** — pick a process (Edge, Discord, a game…) in the
+- **Offline translation** â€” a pass-through node translates speech into English with Whisper, or into Portuguese, Spanish, French, German, Italian, Japanese, Korean or Simplified Chinese with a local Qwen2.5 GGUF model. Optional OPUS-MT ONNX models can replace Qwen for supported pairs. It also exports timed SRT/VTT cues. Audio and text stay on the PC.
+- **Per-application capture** â€” pick a process (Edge, Discord, a gameâ€¦) in the
   sidebar and drag it onto the canvas. Ruse captures it through the Windows
-  process-loopback API on Windows 10 build 20348 or later, so nothing has to be
-  reconfigured in the app. On older builds the Applications list is hidden with a
-  banner; use **System audio** instead.
-- **File player** — add an audio file as a source node, with position/seek,
-  play/pause and optional looping,
+  process-loopback API on Windows 11 or Windows Server 2022 (build 20348+), so
+  nothing has to be reconfigured. On Windows 10 the Applications list is hidden
+  with a banner; use **System audio** or route the app to a virtual cable.
+- **File player** â€” add an audio file as a source node, with position/seek,
+  play/pause, optional looping and a direct per-node output selector,
   and route it through the same effects and outputs.
-- **Any output device** — WASAPI endpoints (speakers, headphones, Voicemeeter
+- **Clean conversion** â€” band-limited windowed-sinc resampling for non-48 kHz
+  sources, proper 5.1/7.1-to-stereo downmixing, and smoothed gain, pan, filter
+  and volume changes to avoid zipper noise.
+- **Any output device** â€” WASAPI endpoints (speakers, headphones, Voicemeeter
   inputs) and **ASIO** drivers, including multichannel interfaces.
-- **Effect chains** — 36 built-in audio effects and analysis taps, including dB meter, spectrum, spectrogram,
-  offline transcription and translation taps: gain, EQ shapes, a 10-band graphic EQ, compressor,
+- **Effect chains** â€” 48 built-in audio effects and analysis taps, including dB meter, spectrum, spectrogram,
+  sidechain ducker, loudness/true-peak meter, parametric EQ, convolution reverb, polarity, vibrato, ring mod, Mid/Side, exciter,
+  offline transcription and translation taps: gain, EQ shapes, a 10-band graphic EQ with a draggable response curve, compressor,
   multiband compressor, limiter, gate, reverb, delay, chorus, flanger, phaser,
   tremolo, pitch shift (standard and high quality),
-  bitcrusher, noise suppression, AGC, comfort noise… with live parameters.
-- **Saved chains** — build a chain of effects once, save it to the library and
+  bitcrusher, noise suppression, AGC, comfort noiseâ€¦ with live parameters.
+- **Saved chains** â€” build a chain of effects once, save it to the library and
   drop it anywhere as a single node.
-- **File recording** — add a recorder output, choose WAV (16/24-bit or 32-bit
-  float), MP3 or FLAC, and save the routed mix to disk.
-- **VST3 plugins** — scan the standard VST3 folders and drop any effect into the
+- **Frame templates** â€” draw a group around nodes, save it as a template and
+  insert the whole wired group later without clearing the canvas. Use the frame
+  header's template button; templates appear in the library under Processing.
+- **Mixer dock** — a resizable right-side mixer with source and output strips,
+  insert chips, per-send gain and Pre/Post routing, a master strip, dB meters,
+  mute/solo, colors and rename. Strips can be horizontal or vertical (`Ctrl+M`;
+  library `Ctrl+L`).
+- **Sidechain routing** — wire a source or effect output to the amber KEY input
+  on a sidechain ducker. The key controls gain reduction and never enters the
+  audible mix.
+- **MIDI learn** â€” enable a MIDI input in Settings, click the MIDI badge on an
+  effect parameter, then move a CC or press a note. CCs map the full range;
+  notes act as a held trigger. Bindings save with the session.
+- **Clip guard** â€” protect every output from hard clipping with a fast limiter
+  and soft knee. It is on by default; loud transients show a GUARD badge and
+  Settings > Behavior can turn it off.
+- **Audio engine settings** — Settings > Audio uses automatic timing by default,
+  with manual block size (2.5/5/7.5/10 ms), device buffer (Low/Balanced/Safe/
+  Manual) and engine cushion (Auto 2 blocks/Manual) when needed.
+- **Automatic device refresh** — new WASAPI playback/capture devices appear in
+  the library within about two seconds; ASIO changes still need a manual refresh.
+- **File recording** â€” add a recorder output, choose WAV (16/24-bit or 32-bit
+  float), MP3 or 24-bit FLAC, and save the routed mix to disk. File I/O and
+  encoding run on a background writer so the audio thread never blocks on disk;
+  16-bit WAV uses TPDF dither, and transport seeks, loops and stale-source skips
+  crossfade to avoid clicks.
+- **VST3 plugins** â€” scan the standard VST3 folders and drop any effect into the
   graph. Parameters appear as normal node controls and the plugin's native
   editor opens in its own window. Plugins run in a separate host process by
-  default, so a crashing plugin cannot close Ruse; turn this off in Settings >
-  Plugins if you need the old in-process behavior. VST3 only; VST2 is not
-  supported.
-- **Live signal feedback** — glowing nodes and matching library items, small
+  default, so a crashing plugin cannot close Ruse; the host pipes are restricted
+  to the current user with a handshake, and a watchdog also restarts a hung host
+  and reapplies its parameters. Turn this off in Settings > Plugins if you need
+  the old in-process behavior. VST3 only; VST2 is not supported.
+- **Live signal feedback** â€” glowing nodes and matching library items, small
   marching packets along active cables, spectrum and spectrogram taps and a dedicated compact
   dB meter node (vertical by default, horizontal from its menu). The glow can be
   disabled in Settings.
-- **Live recording feedback** — each recorder shows NO FILE / ARMED / REC /
+- **Live recording feedback** â€” each recorder shows NO FILE / ARMED / REC /
   SAVED / ERR, a global REC timer appears in the title bar, and an output that
   clips gets its own CLIP badge.
-- **Presets** — the whole graph (nodes, cables, effect settings) saves to a
+- **Presets** â€” the whole graph (nodes, cables, effect settings) saves to a
   `.ruse.json` file.
-- **Start with Windows** — an option in Settings adds or removes Ruse from the
+- **Start with Windows** â€” an option in Settings adds or removes Ruse from the
   per-user startup apps.
-- **Close to tray** — with the option on, closing the window hides Ruse in the
+- **Close to tray** â€” with the option on, closing the window hides Ruse in the
   notification area while audio keeps routing; minimizing just minimizes. Click
   the tray icon to restore it or use its menu to exit.
-- **Start routing on launch** — optionally start the restored graph after the
+- **Start routing on launch** â€” optionally start the restored graph after the
   window is ready. The compact Routing switch shows ON/OFF and glows green
   while running; turning it off stops the graph.
 - **Undo/redo** for everything, including node moves and effect tweaks.
-- **Low latency** — the whole path is about 20 ms on a modern machine.
-- **Diagnostics** — an optional live diagnostics canvas node shows audio
-  buffers/delays, CPU/GPU use, memory, FPS and JS heap. It is draggable,
-  scalable and closable. A built-in self-test suite (`--selftest` and friends)
-  exercises the engine without hardware.
-- **Languages** — English, Portuguese (Brazil), Spanish, French, German,
+- **Low latency** - the software path adds about 28 ms steady (~38 ms peak) on a modern machine; the full source-to-speaker figure includes capture backlog.
+- **Diagnostics** â€” an optional live diagnostics canvas node shows audio
+  buffers/delays, source fill rate, output ring fill, underruns/skips per
+  minute, latency mean/jitter, estimated clock drift, engine block, output
+  cushion, endpoint/render latency, CPU/GPU use, memory, FPS and JS heap. It is
+  draggable, scalable and closable. A built-in self-test suite (`--selftest`
+  and friends) exercises the engine without hardware. The offline
+  `--transparency-test` harness checks nulling, 44.1/96k resampling and 5.1
+  downmix, and writes reference/degraded WAVs for an optional external ViSQOL run.
+- **Languages** â€” English, Portuguese (Brazil), Spanish, French, German,
   Italian, Japanese, Korean and Simplified Chinese; switchable live.
 
 ## Building
@@ -69,6 +102,14 @@ dotnet build src\Ruse.App\Ruse.App.csproj
 Needs the .NET 10 SDK and Node.js 20+. The build installs the Web UI packages on
 first use and compiles the React assets into the app output. The app itself is
 `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`.
+
+The Web UI translation files are validated with `npm run check-locales` in
+`src\Ruse.App\WebUi`; `npm test` runs the UI unit tests.
+
+For a repeatable check, run
+`powershell -ExecutionPolicy Bypass -File scripts\regress-ruse.ps1 -Build`.
+Add `-ProcessId <pid>` for live graph/device tests and `-Vst3Plugin <path>` for
+the isolated VST3 test.
 
 Speech and translation models are downloaded from Settings > Speech &
 translation. Whisper models run speech recognition. Translation uses Qwen2.5
@@ -100,12 +141,16 @@ rescan button in the library) after installing a plugin.
 | `--device-test --pid <pid>` | End-to-end run against a real output device |
 | `--effects-test` | Checks every effect: parameters, output, preset round-trip |
 | `--record-test` | Writes/reads every recording format and a live route |
+| --transparency-test [outdir] | Offline null/SRC/downmix checks; writes WAVs for optional ViSQOL |
+| `--monitor-test --pid <pid> [--seconds N] [--output-match NAME]` | Live source/ring/drift/under-run click monitor |
 | `--translation-text-test <model> <target> <text> <out>` | Checks one local Qwen model without a route |
 | `--opus-test <source> <target> <text> <out>` | Runs one installed OPUS-MT pair, including an English pivot |
 | `--opus-download-test <pair> <out>` | Downloads and verifies one OPUS-MT pair |
 | `--translation-e2e-test <speech> <translation> <target> <wav> <out>` | Runs a WAV through the speech-and-translation pipeline (add `--opus`) |
 | `--vst3-test <plugin> <out>` | Loads a VST3, processes a tone and saves state |
 | `--vst3-isolated-test <plugin> <out>` | Runs a VST3 in the isolated host process |
+| `--vst3-bench-test <plugin> <out> [--blocks N]` | Measures per-block isolated vs in-process VST3 cost |
+| `--cable-test <input.wav> <wet.wav> <result.txt> [--seconds N] [--render-match NAME] [--capture-match NAME]` | Runs a virtual-cable input/output loop with effects and rnnoise |
 | `--vst3-route-test <plugin> <out>` | Runs a VST3 through the real route renderer |
 | `--vst3-editor-test <plugin> <out>` | Opens and closes a VST3 editor |
 | `--vst3-scan-test` | Lists the VST3 effects found in the standard folders |
@@ -113,15 +158,16 @@ rescan button in the library) after installing a plugin.
 
 ## Packaging
 
-For a machine without .NET, publish self-contained:
+For a machine without .NET, build the self-contained package:
 
-```bat
-dotnet publish src\Ruse.App\Ruse.App.csproj -c Release -r win-x64 --self-contained true -o ..\Ruse-publish
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\package-ruse.ps1
 ```
 
-The publish target copies `WebUi/dist` beside the exe. Models, OPUS-MT ONNX
-files, VST3 plugins and ASIO drivers are not bundled; the target machine still
-needs the WebView2 Runtime. See `README-first-run.txt` in a packaged build.
+The script publishes, copies `WebUi/dist`, moves satellite resources under
+`Ruse\Localization\<culture>`, adds README/LICENSE and writes the `.zip` and
+`.sha256` files. Models, OPUS-MT ONNX files, VST3 plugins and ASIO drivers are
+not bundled; the target machine still needs the WebView2 Runtime.
 
 ## How it is put together
 
@@ -157,7 +203,7 @@ src/Ruse.App/
 ```
 
 The engine always mixes at **48 kHz, stereo, 32-bit float**. Sources are
-converted into that format, effects run in it, and outputs convert out of it —
+converted into that format, effects run in it, and outputs convert out of it â€”
 WASAPI lets Windows do the conversion, ASIO drivers are resampled by Ruse when
 the driver runs at another rate.
 

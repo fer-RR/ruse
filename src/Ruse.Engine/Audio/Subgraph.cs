@@ -11,6 +11,9 @@ public sealed class SubgraphElement
     public string TypeId { get; set; } = "";
 
     public Dictionary<string, float> Parameters { get; set; } = new();
+
+    /// <summary>For a convolution reverb: the impulse response file path.</summary>
+    public string? IrPath { get; set; }
 }
 
 /// <summary>
@@ -47,9 +50,24 @@ public sealed class SubgraphDefinition
         foreach (var element in Elements)
         {
             var instance = AudioProcessorCatalog.Create(element.TypeId);
-            if (instance == null)
+            if (instance == null || instance is ITapProcessor || instance is IVst3Processor)
             {
+                (instance as IDisposable)?.Dispose();
                 continue;
+            }
+
+            if (instance is IImpulseResponseProcessor impulseResponse &&
+                !string.IsNullOrWhiteSpace(element.IrPath) &&
+                IsTrustedIrPath(element.IrPath))
+            {
+                try
+                {
+                    impulseResponse.LoadImpulseResponse(element.IrPath);
+                }
+                catch
+                {
+                    // A missing IR should not stop the rest of the chain loading.
+                }
             }
 
             if (instance is IParameterizedProcessor parameterized)
@@ -57,7 +75,15 @@ public sealed class SubgraphDefinition
                 foreach (var (name, value) in element.Parameters)
                 {
                     var parameter = parameterized.Parameters.FirstOrDefault(p => p.Name == name);
-                    parameter?.Set(value);
+                    if (parameter == null || !float.IsFinite(value))
+                    {
+                        continue;
+                    }
+
+                    float clamped = parameter.IsToggle
+                        ? Math.Clamp(value, 0f, 1f)
+                        : Math.Clamp(value, parameter.Min, parameter.Max);
+                    parameter.Set(parameter.IsInteger ? MathF.Round(clamped) : clamped);
                 }
             }
 
@@ -67,13 +93,27 @@ public sealed class SubgraphDefinition
         return processor;
     }
 
+    private static bool IsTrustedIrPath(string path) =>
+        Path.IsPathFullyQualified(path) &&
+        !path.StartsWith(@"\\", StringComparison.Ordinal) &&
+        !path.StartsWith("//", StringComparison.Ordinal);
+
     /// <summary>Captures the current state of a chain processor.</summary>
     public static SubgraphDefinition FromProcessor(ChainProcessor processor)
     {
         var definition = new SubgraphDefinition { Name = processor.DisplayName };
         foreach (var inner in processor.Processors)
         {
-            var element = new SubgraphElement { TypeId = inner.TypeId };
+            if (inner is ITapProcessor or IVst3Processor)
+            {
+                continue;
+            }
+
+            var element = new SubgraphElement
+            {
+                TypeId = inner.TypeId,
+                IrPath = (inner as IImpulseResponseProcessor)?.ImpulseResponsePath,
+            };
             if (inner is IParameterizedProcessor parameterized)
             {
                 foreach (var parameter in parameterized.Parameters)
@@ -93,7 +133,7 @@ public sealed class SubgraphDefinition
 /// Runs several effects in sequence as if they were one - the audio
 /// equivalent of a Blender node group or a Node-RED subflow.
 /// </summary>
-public sealed class ChainProcessor : IAudioProcessor
+public sealed class ChainProcessor : IAudioProcessor, ISidechainProcessor, IDisposable
 {
     private readonly List<IAudioProcessor> _processors = new();
 
@@ -112,7 +152,25 @@ public sealed class ChainProcessor : IAudioProcessor
     {
         for (int i = 0; i < _processors.Count; i++)
         {
-            _processors[i].Process(samples, frames);
+            if (_processors[i] is not ITapProcessor)
+            {
+                _processors[i].Process(samples, frames);
+            }
+        }
+    }
+
+    public void SetSidechain(ReadOnlySpan<float> samples, int frames)
+    {
+        foreach (var processor in _processors)
+        {
+            if (processor is ISidechainProcessor sidechain)
+            {
+                sidechain.SetSidechain(samples, frames);
+            }
+            else if (processor is ChainProcessor chain)
+            {
+                chain.SetSidechain(samples, frames);
+            }
         }
     }
 
@@ -136,6 +194,20 @@ public sealed class ChainProcessor : IAudioProcessor
 
             return total;
         }
+    }
+
+    public void Dispose()
+    {
+        var disposed = new HashSet<IAudioProcessor>(ReferenceEqualityComparer.Instance);
+        foreach (var processor in _processors)
+        {
+            if (disposed.Add(processor) && processor is IDisposable disposable)
+            {
+                disposable.Dispose();
+            }
+        }
+
+        _processors.Clear();
     }
 }
 

@@ -1,3 +1,4 @@
+using System.IO;
 using System.Text.Json;
 using Ruse.App.Diagnostics;
 
@@ -22,6 +23,12 @@ public sealed class Preset
 
     /// <summary>source â†’ modifier links, by index.</summary>
     public List<PresetSourceModifierLink> SourceModifiers { get; set; } = new();
+
+    /// <summary>source → modifier key inputs, by index; these are not audible routes.</summary>
+    public List<PresetSidechainLink> Sidechains { get; set; } = new();
+
+    /// <summary>MIDI note/CC mappings for effect parameters.</summary>
+    public List<PresetMidiBinding> MidiBindings { get; set; } = new();
 
     /// <summary>modifier â†’ output links, by index.</summary>
     public List<PresetModifierOutputLink> ModifierOutputs { get; set; } = new();
@@ -48,7 +55,13 @@ public sealed class PresetSource
     public string? ProcessName { get; set; }
     public string? DeviceId { get; set; }
     public string? FilePath { get; set; }
+    public string? OutputId { get; set; }
+    public string? Color { get; set; }
+    public bool Solo { get; set; }
     public bool FileLoop { get; set; }
+    public float ToneFrequency { get; set; } = 1000f;
+    public string ToneWaveform { get; set; } = "Sine";
+    public float ToneLevelDb { get; set; } = -18f;
     public double X { get; set; }
     public double Y { get; set; }
     public double? Width { get; set; }
@@ -68,6 +81,10 @@ public sealed class PresetOutput
     public string? FileFormat { get; set; }
     public string RecordingMode { get; set; } = "Off";
     public bool AutoSave { get; set; }
+    public double RecorderSilenceStopSeconds { get; set; }
+    public double RecorderStartThresholdDb { get; set; } = -40;
+    public string? Color { get; set; }
+    public bool Solo { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
     public double? Width { get; set; }
@@ -82,6 +99,7 @@ public sealed class PresetRoute
     public int SourceIndex { get; set; }
     public int OutputIndex { get; set; }
     public float Gain { get; set; } = 1.0f;
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>A modifier node placed on the canvas, with its effect chain.</summary>
@@ -89,7 +107,10 @@ public sealed class PresetModifier
 {
     public string Title { get; set; } = "Modifier";
     public bool Enabled { get; set; } = true;
+    public bool Parallel { get; set; }
+    public float Send { get; set; } = 0.5f;
     public string? TranscriberModel { get; set; }
+    public string? Color { get; set; }
     public string? TranslatorTarget { get; set; }
     public string? TranslatorModel { get; set; }
     public double X { get; set; }
@@ -122,6 +143,12 @@ public sealed class PresetProcessor
     /// <summary>For a VST3 processor: the base64 component state chunk.</summary>
     public string? PluginState { get; set; }
 
+    /// <summary>For a convolution reverb: the impulse response file path.</summary>
+    public string? IrPath { get; set; }
+
+    /// <summary>For a parallel send chain: the wet amount.</summary>
+    public float Send { get; set; } = 0.5f;
+
     /// <summary>For a saved chain: the effects it contains, in order.</summary>
     public List<PresetProcessor>? Elements { get; set; }
 
@@ -135,10 +162,31 @@ public sealed class PresetSourceModifierLink
     public int ModifierIndex { get; set; }
 }
 
+public sealed class PresetSidechainLink
+{
+    public int SourceIndex { get; set; }
+    public int? SourceModifierIndex { get; set; }
+    public int ModifierIndex { get; set; }
+}
+
 public sealed class PresetModifierOutputLink
 {
     public int ModifierIndex { get; set; }
     public int OutputIndex { get; set; }
+    public float Gain { get; set; } = 1.0f;
+    public bool Enabled { get; set; } = true;
+}
+
+public sealed class PresetMidiBinding
+{
+    public int ModifierIndex { get; set; }
+    public int ProcessorIndex { get; set; }
+    public int ParameterIndex { get; set; }
+    public int Channel { get; set; }
+    public string Kind { get; set; } = "cc";
+    public int Number { get; set; }
+    public float Min { get; set; }
+    public float Max { get; set; } = 1f;
 }
 
 public sealed class PresetModifierLink
@@ -175,6 +223,35 @@ public static class PresetSerializer
                 TypeId = chain.TypeId,
                 Name = chain.DisplayName,
                 Elements = chain.Processors.Select(SerializeProcessor).ToList(),
+            };
+        }
+
+        if (processor is IImpulseResponseProcessor impulseResponse)
+        {
+            var irEntry = new PresetProcessor
+            {
+                TypeId = processor.TypeId,
+                IrPath = impulseResponse.ImpulseResponsePath,
+            };
+            if (processor is IParameterizedProcessor irParameters)
+            {
+                foreach (var parameter in irParameters.Parameters)
+                {
+                    irEntry.Parameters[parameter.Name] = parameter.Get();
+                }
+            }
+
+            return irEntry;
+        }
+
+        if (processor is ParallelChainProcessor parallel)
+        {
+            return new PresetProcessor
+            {
+                TypeId = parallel.TypeId,
+                Name = parallel.DisplayName,
+                Send = parallel.Send,
+                Elements = parallel.Processors.Select(SerializeProcessor).ToList(),
             };
         }
 
@@ -230,16 +307,62 @@ public static class PresetSerializer
             return chain;
         }
 
+        if (entry.TypeId == ParallelChainProcessor.Id)
+        {
+            var processors = new List<IAudioProcessor>();
+            if (entry.Elements != null)
+            {
+                foreach (var inner in entry.Elements)
+                {
+                    var processor = CreateProcessor(inner);
+                    if (processor != null && processor is not ITapProcessor && processor is not IVst3Processor)
+                    {
+                        processors.Add(processor);
+                    }
+                }
+            }
+
+            float send = float.IsFinite(entry.Send) ? Math.Clamp(entry.Send, 0f, 1f) : 0.5f;
+            return new ParallelChainProcessor(processors.ToArray(), send);
+        }
+
         var created = AudioProcessorCatalog.Create(entry.TypeId);
+        if (created is IImpulseResponseProcessor impulseResponse &&
+            !string.IsNullOrWhiteSpace(entry.IrPath) &&
+            IsTrustedIrPath(entry.IrPath))
+        {
+            try
+            {
+                impulseResponse.LoadImpulseResponse(entry.IrPath);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning($"Could not restore impulse response '{entry.IrPath}': {ex.Message}");
+            }
+        }
+
         if (created is IParameterizedProcessor parameterized)
         {
             foreach (var (name, value) in entry.Parameters)
             {
                 var parameter = parameterized.Parameters.FirstOrDefault(p => p.Name == name);
-                parameter?.Set(value);
+                if (parameter == null || !float.IsFinite(value))
+                {
+                    continue;
+                }
+
+                float clamped = parameter.IsToggle
+                    ? Math.Clamp(value, 0f, 1f)
+                    : Math.Clamp(value, parameter.Min, parameter.Max);
+                parameter.Set(parameter.IsInteger ? MathF.Round(clamped) : clamped);
             }
         }
 
         return created;
     }
+
+    private static bool IsTrustedIrPath(string path) =>
+        Path.IsPathFullyQualified(path) &&
+        !path.StartsWith(@"\\", StringComparison.Ordinal) &&
+        !path.StartsWith("//", StringComparison.Ordinal);
 }

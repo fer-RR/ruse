@@ -78,50 +78,62 @@ public static class AudioFileFormats
         Enum.TryParse<AudioFileFormat>(name, ignoreCase: true, out var format) ? format : AudioFileFormat.Wav24;
 }
 
-/// <summary>Writes the 48 kHz stereo mix to WAV, MP3 or FLAC.</summary>
+/// <summary>
+/// Writes the 48 kHz stereo mix to WAV, MP3 or FLAC. The render thread only
+/// copies floats into a lock-free ring; disk I/O, PCM conversion and encoding
+/// happen on a worker thread.
+/// </summary>
 public sealed class AudioFileRecorder : IDisposable
 {
     private const int SampleRate = 48000;
     private const int Channels = 2;
+    private const int RingSeconds = 10;
+    private const int WriterBlockFloats = 8192;
 
     private readonly string _path;
     private readonly AudioFileFormat _format;
-    private WaveFileWriter? _wave;
-    private Pcm16BlockingProvider? _provider;
-    private Thread? _encoderThread;
-    private long _frames;
-    private volatile string? _lastError;
-    private bool _stopped;
+    private readonly FloatRingBuffer _samples = new(SampleRate * Channels * RingSeconds);
     private readonly object _stopLock = new();
+
+    private WaveFileWriter? _wave;
+    private PcmRingProvider? _provider;
+    private Thread? _workerThread;
+    private long _frames;
+    private long _droppedFrames;
+    private volatile string? _lastError;
+    private volatile bool _completed;
+    private volatile bool _stopped;
+    private readonly Random _ditherRandom = new();
 
     public AudioFileRecorder(string path, AudioFileFormat format)
     {
         _path = path;
         _format = format;
 
-        if (format == AudioFileFormat.Wav16 ||
-            format == AudioFileFormat.Wav24 ||
-            format == AudioFileFormat.Wav32Float)
+        if (!IsCompressed)
         {
             _wave = new WaveFileWriter(path, WaveFormatFor(format));
-            return;
+        }
+        else
+        {
+            _provider = new PcmRingProvider(_samples, () => _completed, SampleRate, Channels, _format == AudioFileFormat.Flac ? 24 : 16);
         }
 
-        _provider = new Pcm16BlockingProvider();
-        _encoderThread = new Thread(EncodeLoop)
+        _workerThread = new Thread(WriteLoop)
         {
             IsBackground = true,
-            Name = $"FileEncoder-{System.IO.Path.GetFileName(path)}",
+            Name = $"FileWriter-{System.IO.Path.GetFileName(path)}",
         };
-        _encoderThread.Start();
+        _workerThread.Start();
     }
 
     public string Path => _path;
     public AudioFileFormat Format => _format;
     public long Frames => Interlocked.Read(ref _frames);
+    public long DroppedFrames => Interlocked.Read(ref _droppedFrames);
     public double Duration => Frames / (double)SampleRate;
     public string? LastError => _lastError;
-    public bool IsCompressed => _provider != null;
+    public bool IsCompressed => _format is AudioFileFormat.Mp3 or AudioFileFormat.Flac;
 
     /// <summary>Accepts one interleaved float block from the render thread.</summary>
     public void Write(float[] samples, int count)
@@ -131,49 +143,98 @@ public sealed class AudioFileRecorder : IDisposable
             return;
         }
 
+        int written = _samples.Write(samples.AsSpan(0, count));
+        if (written > 0)
+        {
+            Interlocked.Add(ref _frames, written / Channels);
+        }
+
+        int dropped = count - written;
+        if (dropped > 0)
+        {
+            Interlocked.Add(ref _droppedFrames, dropped / Channels);
+        }
+    }
+
+    private void WriteLoop()
+    {
         try
         {
-            if (_wave != null)
+            if (IsCompressed)
             {
-                _wave.WriteSamples(samples, 0, count);
+                EncodeLoop();
             }
             else
             {
-                _provider?.Add(samples, count);
+                WriteWavLoop();
             }
         }
         catch (Exception ex)
         {
-            Fail($"Could not write the recording: {ex.Message}");
-            return;
+            Fail($"The {AudioFileFormats.Get(_format).DisplayName} writer failed: {ex.Message}");
         }
+        finally
+        {
+            if (!IsCompressed)
+            {
+                try
+                {
+                    _wave?.Dispose();
+                }
+                catch
+                {
+                }
 
-        Interlocked.Add(ref _frames, count / Channels);
+                _wave = null;
+            }
+        }
+    }
+
+    private void WriteWavLoop()
+    {
+        var buffer = new float[WriterBlockFloats];
+        while (true)
+        {
+            int read = _samples.Read(buffer);
+            if (read > 0)
+            {
+                if (_format == AudioFileFormat.Wav16)
+                {
+                    for (int i = 0; i < read; i++)
+                    {
+                        buffer[i] += (float)((_ditherRandom.NextDouble() - _ditherRandom.NextDouble()) / 32768.0);
+                    }
+                }
+
+                _wave!.WriteSamples(buffer, 0, read);
+                continue;
+            }
+
+            if (_completed)
+            {
+                return;
+            }
+
+            Thread.Sleep(1);
+        }
     }
 
     private void EncodeLoop()
     {
-        try
+        if (_format == AudioFileFormat.Mp3)
         {
-            if (_format == AudioFileFormat.Mp3)
-            {
-                MediaFoundationEncoder.EncodeToMp3(_provider!, _path, 192000);
-            }
-            else
-            {
-                MediaFoundationEncoder.EncodeToFlac(_provider!, _path);
-            }
+            MediaFoundationEncoder.EncodeToMp3(_provider!, _path, 192000);
         }
-        catch (Exception ex)
+        else
         {
-            Fail($"The {AudioFileFormats.Get(_format).DisplayName} encoder failed: {ex.Message}");
+            MediaFoundationEncoder.EncodeToFlac(_provider!, _path);
         }
     }
 
     private void Fail(string message)
     {
         _lastError ??= message;
-        _provider?.CompleteAdding();
+        _completed = true;
     }
 
     public void Stop()
@@ -188,19 +249,20 @@ public sealed class AudioFileRecorder : IDisposable
             _stopped = true;
         }
 
-        _wave?.Dispose();
-        _wave = null;
-
-        if (_provider != null)
+        _completed = true;
+        Thread? worker = _workerThread;
+        _workerThread = null;
+        if (worker != null && worker != Thread.CurrentThread &&
+            !worker.Join(TimeSpan.FromSeconds(30)))
         {
-            _provider.CompleteAdding();
-            if (_encoderThread != null && !_encoderThread.Join(TimeSpan.FromSeconds(30)))
-            {
-                Fail("The encoder did not finish in time.");
-            }
+            Fail("The audio writer did not finish in time.");
+        }
 
-            _encoderThread = null;
-            _provider = null;
+        _provider = null;
+
+        if (_lastError == null && DroppedFrames > 0)
+        {
+            _lastError = $"Recording dropped {DroppedFrames} frames because the writer fell behind.";
         }
     }
 
@@ -214,84 +276,114 @@ public sealed class AudioFileRecorder : IDisposable
         _ => throw new ArgumentOutOfRangeException(nameof(format)),
     };
 
-    /// <summary>Blocking PCM queue for the Media Foundation encoders.</summary>
-    private sealed class Pcm16BlockingProvider : IWaveProvider
+    /// <summary>
+    /// Pulls float samples from the render ring and converts them to PCM on the
+    /// encoder thread. No allocations or locks occur on the producer side.
+    /// </summary>
+    private sealed class PcmRingProvider : IWaveProvider
     {
-        private readonly object _lock = new();
-        private readonly Queue<byte[]> _chunks = new();
+        private readonly FloatRingBuffer _source;
+        private readonly Func<bool> _completed;
+        private readonly float[] _floats;
+        private readonly byte[] _bytes;
+        private readonly int _bytesPerSample;
         private int _offset;
         private int _available;
-        private bool _completed;
+        private uint _ditherState = 0x9E3779B9;
 
-        public WaveFormat WaveFormat { get; } = new(SampleRate, 16, Channels);
-
-        public void Add(float[] samples, int count)
+        public PcmRingProvider(
+            FloatRingBuffer source,
+            Func<bool> completed,
+            int sampleRate,
+            int channels,
+            int bitsPerSample)
         {
-            var bytes = new byte[count * 2];
-            for (int i = 0; i < count; i++)
-            {
-                short value = (short)(Math.Clamp(samples[i], -1f, 1f) * short.MaxValue);
-                bytes[i * 2] = (byte)value;
-                bytes[i * 2 + 1] = (byte)(value >> 8);
-            }
-
-            lock (_lock)
-            {
-                if (_completed)
-                {
-                    return;
-                }
-
-                _chunks.Enqueue(bytes);
-                _available += bytes.Length;
-                Monitor.PulseAll(_lock);
-            }
+            _source = source;
+            _completed = completed;
+            _bytesPerSample = Math.Max(2, bitsPerSample / 8);
+            _floats = new float[WriterBlockFloats];
+            _bytes = new byte[WriterBlockFloats * _bytesPerSample];
+            WaveFormat = new WaveFormat(sampleRate, bitsPerSample, channels);
         }
 
-        public void CompleteAdding()
-        {
-            lock (_lock)
-            {
-                _completed = true;
-                Monitor.PulseAll(_lock);
-            }
-        }
+        public WaveFormat WaveFormat { get; }
 
         public int Read(byte[] buffer, int offset, int count) =>
             Read(buffer.AsSpan(offset, count));
 
         public int Read(Span<byte> buffer)
         {
-            lock (_lock)
+            if (buffer.IsEmpty)
             {
-                while (!_completed && _available < buffer.Length)
-                {
-                    Monitor.Wait(_lock);
-                }
+                return 0;
+            }
 
+            int written = 0;
+            while (written < buffer.Length)
+            {
                 if (_available == 0)
                 {
-                    return 0;
-                }
-
-                int written = 0;
-                while (written < buffer.Length && _available > 0)
-                {
-                    var head = _chunks.Peek();
-                    int take = Math.Min(buffer.Length - written, head.Length - _offset);
-                    head.AsSpan(_offset, take).CopyTo(buffer[written..]);
-                    written += take;
-                    _offset += take;
-                    _available -= take;
-                    if (_offset == head.Length)
+                    int read = _source.Read(_floats);
+                    if (read == 0)
                     {
-                        _chunks.Dequeue();
-                        _offset = 0;
+                        if (_completed())
+                        {
+                            break;
+                        }
+
+                        Thread.Sleep(1);
+                        continue;
+                    }
+
+                    _offset = 0;
+                    _available = read * _bytesPerSample;
+                    for (int i = 0; i < read; i++)
+                    {
+                        if (_bytesPerSample == 2)
+                        {
+                            // TPDF dither at the 16-bit quantizer step; 24-bit
+                            // and float captures stay undithered.
+                            float scaled = Math.Clamp(_floats[i], -1f, 1f) * short.MaxValue;
+                            short value = (short)Math.Clamp(
+                                MathF.Round(scaled + NextTpdf()), -32768f, 32767f);
+                            _bytes[i * 2] = (byte)value;
+                            _bytes[i * 2 + 1] = (byte)(value >> 8);
+                        }
+                        else
+                        {
+                            int value = (int)MathF.Round(Math.Clamp(_floats[i], -1f, 1f) * 8388607f);
+                            value = Math.Clamp(value, -8388608, 8388607);
+                            int index = i * 3;
+                            _bytes[index] = (byte)value;
+                            _bytes[index + 1] = (byte)(value >> 8);
+                            _bytes[index + 2] = (byte)(value >> 16);
+                        }
                     }
                 }
 
-                return written;
+                int take = Math.Min(buffer.Length - written, _available);
+                _bytes.AsSpan(_offset, take).CopyTo(buffer[written..]);
+                _offset += take;
+                _available -= take;
+                written += take;
             }
+
+            return written;
         }
-    }
-}
+
+        private float NextTpdf()
+        {
+            uint state = _ditherState;
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            _ditherState = state;
+            float first = (state & 0xFFFF) / 65536f;
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            _ditherState = state;
+            float second = (state & 0xFFFF) / 65536f;
+            return first + second - 1f;
+        }
+    }}

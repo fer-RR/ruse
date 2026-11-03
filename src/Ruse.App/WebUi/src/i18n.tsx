@@ -20,7 +20,7 @@ export const LANGUAGES: ReadonlyArray<{ id: Language; label: string }> = [
   { id: 'it', label: 'Italiano' },
   { id: 'ja', label: '日本語' },
   { id: 'ko', label: '한국어' },
-  { id: 'zh-CN', label: '中文（简体）' },
+  { id: 'zh-CN', label: '简体中文' },
 ];
 
 const DICTIONARIES: Partial<Record<Language, Record<string, string>>> = {

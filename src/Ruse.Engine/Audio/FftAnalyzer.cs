@@ -7,9 +7,9 @@ namespace Ruse.App.Audio;
 internal sealed class FftAnalyzer
 {
     public const int SampleRate = 48000;
-    public const int FftSize = 2048;
-    public const int Bands = 64;
-    private const int HopSize = FftSize;
+    public const int FftSize = 4096;
+    public const int Bands = 128;
+    private const int HopSize = 1536;
 
     private readonly float[] _ring = new float[FftSize];
     private readonly float[] _window = new float[FftSize];

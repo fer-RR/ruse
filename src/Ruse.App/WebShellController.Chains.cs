@@ -28,8 +28,16 @@ internal sealed partial class WebShellController
         }
 
         var definition = new SubgraphDefinition { Name = name };
-        foreach (var saved in request.Elements)
+        ModifierNode? sourceModifier = null;
+        if (!string.IsNullOrEmpty(request.NodeId) &&
+            _nodes.TryGetValue(request.NodeId, out var sourceEntry))
         {
+            sourceModifier = sourceEntry.Modifier;
+        }
+
+        for (int index = 0; index < request.Elements.Count; index++)
+        {
+            var saved = request.Elements[index];
             var descriptor = AudioProcessorCatalog.Find(saved.TypeId);
             if (descriptor == null)
             {
@@ -37,7 +45,19 @@ internal sealed partial class WebShellController
             }
 
             var element = new SubgraphElement { TypeId = saved.TypeId };
+            if (sourceModifier != null && index < sourceModifier.Processors.Count &&
+                sourceModifier.Processors[index] is IImpulseResponseProcessor sourceIr)
+            {
+                element.IrPath = sourceIr.ImpulseResponsePath;
+            }
+
             var live = descriptor.Create();
+            if (live is ITapProcessor)
+            {
+                SetStatus("Analysis taps cannot be saved inside a chain.", isError: true);
+                continue;
+            }
+
             if (live is IParameterizedProcessor parameterized)
             {
                 foreach (var parameter in parameterized.Parameters)
@@ -74,11 +94,28 @@ internal sealed partial class WebShellController
             _nodes.TryGetValue(request.NodeId, out var entry) &&
             entry.Modifier?.Processors.OfType<ChainProcessor>().FirstOrDefault() != null)
         {
-            entry.Modifier.Clear();
-            entry.Modifier.Add(definition.CreateProcessor());
+            var previous = entry.Modifier.Processors.ToList();
+            _graph.WithEngineLock(() =>
+            {
+                entry.Modifier.Clear();
+                entry.Modifier.Add(definition.CreateProcessor());
+            });
             entry.Modifier.Title = definition.Name;
             entry.Title = definition.Name;
             entry.Subtitle = definition.Description;
+            _midiBindings.RemoveAll(binding => binding.NodeId == entry.Id);
+            if (_midiLearnTarget?.NodeId == entry.Id)
+            {
+                _midiLearnTarget = null;
+            }
+
+            _graph.RefreshModifiers();
+            foreach (var processor in previous)
+            {
+                CleanupTapProcessor(processor);
+                (processor as IDisposable)?.Dispose();
+            }
+
             PublishGraph();
         }
 

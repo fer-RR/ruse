@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using NAudio.Wave;
 using NAudio.Wave.Asio;
 using Ruse.App.Diagnostics;
@@ -206,7 +207,7 @@ internal sealed class AsioFloatProvider : IWaveProvider
     private readonly WaveFormat _format;
     private readonly byte[] _scratch;
     private readonly List<float> _converted = new();
-    private readonly byte[] _out;
+    private int _convertedOffset;
     private long _callbackCount;
 
     public AsioFloatProvider(BufferedWaveProvider source, int targetRate)
@@ -215,7 +216,7 @@ internal sealed class AsioFloatProvider : IWaveProvider
         _format = WaveFormat.CreateIeeeFloatWaveFormat(targetRate, 2);
         _converter = new FormatConverter(2, source.WaveFormat.SampleRate, targetRate);
         _scratch = new byte[source.WaveFormat.AverageBytesPerSecond / 20]; // 50 ms
-        _out = new byte[_scratch.Length];
+        _converted.Capacity = _scratch.Length / sizeof(float) * 2;
     }
 
     public WaveFormat WaveFormat => _format;
@@ -223,44 +224,50 @@ internal sealed class AsioFloatProvider : IWaveProvider
     /// <summary>How many times the driver has asked for a buffer.</summary>
     public long CallbackCount => System.Threading.Interlocked.Read(ref _callbackCount);
 
-    public int Read(byte[] buffer, int offset, int count)
+    public int Read(byte[] buffer, int offset, int count) =>
+        ReadCore(buffer.AsSpan(offset, count));
+
+    public int Read(Span<byte> buffer) => ReadCore(buffer);
+
+    private int ReadCore(Span<byte> buffer)
     {
         System.Threading.Interlocked.Increment(ref _callbackCount);
 
-        int read = _source.Read(_scratch.AsSpan(0, Math.Min(count, _scratch.Length)));
-        if (read <= 0)
+        int written = 0;
+        while (written < buffer.Length)
         {
-            return 0;
+            if (_convertedOffset >= _converted.Count)
+            {
+                int read = _source.Read(_scratch);
+                if (read <= 0)
+                {
+                    break;
+                }
+
+                var samples = MemoryMarshal.Cast<byte, float>(_scratch.AsSpan(0, read));
+                _converted.Clear();
+                _convertedOffset = 0;
+                _converter.Convert(samples, _converted);
+                if (_converted.Count == 0)
+                {
+                    continue;
+                }
+            }
+
+            int floats = Math.Min(
+                _converted.Count - _convertedOffset,
+                (buffer.Length - written) / sizeof(float));
+            if (floats <= 0)
+            {
+                break;
+            }
+
+            MemoryMarshal.AsBytes(CollectionsMarshal.AsSpan(_converted).Slice(_convertedOffset, floats))
+                .CopyTo(buffer[written..]);
+            _convertedOffset += floats;
+            written += floats * sizeof(float);
         }
 
-        int floats = read / sizeof(float);
-        var samples = new float[floats];
-        Buffer.BlockCopy(_scratch, 0, samples, 0, floats * sizeof(float));
-
-        _converted.Clear();
-        _converter.Convert(samples, _converted);
-
-        int produced = _converted.Count;
-        int bytes = produced * sizeof(float);
-        if (bytes > count)
-        {
-            bytes = count;
-            produced = count / sizeof(float);
-        }
-
-        for (int i = 0; i < produced; i++)
-        {
-            BitConverter.GetBytes(_converted[i]).CopyTo(buffer, offset + i * sizeof(float));
-        }
-
-        return produced * sizeof(float);
-    }
-
-    public int Read(Span<byte> buffer)
-    {
-        var tmp = new byte[buffer.Length];
-        int read = Read(tmp, 0, tmp.Length);
-        tmp.AsSpan(0, read).CopyTo(buffer);
-        return read;
+        return written;
     }
 }

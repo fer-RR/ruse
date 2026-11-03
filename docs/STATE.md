@@ -6,135 +6,175 @@ Keep this file short. New sessions start here.
 
 Ruse is a Windows node-based audio router: .NET 10, NAudio 3.3, WPF host,
 WebView2 + React UI, Whisper.net for speech, LLamaSharp/Qwen and optional
-ONNX Runtime OPUS-MT for translation, and OwnAudioVst for VST3. There is one UI;
-the old WPF workspace was removed.
+ONNX Runtime OPUS-MT for translation, and OwnAudioVst for VST3. One UI; the old
+WPF workspace is gone.
 
-- Canonical repo: `C:\Users\ih_me\Projects\Ruse` (`main`, stale at `240d065`)
-- Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, clean; latest feature
-  commit `113c428`).
-  Do not reset or clean it.
-- Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe` (version 0.2.0-beta.1)
+- Canonical repo: `C:\Users\ih_me\Projects\Ruse` (`main`, `2612cfd`)
+- Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, HEAD `2612cfd`;
+  large uncommitted batch, do not reset or clean).
+- Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe` (0.2.0-beta.1)
 - Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.2.0-beta.1-win-x64.zip`
-  (+ `.sha256`, SHA-256 `84c5e375...a5d0f519`); self-contained win-x64,
-  WebUI and LICENSE included, models/VSTs excluded.
+  (older build; rebuild after committing the current batch). Self-contained
+  win-x64, layout `Ruse\Ruse.exe`, `Ruse\Localization\<culture>`,
+  README/LICENSE. Models and VSTs excluded.
 - Runtime data: `%APPDATA%\Ruse` (`settings.json`, `session.ruse.json`,
-  `chains.json`, `ruse.log`, `models\`).
+  `chains.json`, `frame-templates.json`, `ruse.log`, `models\`).
 - Screenshots: `C:\Users\ih_me\OneDrive\Documentos\voicemet-screenshots`.
 
-Latest batch: onboarding/splash, 9 locales, tray behavior, file player,
-translator, OPUS-MT provider, VST3 isolation, effects, analysis taps,
-per-app capture fallback, workspace/sidebar cleanup, package publish fix.
+## Current state
+
+- **Audio engine:** 48 kHz stereo float. One `GraphEngine` thread renders every
+  source/modifier once; one pump thread per output; one capture thread per
+  source. Auto timing is the default: 5 ms blocks, 2-block engine cushion,
+  balanced device buffer.
+- **Timing controls:** Settings > Audio. Auto on/off. Manual block
+  2.5/5/7.5/10 ms; device buffer Low/Balanced/Safe/Manual (2–40 ms); engine
+  cushion Auto (2 blocks)/Manual (2–50 ms); optional elastic engine ring
+  (starts at one block, grows after underruns, shrinks after 2 s stable).
+  Changes restart routing.
+- **Audio path:** band-limited 49-tap windowed-sinc SRC, 5.1/7.1 downmix,
+  smoothed gain/filter/volume, bypass and transport fades, zero-latency clip
+  guard, lock-free SPSC rings, asynchronous recording writer.
+- **Mixer:** resizable dock; inserts, master strip, per-send gain/enable and
+  Pre/Post chain routing, dB meters, solo/mute/color/rename, horizontal or
+  vertical strips, color groups. `Ctrl+M` mixer, `Ctrl+L` library.
+- **Nodes/features:** sidechain ducker, MIDI-learn effect parameters, file
+  player with per-node output routing, frame templates, graphic EQ, parametric EQ with curve, convolution reverb, loudness/true-peak meter, test tone, parallel send, tempo sync, saved
+  chains, VST3, ASIO, WASAPI/system/process sources, recorder WAV16/24/32,
+  MP3 and 24-bit FLAC.
+- **Diagnostics:** source fill, ring fill, underruns/skips per minute, latency
+  mean/stddev, estimated ppm drift, output-first startup, and live click
+  monitor. Offline transparency harness and optional external ViSQOL.
+- **Security:** imported presets cannot restore recorder paths or arm
+  recorders; WebView commands require `https://ui.ruse`; isolated VST pipes are
+  current-user-only with handshake; block dimensions checked; model downloads
+  SHA-256 verified.
+- **GPU:** CPU default; Vulkan option with fallback. A user reported a large
+  GPU speedup, but keep CPU default until there is a broader GPU matrix.
+- **Localization:** 8 UI locales plus `en`; `npm run check-locales` enforces
+  key coverage, duplicate keys and placeholders. Native wording review remains.
+- **Recent batch:** mixer master/inserts/sends/dB/vertical layout and strip
+  navigation; source/output format badges; diagnostics toolbar toggle;
+  settings reorder and persisted collapse state; elastic engine ring;
+  modifier sidechain keys; click-free effect bypass; lazy recorder graph
+  registration; dead monitor/API paths removed. P1 audit hardening: saved-chain
+  IR paths, empty-chain creation, EQ drag/keyboard/MIDI controls, preset value
+  clamping, stale MIDI cleanup, recorder restore, diagnostics format fields,
+  dynamic locale keys, chain disposal, 24/32-bit PCM, bypass latency alignment,
+  and asynchronous isolated-VST audio I/O. P0 audit fixes: modifier sends now
+  apply their routed gain, live-demo shutdown leaves the saved session intact,
+  loudness telemetry no longer sticks, analysis taps are cleaned on graph reset,
+  speech/translation model refcounts release on every early exit, and failed
+  output starts reset their running state for retry. P2 hardening: send/link
+  changes update gain in place without recompiling, faulted chains stop retrying,
+  output pump teardown and engine-ring clears are synchronized, loudness reads
+  are cached, diagnostics history samples only active graphs at 4 Hz, keyboard
+  shortcuts respect dialogs, and the UI has a Vitest runner. Audio pass:
+  extensible IEEE-float capture detection, 63-tap/512-phase SRC, direct
+  zero-copy stereo conversion, 20 ms capture buffering, TPDF dither for 16-bit
+  recording, and non-blocking engine-ring enqueue during output clears.
 
 ## Build and test
 
 ```text
 dotnet build src\Ruse.App\Ruse.App.csproj -v q --nologo
-powershell -ExecutionPolicy Bypass -File C:\Users\ih_me\AppData\Local\Temp\opencode\regress-ruse.ps1 -Repo C:\Users\ih_me\Projects\wt\Ruse-work
+cd src\Ruse.App\WebUi && npm test
+powershell -ExecutionPolicy Bypass -File scripts\regress-ruse.ps1
+powershell -ExecutionPolicy Bypass -File scripts\package-ruse.ps1
+powershell -ExecutionPolicy Bypass -File scripts\transparency-test.ps1
 ```
 
-Needs .NET 10 and Node.js 20+. The build runs `WebUi/dist`; publish also copies
-it via `CopyWebUiAssetsToPublish`. Close a running Ruse before building; it
-locks `bin\Debug\net10.0-windows\Ruse.exe`.
-
-Current status: build, `--web-test`, `--effects-test` (36 processors), `--selftest`,
-the regression script, translation tests and VST3 load/preset/route/editor/scan/
-isolated tests, OPUS-MT engine/download tests, and the per-app capability contract pass.
-Legacy `--legacy-ui`, `--uitest`, `--feedback-bench` and `--perf-test` are gone.
-
-Useful modes: `--demo`, `--live-demo --pid <pid>`, `--translation-e2e-test`
-(add `--opus` to use OPUS-MT), `--opus-test`, `--opus-download-test`,
-`--vst3-test`, `--vst3-isolated-test`, `--vst3-route-test`, `--vst3-editor-test`,
-`--vst3-scan-test`.
-Test fixtures already on this machine: Whisper medium `.en`/multilingual,
-Qwen2.5 1.5B, OPUS-MT en/de/es/fr/it/pt/zh and de/es/fr/it/pt/ja/zh/ko-to-en
-pairs, and VST3 `ring-out`, `rnnoise`, `DirtyFilterPlus`.
+Close Ruse before building; it locks the debug exe. Package publish moves
+satellite resources into `Ruse\Localization`. Last verified this batch: build,
+`--web-test`, `--preset-test`, `--sidechain-test` and `--selftest`. The older
+`regress-ruse.ps1` pass was **16/16**
+(web, self-test, effects, record, chains, fan-out, templates, graphic EQ,
+WebView origin, recorder disarming, VST bounds, isolated VST, sidechain,
+clip guard, ring, transparency). Live modes: `--demo`,
+`--live-demo --pid <pid>`, `--monitor-test --pid <pid> [--seconds N]
+[--output-match NAME] [--block-ms N] [--engine-cushion-ms N]`.
+Optional ViSQOL is external only; it is not bundled or called at runtime.
 
 ## Architecture
 
-- Engine: `src/Ruse.Engine` (no WPF). UI: `src/Ruse.App`; `WebShellController`
-  serializes commands/snapshots on the dispatcher.
-- Mixing: 48 kHz stereo float. One capture thread per source, one render thread
-  per output. Every route owns a `SourceNode.Subscription` for fan-out.
-- Sources: process loopback, devices, system loopback, ASIO and paced audio-file
-  playback.
-- Taps (dB meter, FFT spectrum, scrolling spectrogram, transcriber, translator)
-  use hidden monitor outputs and never enter the mix. The FFT is 2048-point
-  Hann-windowed, 64 log-spaced bands, refreshed about 23 times per second.
-- Whisper and Qwen model loads are preflighted in child processes. Qwen
-  generation is serialized across sessions; OPUS-MT runs in managed ONNX
-  Runtime and is serialized by an engine-wide lock.
-- Speech and translation run on **CPU by default**. The build ships the Vulkan
-  runtimes; the GPU option sets Whisper `UseGpu` and LLamaSharp
-  `GpuLayerCount = 99`, with automatic CPU fallback. OPUS-MT uses ONNX Runtime
-  on the CPU.
-- VST3: one processor per node, shared by its routes. Plugins run in a child
-  host process by default (`IsolatedVst3Processor` + named pipes); Settings >
-  Plugins can switch back to the in-process adapter. Fast scan at startup/
-  refresh; native editor is a separate window; state is a base64 chunk in
-  presets. VST2 is intentionally unsupported.
-- Route chains rebuild atomically under a lock. Shared VST processors are not
-  cloned; managed effects are cloned per route.
+- Engine: `src/Ruse.Engine` (no WPF). App/UI: `src/Ruse.App`; one
+  `WebShellController` serializes commands and snapshots on the dispatcher.
+- `GraphEngine` renders a fixed block through sources -> modifiers -> output
+  rings. DSP order is deterministic and single-threaded; endpoint pumps run
+  independently so fan-out/taps never process effects twice.
+- Taps (dB meter, FFT spectrum/spectrogram, transcriber, translator) read a
+  modifier’s post-effect block through worker threads and never enter the mix.
+- DSP is 32-bit float. SRC is band-limited windowed-sinc with a precomputed
+  kernel; no FFT SRC.
+- VST3 is one processor per node, isolated by default in a child host with
+  watchdog/restart. VST2 is unsupported.
+- 48 kHz is still fixed. Sample rates are converted per source; a 44.1 kHz
+  endpoint may be converted again by Windows.
+
+## Latency budget (current)
+
+- Auto: 5 ms graph block; engine queue 10 ms (2 blocks); device buffer
+  auto/Balanced (6–13 ms observed); WASAPI endpoint 2 ms; effect chain 0 ms in
+  the baseline. Output-side estimate is ~19 ms steady / ~22.7 ms peak.
+- Source capture backlog is separate: ~8–15 ms after the output-first fix.
+  Approximate full source-to-speaker path: ~28 ms steady, ~38 ms peak.
+- 2.5 ms block/cushion 5 ms was tested on the dev machine: 7 underruns in 20 s.
+  5 / 7.5 / 10 ms were stable; Auto stays at 5 ms / 10 ms cushion.
+- Elastic ring is manual-only: target starts at one block, grows one block per
+  underrun up to the engine cushion, and shrinks one block after 2 s stable.
+- Clip guard adds no latency. VST/native effects add their reported look-ahead
+  through PDC. Isolated VST audio uses an asynchronous worker queue with one block of latency.
+- MMCSS Pro Audio is applied to graph, pumps, process/file capture and isolated
+  VST audio threads. Device/ASIO callback threads belong to NAudio/driver.
+
+## Known issues / next
+
+- Large uncommitted batch; commit only when the user asks.
+- Native status/history text, device/model names and engine errors remain
+  English. Native localization review pending.
+- Fixed 48 kHz engine and optional true-peak lookahead clip guard are documented
+  in `docs/BACKLOG.md`.
+- VST editor-only state is not recovered after a watchdog restart; editor
+  parameter changes are not polled back to sliders. VST3 sidechain buses and
+  VST3 MIDI are not implemented.
+- ASIO was not changed in the recent passes; ASIO virtual-driver testing still
+  needs an insert patch or a real loopback interface.
+- Per-app capture needs Windows 11 / Server 2022; Windows 10 uses system audio
+  or a virtual cable.
+- Qwen 0.5B is approximate, 1.5B default, 3B slower/RAM-heavy. OPUS-MT is
+  CPU-only; no English->Japanese/Korean pair.
+- Elastic ring only prevents repeat underruns; the first underrun is still
+  audible. It controls the engine ring, not the device buffer.
+- Post-chain sends need exactly one terminal effect chain. A shared chain
+  shares its send gain across sources.
+- GPU backends, real-microphone translator/VST3 testing and CLAP remain in
+  `docs/BACKLOG.md`.
 
 ## Key files
 
 ```text
 src/Ruse.Engine/Audio/
-  SourceNode.cs, AudioFileCapture.cs       sources and file playback
-  OutputNode.cs                            render pump, routes, alignment, recorder
-  AudioGraph.cs                            graph and route derivation
-  ModifierNode.cs                          effect chains and disposal
-  Vst3Processor.cs                         OwnAudioVst adapter
-  IsolatedVst3Processor.cs, Vst3HostRunner.cs  out-of-process host
-  FftAnalyzer.cs, SpectrumProcessor.cs,
-  SpectrogramProcessor.cs                  FFT analysis taps
-  TranslatorProcessor.cs                   translation tap
-  OpusTranslationModels.cs, OpusMtEngine.cs  optional OPUS-MT catalog and ONNX engine
-  PresetModel.cs, Subgraph.cs              presets and saved chains
+  GraphEngine.cs, AudioGraph.cs, AudioEngineConfig.cs
+  SourceNode.cs, OutputNode.cs, FloatRingBuffer.cs
+  FormatConverter.cs, ClipGuard.cs, SidechainDuckerProcessor.cs
+  AudioFileRecorder.cs, AudioFileCapture.cs
+  PresetModel.cs, Subgraph.cs, FrameTemplateLibrary.cs
+  Vst3Processor.cs, IsolatedVst3Processor.cs, Vst3HostRunner.cs
+  Transcription/translation/FFT processors
 src/Ruse.App/
-  WebMainWindow.xaml(.cs), TrayIcon.cs     WebView2 host and tray
-  WebShellController*.cs                   bridge, catalog, graph, persistence
-  TranscriptionService.cs, TranscriptionModels.cs
-  TranslationService.cs, TranslationModels.cs, TranslationModelCache.cs
-  TranslationModelProbe.cs, TranslationLanguages.cs
-  StartupErrorDialog.xaml(.cs)             WebView2 startup failure
-  Vst3SelfTest.cs                          VST3 diagnostics
-  WebUi/src/                               React workspace and locales
+  WebShellController*.cs                bridge, graph, persistence, diagnostics
+  WebShellController.Audio.cs           audio timing settings
+  WebShellController.Midi.cs            MIDI runtime
+  WebUi/src/                            React workspace and locales
+scripts/
+  regress-ruse.ps1, package-ruse.ps1, transparency-test.ps1
 ```
-
-## Known issues / next
-
-- Native status/history text, device/model names and engine errors are English.
-  Review the seven machine-translated locales and add a `t()` coverage check.
-- Translation is chunked (roughly 2–12 s lag). VAD, sentence timestamps and
-  SRT/VTT/TXT export are in place; cue timing is approximate.
-- Qwen 0.5B is approximate, 1.5B is the default, 3B is slower and needs RAM.
-- Bluetooth output could not be retested on the dev PC (no paired endpoint). The
-  engine mix is fixed at 48 kHz; use the Stereo endpoint, not Hands-Free/16 kHz.
-- Per-app capture needs Windows 10 build 20348 or later. Older builds hide the
-  Applications list, show a banner, and use System audio instead. Existing app
-  sources fail quietly once instead of retrying on every route change.
-- OPUS-MT is optional and CPU-only. English to Japanese/Korean is not offered;
-  use Qwen for those targets. Each pair is ~100 MB; a non-English pivot needs
-  two models. English to Portuguese uses the en-ROMANCE model with a prefix.
-- VST3 isolation covers plugin crashes; if the host dies the node falls back
-  to dry audio and shows an error. It uses synchronous pipe audio, so a hung
-  (not crashed) plugin can still stall its render thread. No auto-restart yet.
-- A VST3 node shares one plugin across its routes; avoid fan-out to several
-  outputs until per-route instances exist. Editor parameter edits are not
-  polled back into node sliders.
-- Translator/VST3 type ids, presets and test modes are stable; keep them.
-- File player has seek, play/pause and a time readout; it still has no dedicated
-  per-node output selector. Tray icon updates live. Duplicate detection depends
-  on the current render session.
-- GPU backends, real-microphone translator/VST3 testing, mixer view,
-  sidechain/MIDI and CLAP remain in `docs/BACKLOG.md`.
 
 ## Conventions
 
 - Comments explain why, not what. Keep them short. No emoji.
-- UI text goes through `useI18n().t('English')`; update every locale file.
+- UI text goes through `useI18n().t('English')`; update all locales.
 - Effect ids and parameter names are stable (presets depend on them).
-- Keep `bin/`, `obj/`, 
-ode_modules/`, `WebUi/dist/`, models and screenshots
-  out of the repo. Do not commit or merge unless the user asks.
-- Demo graphs are reviewed visually; keep `--demo` tidy.
+- Keep `bin/`, `obj/`, `node_modules/`, `WebUi/dist/`, models, screenshots and
+  package output out of the repo.
+- Do not commit or merge unless the user asks.

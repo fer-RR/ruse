@@ -12,6 +12,10 @@ public sealed class OutputNode : IDisposable
     private Thread? _pumpThread;
     private volatile bool _running;
     private float _meterLevel;
+    private float _meterLevelLeft;
+    private float _meterLevelRight;
+    private float _meterDbLeft = -60f;
+    private float _meterDbRight = -60f;
 
     // ASIO path: when set, the mix is rendered to an ASIO driver instead of a
     // WASAPI endpoint. The driver owns its clock, so the rate can differ.
@@ -28,21 +32,125 @@ public sealed class OutputNode : IDisposable
     /// <summary>Persistent recorder control state.</summary>
     public RecorderMode RecorderMode { get; set; } = RecorderMode.Off;
     public bool AutoSave { get; set; }
+    public double RecorderSilenceStopSeconds { get; set; }
+    public double RecorderStartThresholdDb { get; set; } = -40;
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public string DeviceId { get; }
     public string Title { get; set; }
     public float Volume { get; set; } = 1.0f;
+    public bool Solo { get; set; }
     public bool Muted { get; set; }
+
+    /// <summary>Master clip guard for every output; set from settings.</summary>
+    public static volatile bool ClipGuardEnabled = true;
+
+    /// <summary>Try IAudioClient3 low-latency shared mode before normal shared mode.</summary>
+    public static volatile bool LowLatencyWasapi = true;
+
+    /// <summary>True while the guard is reducing gain on this output.</summary>
+    public bool ClipGuardActive { get; internal set; }
+
+    private readonly ClipGuard _clipGuard = new();
 
     /// <summary>True when this output records to a file rather than a device.</summary>
     public bool IsFileRecorder { get; private set; }
 
-    /// <summary>True for a hidden tap monitor.</summary>
-    public bool IsMonitor { get; private set; }
+    /// <summary>
+    /// True when the shared graph renderer owns this output's mix. Test sinks
+    /// use the per-route renderer so engine-level self-tests stay valid.
+    /// </summary>
+    internal bool UseGraphEngine { get; set; } = true;
 
-    /// <summary>Receives the post-effect mix before master gain for a monitor output.</summary>
-    private Action<float[], int>? _mixSink;
+    /// <summary>True when this output is rendered by the shared graph engine.</summary>
+    public bool UsesGraphEngine => UseGraphEngine;
+
+    /// <summary>Set by the renderer when a shared native plugin is on the path.</summary>
+    internal bool HasNativePlugin { get; set; }
+
+    /// <summary>Wakes the graph renderer when this pump needs another block.</summary>
+    private volatile Action? _engineWake;
+    internal Action? EngineWake
+    {
+        get => _engineWake;
+        set => _engineWake = value;
+    }
+
+    private readonly FloatRingBuffer _engineBuffer = new(48000 * 2 * 3);
+    private readonly object _engineLock = new();
+
+    internal int ElasticTargetFrames { get; set; }
+    internal int ElasticVersion { get; set; } = -1;
+    internal long ElasticUnderrunMark { get; set; }
+    internal long ElasticLastAdjust { get; set; }
+
+    /// <summary>Audio queued by the graph renderer for this output, in frames.</summary>
+    internal double EngineBufferedFrames => _engineBuffer.AvailableToRead / 2.0;
+
+    internal double EngineBufferedMs => EngineBufferedFrames * 1000.0 / 48000;
+    public double EngineQueuePercent => _engineBuffer.AvailableToRead / (48000.0 * 2 * 3) * 100.0;
+
+    internal void SubmitEngineBlock(ReadOnlySpan<float> block)
+    {
+        // Control-side clears are rare; never block the render thread behind one.
+        if (!Monitor.TryEnter(_engineLock))
+        {
+            return;
+        }
+
+        try
+        {
+            _engineBuffer.Write(block);
+        }
+        finally
+        {
+            Monitor.Exit(_engineLock);
+        }
+    }
+
+    internal void ClearEngineAudio()
+    {
+        lock (_engineLock)
+        {
+            _engineBuffer.Clear();
+        }
+    }
+
+    internal bool ApplyClipGuard(float[] mix, int frames)
+    {
+        _clipGuard.Process(mix, frames);
+        ClipGuardActive = _clipGuard.Engaged;
+        return ClipGuardActive;
+    }
+
+    internal float DrainEngineLevelForTest(int frames)
+    {
+        var buffer = new float[Math.Max(1, frames) * 2];
+        int read = _engineBuffer.Read(buffer);
+        double sum = 0;
+        for (int i = 0; i < read; i++)
+        {
+            sum += Math.Abs(buffer[i]);
+        }
+
+        return read == 0 ? 0f : (float)(sum / read);
+    }
+
+    internal void SetCompiledState(double chainLatencyMs, bool hasNativePlugin)
+    {
+        _chainLatencyMs = chainLatencyMs;
+        HasNativePlugin = hasNativePlugin;
+    }
+
+    internal void SetMixResult(float left, float right, float leftDb, float rightDb, bool clipping)
+    {
+        _meterLevelLeft = left;
+        _meterLevelRight = right;
+        _meterLevel = Math.Max(left, right);
+        _meterDbLeft = leftDb;
+        _meterDbRight = rightDb;
+        Clipping = clipping;
+    }
 
     /// <summary>False for recorders restored from a preset.</summary>
     public bool AutoStart { get; set; } = true;
@@ -61,6 +169,10 @@ public sealed class OutputNode : IDisposable
     public static volatile bool MasterMuted = false;
 
     public float MeterLevel => _meterLevel;
+    public float MeterLevelLeft => _meterLevelLeft;
+    public float MeterLevelRight => _meterLevelRight;
+    public float MeterDbLeft => _meterDbLeft;
+    public float MeterDbRight => _meterDbRight;
     public bool IsRunning => _running;
 
     /// <summary>True when the most recent mix block exceeded full scale and was clipped.</summary>
@@ -77,12 +189,17 @@ public sealed class OutputNode : IDisposable
         get
         {
             double queued = _buffer?.BufferedDuration.TotalMilliseconds ?? 0;
-            return _outputLatencyMs + queued + _chainLatencyMs;
+            return _outputLatencyMs + queued + _chainLatencyMs + (UseGraphEngine ? EngineBufferedMs : 0);
         }
     }
 
     /// <summary>Latency added by effect chains and alignment, in ms.</summary>
     public double ChainLatencyMs => _chainLatencyMs;
+    public double EndpointLatencyMs => _outputLatencyMs;
+    public double EngineQueueMs => EngineBufferedMs;
+
+    /// <summary>Current render cushion target, in ms (diagnostics/tests).</summary>
+    public double TargetCushionMs => RenderTargetBufferMs;
 
     private double _outputLatencyMs;
     private double _chainLatencyMs;
@@ -120,10 +237,14 @@ public sealed class OutputNode : IDisposable
 
         // Take each route's copy of its source straight away, so a route hears
         // the source from the moment it is connected rather than from its
-        // first render.
-        for (int i = 0; i < routes.Length; i++)
+        // first render. The graph renderer reads each source once and fans it
+        // out internally, so it does not need per-route copies.
+        if (!UseGraphEngine)
         {
-            _ = routes[i].Subscription;
+            for (int i = 0; i < routes.Length; i++)
+            {
+                _ = routes[i].Subscription;
+            }
         }
 
         int maxFrames = 0;
@@ -158,18 +279,8 @@ public sealed class OutputNode : IDisposable
     public static OutputNode CreateForTest(Action<float[], int> sink)
     {
         var node = new OutputNode();
+        node.UseGraphEngine = false;
         node._testSink = sink;
-        return node;
-    }
-
-    /// <summary>Creates a silent real-time output for a tap sink.</summary>
-    public static OutputNode CreateMonitor(Action<float[], int> sink)
-    {
-        var node = new OutputNode("monitor:" + Guid.NewGuid().ToString("N"), "Tap monitor");
-        node.IsMonitor = true;
-        node.PaceRealTime = true;
-        node._testSink = static (_, _) => { };
-        node._mixSink = sink;
         return node;
     }
 
@@ -223,14 +334,38 @@ public sealed class OutputNode : IDisposable
             return;
         }
 
+        if (_pumpThread != null)
+        {
+            Stop();
+            if (_pumpThread != null)
+            {
+                return;
+            }
+        }
+
+        if (_wasapiOut != null || _asioEndpoint != null)
+        {
+            ResetFailedStart();
+        }
+
         _stopRequested = false;
         _running = true;
         Underruns = 0;
         _renderedOnce = false;
+        _startedAt = Environment.TickCount64;
+        _lastUnderrunTick = 0;
+        _underrunBurst = 0;
+        _latencyDowngrades = 0;
+        _latencyPenaltyMs = 0;
+        ClearEngineAudio();
+        _clipGuard.Reset();
+        ClipGuardActive = false;
 
         int sampleRate = 48000;
         int channels = 2;
 
+        try
+        {
         if (IsFileRecorder)
         {
             _lastRecordedSeconds = 0;
@@ -251,7 +386,7 @@ public sealed class OutputNode : IDisposable
         else if (_testSink == null)
         {
             // The mix is interleaved IEEE float, so the provider must advertise
-            // float too â€” a PCM32 format would reinterpret the float bit patterns
+            // float too — a PCM32 format would reinterpret the float bit patterns
             // as integers and play noise instead of audio.
             var format = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels);
 
@@ -281,6 +416,8 @@ public sealed class OutputNode : IDisposable
                     Faulted?.Invoke(this,
                         $"ASIO driver '{_asioDriver.Name}' is not streaming (state {_asioEndpoint.State}). " +
                         "Its host application may not be running.");
+                    ResetFailedStart();
+                    return;
                 }
             }
             else
@@ -288,13 +425,18 @@ public sealed class OutputNode : IDisposable
                 // Ask WASAPI for a low-latency shared-mode stream via IAudioClient3.
                 // If the device can't grant it, WasapiPlayer transparently falls back
                 // to standard shared mode and reports the period it actually got.
-                _wasapiOut = new WasapiPlayerBuilder()
+                var builder = new WasapiPlayerBuilder()
                     .WithDevice(_device)
                     .WithSharedMode()
-                    .WithEventSync()
-                    .WithLowLatency()
-                    .WithLatency(5)
-                    .Build();
+                    .WithEventSync();
+                if (LowLatencyWasapi)
+                {
+                    builder = builder.WithLowLatency();
+                }
+
+                // Ask for the smallest period the endpoint actually supports
+                // instead of assuming 3 ms everywhere.
+                _wasapiOut = builder.WithLatency(ChooseWasapiLatencyMs()).Build();
 
                 _wasapiOut.PlaybackStopped += OnPlaybackStopped;
                 _wasapiOut.Init(_buffer);
@@ -323,11 +465,43 @@ public sealed class OutputNode : IDisposable
             Priority = ThreadPriority.AboveNormal,
         };
         _pumpThread.Start();
+        }
+        catch
+        {
+            ResetFailedStart();
+            throw;
+        }
+    }
+
+    private void ResetFailedStart()
+    {
+        _stopRequested = true;
+        _running = false;
+        try
+        {
+            _wasapiOut?.Dispose();
+        }
+        catch
+        {
+        }
+
+        _wasapiOut = null;
+        try
+        {
+            _asioEndpoint?.Dispose();
+        }
+        catch
+        {
+        }
+
+        _asioEndpoint = null;
+        _buffer = null;
     }
 
     private void PumpLoop(int sampleRate, int channels)
     {
-        const int framesPerChunk = 240; // 5ms at 48kHz â€” smaller chunks = lower latency
+        using var mmcss = MmcssScope.Enter();
+        int framesPerChunk = AudioEngineConfig.BlockFrames;
         var mix = new float[framesPerChunk * channels];
         var temp = new float[framesPerChunk * channels];
         var byteBuffer = new byte[mix.Length * 4];
@@ -344,7 +518,7 @@ public sealed class OutputNode : IDisposable
                 long due = (long)(clock.Elapsed.TotalSeconds * sampleRate);
                 if (produced < due)
                 {
-                    RenderChunk(mix, temp, byteBuffer, channels);
+                    RenderOrDrainChunk(mix, temp, byteBuffer, channels);
                     produced += framesPerChunk;
                 }
                 else
@@ -369,7 +543,7 @@ public sealed class OutputNode : IDisposable
                     long due = (long)(clock.Elapsed.TotalSeconds * sampleRate);
                     if (produced < due)
                     {
-                        RenderChunk(mix, temp, byteBuffer, channels);
+                        RenderOrDrainChunk(mix, temp, byteBuffer, channels);
                         produced += framesPerChunk;
                     }
                     else
@@ -383,7 +557,7 @@ public sealed class OutputNode : IDisposable
 
             while (_running)
             {
-                RenderChunk(mix, temp, byteBuffer, channels);
+                RenderOrDrainChunk(mix, temp, byteBuffer, channels);
                 Thread.Sleep(3);
             }
 
@@ -408,7 +582,7 @@ public sealed class OutputNode : IDisposable
                         Underruns++;
                     }
 
-                    RenderChunk(mix, temp, byteBuffer, channels);
+                    RenderOrDrainChunk(mix, temp, byteBuffer, channels);
                     _renderedOnce = true;
                 }
                 else
@@ -423,34 +597,100 @@ public sealed class OutputNode : IDisposable
         }
     }
 
+    private int ChooseWasapiLatencyMs()
+    {
+        try
+        {
+            using var client = _device.CreateAudioClient();
+            var mix = client.MixFormat;
+            var info = client.GetSharedModeEnginePeriod(mix);
+            if (info.MinPeriodInFrames == 0)
+            {
+                return 5;
+            }
+
+            double milliseconds = info.MinPeriodInFrames * 1000.0 / Math.Max(1, mix.SampleRate);
+            return Math.Clamp((int)Math.Ceiling(milliseconds), 3, 10);
+        }
+        catch
+        {
+            // IAudioClient3 is optional; use the conservative shared-mode value.
+            return 5;
+        }
+    }
+
     // Small enough for low latency, large enough to absorb a scheduling hiccup.
     private const double TargetBufferMs = 12;
 
-    // Native plugins do their work on the render thread. A 5 ms pump with a
-    // 12 ms cushion is too tight when a VST3 can take a couple of milliseconds
-    // and the device pulls every 2 ms, which shows up as periodic dropouts.
-    // Keep extra headroom whenever a shared native processor is in the chain.
-    private const double NativePluginTargetBufferMs = 24;
+    /// <summary>Target one endpoint period instead of two when true.</summary>
+    public static volatile bool AggressiveCushion;
+
+    // Native plugins start at 6 ms. A route that keeps underrunning steps up
+    // to 10/14/18 ms through the automatic cushion downgrade.
+    private const double NativePluginTargetBufferMs = 6;
 
     private double RenderTargetBufferMs
     {
         get
         {
-            var routes = _routeSnapshot;
-            for (int r = 0; r < routes.Length; r++)
+            int manualMs = AudioEngineConfig.OutputBufferManualMs;
+            if (manualMs > 0)
             {
-                var templates = routes[r].Templates;
-                for (int i = 0; i < templates.Length; i++)
-                {
-                    if (HasNativeProcessor(templates[i]))
-                    {
-                        return NativePluginTargetBufferMs;
-                    }
-                }
+                return Math.Clamp(manualMs + _latencyPenaltyMs, 2, 40);
             }
 
-            return TargetBufferMs;
+            if (HasNativePlugin || (!UseGraphEngine && RoutesHaveNativeProcessor()))
+            {
+                return Math.Min(30, NativePluginTargetBufferMs + _latencyPenaltyMs);
+            }
+
+            // Keep roughly two device periods buffered; that is the minimum
+            // that survives one late pump wake without inserting silence.
+            // Aggressive mode keeps one period instead.
+            double endpointMs;
+            if (_asioEndpoint != null)
+            {
+                endpointMs = _asioEndpoint.SampleRate > 0 && _asioEndpoint.BufferSize > 0
+                    ? _asioEndpoint.BufferSize * 1000.0 / _asioEndpoint.SampleRate
+                    : _asioEndpoint.LatencyMs;
+            }
+            else
+            {
+                endpointMs = _outputLatencyMs;
+            }
+
+            if (endpointMs <= 0)
+            {
+                endpointMs = AggressiveCushion ? 4 : TargetBufferMs;
+            }
+
+            int periods = AudioEngineConfig.OutputBufferPeriods;
+            if (periods <= 0)
+            {
+                periods = AggressiveCushion ? 1 : 2;
+            }
+
+            double minimum = periods > 1 ? 6 : 3;
+            return Math.Clamp(endpointMs * periods + _latencyPenaltyMs, minimum, 24);
         }
+    }
+
+    private bool RoutesHaveNativeProcessor()
+    {
+        var routes = _routeSnapshot;
+        for (int r = 0; r < routes.Length; r++)
+        {
+            var templates = routes[r].Templates;
+            for (int i = 0; i < templates.Length; i++)
+            {
+                if (HasNativeProcessor(templates[i]))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static bool HasNativeProcessor(IAudioProcessor processor)
@@ -484,6 +724,11 @@ public sealed class OutputNode : IDisposable
     public long Underruns { get; private set; }
 
     private bool _renderedOnce;
+    private long _startedAt;
+    private long _lastUnderrunTick;
+    private int _underrunBurst;
+    private int _latencyDowngrades;
+    private double _latencyPenaltyMs;
 
     /// <summary>Bytes allocated by the render thread while mixing (diagnostics).</summary>
     public long RenderAllocatedBytes { get; private set; }
@@ -493,6 +738,107 @@ public sealed class OutputNode : IDisposable
 
     [System.Runtime.InteropServices.DllImport("winmm.dll", EntryPoint = "timeEndPeriod")]
     private static extern uint TimeEndPeriod(uint uPeriod);
+
+    /// <summary>Mixes and emits one pump chunk.</summary>
+    internal void RenderOrDrainChunk(float[] mix, float[] temp, byte[] byteBuffer, int channels)
+    {
+        if (UseGraphEngine)
+        {
+            DrainEngineChunk(mix, byteBuffer, channels);
+            return;
+        }
+
+        RenderChunk(mix, temp, byteBuffer, channels);
+    }
+
+    /// <summary>Emits one block produced by the shared graph renderer.</summary>
+    private void DrainEngineChunk(float[] mix, byte[] byteBuffer, int channels)
+    {
+        int read = _engineBuffer.Read(mix);
+        if (read < mix.Length)
+        {
+            Array.Clear(mix, read, mix.Length - read);
+            if (_renderedOnce)
+            {
+                Underruns++;
+                RegisterUnderrun();
+            }
+
+            ShortReadFrames += (mix.Length - read) / channels;
+        }
+
+        _renderedOnce = true;
+        WriteSink(mix, byteBuffer, channels);
+
+        var wake = _engineWake;
+        if (wake != null)
+        {
+            try
+            {
+                wake();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The engine was disposed while this pump was finishing.
+            }
+        }
+    }
+
+    private void RegisterUnderrun()
+    {
+        if (!UseGraphEngine || _latencyDowngrades >= 3)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+
+        // Ignore the prefill at start: the first few blocks are silence by design.
+        if (now - _startedAt < 2000)
+        {
+            return;
+        }
+
+        if (now - _lastUnderrunTick < 1000)
+        {
+            _underrunBurst++;
+        }
+        else
+        {
+            _underrunBurst = 1;
+        }
+
+        _lastUnderrunTick = now;
+        if (_underrunBurst < 3)
+        {
+            return;
+        }
+
+        _underrunBurst = 0;
+        _latencyDowngrades++;
+        _latencyPenaltyMs += 4;
+        Ruse.App.Diagnostics.AppLog.Info(
+            $"Output '{Title}' is underrunning; adding 4 ms of latency cushion " +
+            $"(total +{_latencyPenaltyMs:0} ms, step {_latencyDowngrades}/3).");
+    }
+
+    private void WriteSink(float[] mix, byte[] byteBuffer, int channels)
+    {
+        if (_recorder != null)
+        {
+            _recorder.Write(mix, mix.Length);
+        }
+        else if (_testSink != null)
+        {
+            _testSink(mix, mix.Length);
+        }
+        else
+        {
+            Buffer.BlockCopy(mix, 0, byteBuffer, 0, byteBuffer.Length);
+            _buffer!.AddSamples(byteBuffer, 0, byteBuffer.Length);
+            BytesWritten += byteBuffer.Length;
+        }
+    }
 
     /// <summary>Mixes and emits one pump chunk.</summary>
     internal void RenderChunk(float[] mix, float[] temp, byte[] byteBuffer, int channels)
@@ -544,21 +890,6 @@ public sealed class OutputNode : IDisposable
             }
         }
 
-        // Tap processors see the post-effect mix before master gain and
-        // clipping, and before any output volume is applied.
-        if (_mixSink != null)
-        {
-            try
-            {
-                _mixSink(mix, mix.Length);
-            }
-            catch
-            {
-                // A tap must never be able to take down the audio path.
-            }
-        }
-
-        // Hard-clip the mix to avoid wrapping distortion when summing sources.
         bool clipped = false;
         for (int i = 0; i < mix.Length; i++)
         {
@@ -569,11 +900,7 @@ public sealed class OutputNode : IDisposable
                 mix[i] = 0f;
                 clipped = true;
             }
-            else if (mix[i] > 1f) { mix[i] = 1f; clipped = true; }
-            else if (mix[i] < -1f) { mix[i] = -1f; clipped = true; }
         }
-
-        Clipping = clipped;
 
         for (int i = 0; i < mix.Length; i++)
         {
@@ -585,29 +912,48 @@ public sealed class OutputNode : IDisposable
             Array.Clear(mix, 0, mix.Length);
         }
 
-        float sum = 0;
-        for (int i = 0; i < mix.Length; i++)
+        if (ClipGuardEnabled)
         {
-            sum += mix[i] * mix[i];
-        }
-
-        float meter = Math.Min(1.0f, MathF.Sqrt(sum / mix.Length) * 3f);
-        _meterLevel = float.IsFinite(meter) ? meter : 0f;
-
-        if (_recorder != null)
-        {
-            _recorder.Write(mix, mix.Length);
-        }
-        else if (_testSink != null)
-        {
-            _testSink(mix, mix.Length);
+            ApplyClipGuard(mix, mix.Length / 2);
         }
         else
         {
-            Buffer.BlockCopy(mix, 0, byteBuffer, 0, byteBuffer.Length);
-            _buffer!.AddSamples(byteBuffer, 0, byteBuffer.Length);
-            BytesWritten += byteBuffer.Length;
+            ClipGuardActive = false;
         }
+
+        for (int i = 0; i < mix.Length; i++)
+        {
+            if (!float.IsFinite(mix[i]))
+            {
+                mix[i] = 0f;
+                clipped = true;
+            }
+            else if (mix[i] > 1f) { mix[i] = 1f; clipped = true; }
+            else if (mix[i] < -1f) { mix[i] = -1f; clipped = true; }
+        }
+
+        Clipping = clipped;
+
+        double sumLeft = 0;
+        double sumRight = 0;
+        int frames = Math.Max(1, mix.Length / 2);
+        for (int i = 0; i + 1 < mix.Length; i += 2)
+        {
+            sumLeft += mix[i] * mix[i];
+            sumRight += mix[i + 1] * mix[i + 1];
+        }
+
+        float meterLeft = Math.Min(1.0f, MathF.Sqrt((float)(sumLeft / frames)) * 3f);
+        float meterRight = Math.Min(1.0f, MathF.Sqrt((float)(sumRight / frames)) * 3f);
+        float dbLeft = (float)(20.0 * Math.Log10(Math.Max(1e-6, Math.Sqrt(sumLeft / frames))));
+        float dbRight = (float)(20.0 * Math.Log10(Math.Max(1e-6, Math.Sqrt(sumRight / frames))));
+        _meterLevelLeft = float.IsFinite(meterLeft) ? meterLeft : 0f;
+        _meterLevelRight = float.IsFinite(meterRight) ? meterRight : 0f;
+        _meterLevel = Math.Max(_meterLevelLeft, _meterLevelRight);
+        _meterDbLeft = float.IsFinite(dbLeft) ? dbLeft : -60f;
+        _meterDbRight = float.IsFinite(dbRight) ? dbRight : -60f;
+
+        WriteSink(mix, byteBuffer, channels);
     }
 
     /// <summary>Total bytes handed to the render endpoint (diagnostics).</summary>
@@ -616,7 +962,7 @@ public sealed class OutputNode : IDisposable
     /// <summary>How much audio is queued in the render buffer right now, in ms.</summary>
     public double BufferedMs => _buffer?.BufferedDuration.TotalMilliseconds ?? 0;
 
-    /// <summary>Playback state of the underlying endpoint ("Playing", "Stopped", â€¦).</summary>
+    /// <summary>Playback state of the underlying endpoint ("Playing", "Stopped", …).</summary>
     public string PlaybackState => _recorder != null
         ? "Recording"
         : _wasapiOut?.PlaybackState.ToString() ?? (_asioEndpoint?.State ?? "none");
@@ -644,14 +990,28 @@ public sealed class OutputNode : IDisposable
 
     public void Stop()
     {
-        if (!_running && _wasapiOut == null && _recorder == null)
+        if (!_running && _wasapiOut == null && _recorder == null && _asioEndpoint == null && _pumpThread == null)
         {
             return;
         }
 
         _stopRequested = true;
         _running = false;
-        _pumpThread?.Join(500);
+        var pump = _pumpThread;
+        if (pump != null && pump != Thread.CurrentThread)
+        {
+            if (!pump.Join(5000))
+            {
+                _pumpThread = pump;
+                Ruse.App.Diagnostics.AppLog.Warning($"Output '{Title}' pump did not stop in time; keeping its resources.");
+                return;
+            }
+        }
+
+        _pumpThread = null;
+        ClearEngineAudio();
+        _clipGuard.Reset();
+        ClipGuardActive = false;
 
         try
         {
@@ -696,6 +1056,10 @@ public sealed class OutputNode : IDisposable
 
         _buffer = null;
         _meterLevel = 0;
+        _meterLevelLeft = 0;
+        _meterLevelRight = 0;
+        _meterDbLeft = -60f;
+        _meterDbRight = -60f;
     }
 
     public void Dispose()
@@ -862,7 +1226,7 @@ public sealed class OutputNode : IDisposable
         }
 
         // Parameters are edited on the template, so mirror values that changed
-        // across the block boundary â€” allocation-free and only on real edits.
+        // across the block boundary — allocation-free and only on real edits.
         private void SyncParameters()
         {
             for (int i = 0; i < _bindings.Length; i++)

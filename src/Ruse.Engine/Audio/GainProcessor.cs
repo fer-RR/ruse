@@ -53,6 +53,9 @@ public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor
     // float from being cached in a register across calls.
     private volatile float _gain = 1.0f;
     private volatile float _pan;
+    private float _rampGain = 1.0f;
+    private float _rampPan;
+    private bool _rampInitialized;
 
     public string TypeId => Id;
     public string DisplayName => "Gain";
@@ -98,9 +101,18 @@ public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor
 
     public void Process(Span<float> samples, int frames)
     {
-        float g = _gain;
-        float pan = _pan;
-        if (g == 1.0f && pan == 0f)
+        float targetGain = _gain;
+        float targetPan = _pan;
+        if (!_rampInitialized)
+        {
+            _rampGain = targetGain;
+            _rampPan = targetPan;
+            _rampInitialized = true;
+        }
+
+        bool ramp = targetGain != _rampGain || targetPan != _rampPan;
+
+        if (!ramp && targetGain == 1.0f && targetPan == 0f)
         {
             return;
         }
@@ -108,22 +120,61 @@ public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor
         int channels = frames > 0 ? Math.Max(1, samples.Length / frames) : 1;
         if (channels < 2)
         {
-            for (int i = 0; i < samples.Length; i++) samples[i] *= g;
+            if (!ramp)
+            {
+                for (int i = 0; i < samples.Length; i++) samples[i] *= targetGain;
+            }
+            else
+            {
+                float step = (targetGain - _rampGain) / Math.Max(1, frames);
+                for (int frame = 0; frame < frames; frame++)
+                {
+                    _rampGain += step;
+                    int index = frame * channels;
+                    samples[index] *= _rampGain;
+                }
+
+                _rampGain = targetGain;
+            }
+
             return;
         }
 
-        float left = g * Math.Min(1f, 1f - pan);
-        float right = g * Math.Min(1f, 1f + pan);
+        if (ramp)
+        {
+            float gainStep = (targetGain - _rampGain) / Math.Max(1, frames);
+            float panStep = (targetPan - _rampPan) / Math.Max(1, frames);
+            for (int frame = 0; frame < frames; frame++)
+            {
+                _rampGain += gainStep;
+                _rampPan += panStep;
+                float left = _rampGain * Math.Min(1f, 1f - _rampPan);
+                float right = _rampGain * Math.Min(1f, 1f + _rampPan);
+                int index = frame * channels;
+                samples[index] *= left;
+                samples[index + 1] *= right;
+            }
+
+            _rampGain = targetGain;
+            _rampPan = targetPan;
+            return;
+        }
+
+        float leftGain = targetGain * Math.Min(1f, 1f - targetPan);
+        float rightGain = targetGain * Math.Min(1f, 1f + targetPan);
         for (int frame = 0; frame < frames; frame++)
         {
             int index = frame * channels;
-            samples[index] *= left;
-            samples[index + 1] *= right;
+            samples[index] *= leftGain;
+            samples[index + 1] *= rightGain;
         }
     }
 
     public void Reset()
     {
+        _rampGain = _gain;
+        _rampPan = _pan;
+        _rampInitialized = false;
     }
 }
 

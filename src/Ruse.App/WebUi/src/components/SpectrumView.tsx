@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { useI18n } from '../i18n';
 
+const FREQUENCY_REFS = [
+  [50, '50'], [100, '100'], [250, '250'], [500, '500'], [1000, '1k'],
+  [2000, '2k'], [5000, '5k'], [10000, '10k'], [20000, '20k'],
+] as const;
+
 function formatHz(value: number | undefined): string {
   if (!value || !Number.isFinite(value)) return '';
   return value >= 1000 ? `${(value / 1000).toFixed(1)} kHz` : `${Math.round(value)} Hz`;
@@ -44,7 +49,7 @@ export default function SpectrumView({
       context.stroke();
     }
 
-    const values = bands?.length ? bands : new Array(64).fill(floor);
+    const values = bands?.length ? bands : new Array(128).fill(floor);
     if (peaks.current.length !== values.length) peaks.current = new Array(values.length).fill(floor);
     for (let i = 0; i < values.length; i++) {
       peaks.current[i] = Math.max(values[i], peaks.current[i] - 1.4);
@@ -90,11 +95,16 @@ export default function SpectrumView({
     context.lineWidth = 0.8;
     context.stroke();
 
-    context.fillStyle = 'rgba(255,255,255,0.38)';
     context.font = '9px Consolas, monospace';
     context.textBaseline = 'bottom';
-    for (const [label, frequency] of [['100', 100], ['1k', 1000], ['10k', 10000], ['20k', 20000]] as const) {
+    for (const [frequency, label] of FREQUENCY_REFS) {
       const x = (Math.log(frequency / 20) / Math.log(1000)) * width;
+      context.strokeStyle = 'rgba(255,255,255,0.055)';
+      context.beginPath();
+      context.moveTo(x, top);
+      context.lineTo(x, bottom);
+      context.stroke();
+      context.fillStyle = 'rgba(255,255,255,0.38)';
       context.fillText(label, Math.max(1, Math.min(width - 18, x)), height - 1);
     }
 

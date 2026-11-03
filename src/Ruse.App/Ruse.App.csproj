@@ -40,7 +40,7 @@
   </ItemGroup>
 
   <Target Name="BuildWebUi" BeforeTargets="Build" Condition="'$(SkipWebUiBuild)' != 'true' And Exists('WebUi\package.json')">
-    <Exec Command="npm.cmd install" WorkingDirectory="WebUi" Condition="!Exists('WebUi\node_modules')" />
+    <Exec Command="npm.cmd ci" WorkingDirectory="WebUi" Condition="!Exists('WebUi\node_modules')" />
     <Exec Command="npm.cmd run build" WorkingDirectory="WebUi" />
   </Target>
 
