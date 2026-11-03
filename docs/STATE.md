@@ -9,14 +9,12 @@ WebView2 + React UI, Whisper.net for speech, LLamaSharp/Qwen and optional
 ONNX Runtime OPUS-MT for translation, and OwnAudioVst for VST3. One UI; the old
 WPF workspace is gone.
 
-- Canonical repo: `C:\Users\ih_me\Projects\Ruse` (`main`, `2612cfd`)
-- Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, HEAD `2612cfd`;
-  large uncommitted batch, do not reset or clean).
+- Canonical repo: `C:\Users\ih_me\Projects\Ruse` (`main`).
+- Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, synced with `main`).
 - Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe` (0.5.1)
-- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.4.1-beta-win-x64.zip`
-  (older build; rebuild after committing the current batch). Self-contained
-  win-x64, layout `Ruse\Ruse.exe`, `Ruse\Localization\<culture>`,
-  README/LICENSE. Models and VSTs excluded.
+- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.5.1-win-x64.zip`.
+  Self-contained win-x64, layout `Ruse\Ruse.exe`,
+  `Ruse\Localization\<culture>`, README/LICENSE. Models and VSTs excluded.
 - Runtime data: `%APPDATA%\Ruse` (`settings.json`, `session.ruse.json`,
   `chains.json`, `frame-templates.json`, `ruse.log`, `models\`).
 - Screenshots: `C:\Users\ih_me\OneDrive\Documentos\voicemet-screenshots`.
