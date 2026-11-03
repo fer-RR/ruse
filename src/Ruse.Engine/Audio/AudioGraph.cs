@@ -112,7 +112,7 @@ public sealed class AudioGraph : IDisposable
         }
     }
 
-    public void RemoveOutput(OutputNode node)
+    public void RemoveOutput(OutputNode node, bool invalidateEngine = true)
     {
         WithEngineLock(() =>
         {
@@ -126,7 +126,7 @@ public sealed class AudioGraph : IDisposable
             // Compile without the output before disposing it, so the renderer
             // can never call into a disposed endpoint. An inert recorder that
             // never joined the graph does not require a recompile.
-            if (removed)
+            if (removed && invalidateEngine)
             {
                 InvalidateEngine();
             }
@@ -145,7 +145,7 @@ public sealed class AudioGraph : IDisposable
         Modifiers.Add(modifier);
     }
 
-    public void RemoveModifier(ModifierNode modifier)
+    public void RemoveModifier(ModifierNode modifier, bool invalidateEngine = true)
     {
         WithEngineLock(() =>
         {
@@ -161,13 +161,19 @@ public sealed class AudioGraph : IDisposable
             }
 
             // Rebuild every output: the routes that only existed because this
-            // modifier reached them are gone for good.
-            foreach (var output in Outputs)
+            // modifier reached them are gone for good. An unconnected modifier
+            // is absent from the compiled graph, so rebuilding would only reset
+            // the running renderer and cause an audible click.
+            if (invalidateEngine)
             {
-                SyncOutputRoutes(output);
+                foreach (var output in Outputs)
+                {
+                    SyncOutputRoutes(output);
+                }
+
+                InvalidateEngine();
             }
 
-            InvalidateEngine();
             modifier.Dispose();
         });
     }
@@ -201,7 +207,7 @@ public sealed class AudioGraph : IDisposable
         StartEngine();
     }
 
-    public void RemoveSource(SourceNode source)
+    public void RemoveSource(SourceNode source, bool invalidateEngine = true)
     {
         WithEngineLock(() =>
         {
@@ -221,14 +227,18 @@ public sealed class AudioGraph : IDisposable
 
             Sources.Remove(source);
 
-            foreach (var output in Outputs)
+            if (invalidateEngine)
             {
-                SyncOutputRoutes(output);
+                foreach (var output in Outputs)
+                {
+                    SyncOutputRoutes(output);
+                }
+
+                // The renderer may still hold a subscription until the rebuild
+                // above; dispose the source only after it has been dropped.
+                InvalidateEngine();
             }
 
-            // The renderer may still hold a subscription until the rebuild
-            // above; dispose the source only after it has been dropped.
-            InvalidateEngine();
             source.Dispose();
         });
     }

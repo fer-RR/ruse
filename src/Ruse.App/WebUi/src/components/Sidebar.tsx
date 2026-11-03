@@ -182,9 +182,9 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     const physicalOutputs = catalog.outputs.filter(item => item.provider !== 'ASIO');
     const asioOutputs = catalog.outputs.filter(item => item.provider === 'ASIO');
     return {
-      applications: { label: 'Applications', items: [systemItem, toneItem, ...catalog.apps] },
+      applications: { label: 'Applications', items: [systemItem, ...catalog.apps] },
       physicalOutputs: { label: 'Speakers & headphones', items: physicalOutputs },
-      physicalInputs: { label: 'Microphones & inputs', items: physicalInputs },
+      physicalInputs: { label: 'Microphones & inputs', items: [toneItem, ...physicalInputs] },
       recording: { label: 'Record & Play', items: [recorderItem, filePlayerItem] },
       virtualBuses: { label: 'Virtual buses', items: virtualInputs },
       virtualInputs: { label: 'Virtual inputs', items: catalog.virtuals },

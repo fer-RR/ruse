@@ -1794,13 +1794,16 @@ internal sealed partial class WebShellController
     private void RemoveEntryInternal(string id)
     {
         if (!_nodes.TryGetValue(id, out var entry)) return;
+        bool linked = _links.Any(link => link.From == id || link.To == id);
+        bool hasTap = entry.Modifier?.Processors.Any(processor => processor is ITapProcessor) == true;
+        bool affectsEngine = linked || hasTap;
         foreach (var link in _links.Where(link => link.From == id || link.To == id).ToList())
         {
             RemoveLinkInternal(link);
         }
 
-        if (entry.Source != null) _graph.RemoveSource(entry.Source);
-        if (entry.Output != null) _graph.RemoveOutput(entry.Output);
+        if (entry.Source != null) _graph.RemoveSource(entry.Source, affectsEngine);
+        if (entry.Output != null) _graph.RemoveOutput(entry.Output, affectsEngine || entry.Output.IsRunning);
         if (entry.Modifier != null)
         {
             foreach (var processor in entry.Modifier.Processors)
@@ -1808,7 +1811,7 @@ internal sealed partial class WebShellController
                 CleanupTapProcessor(processor);
             }
 
-            _graph.RemoveModifier(entry.Modifier);
+            _graph.RemoveModifier(entry.Modifier, affectsEngine);
         }
 
         _nodes.Remove(id);
