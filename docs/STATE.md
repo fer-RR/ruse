@@ -12,8 +12,8 @@ WPF workspace is gone.
 - Canonical repo: `C:\Users\ih_me\Projects\Ruse` (`main`, `2612cfd`)
 - Worktree: `C:\Users\ih_me\Projects\wt\Ruse-work` (`work`, HEAD `2612cfd`;
   large uncommitted batch, do not reset or clean).
-- Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe` (0.2.0-beta.1)
-- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.2.0-beta.1-win-x64.zip`
+- Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe` (0.4.1-beta)
+- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.4.1-beta-win-x64.zip`
   (older build; rebuild after committing the current batch). Self-contained
   win-x64, layout `Ruse\Ruse.exe`, `Ruse\Localization\<culture>`,
   README/LICENSE. Models and VSTs excluded.

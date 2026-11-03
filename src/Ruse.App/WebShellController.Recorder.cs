@@ -170,6 +170,11 @@ internal sealed partial class WebShellController
 
         output.AutoStart = true;
         output.RecorderMode = mode;
+        if (mode == RecorderMode.Armed)
+        {
+            output.AutoSave = true;
+        }
+
         if (mode == RecorderMode.On)
         {
             if (_graph.AutoRun)
