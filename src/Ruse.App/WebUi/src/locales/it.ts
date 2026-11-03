@@ -687,4 +687,9 @@ export const it: Record<string, string> = {
   "Start threshold": "Soglia di avvio",
   "seconds": "secondi",
   "While armed, start above this level": "In modalità armata, avvia sopra questo livello",
+  "Starting Ruse": "Avvio di Ruse",
+  "Preparing audio engine...": "Preparazione del motore audio...",
+  "Auto-tune": "Auto-tune",
+  "Auto-tune (experimental)": "Auto-tune (sperimentale)",
+  "Experimental": "Sperimentale",
 };

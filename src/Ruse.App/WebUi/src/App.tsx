@@ -5,7 +5,7 @@ import {
 } from '@xyflow/react';
 import type { Connection, Edge, EdgeChange, NodeChange } from '@xyflow/react';
 import {
-  AlertTriangle, ArrowUpDown, ChevronLeft, ChevronRight, Copy, Info, LayoutGrid, Maximize2,
+  AlertTriangle, ArrowUpDown, AudioLines, ChevronLeft, ChevronRight, Copy, Info, LayoutGrid, Maximize2,
   LayoutTemplate, Minus, Pencil, Plus, Trash2, Unplug, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { isHosted, send, subscribe } from './bridge';
@@ -100,6 +100,7 @@ export default function App() {
   const t = (text: string, vars?: Record<string, string | number>) => translate(language, text, vars);
   const ui = useUiTelemetry();
   const [status, setStatus] = useState<StatusMessage>({ text: isHosted ? 'Starting native audio engine.' : 'Interface preview - native engine not attached.', isError: false });
+  const [startup, setStartup] = useState({ visible: isHosted, progress: 0.08 });
   const [alert, setAlert] = useState<StatusMessage | null>(null);
   const [dismissedWarning, setDismissedWarning] = useState('');
   const [history, setHistory] = useState<HistorySnapshot>({ canUndo: false, canRedo: false, undoLabel: '', redoLabel: '' });
@@ -359,6 +360,16 @@ export default function App() {
       case 'alert': setAlert(payload as StatusMessage); break;
       case 'splash':
       case 'welcome': setWelcomeOpen(true); break;
+      case 'startup-progress': {
+        const detail = payload as { progress?: number };
+        const progress = Number.isFinite(detail.progress) ? Math.max(0.05, Math.min(1, detail.progress!)) : 0.1;
+        setStartup(current => ({ ...current, visible: true, progress }));
+        break;
+      }
+      case 'startup-complete':
+        setStartup(current => ({ ...current, progress: 1 }));
+        window.setTimeout(() => setStartup(current => ({ ...current, visible: false })), 250);
+        break;
       case 'close-to-tray': setTrayPrompt(true); break;
     }
   }), []);
@@ -1342,6 +1353,16 @@ export default function App() {
       {showAudioHelp && <DuplicateAudioDialog warning={primaryWarning} onClose={() => setShowAudioHelp(false)} />}
       {showDeviceHelp && <DeviceHelpDialog onClose={() => setShowDeviceHelp(false)} />}
     </div>
+    {startup.visible && (
+      <div className="startup-overlay" role="status" aria-live="polite">
+        <div className="startup-card">
+          <div className="startup-logo"><AudioLines size={26} /></div>
+          <strong>{t('Starting Ruse')}</strong>
+          <div className="startup-progress"><span style={{ width: `${Math.round(startup.progress * 100)}%` }} /></div>
+          <small>{t('Preparing audio engine...')}</small>
+        </div>
+      </div>
+    )}
     </I18nProvider>
   );
 }

@@ -687,4 +687,9 @@ export const ja: Record<string, string> = {
   "Start threshold": "開始しきい値",
   "seconds": "秒",
   "While armed, start above this level": "アーム時にこのレベルを超えたら録音を開始",
+  "Starting Ruse": "Ruse を起動中",
+  "Preparing audio engine...": "オーディオエンジンを準備中...",
+  "Auto-tune": "オートチューン",
+  "Auto-tune (experimental)": "オートチューン（実験的）",
+  "Experimental": "実験的",
 };

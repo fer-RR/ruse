@@ -687,4 +687,9 @@ export const zhCN: Record<string, string> = {
   "Start threshold": "起始阈值",
   "seconds": "秒",
   "While armed, start above this level": "待命时高于此电平开始录制",
+  "Starting Ruse": "正在启动 Ruse",
+  "Preparing audio engine...": "正在准备音频引擎...",
+  "Auto-tune": "自动修音",
+  "Auto-tune (experimental)": "自动修音（实验性）",
+  "Experimental": "实验性",
 };

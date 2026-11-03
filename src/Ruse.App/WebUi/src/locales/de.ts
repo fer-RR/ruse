@@ -687,4 +687,9 @@ export const de: Record<string, string> = {
   "Start threshold": "Startpegel",
   "seconds": "Sekunden",
   "While armed, start above this level": "Im scharfen Modus oberhalb dieses Pegels starten",
+  "Starting Ruse": "Ruse wird gestartet",
+  "Preparing audio engine...": "Audio-Engine wird vorbereitet...",
+  "Auto-tune": "Auto-Tune",
+  "Auto-tune (experimental)": "Auto-Tune (experimentell)",
+  "Experimental": "Experimentell",
 };

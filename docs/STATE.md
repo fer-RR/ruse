@@ -39,7 +39,7 @@ WPF workspace is gone.
   Pre/Post chain routing, dB meters, solo/mute/color/rename, horizontal or
   vertical strips, color groups. `Ctrl+M` mixer, `Ctrl+L` library.
 - **Nodes/features:** sidechain ducker, MIDI-learn effect parameters, file
-  player with per-node output routing, frame templates, graphic EQ, parametric EQ with curve, convolution reverb, loudness/true-peak meter, test tone, parallel send, tempo sync, saved
+  player with per-node output routing, frame templates, graphic EQ, parametric EQ with curve, convolution reverb, auto-tune, experimental TD-PSOLA auto-tune, loudness/true-peak meter, test tone, parallel send, tempo sync, saved
   chains, VST3, ASIO, WASAPI/system/process sources, recorder WAV16/24/32,
   MP3 and 24-bit FLAC.
 - **Diagnostics:** source fill, ring fill, underruns/skips per minute, latency

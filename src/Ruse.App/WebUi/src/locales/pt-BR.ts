@@ -708,4 +708,9 @@ export const ptBR: Record<string, string> = {
   "Start threshold": "Limite de início",
   "seconds": "segundos",
   "While armed, start above this level": "Quando armado, iniciar acima deste nível",
+  "Starting Ruse": "Iniciando o Ruse",
+  "Preparing audio engine...": "Preparando o mecanismo de áudio...",
+  "Auto-tune": "Autoafinação",
+  "Auto-tune (experimental)": "Autoafinação (experimental)",
+  "Experimental": "Experimental",
 };

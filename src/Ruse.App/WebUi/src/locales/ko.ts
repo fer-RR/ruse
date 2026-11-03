@@ -687,4 +687,9 @@ export const ko: Record<string, string> = {
   "Start threshold": "시작 임계값",
   "seconds": "초",
   "While armed, start above this level": "대기 모드에서 이 레벨 이상이면 녹음 시작",
+  "Starting Ruse": "Ruse 시작 중",
+  "Preparing audio engine...": "오디오 엔진 준비 중...",
+  "Auto-tune": "오토튠",
+  "Auto-tune (experimental)": "오토튠 (실험적)",
+  "Experimental": "실험적",
 };

@@ -22,8 +22,8 @@ capture device to any output device, with an effect chain in between.
   and volume changes to avoid zipper noise.
 - **Any output device** â€” WASAPI endpoints (speakers, headphones, Voicemeeter
   inputs) and **ASIO** drivers, including multichannel interfaces.
-- **Effect chains** â€” 48 built-in audio effects and analysis taps, including dB meter, spectrum, spectrogram,
-  sidechain ducker, loudness/true-peak meter, parametric EQ, convolution reverb, polarity, vibrato, ring mod, Mid/Side, exciter,
+- **Effect chains** â€” 50 built-in audio effects and analysis taps, including dB meter, spectrum, spectrogram,
+  sidechain ducker, loudness/true-peak meter, parametric EQ, convolution reverb, auto-tune, experimental TD-PSOLA auto-tune, polarity, vibrato, ring mod, Mid/Side, exciter,
   offline transcription and translation taps: gain, EQ shapes, a 10-band graphic EQ with a draggable response curve, compressor,
   multiband compressor, limiter, gate, reverb, delay, chorus, flanger, phaser,
   tremolo, pitch shift (standard and high quality),

@@ -529,7 +529,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
             </SettingsSection>
 
             <SettingsSection
-              title="MIDI input"
+              title={`${t('MIDI input')} (${t('Experimental')})`}
               summary={settings.midiEnabled ? (settings.midiOpen ? t('On') : t('Off')) : t('Off')}
             >
               <ToggleSetting label={t('Enable MIDI input')} description={t('Listen for notes and control changes from a MIDI device.')} checked={settings.midiEnabled === true} onChange={value => onChange({ ...settings, midiEnabled: value })} />

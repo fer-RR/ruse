@@ -157,6 +157,18 @@ public static class AudioProcessorCatalog
             () => new ClipperProcessor()));
 
         Register(new Descriptor(
+            AutoTuneProcessor.Id,
+            "Auto-tune",
+            "Scale-aware monophonic vocal pitch correction.",
+            () => new AutoTuneProcessor()));
+
+        Register(new Descriptor(
+            AutoTuneExperimentalProcessor.Id,
+            "Auto-tune (experimental)",
+            "TD-PSOLA vocal tuning with formant preservation; experimental.",
+            () => new AutoTuneExperimentalProcessor()));
+
+        Register(new Descriptor(
             ClipGuardProcessor.Id,
             "Clip guard",
             "Soft-knee peak limiting with adjustable ceiling, attack and release.",

@@ -1142,6 +1142,46 @@ public static class LatencySelfTest
         return peak <= 0.51f && guard.Engaged;
     }
 
+    private static bool TestAutoTune()
+    {
+        var tune = new AutoTuneProcessor();
+        tune.Parameters.First(parameter => parameter.Name == "Scale").Set(0);
+        tune.Parameters.First(parameter => parameter.Name == "Retune").Set(0);
+        tune.Parameters.First(parameter => parameter.Name == "Strength").Set(100);
+        tune.Parameters.First(parameter => parameter.Name == "Mix").Set(100);
+        var block = new float[240 * 2];
+        int crossings = 0;
+        float previous = 0;
+        for (int pass = 0; pass < 300; pass++)
+        {
+            for (int frame = 0; frame < 240; frame++)
+            {
+                float sample = 0.2f * MathF.Sin(2f * MathF.PI * 450f * (pass * 240 + frame) / 48000f);
+                block[frame * 2] = sample;
+                block[frame * 2 + 1] = sample;
+            }
+
+            tune.Process(block, 240);
+            if (pass < 150)
+            {
+                continue;
+            }
+
+            for (int sample = 0; sample < block.Length; sample += 2)
+            {
+                if (previous <= 0f && block[sample] > 0f)
+                {
+                    crossings++;
+                }
+
+                previous = block[sample];
+            }
+        }
+
+        double hz = crossings / (150.0 * 240.0 / 48000.0);
+        return hz > 435.0 && hz < 445.0;
+    }
+
     private static bool TestImpulseRestore()
     {
         string path = Path.Combine(Path.GetTempPath(), "ruse-ir-" + Guid.NewGuid().ToString("N") + ".wav");
@@ -1202,7 +1242,7 @@ public static class LatencySelfTest
         const int frames = 240; // matches the mixer pump
         const int blocks = sampleRate / frames * 5; // 5 seconds of audio
 
-        const int expectedEffectCount = 48;
+        const int expectedEffectCount = 50;
         string[] requiredIds =
         [
             GainProcessor.Id,
@@ -1212,6 +1252,8 @@ public static class LatencySelfTest
             ConvolutionReverbProcessor.Id,
             SidechainDuckerProcessor.Id,
             ClipGuardProcessor.Id,
+            AutoTuneProcessor.Id,
+            AutoTuneExperimentalProcessor.Id,
         ];
 
         var failures = new List<string>();
@@ -1392,6 +1434,11 @@ public static class LatencySelfTest
         if (!TestParametricEqResponse())
         {
             failures.Add("parametric EQ did not boost a 1 kHz tone");
+        }
+
+        if (!TestAutoTune())
+        {
+            failures.Add("auto-tune did not correct a 450 Hz tone to A4");
         }
 
         if (!TestClipGuardEffect())

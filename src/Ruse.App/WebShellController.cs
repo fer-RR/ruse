@@ -41,6 +41,12 @@ internal sealed partial class WebShellController : IDisposable
     private bool _shutdownSaved;
     private const long ClipHoldMs = 2000;
     private bool _autoStartDone;
+    private bool _uiReady;
+    private bool _startupLoaded;
+    private bool _uiPublished;
+    private readonly TaskCompletionSource<bool> _uiReadySignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private double _startupProgress = 0.08;
+    private string _startupLabel = "Starting Ruse";
     private bool _postFailureLogged;
     private long _lastTelemetryPublish;
     private string? _lastGpuFallbackReason;
@@ -60,7 +66,6 @@ internal sealed partial class WebShellController : IDisposable
         _window = window;
         _settings = AppSettings.Load();
         ModelRuntime.UseGpu = _settings.UseGpu;
-        ModelRuntime.ConfigureNativeLibraries();
         Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
         OutputNode.AggressiveCushion = _settings.AggressiveOutputCushion;
         OutputNode.ClipGuardEnabled = _settings.ClipGuard;
@@ -122,9 +127,24 @@ internal sealed partial class WebShellController : IDisposable
         _core.SetVirtualHostNameToFolderMapping(
             "ui.ruse", webRoot, CoreWebView2HostResourceAccessKind.Allow);
 
+        RestoreWindowBounds();
+        _core.Navigate("https://ui.ruse/index.html");
+        _telemetryTimer.Start();
+        _appsTimer.Start();
+        _devicesTimer.Start();
+
+        PostStartupProgress(0.12, "Starting Ruse");
+        await Task.WhenAny(_uiReadySignal.Task, Task.Delay(1000));
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+
+        _ = Task.Run(ModelRuntime.ConfigureNativeLibraries);
+
+        PostStartupProgress(0.22, "Loading library");
         SubgraphLibrary.Load();
         FrameTemplateLibrary.Load();
+        PostStartupProgress(0.4, "Scanning audio devices");
         RefreshCatalog();
+        PostStartupProgress(0.62, "Restoring session");
         if (App.LiveDemoMode)
         {
             BuildLiveGraph(App.LiveDemoProcessId);
@@ -138,12 +158,46 @@ internal sealed partial class WebShellController : IDisposable
             TryLoadSession();
         }
 
+        PostStartupProgress(0.82, "Starting MIDI");
         InitializeMidi();
-        RestoreWindowBounds();
-        _core.Navigate("https://ui.ruse/index.html");
-        _telemetryTimer.Start();
-        _appsTimer.Start();
-        _devicesTimer.Start();
+        _startupLoaded = true;
+        CompleteUiReady();
+    }
+
+    private void PostStartupProgress(double progress, string label)
+    {
+        _startupProgress = Math.Clamp(progress, 0, 1);
+        _startupLabel = label;
+        if (_uiReady)
+        {
+            Post("startup-progress", new { progress = _startupProgress, label });
+        }
+    }
+
+    private void CompleteUiReady()
+    {
+        if (!_uiReady || !_startupLoaded || _uiPublished)
+        {
+            return;
+        }
+
+        _uiPublished = true;
+        PublishAll();
+        PostStartupProgress(1, "Ready");
+        Post("startup-complete", new { });
+        if (!App.DemoMode && !App.LiveDemoMode && _settings.ShowWelcomeScreen)
+        {
+            Post("splash", new
+            {
+                firstRun = !_settings.OnboardingCompleted && _nodes.Count == 0,
+            });
+        }
+
+        if (!_autoStartDone && _settings.StartRoutingOnLaunch && _nodes.Count > 0 && !App.DemoMode)
+        {
+            _autoStartDone = true;
+            Dispatcher.CurrentDispatcher.BeginInvoke(StartRouting, DispatcherPriority.ApplicationIdle);
+        }
     }
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
@@ -192,20 +246,13 @@ internal sealed partial class WebShellController : IDisposable
         switch (message.Type)
         {
             case "ready":
-                PublishAll();
-                if (!App.DemoMode && !App.LiveDemoMode && _settings.ShowWelcomeScreen)
+                _uiReady = true;
+                _uiReadySignal.TrySetResult(true);
+                if (!_startupLoaded)
                 {
-                    Post("splash", new
-                    {
-                        firstRun = !_settings.OnboardingCompleted && _nodes.Count == 0,
-                    });
+                    PostStartupProgress(_startupProgress, _startupLabel);
                 }
-
-                if (!_autoStartDone && _settings.StartRoutingOnLaunch && _nodes.Count > 0 && !App.DemoMode)
-                {
-                    _autoStartDone = true;
-                    Dispatcher.CurrentDispatcher.BeginInvoke(StartRouting, DispatcherPriority.ApplicationIdle);
-                }
+                CompleteUiReady();
                 break;
             case "refresh": RefreshCatalog(); break;
             case "add": AddFromMessage(message); break;
