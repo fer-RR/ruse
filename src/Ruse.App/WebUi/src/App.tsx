@@ -549,7 +549,7 @@ export default function App() {
       id: link.id,
       source: link.from,
       target: link.to,
-      sourceHandle: 'out',
+      sourceHandle: source?.isNoteDetector ? 'key' : 'out',
       targetHandle: link.kind === 'sidechain' ? 'sidechain' : 'in',
       type: 'ruseEdge',
       data: { kind: link.kind },
@@ -705,6 +705,7 @@ export default function App() {
     const source = connection.source ? nodeById.get(connection.source) : undefined;
     const target = connection.target ? nodeById.get(connection.target) : undefined;
     if (!source || !target || source.id === target.id) return false;
+    if (source.isNoteDetector && connection.targetHandle !== 'sidechain') return false;
     if (connection.targetHandle === 'sidechain') {
       return (source.kind === 'source' || source.kind === 'modifier') &&
              target.kind === 'modifier' && target.supportsSidechain === true;

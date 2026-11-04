@@ -59,9 +59,16 @@ public sealed class PresetSource
     public string? Color { get; set; }
     public bool Solo { get; set; }
     public bool FileLoop { get; set; }
+    public float FileSpeed { get; set; } = 1f;
     public float ToneFrequency { get; set; } = 1000f;
     public string ToneWaveform { get; set; } = "Sine";
     public float ToneLevelDb { get; set; } = -18f;
+    public string? TtsText { get; set; }
+    public string? TtsSourceNodeId { get; set; }
+    public string? TtsModel { get; set; }
+    public float TtsSpeed { get; set; } = 1f;
+    public int TtsVoice { get; set; }
+    public int NetworkPort { get; set; } = NetworkPcm.DefaultPort;
     public double X { get; set; }
     public double Y { get; set; }
     public double? Width { get; set; }
@@ -77,6 +84,9 @@ public sealed class PresetOutput
     public bool IsVirtual { get; set; }
     public string? MicHint { get; set; }
     public bool IsFile { get; set; }
+    public bool IsNetwork { get; set; }
+    public string? NetworkHost { get; set; }
+    public int NetworkPort { get; set; } = NetworkPcm.DefaultPort;
     public string? FilePath { get; set; }
     public string? FileFormat { get; set; }
     public string RecordingMode { get; set; } = "Off";

@@ -1142,6 +1142,88 @@ public static class LatencySelfTest
         return peak <= 0.51f && guard.Engaged;
     }
 
+    private static bool TestAutoTuneKey()
+    {
+        int tapId = NoteDetectorProcessor.NextTapId();
+        NoteDetectorProcessor.EnsureTap(tapId);
+        var tune = new AutoTuneProcessor();
+        tune.SetKeyTapId(tapId);
+        tune.Parameters.First(parameter => parameter.Name == "Retune").Set(0);
+        tune.Parameters.First(parameter => parameter.Name == "Strength").Set(100);
+        tune.Parameters.First(parameter => parameter.Name == "Mix").Set(100);
+        var keyBlock = new float[240 * 2];
+        var tuneBlock = new float[240 * 2];
+        int crossings = 0;
+        float previous = 0;
+        try
+        {
+            for (int pass = 0; pass < 300; pass++)
+            {
+                for (int frame = 0; frame < 240; frame++)
+                {
+                    float keySample = 0.2f * MathF.Sin(2f * MathF.PI * 440f * (pass * 240 + frame) / 48000f);
+                    float tuneSample = 0.2f * MathF.Sin(2f * MathF.PI * 450f * (pass * 240 + frame) / 48000f);
+                    keyBlock[frame * 2] = keySample;
+                    keyBlock[frame * 2 + 1] = keySample;
+                    tuneBlock[frame * 2] = tuneSample;
+                    tuneBlock[frame * 2 + 1] = tuneSample;
+                }
+
+                NoteDetectorProcessor.WriteTap(tapId, keyBlock, 240);
+                tune.Process(tuneBlock, 240);
+                if (pass < 150)
+                {
+                    continue;
+                }
+
+                for (int i = 0; i < tuneBlock.Length; i += 2)
+                {
+                    if (previous <= 0f && tuneBlock[i] > 0f)
+                    {
+                        crossings++;
+                    }
+
+                    previous = tuneBlock[i];
+                }
+            }
+        }
+        finally
+        {
+            NoteDetectorProcessor.RemoveTap(tapId);
+        }
+
+        double hz = crossings / (150.0 * 240.0 / 48000.0);
+        return Math.Abs(hz - 440.0) < 5.0;
+    }
+
+    private static bool TestNoteDetector()
+    {
+        int tapId = NoteDetectorProcessor.NextTapId();
+        NoteDetectorProcessor.EnsureTap(tapId);
+        try
+        {
+            var block = new float[240 * 2];
+            for (int pass = 0; pass < 60; pass++)
+            {
+                for (int frame = 0; frame < 240; frame++)
+                {
+                    float sample = 0.2f * MathF.Sin(2f * MathF.PI * 440f * (pass * 240 + frame) / 48000f);
+                    block[frame * 2] = sample;
+                    block[frame * 2 + 1] = sample;
+                }
+
+                NoteDetectorProcessor.WriteTap(tapId, block, 240);
+            }
+
+            return NoteDetectorProcessor.TryGetReading(tapId, out var reading) &&
+                   reading.Midi == 69 &&
+                   Math.Abs(reading.Cents) < 10f;
+        }
+        finally
+        {
+            NoteDetectorProcessor.RemoveTap(tapId);
+        }
+    }
     private static bool TestAutoTune()
     {
         var tune = new AutoTuneProcessor();
@@ -1242,7 +1324,7 @@ public static class LatencySelfTest
         const int frames = 240; // matches the mixer pump
         const int blocks = sampleRate / frames * 5; // 5 seconds of audio
 
-        const int expectedEffectCount = 50;
+        const int expectedEffectCount = 51;
         string[] requiredIds =
         [
             GainProcessor.Id,
@@ -1254,6 +1336,7 @@ public static class LatencySelfTest
             ClipGuardProcessor.Id,
             AutoTuneProcessor.Id,
             AutoTuneExperimentalProcessor.Id,
+            NoteDetectorProcessor.Id,
         ];
 
         var failures = new List<string>();
@@ -1439,6 +1522,14 @@ public static class LatencySelfTest
         if (!TestAutoTune())
         {
             failures.Add("auto-tune did not correct a 450 Hz tone to A4");
+        }
+        if (!TestNoteDetector())
+        {
+            failures.Add("note detector did not identify a 440 Hz tone as A4");
+        }
+        if (!TestAutoTuneKey())
+        {
+            failures.Add("auto-tune did not follow the note detector key");
         }
 
         if (!TestClipGuardEffect())

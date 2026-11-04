@@ -39,6 +39,14 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Publish failed."
     }
+    $ttsProject = Join-Path $repo "src\Ruse.TtsHost\Ruse.TtsHost.csproj"
+    if (Test-Path -LiteralPath $ttsProject) {
+        $ttsDir = Join-Path $appDir "tts-host"
+        dotnet publish $ttsProject -c $Configuration -r $Runtime --self-contained true -o $ttsDir --nologo -v q
+        if ($LASTEXITCODE -ne 0) {
+            throw "TTS host publish failed."
+        }
+    }
 
     New-Item -ItemType Directory -Force -Path $localizationDir | Out-Null
     $cultureDirs = Get-ChildItem -LiteralPath $appDir -Directory | Where-Object {

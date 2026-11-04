@@ -59,6 +59,9 @@ internal sealed partial class WebShellController : IDisposable
     private TranslationModelProgress? _translationDownload;
     private long _lastTranslationPublish;
     private long _lastTranslationStatus;
+    private CancellationTokenSource? _ttsDownloadCancel;
+    private TtsModelProgress? _ttsDownload;
+    private long _lastTtsPublish;
     private Action<bool>? _trayDecision;
 
     public WebShellController(WebMainWindow window)
@@ -259,6 +262,7 @@ internal sealed partial class WebShellController : IDisposable
             case "add-file-player": AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), String(message, "path")); break;
             case "file-player-file": ChooseFilePlayerFile(String(message, "id")); break;
             case "file-player-loop": SetFilePlayerLoop(String(message, "id"), Bool(message, "value")); break;
+            case "file-player-speed": SetFilePlayerSpeed(String(message, "id"), (float)Number(message, "value", 1)); break;
             case "file-player-output": SetFilePlayerOutput(String(message, "id"), String(message, "outputId")); break;
             case "file-player-start": StartFilePlayer(String(message, "id")); break;
             case "file-player-stop": StopFilePlayer(String(message, "id")); break;
@@ -320,6 +324,21 @@ internal sealed partial class WebShellController : IDisposable
             case "translator-restart": RestartTranslation(String(message, "id")); break;
             case "translator-export": ExportTranslation(String(message, "id")); break;
             case "translator-open-folder": OpenTranslationModelsFolder(); break;
+            case "tts-model": SetTtsModel(String(message, "id"), String(message, "model")); break;
+            case "tts-download": DownloadTtsModel(String(message, "id")); break;
+            case "tts-download-cancel": CancelTtsDownload(); break;
+            case "tts-delete": DeleteTtsModel(String(message, "id")); break;
+            case "tts-open-folder": OpenTtsModelsFolder(); break;
+            case "tts-text": SetTtsText(String(message, "id"), String(message, "text")); break;
+            case "tts-source": SetTtsSource(String(message, "id"), String(message, "source")); break;
+            case "tts-open-text": ChooseTtsTextFile(String(message, "id")); break;
+            case "tts-speed": SetTtsSpeed(String(message, "id"), (float)Number(message, "value", 1)); break;
+            case "tts-voice": SetTtsVoice(String(message, "id"), (int)Number(message, "value", 0)); break;
+            case "tts-speak": SpeakTts(String(message, "id")); break;
+            case "tts-stop": StopTts(String(message, "id")); break;
+            case "network-input-port": SetNetworkInputPort(String(message, "id"), (int)Number(message, "value", NetworkPcm.DefaultPort)); break;
+            case "network-output-host": SetNetworkOutputHost(String(message, "id"), String(message, "value")); break;
+            case "network-output-port": SetNetworkOutputPort(String(message, "id"), (int)Number(message, "value", NetworkPcm.DefaultPort)); break;
             case "vst3-editor": SetVst3Editor(String(message, "id"), Bool(message, "open")); break;
             case "vst3-rescan": RescanVst3Plugins(); break;
             case "rename": RenameNode(String(message, "id"), String(message, "title")); break;
@@ -651,6 +670,30 @@ internal sealed partial class WebShellController : IDisposable
             };
         }).ToList();
 
+        int installedTtsCount = 0;
+        long installedTtsBytes = 0;
+        var ttsModels = TtsModels.All.Select(model =>
+        {
+            bool installed = TtsModels.IsInstalled(model.Id);
+            long bytes = installed ? TtsModels.GetInstalledSizeBytes(model.Id) : 0;
+            if (installed)
+            {
+                installedTtsCount++;
+                installedTtsBytes += bytes;
+            }
+
+            return new TtsModelDto
+            {
+                Id = model.Id,
+                Name = model.Name,
+                Languages = model.Languages,
+                SizeMb = (int)Math.Round(model.SizeMb),
+                License = model.License,
+                Note = model.Note,
+                Installed = installed,
+                InstalledSize = installed ? TtsModels.FormatSize(bytes / 1024.0 / 1024.0) : "",
+            };
+        }).ToList();
         Post("settings", new SettingsDto
         {
             AutoLoadSession = _settings.AutoLoadSession,
@@ -706,6 +749,20 @@ internal sealed partial class WebShellController : IDisposable
             TranslatorTarget = _settings.TranslatorTarget,
             TranslationProvider = _settings.TranslationProvider,
             TranslatorModels = translationModels,
+            TtsModel = _settings.TtsModel,
+            TtsSpeed = _settings.TtsSpeed,
+            TtsModels = ttsModels,
+            TtsDownload = _ttsDownload == null
+                ? null
+                : new TtsDownloadDto
+                {
+                    Id = _ttsDownload.Id,
+                    Phase = _ttsDownload.Phase,
+                    Percent = (int)Math.Round(_ttsDownload.Progress * 100),
+                    Message = _ttsDownload.Error ?? "",
+                },
+            InstalledTtsModelsCount = installedTtsCount,
+            InstalledTtsModelsSize = TtsModels.FormatSize(installedTtsBytes / 1024.0 / 1024.0),
             OpusModels = opusModels,
             TranslatorDownload = _translationDownload == null
                 ? null
@@ -743,6 +800,7 @@ internal sealed partial class WebShellController : IDisposable
         }
 
         _lastTelemetryPublish = now;
+        PollTtsSources();
         long telemetryStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         var telemetry = new TelemetryDto
         {
@@ -842,6 +900,16 @@ internal sealed partial class WebShellController : IDisposable
                         meter.LoudnessTruePeak = LoudnessProcessor.GetTruePeakDb(loudness.TapId);
                     }
 
+                    if (modifier.Enabled && modifier.Processors.OfType<NoteDetectorProcessor>().FirstOrDefault() is { } noteDetector &&
+                        NoteDetectorProcessor.TryGetReading(noteDetector.TapId, out var note))
+                    {
+                        meter.NoteName = note.Name;
+                        meter.NoteMidi = note.Midi;
+                        meter.NoteCents = Finite(note.Cents);
+                        meter.NoteHz = Finite(note.Hz);
+                        meter.NoteConfidence = Finite(note.Confidence);
+                        meter.NoteActive = true;
+                    }
                     if (modifier.Enabled && modifier.Processors.OfType<TranslatorProcessor>().FirstOrDefault() is { } translator)
                     {
                         meter.TranscriptionLevel = Meter(TranscriptionProcessor.GetLevel(translator.TapId));
@@ -1155,6 +1223,8 @@ internal sealed partial class WebShellController : IDisposable
         _modelDownloadCancel?.Dispose();
         _translationDownloadCancel?.Cancel();
         _translationDownloadCancel?.Dispose();
+        _ttsDownloadCancel?.Cancel();
+        _ttsDownloadCancel?.Dispose();
         TranscriptionRegistry.StopAll();
         TranslationRegistry.StopAll();
         SpeechModelCache.DropAll();
@@ -1182,6 +1252,16 @@ internal sealed partial class WebShellController : IDisposable
         public string? TranscriberModel { get; set; }
         public string? TranslatorTarget { get; set; }
         public string? TranslatorModel { get; set; }
+        public string? TtsText { get; set; }
+        public string? TtsSourceNodeId { get; set; }
+        public string? TtsModel { get; set; }
+        public float TtsSpeed { get; set; } = 1f;
+        public int TtsVoice { get; set; }
+        public string? TtsStatus { get; set; }
+        public string? TtsAudioPath { get; set; }
+        public int TtsSpokenLength { get; set; }
+        public bool TtsGenerating { get; set; }
+        public CancellationTokenSource? TtsGenerationCancel { get; set; }
         public string? SourceEndpointId { get; set; }
         public string? SourceEndpointName { get; set; }
         public SourceNode? Source { get; init; }

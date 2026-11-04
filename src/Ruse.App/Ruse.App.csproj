@@ -34,6 +34,7 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.1" />
     <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.1" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+    <PackageReference Include="SharpCompress" Version="0.50.8" />
     <PackageReference Include="Whisper.net" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" />
@@ -56,6 +57,21 @@
       <WebUiPublishAsset Include="WebUi\dist\**\*" />
     </ItemGroup>
     <Copy SourceFiles="@(WebUiPublishAsset)" DestinationFiles="@(WebUiPublishAsset->'$(PublishDir)WebUi\%(RecursiveDir)%(Filename)%(Extension)')" />
+  </Target>
+
+  <Target Name="BuildTtsHost" BeforeTargets="Build" Condition="Exists('..\Ruse.TtsHost\Ruse.TtsHost.csproj')">
+    <MSBuild Projects="..\Ruse.TtsHost\Ruse.TtsHost.csproj" Targets="Build" Properties="Configuration=$(Configuration)" />
+    <ItemGroup>
+      <TtsHostFiles Include="..\Ruse.TtsHost\bin\$(Configuration)\net10.0-windows\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(TtsHostFiles)" DestinationFiles="@(TtsHostFiles->'$(OutDir)tts-host\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="CopyTtsHostToPublish" AfterTargets="Publish" Condition="Exists('..\Ruse.TtsHost\bin\$(Configuration)\net10.0-windows')">
+    <ItemGroup>
+      <TtsHostPublishFiles Include="..\Ruse.TtsHost\bin\$(Configuration)\net10.0-windows\**\*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(TtsHostPublishFiles)" DestinationFiles="@(TtsHostPublishFiles->'$(PublishDir)tts-host\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
   </Target>
 
 </Project>

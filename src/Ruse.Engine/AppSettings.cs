@@ -75,6 +75,12 @@ public sealed class AppSettings
     /// <summary>Translation engine: "qwen" (default) or "opus" (ONNX Runtime).</summary>
     public string TranslationProvider { get; set; } = "qwen";
 
+    /// <summary>Default local text-to-speech model id.</summary>
+    public string TtsModel { get; set; } = "supertonic-3-int8";
+
+    /// <summary>Speaking rate for new text-to-speech nodes (1.0 = normal).</summary>
+    public float TtsSpeed { get; set; } = 1f;
+
     /// <summary>When the mini-map is shown (0 = always, 1 = never, 2 = when zoomed in).</summary>
     public int MinimapMode { get; set; } = 2;
 

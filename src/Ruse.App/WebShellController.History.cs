@@ -56,7 +56,16 @@ internal sealed partial class WebShellController
         bool Parallel = false,
         float Send = 0.5f,
         double RecorderSilenceStopSeconds = 0,
-        double RecorderStartThresholdDb = -40);
+        double RecorderStartThresholdDb = -40,
+        string? TtsText = null,
+        string? TtsSourceNodeId = null,
+        string? TtsModel = null,
+        float TtsSpeed = 1f,
+        int NetworkPort = 0,
+        string? NetworkHost = null,
+        bool IsNetworkOutput = false,
+        float FileSpeed = 1f,
+        int TtsVoice = 0);
 
     private void PushAction(string label, Action undo, Action redo, string? coalesceKey = null)
     {
@@ -151,11 +160,18 @@ internal sealed partial class WebShellController
                 ProcessId = entry.Source.ProcessId,
                 ProcessName = entry.Source.ProcessName,
                 DeviceId = entry.Source.DeviceId,
-                FilePath = entry.Source.FilePath,
+                FilePath = entry.Source.Kind == SourceKind.Tts ? null : entry.Source.FilePath,
                 FileLoop = entry.Source.FileLoop,
+                FileSpeed = entry.Source.FileSpeed,
                 ToneFrequency = entry.Source.ToneFrequency,
                 ToneWave = entry.Source.ToneWave,
                 ToneLevelDb = entry.Source.ToneLevelDb,
+                TtsText = entry.TtsText,
+                TtsSourceNodeId = entry.TtsSourceNodeId,
+                TtsModel = entry.TtsModel,
+                TtsSpeed = entry.TtsSpeed,
+                TtsVoice = entry.TtsVoice,
+                NetworkPort = entry.Source.NetworkPort,
                 AsioDriver = entry.Source.AsioDriver,
                 AsioChannels = entry.Source.AsioChannels.ToArray(),
                 Volume = entry.Source.Gain,
@@ -176,6 +192,9 @@ internal sealed partial class WebShellController
                 AutoSave = entry.Output.AutoSave,
                 RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds,
                 RecorderStartThresholdDb = entry.Output.RecorderStartThresholdDb,
+                IsNetworkOutput = entry.Output.IsNetworkOutput,
+                NetworkHost = entry.Output.NetworkHost,
+                NetworkPort = entry.Output.NetworkPort,
                 Volume = entry.Output.Volume,
                 Muted = entry.Output.Muted,
             };
@@ -214,14 +233,28 @@ internal sealed partial class WebShellController
                     processName: snapshot.ProcessName,
                     filePath: snapshot.FilePath,
                     fileLoop: snapshot.FileLoop);
+                source.SetFileSpeed(snapshot.FileSpeed);
                 if (snapshot.SourceKind == SourceKind.Tone)
                 {
                     source.SetTone(snapshot.ToneFrequency, snapshot.ToneWave, snapshot.ToneLevelDb);
+                }
+                else if (snapshot.SourceKind == SourceKind.Network)
+                {
+                    source.SetNetworkPort(snapshot.NetworkPort);
                 }
 
                 source.Gain = snapshot.Volume;
                 source.Muted = snapshot.Muted;
                 var sourceEntry = RegisterSource(source, snapshot.X, snapshot.Y, snapshot.Id);
+                if (snapshot.SourceKind == SourceKind.Tts)
+                {
+                    sourceEntry.TtsText = snapshot.TtsText ?? "";
+                    sourceEntry.TtsSourceNodeId = snapshot.TtsSourceNodeId;
+                    sourceEntry.TtsModel = snapshot.TtsModel ?? _settings.TtsModel;
+                    sourceEntry.TtsSpeed = Math.Clamp(snapshot.TtsSpeed <= 0 ? 1f : snapshot.TtsSpeed, 0.5f, 2f);
+                    sourceEntry.TtsVoice = Math.Max(0, snapshot.TtsVoice);
+                    sourceEntry.TtsStatus = TtsModels.IsInstalled(sourceEntry.TtsModel) ? "Ready" : "No model installed";
+                }
                 sourceEntry.Width = snapshot.Width;
                 sourceEntry.Height = snapshot.Height;
                 return sourceEntry;
@@ -231,7 +264,11 @@ internal sealed partial class WebShellController
             {
                 OutputNode output;
                 string? micHint = null;
-                if (snapshot.IsFile)
+                if (snapshot.IsNetworkOutput)
+                {
+                    output = OutputNode.CreateForNetwork(snapshot.NetworkHost ?? "127.0.0.1", snapshot.NetworkPort);
+                }
+                else if (snapshot.IsFile)
                 {
                     output = OutputNode.CreateForFile(snapshot.FilePath ?? string.Empty, snapshot.FileFormat);
                     output.AutoStart = !string.Equals(

@@ -169,6 +169,12 @@ public static class AudioProcessorCatalog
             () => new AutoTuneExperimentalProcessor()));
 
         Register(new Descriptor(
+            NoteDetectorProcessor.Id,
+            "Note detector",
+            "Detects the stable note of a monophonic vocal or instrument and sends it through a key link.",
+            () => new NoteDetectorProcessor()));
+
+        Register(new Descriptor(
             ClipGuardProcessor.Id,
             "Clip guard",
             "Soft-knee peak limiting with adjustable ceiling, attack and release.",

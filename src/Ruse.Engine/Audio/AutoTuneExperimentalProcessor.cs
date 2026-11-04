@@ -5,7 +5,7 @@ namespace Ruse.App.Audio;
 /// Auto-tune node, grains are copied at their original rate so formants are
 /// preserved; the tradeoff is a more experimental, slightly higher-latency path.
 /// </summary>
-public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameterizedProcessor
+public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameterizedProcessor, ISidechainProcessor
 {
     public const string Id = "auto-tune-experimental";
 
@@ -27,13 +27,14 @@ public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameteri
     ];
 
     private readonly PsolaPitchShifter _shifter = new();
-    private readonly YinPitchDetector _detector = new();
+    private readonly NotePitchTracker _detector = new(highResolution: false);
     private readonly AudioParameter[] _parameters;
     private volatile float _key;
     private volatile float _scale;
     private volatile float _retuneMs = 40f;
     private volatile float _strength = 80f;
     private volatile float _mix = 100f;
+    private volatile int _keyTapId;
     private float _correction;
 
     public AutoTuneExperimentalProcessor()
@@ -101,6 +102,8 @@ public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameteri
     public string DisplayName => "Auto-tune (experimental)";
     public IReadOnlyList<AudioParameter> Parameters => _parameters;
     public int LatencySamples => _shifter.LatencySamples;
+    public void SetKeyTapId(int tapId) => _keyTapId = tapId;
+    public void SetSidechain(ReadOnlySpan<float> samples, int frames) { }
 
     public void Process(Span<float> samples, int frames)
     {
@@ -127,6 +130,10 @@ public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameteri
         }
 
         double midi = 69.0 + 12.0 * Math.Log2(hz / 440.0);
+        if (_keyTapId > 0 && NoteDetectorProcessor.TryGetReading(_keyTapId, out var keyNote))
+        {
+            return Math.Clamp((float)(keyNote.Midi - midi) * (_strength / 100f), -12f, 12f);
+        }
         int nearest = (int)Math.Round(midi);
         int[] scale = Scales[Math.Clamp((int)MathF.Round(_scale), 0, Scales.Length - 1)];
         int key = Math.Clamp((int)MathF.Round(_key), 0, 11);

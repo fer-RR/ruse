@@ -12,6 +12,8 @@ public enum SourceKind
     Asio,
     File,
     Tone,
+    Tts,
+    Network,
 }
 
 /// <summary>A capture source with per-consumer audio copies.</summary>
@@ -54,6 +56,10 @@ public sealed class SourceNode : IDisposable
     public string? ProcessName { get; set; }
     public string? DeviceId { get; }
     public string? FilePath { get; private set; }
+    public int NetworkPort { get; private set; } = NetworkPcm.DefaultPort;
+    public string? NetworkError => (_capture as NetworkPcmCapture)?.LastError;
+    public double NetworkBufferedMs => (_capture as NetworkPcmCapture)?.BufferedMs ?? 0;
+    public int TtsQueuedFiles => (_capture as TtsAudioCapture)?.QueuedFiles ?? 0;
 
     /// <summary>ASIO driver name when <see cref="Kind"/> is <see cref="SourceKind.Asio"/>.</summary>
     public string? AsioDriver { get; }
@@ -61,7 +67,8 @@ public sealed class SourceNode : IDisposable
     /// <summary>ASIO input channels to capture (first two are used for the stereo mix).</summary>
     public int[] AsioChannels { get; }
     public bool IsRunning => _capture != null && !_faulted &&
-        (_capture is not AudioFileCapture file || file.IsRunning);
+        (_capture is not AudioFileCapture file || file.IsRunning) &&
+        (_capture is not TtsAudioCapture tts || tts.IsRunning);
 
     /// <summary>Raised when the capture stream stops by itself (device lost, error).</summary>
     public event Action<SourceNode, string>? Faulted;
@@ -102,7 +109,7 @@ public sealed class SourceNode : IDisposable
 
     public SourceNode(string title, SourceKind kind, uint? processId = null, string? deviceId = null,
         string? asioDriver = null, int[]? asioChannels = null, string? processName = null,
-        string? filePath = null, bool fileLoop = false)
+        string? filePath = null, bool fileLoop = false, float fileSpeed = 1f)
     {
         Title = title;
         Kind = kind;
@@ -111,6 +118,7 @@ public sealed class SourceNode : IDisposable
         DeviceId = deviceId;
         FilePath = filePath;
         FileLoop = fileLoop;
+        FileSpeed = Math.Clamp(fileSpeed, 0.5f, 2f);
         _fileDurationSeconds = !string.IsNullOrWhiteSpace(filePath)
             ? AudioFileCapture.GetDuration(filePath)
             : 0;
@@ -119,6 +127,7 @@ public sealed class SourceNode : IDisposable
     }
 
     public bool FileLoop { get; private set; }
+    public float FileSpeed { get; private set; } = 1f;
 
     public float ToneFrequency { get; private set; } = 1000f;
     public ToneWaveform ToneWave { get; private set; } = ToneWaveform.Sine;
@@ -136,9 +145,51 @@ public sealed class SourceNode : IDisposable
         }
     }
 
-    public bool HasFile => Kind == SourceKind.File &&
+    public void SetNetworkPort(int port)
+    {
+        bool wasRunning = IsRunning;
+        Stop();
+        NetworkPort = Math.Clamp(port, 1, 65535);
+        if (wasRunning)
+        {
+            Start();
+        }
+    }
+    
+    public bool HasFile => Kind is SourceKind.File or SourceKind.Tts &&
         !string.IsNullOrWhiteSpace(FilePath) && File.Exists(FilePath);
 
+    public void SetTtsAudio(string path)
+    {
+        bool wasRunning = IsRunning;
+        Stop();
+        FilePath = path;
+        _fileDurationSeconds = AudioFileCapture.GetDuration(path);
+        if (wasRunning)
+        {
+            Start();
+        }
+    }
+    
+    public void EnqueueTtsAudio(string path)
+    {
+        if (_capture is TtsAudioCapture tts)
+        {
+            tts.Enqueue(path);
+            return;
+        }
+        SetTtsAudio(path);
+        Start();
+    }
+    
+    public void CompleteTtsAudio() => (_capture as TtsAudioCapture)?.Complete();
+    
+    public void ClearTtsAudio()
+    {
+        Stop();
+        FilePath = null;
+    }
+    
     public void SetFile(string path, bool loop)
     {
         bool wasRunning = IsRunning;
@@ -152,6 +203,15 @@ public sealed class SourceNode : IDisposable
         }
     }
 
+    public void SetFileSpeed(float speed)
+    {
+        FileSpeed = Math.Clamp(speed, 0.5f, 2f);
+        if (_capture is AudioFileCapture file)
+        {
+            file.Speed = FileSpeed;
+        }
+    }
+    
     public void SetFileLoop(bool loop)
     {
         FileLoop = loop;
@@ -352,7 +412,7 @@ public sealed class SourceNode : IDisposable
             return;
         }
 
-        if (Kind == SourceKind.File && !HasFile)
+        if (Kind is SourceKind.File or SourceKind.Tts && !HasFile)
         {
             return;
         }
@@ -377,8 +437,14 @@ public sealed class SourceNode : IDisposable
             case SourceKind.File:
                 StartFileCapture();
                 break;
+            case SourceKind.Tts:
+                StartTtsCapture();
+                break;
             case SourceKind.Tone:
                 StartToneCapture();
+                break;
+            case SourceKind.Network:
+                StartNetworkCapture();
                 break;
         }
     }
@@ -479,6 +545,48 @@ public sealed class SourceNode : IDisposable
         }
     }
 
+    private void StartTtsCapture()
+    {
+        if (string.IsNullOrWhiteSpace(FilePath) || !File.Exists(FilePath))
+        {
+            throw new FileNotFoundException("The generated speech file is missing.", FilePath);
+        }
+        var capture = new TtsAudioCapture(FilePath);
+        SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate, bitsPerSample: 32);
+        capture.DataAvailable += OnDataAvailable;
+        _capture = capture;
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            _capture = null;
+            capture.DataAvailable -= OnDataAvailable;
+            capture.Dispose();
+            throw;
+        }
+    }
+    
+    private void StartNetworkCapture()
+    {
+        var capture = new NetworkPcmCapture(NetworkPort, NetworkPcm.DefaultBufferMs);
+        SetSourceFormat(NetworkPcm.Channels, NetworkPcm.SampleRate, bitsPerSample: 32);
+        capture.DataAvailable += OnDataAvailable;
+        _capture = capture;
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            _capture = null;
+            capture.DataAvailable -= OnDataAvailable;
+            capture.Dispose();
+            throw;
+        }
+    }
+    
     private void StartToneCapture()
     {
         var capture = new ToneGeneratorCapture(ToneFrequency, ToneWave, ToneLevelDb);
@@ -505,7 +613,7 @@ public sealed class SourceNode : IDisposable
             throw new FileNotFoundException("Choose an audio file for this player.", FilePath);
         }
 
-        var capture = new AudioFileCapture(FilePath, FileLoop);
+        var capture = new AudioFileCapture(FilePath, FileLoop, FileSpeed);
         _fileDurationSeconds = capture.DurationSeconds;
         SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate,
             bitsPerSample: capture.WaveFormat.BitsPerSample);
@@ -855,6 +963,14 @@ public sealed class SourceNode : IDisposable
             case ToneGeneratorCapture tone:
                 tone.DataAvailable -= OnDataAvailable;
                 tone.Dispose();
+                break;
+            case NetworkPcmCapture network:
+                network.DataAvailable -= OnDataAvailable;
+                network.Dispose();
+                break;
+            case TtsAudioCapture ttsAudio:
+                ttsAudio.DataAvailable -= OnDataAvailable;
+                ttsAudio.Dispose();
                 break;
         }
 

@@ -1,6 +1,6 @@
 export type NodeKind = 'source' | 'output' | 'modifier';
 export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output' | 'sidechain';
-export type CatalogKind = 'app' | 'system' | 'tone' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'recorder' | 'vst3' | 'template';
+export type CatalogKind = 'app' | 'system' | 'tone' | 'tts' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'recorder' | 'vst3' | 'template';
 
 export interface ChainElement {
   typeId: string;
@@ -99,10 +99,30 @@ export interface NodeModel {
   fileOutputId?: string;
   fileOutputs?: Array<{ id: string; name: string }>;
   fileLoop?: boolean;
+  fileSpeed?: number;
   isToneGenerator?: boolean;
   toneFrequency?: number;
   toneWaveform?: string;
   toneLevelDb?: number;
+  isNoteDetector?: boolean;
+  isNetworkInput?: boolean;
+  isNetworkOutput?: boolean;
+  networkHost?: string;
+  networkPort?: number;
+  networkLocalIp?: string;
+  networkError?: string;
+  networkBufferedMs?: number;
+  isTts?: boolean;
+  ttsText?: string;
+  ttsSourceNodeId?: string;
+  ttsModel?: string;
+  ttsSpeed?: number;
+  ttsVoice?: number;
+  ttsVoices?: string[];
+  ttsUsesGpu?: boolean;
+  ttsStatus?: string;
+  ttsModelInstalled?: boolean;
+  ttsSources?: Array<{ id: string; title: string; kind: string }>;
   isDbMeter?: boolean;
   isLoudness?: boolean;
   isTranscriber?: boolean;
@@ -220,6 +240,12 @@ export interface NodeTelemetry {
   transcriptionHasAudio?: boolean;
   transcriptionElapsed?: number;
   usesGpu?: boolean;
+  noteName?: string;
+  noteMidi?: number;
+  noteCents?: number;
+  noteHz?: number;
+  noteConfidence?: number;
+  noteActive?: boolean;
 }
 
 export interface DiagnosticInfo {
@@ -317,6 +343,23 @@ export interface OpusModelInfo {
   note?: string;
 }
 
+export interface TtsModelInfo {
+  id: string;
+  name: string;
+  languages: string;
+  sizeMb: number;
+  installed: boolean;
+  installedSize?: string;
+  license?: string;
+  note?: string;
+}
+
+export interface TtsDownload {
+  id: string;
+  phase: string;
+  percent: number;
+  message: string;
+}
 export interface TranslatorDownload {
   id: string;
   phase: string;
@@ -370,6 +413,12 @@ export interface SettingsModel {
   translatorTarget: string;
   translatorModels: TranslatorModelInfo[];
   translationProvider: string;
+  ttsModel: string;
+  ttsSpeed?: number;
+  ttsModels: TtsModelInfo[];
+  ttsDownload?: TtsDownload | null;
+  installedTtsModelsSize?: string;
+  installedTtsModelsCount?: number;
   opusModels: OpusModelInfo[];
   translatorDownload?: TranslatorDownload | null;
   installedOpusModelsSize?: string;

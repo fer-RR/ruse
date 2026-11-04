@@ -31,14 +31,21 @@ internal sealed partial class WebShellController
                     ProcessId = entry.Source.ProcessId,
                     ProcessName = entry.Source.ProcessName,
                     DeviceId = entry.Source.DeviceId,
-                    FilePath = entry.Source.FilePath,
+                    FilePath = entry.Source.Kind == SourceKind.Tts ? null : entry.Source.FilePath,
                     OutputId = entry.Source.SelectedOutputId,
                     Color = entry.Color,
                     Solo = entry.Source.Solo,
                     FileLoop = entry.Source.FileLoop,
+                    FileSpeed = entry.Source.FileSpeed,
                     ToneFrequency = entry.Source.ToneFrequency,
                     ToneWaveform = entry.Source.ToneWave.ToString(),
                     ToneLevelDb = entry.Source.ToneLevelDb,
+                    TtsText = entry.TtsText,
+                    TtsSourceNodeId = entry.TtsSourceNodeId,
+                    TtsModel = entry.TtsModel,
+                    TtsSpeed = entry.TtsSpeed,
+                    TtsVoice = entry.TtsVoice,
+                    NetworkPort = entry.Source.NetworkPort,
                     X = entry.X + offsetX,
                     Y = entry.Y + offsetY,
                     Width = entry.Width,
@@ -57,6 +64,9 @@ internal sealed partial class WebShellController
                     IsVirtual = entry.MicHint != null,
                     MicHint = entry.MicHint,
                     IsFile = entry.Output.IsFileRecorder,
+                    IsNetwork = entry.Output.IsNetworkOutput,
+                    NetworkHost = entry.Output.NetworkHost,
+                    NetworkPort = entry.Output.NetworkPort,
                     FilePath = entry.Output.IsFileRecorder ? entry.Output.RecordingPath : null,
                     FileFormat = entry.Output.IsFileRecorder ? entry.Output.RecordingFormat.ToString() : null,
                     RecordingMode = entry.Output.RecorderMode.ToString(),
@@ -220,12 +230,26 @@ internal sealed partial class WebShellController
                         : ToneWaveform.Sine;
                     source.SetTone(saved.ToneFrequency, wave, saved.ToneLevelDb);
                 }
+                else if (kind == SourceKind.Network)
+                {
+                    source.SetNetworkPort(saved.NetworkPort);
+                }
 
+                source.SetFileSpeed(saved.FileSpeed);
                 source.Gain = float.IsFinite(saved.Volume) ? Math.Clamp(saved.Volume, 0f, 4f) : 1f;
                 source.Muted = saved.Muted;
                 source.Solo = saved.Solo;
                 source.SelectedOutputId = saved.OutputId;
                 var sourceEntry = RegisterSource(source, saved.X + offsetX, saved.Y + offsetY);
+                if (kind == SourceKind.Tts)
+                {
+                    sourceEntry.TtsText = saved.TtsText ?? "";
+                    sourceEntry.TtsSourceNodeId = saved.TtsSourceNodeId;
+                    sourceEntry.TtsModel = saved.TtsModel ?? _settings.TtsModel;
+                    sourceEntry.TtsSpeed = Math.Clamp(saved.TtsSpeed <= 0 ? 1f : saved.TtsSpeed, 0.5f, 2f);
+                    sourceEntry.TtsVoice = Math.Max(0, saved.TtsVoice);
+                    sourceEntry.TtsStatus = TtsModels.IsInstalled(sourceEntry.TtsModel) ? "Ready" : "No model installed";
+                }
                 sourceEntry.Width = saved.Width;
                 sourceEntry.Height = saved.Height;
                 sourceEntry.Color = NormalizeNodeColor(saved.Color);
@@ -244,7 +268,11 @@ internal sealed partial class WebShellController
             {
                 OutputNode output;
                 string? micHint = null;
-                if (saved.IsFile)
+                if (saved.IsNetwork)
+                {
+                    output = OutputNode.CreateForNetwork(saved.NetworkHost ?? "127.0.0.1", saved.NetworkPort);
+                }
+                else if (saved.IsFile)
                 {
                     // Recorder paths in imported presets are untrusted. Session and
                     // template libraries are local and keep their chosen destination.
@@ -501,6 +529,7 @@ internal sealed partial class WebShellController
         string oldTranslatorModel = _settings.TranslatorModel;
         string oldTranslatorTarget = _settings.TranslatorTarget;
         string oldTranslationProvider = _settings.TranslationProvider;
+        string oldTtsModel = _settings.TtsModel;
         _settings.AutoLoadSession = settings.AutoLoadSession;
         _settings.FollowPlayingApps = settings.FollowPlayingApps;
         _settings.FollowOutputId = settings.FollowOutputId ?? "";
@@ -563,6 +592,8 @@ internal sealed partial class WebShellController
         _settings.TranslatorTarget = TranslationLanguages.Normalize(settings.TranslatorTarget);
         _settings.TranslationProvider = string.Equals(settings.TranslationProvider, "opus", StringComparison.OrdinalIgnoreCase)
             ? "opus" : "qwen";
+        _settings.TtsModel = TtsModels.Find(settings.TtsModel)?.Id ?? TtsModels.DefaultId;
+        _settings.TtsSpeed = Math.Clamp(settings.TtsSpeed <= 0 ? 1f : settings.TtsSpeed, 0.5f, 2f);
         StartupRegistration.SetEnabled(settings.StartWithWindows);
         _settings.Save();
         ConfigureAudioEngine();
@@ -614,6 +645,16 @@ internal sealed partial class WebShellController
                 ApplyTranslatorSettings(entry,
                     modelChanged ? newTranslatorModel : entry.TranslatorModel,
                     targetChanged ? newTranslatorTarget : entry.TranslatorTarget);
+            }
+        }
+
+        string newTtsModel = TtsModels.Find(_settings.TtsModel)?.Id ?? TtsModels.DefaultId;
+        if (!string.Equals(oldTtsModel, newTtsModel, StringComparison.OrdinalIgnoreCase))
+        {
+            foreach (var entry in _nodes.Values.Where(entry => entry.Source?.Kind == SourceKind.Tts &&
+                         (string.IsNullOrEmpty(entry.TtsModel) || string.Equals(entry.TtsModel, oldTtsModel, StringComparison.OrdinalIgnoreCase))))
+            {
+                entry.TtsModel = newTtsModel;
             }
         }
 

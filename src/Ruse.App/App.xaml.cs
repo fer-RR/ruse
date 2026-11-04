@@ -432,6 +432,23 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--tts-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string model = GetStringArg(e.Args, "--tts-test", TtsModels.DefaultId);
+            string output = GetStringArg(e.Args, "--tts-output", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "ruse-tts-test.wav"));
+            try
+            {
+                string generated = TtsSynthesis.SynthesizeAsync(model, "Ruse text to speech test.", 1f, 0, CancellationToken.None).GetAwaiter().GetResult();
+                File.Copy(generated, output, overwrite: true);
+                WriteResult("tts-test.txt", $"Ruse TTS test: PASS ({new FileInfo(output).Length} bytes, model {model})");
+            }
+            catch (Exception ex)
+            {
+                WriteResult("tts-test.txt", $"Ruse TTS test: FAIL ({ex.Message})");
+            }
+            Shutdown();
+            return;
+        }
         if (e.Args.Contains("--ring-test", StringComparer.OrdinalIgnoreCase))
         {
             WriteResult("ring-test.txt", "Ruse ring test: " + LatencySelfTest.TestRingBuffer());

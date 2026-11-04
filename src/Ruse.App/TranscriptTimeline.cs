@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Ruse.App;
@@ -12,8 +12,8 @@ internal sealed class SpeechChunker
     private const int SampleRate = 16000;
     private const int FrameSamples = 160;          // 10 ms
     private const int MinSamples = SampleRate * 2; // avoid one-word chunks
-    private const int MaxSamples = SampleRate * 10;
-    private const int HangoverFrames = 120;        // 1.2 s of silence ends a sentence
+    private const int MaxSamples = SampleRate * 6;
+    private const int HangoverFrames = 100;        // 1 s of silence ends a sentence
     private const int MinVoiceFrames = 20;         // require 200 ms of voice
 
     private readonly List<float> _samples = new(MaxSamples + 8192);

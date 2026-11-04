@@ -117,8 +117,28 @@ internal sealed class NodeDto
     public string? FilePath { get; set; }
     public string? FileOutputId { get; set; }
     public bool FileLoop { get; set; }
+    public float FileSpeed { get; set; } = 1f;
     public bool IsToneGenerator { get; set; }
+    public bool IsNoteDetector { get; set; }
+    public bool IsNetworkInput { get; set; }
+    public bool IsNetworkOutput { get; set; }
+    public string? NetworkHost { get; set; }
+    public int NetworkPort { get; set; }
+    public string? NetworkLocalIp { get; set; }
+    public string? NetworkError { get; set; }
+    public double NetworkBufferedMs { get; set; }
     public float ToneFrequency { get; set; } = 1000f;
+    public bool IsTts { get; set; }
+    public string? TtsText { get; set; }
+    public string? TtsSourceNodeId { get; set; }
+    public string? TtsModel { get; set; }
+    public float TtsSpeed { get; set; } = 1f;
+    public int TtsVoice { get; set; }
+    public List<string> TtsVoices { get; set; } = new();
+    public bool TtsUsesGpu { get; set; }
+    public string? TtsStatus { get; set; }
+    public bool TtsModelInstalled { get; set; }
+    public List<TtsTextSourceDto> TtsSources { get; set; } = new();
     public string ToneWaveform { get; set; } = "Sine";
     public float ToneLevelDb { get; set; } = -18f;
     public bool FilePaused { get; set; }
@@ -256,6 +276,12 @@ internal sealed class NodeTelemetryDto
     public bool TranscriptionHasAudio { get; set; }
     public double? TranscriptionElapsed { get; set; }
     public bool? UsesGpu { get; set; }
+    public string? NoteName { get; set; }
+    public int? NoteMidi { get; set; }
+    public float? NoteCents { get; set; }
+    public float? NoteHz { get; set; }
+    public float? NoteConfidence { get; set; }
+    public bool NoteActive { get; set; }
 }
 
 internal sealed class TelemetryDto
@@ -358,6 +384,12 @@ internal sealed class SettingsDto
     public string TranslatorModel { get; set; } = "";
     public string TranslatorTarget { get; set; } = "en";
     public string TranslationProvider { get; set; } = "qwen";
+    public string TtsModel { get; set; } = "";
+    public float TtsSpeed { get; set; } = 1f;
+    public List<TtsModelDto> TtsModels { get; set; } = new();
+    public TtsDownloadDto? TtsDownload { get; set; }
+    public string InstalledTtsModelsSize { get; set; } = "";
+    public int InstalledTtsModelsCount { get; set; }
     public List<TranslatorModelDto> TranslatorModels { get; set; } = new();
     public TranslatorDownloadDto? TranslatorDownload { get; set; }
     public string InstalledTranslatorModelsSize { get; set; } = "";
@@ -428,6 +460,33 @@ internal sealed class OpusModelDto
 }
 
 internal sealed class TranslatorDownloadDto
+{
+    public string Id { get; set; } = "";
+    public string Phase { get; set; } = "";
+    public int Percent { get; set; }
+    public string Message { get; set; } = "";
+}
+
+internal sealed class TtsTextSourceDto
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "";
+    public string Kind { get; set; } = "";
+}
+
+internal sealed class TtsModelDto
+{
+    public string Id { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Languages { get; set; } = "";
+    public int SizeMb { get; set; }
+    public bool Installed { get; set; }
+    public string InstalledSize { get; set; } = "";
+    public string License { get; set; } = "";
+    public string? Note { get; set; }
+}
+
+internal sealed class TtsDownloadDto
 {
     public string Id { get; set; } = "";
     public string Phase { get; set; } = "";

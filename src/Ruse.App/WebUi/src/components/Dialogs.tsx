@@ -8,6 +8,7 @@ import type { CatalogItem, GraphWarning, SettingsModel } from '../types';
 import ModelCatalog from './ModelCatalog';
 import TranslationModelCatalog from './TranslationModelCatalog';
 import OpusModelCatalog from './OpusModelCatalog';
+import TtsModelCatalog from './TtsModelCatalog';
 
 export function Modal({ title, onClose, children, className = '', movable = false }: {
   title: string;
@@ -340,6 +341,10 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
   const selectedModel = installed.some(model => model.id === settings.transcriberModel)
     ? settings.transcriberModel
     : installed[0]?.id ?? '';
+  const installedTts = settings.ttsModels.filter(model => model.installed);
+  const selectedTts = installedTts.some(model => model.id === settings.ttsModel)
+    ? settings.ttsModel
+    : installedTts[0]?.id ?? '';
   const installedTranslators = settings.translatorModels.filter(model => model.installed);
   const selectedTranslator = installedTranslators.some(model => model.id === settings.translatorModel)
     ? settings.translatorModel
@@ -450,6 +455,25 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               ) : (
                 <OpusModelCatalog models={settings.opusModels} download={settings.translatorDownload} />
               )}
+            </SettingsSection>
+            <SettingsSection
+              title="Text to speech"
+              summary={`${t('{count} installed', { count: settings.installedTtsModelsCount ?? installedTts.length })} / ${settings.installedTtsModelsSize ?? '0 MB'}`}
+            >
+              <label className="setting-row">
+                <span><strong>{t('Default TTS model')}</strong><small>{t('Used by new Text to speech nodes; each node can use the default.')}</small></span>
+                {installedTts.length > 0
+                  ? <select value={selectedTts} onChange={event => onChange({ ...settings, ttsModel: event.target.value })}>
+                      {installedTts.map(model => <option key={model.id} value={model.id} title={model.name}>{model.name}</option>)}
+                    </select>
+                  : <span className="model-missing">{t('No models installed')}</span>}
+              </label>
+              <TtsModelCatalog
+                models={settings.ttsModels}
+                selectedModel={selectedTts}
+                download={settings.ttsDownload}
+                onSelectDefault={id => onChange({ ...settings, ttsModel: id })}
+              />
             </SettingsSection>
           </>
         )}

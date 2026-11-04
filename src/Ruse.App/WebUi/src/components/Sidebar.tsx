@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { RefObject } from 'react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, FileAudio, Headphones,
-  Layers3, Mic, Pencil, Plus, Puzzle, Radio, Search, SlidersHorizontal, Speaker, Trash2, X,
+  AppWindow, AudioLines, Check, ChevronDown, FileAudio, Headphones, MessageSquare,
+  Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, Search, SlidersHorizontal, Speaker, Trash2, X,
 } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { catalogKey } from '../library';
@@ -19,6 +19,19 @@ const toneItem: CatalogItem = {
   details: 'Generate a test signal for routing and level checks',
 };
 
+const ttsItem: CatalogItem = {
+  id: 'tts', kind: 'tts', name: 'Text to speech', subtitle: 'Local TTS',
+  details: 'Speak typed text, a text file, or the output of a transcriber or translator',
+};
+const networkInputItem: CatalogItem = {
+  id: 'network-in', kind: 'network-in', name: 'Network input', subtitle: 'UDP PCM receiver',
+  details: 'Receive a Ruse network stream on this PC',
+};
+
+const networkOutputItem: CatalogItem = {
+  id: 'network-out', kind: 'network-out', name: 'Network output', subtitle: 'UDP PCM sender',
+  details: 'Send this route to another Ruse instance',
+};
 const recorderItem: CatalogItem = {
   id: 'recorder', kind: 'recorder', name: 'Record to file', subtitle: 'WAV, MP3 or FLAC',
   details: 'Add a file destination for a routed mix',
@@ -36,6 +49,9 @@ function ItemIcon({ item }: { item: CatalogItem }) {
     case 'app': return <AppWindow {...props} />;
     case 'system': return <AudioLines {...props} />;
     case 'tone': return <AudioLines {...props} />;
+    case 'tts': return <MessageSquare {...props} />;
+    case 'network-in': return <Network {...props} />;
+    case 'network-out': return <Network {...props} />;
     case 'input': return item.virtual ? <Radio {...props} /> : <Mic {...props} />;
     case 'output': {
       const name = item.name.toLowerCase();
@@ -183,8 +199,9 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     const asioOutputs = catalog.outputs.filter(item => item.provider === 'ASIO');
     return {
       applications: { label: 'Applications', items: [systemItem, ...catalog.apps] },
+      network: { label: 'Network', items: [networkInputItem, networkOutputItem] },
       physicalOutputs: { label: 'Speakers & headphones', items: physicalOutputs },
-      physicalInputs: { label: 'Microphones & inputs', items: [toneItem, ...physicalInputs] },
+      physicalInputs: { label: 'Microphones & inputs', items: [ttsItem, toneItem, ...physicalInputs] },
       recording: { label: 'Record & Play', items: [recorderItem, filePlayerItem] },
       virtualBuses: { label: 'Virtual buses', items: virtualInputs },
       virtualInputs: { label: 'Virtual inputs', items: catalog.virtuals },
@@ -202,6 +219,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
       title: 'Sources',
       sections: [
         catalogSections.applications,
+        catalogSections.network,
         catalogSections.physicalInputs,
         catalogSections.virtualBuses,
         catalogSections.asioInputs,
@@ -224,6 +242,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
 
   const allSections = useMemo(() => [
     catalogSections.applications,
+    catalogSections.network,
     catalogSections.physicalOutputs,
     catalogSections.physicalInputs,
     catalogSections.recording,

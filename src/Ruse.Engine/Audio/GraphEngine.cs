@@ -1212,6 +1212,7 @@ internal sealed class GraphEngine : IDisposable
         private readonly SpectrogramProcessor[] _spectrograms;
         private readonly int[] _dbTaps;
         private readonly int[] _loudnessTaps;
+        private readonly int[] _noteTaps;
         private readonly FloatRingBuffer _ring = new(SampleRate * Channels);
         private readonly Thread _thread;
         private volatile bool _running = true;
@@ -1242,6 +1243,11 @@ internal sealed class GraphEngine : IDisposable
                 .ToArray();
             _loudnessTaps = modifier.Processors
                 .OfType<LoudnessProcessor>()
+                .Select(processor => processor.TapId)
+                .Where(id => id > 0)
+                .ToArray();
+            _noteTaps = modifier.Processors
+                .OfType<NoteDetectorProcessor>()
                 .Select(processor => processor.TapId)
                 .Where(id => id > 0)
                 .ToArray();
@@ -1303,6 +1309,10 @@ internal sealed class GraphEngine : IDisposable
                     for (int i = 0; i < _loudnessTaps.Length; i++)
                     {
                         LoudnessProcessor.WriteTap(_loudnessTaps[i], samples, frames);
+                    }
+                    for (int i = 0; i < _noteTaps.Length; i++)
+                    {
+                        NoteDetectorProcessor.WriteTap(_noteTaps[i], samples, frames);
                     }
                 }
                 catch (Exception ex)

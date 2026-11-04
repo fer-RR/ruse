@@ -12,9 +12,11 @@ Download the latest Windows build from [Releases](https://github.com/fer-RR/ruse
   microphones, ASIO inputs, virtual buses, file playback, and a test tone.
 - **Flexible destinations**: WASAPI and ASIO outputs, virtual cables, and WAV,
   MP3, or FLAC recording.
-- **50 built-in effects** including EQ, dynamics, reverb, delay, modulation,
+- **51 built-in effects** including EQ, dynamics, reverb, delay, modulation,
   pitch shift, auto-tune, and an experimental formant-preserving TD-PSOLA
   auto-tune.
+- **Vocal note detection**: a monophonic note detector with a key output for the Auto-tune nodes.
+- **Network audio**: Ruse-to-Ruse UDP PCM input and output nodes for LAN or VPN routing.
 - **Analysis taps**: spectrum, spectrogram, dB meter, loudness/true-peak meter,
   and diagnostics.
 - **VST3 support**: isolated plugin hosting by default, so a crashing plugin
@@ -23,8 +25,10 @@ Download the latest Windows build from [Releases](https://github.com/fer-RR/ruse
   mute/solo, mixer dock, saved chains, and frame templates.
 - **Workflow**: undo/redo, MIDI learn, presets, start with Windows, close to
   tray, automatic device refresh, and nine UI languages.
-- **Speech tools**: offline transcription with Whisper and local translation
-  with Qwen2.5 or optional OPUS-MT models.
+- **Speech tools**: offline transcription with Whisper, local translation with
+  Qwen2.5 or optional OPUS-MT models, and offline text to speech with
+  Supertonic 3 or Kokoro. Text can be typed, loaded from a file, or taken from a
+  transcriber or translator node.
 - **Low-latency engine**: 48 kHz, stereo, 32-bit float, with click-free gain and
   parameter changes and a built-in diagnostics node.
 

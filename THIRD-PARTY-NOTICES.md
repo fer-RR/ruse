@@ -83,6 +83,11 @@ THIS SOFTWARE.
 
 ## Apache 2.0
 
+- **sherpa-onnx** — Copyright (c) 2019-2026 Xiaomi Corporation.
+  https://github.com/k2-fsa/sherpa-onnx
+- **Kokoro-82M model** — Copyright (c) hexgrad. The Kokoro model files are
+  downloaded separately when the user installs the TTS model; not bundled.
+  https://huggingface.co/hexgrad/Kokoro-82M
 - **Qwen2.5 Instruct GGUF models** — Copyright (c) Alibaba Cloud.
   Downloaded separately when the user installs a translation model; not bundled.
   https://huggingface.co/Qwen
@@ -90,6 +95,12 @@ THIS SOFTWARE.
   dependencies.
   https://www.apache.org/licenses/LICENSE-2.0
 
+## OpenRAIL
+
+- **Supertonic 3 model** — Copyright (c) Supertone. Downloaded separately when
+  the user installs the TTS model; not bundled. The model is released under the
+  OpenRAIL licence; review its use restrictions before redistribution.
+  https://huggingface.co/Supertone/supertonic-3
 ## Build-time only
 
 The web UI build uses Vite, TypeScript, browserslist/caniuse-lite and other

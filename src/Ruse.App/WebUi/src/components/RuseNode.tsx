@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
-  AppWindow, AudioLines, ChevronDown, ChevronUp, FileAudio, Languages, Layers3, Mic, MonitorSpeaker,
+  AppWindow, AudioLines, Check, ChevronDown, ChevronUp, Copy, FileAudio, Languages, Layers3, Mic, MonitorSpeaker,
   Play, Power, Puzzle, Radio, Settings, SlidersHorizontal, Square, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
@@ -43,6 +43,8 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'virtual': return <Radio {...props} />;
     case 'file': return <FileAudio {...props} />;
     case 'tone': return <AudioLines {...props} />;
+    case 'tts': return <AudioLines {...props} />;
+    case 'network': return <Radio {...props} />;
     case 'recorder': return <FileAudio {...props} />;
     case 'translator': return <Languages {...props} />;
     case 'vst3': return <Puzzle {...props} />;
@@ -151,6 +153,12 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
         </button>
         <button className="small-button" onClick={() => send('file-player-file', { id: node.id })}>{t('Choose file')}</button>
         <button className="small-button" disabled={!hasFile} onClick={() => send('file-player-restart', { id: node.id })}>{t('Restart')}</button>
+        <label className="file-player-speed">
+          <span>{t('Speed')}</span>
+          <select value={node.fileSpeed ?? 1} onChange={event => send('file-player-speed', { id: node.id, value: Number(event.target.value) })}>
+            {[0.5, 0.75, 1, 1.25, 1.5, 2].map(speed => <option key={speed} value={speed}>{speed}x</option>)}
+          </select>
+        </label>
         <label className="file-player-loop">
           <input
             type="checkbox"
@@ -164,6 +172,217 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
   );
 }
 
+function NetworkAddress({ node }: { node: RuseFlowNode['data'] }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const ip = node.networkLocalIp ?? '';
+  const copy = async () => {
+    if (!ip) return;
+    try {
+      if (navigator.clipboard) {
+        await navigator.clipboard.writeText(ip);
+      } else {
+        const area = document.createElement('textarea');
+        area.value = ip;
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+    }
+  };
+
+  return (
+    <div className="network-ip">
+      <span>{t('Your LAN IP')}: {ip || '—'}</span>
+      <button className="icon-button compact" title={copied ? t('Copied') : t('Copy')} aria-label={copied ? t('Copied') : t('Copy')} onClick={copy}>
+        {copied ? <Check size={12} /> : <Copy size={12} />}
+      </button>
+    </div>
+  );
+}
+function NetworkInputControls({ node }: { node: RuseFlowNode['data'] }) {
+  const { t } = useI18n();
+  const [port, setPort] = useState(String(node.networkPort ?? 7890));
+  useEffect(() => setPort(String(node.networkPort ?? 7890)), [node.networkPort]);
+  const commit = () => {
+    const value = Number(port);
+    if (Number.isFinite(value)) send('network-input-port', { id: node.id, value });
+  };
+  return (
+    <div className="network-controls nodrag">
+      <label className="network-row">
+        <span>{t('Listen IP')}</span>
+        <input value="0.0.0.0" readOnly />
+      </label>
+      <label className="network-row">
+        <span>{t('UDP port')}</span>
+        <input
+          type="number"
+          min={1}
+          max={65535}
+          value={port}
+          onChange={event => setPort(event.target.value)}
+          onBlur={commit}
+          onKeyDown={event => { if (event.key === 'Enter') { event.currentTarget.blur(); } }}
+        />
+      </label>
+      {node.muted
+        ? <div className="network-status">{t('Disconnected')}</div>
+        : node.networkError
+        ? <div className="network-error">{node.networkError}</div>
+        : <div className="network-status">{t('Listening on UDP')} {node.networkPort ?? 7890} · {Math.round(node.networkBufferedMs ?? 0)} ms</div>}
+      <NetworkAddress node={node} />
+      <div className="network-actions">
+        <button className="small-button" onClick={() => send('mute', { id: node.id, value: !node.muted })}>{node.muted ? t('Connect') : t('Disconnect')}</button>
+      </div>
+    </div>
+  );
+}
+
+function NetworkOutputControls({ node }: { node: RuseFlowNode['data'] }) {
+  const { t } = useI18n();
+  const [host, setHost] = useState(node.networkHost ?? '127.0.0.1');
+  const [port, setPort] = useState(String(node.networkPort ?? 7890));
+  useEffect(() => setHost(node.networkHost ?? '127.0.0.1'), [node.networkHost]);
+  useEffect(() => setPort(String(node.networkPort ?? 7890)), [node.networkPort]);
+  const commitHost = () => {
+    if (host.trim()) send('network-output-host', { id: node.id, value: host.trim() });
+  };
+  const commitPort = () => {
+    const value = Number(port);
+    if (Number.isFinite(value)) send('network-output-port', { id: node.id, value });
+  };
+  return (
+    <div className="network-controls nodrag">
+      <label className="network-row">
+        <span>{t('Destination IP')}</span>
+        <input value={host} onChange={event => setHost(event.target.value)} onBlur={commitHost} />
+      </label>
+      <label className="network-row">
+        <span>{t('UDP port')}</span>
+        <input
+          type="number"
+          min={1}
+          max={65535}
+          value={port}
+          onChange={event => setPort(event.target.value)}
+          onBlur={commitPort}
+          onKeyDown={event => { if (event.key === 'Enter') { event.currentTarget.blur(); } }}
+        />
+      </label>
+      {node.muted
+        ? <div className="network-status">{t('Disconnected')}</div>
+        : node.networkError
+          ? <div className="network-error">{node.networkError}</div>
+          : <div className="network-status">{t('Sending UDP PCM')}</div>}
+      <NetworkAddress node={node} />
+      <div className="network-actions">
+        <button className="small-button" onClick={() => send('mute', { id: node.id, value: !node.muted })}>{node.muted ? t('Connect') : t('Disconnect')}</button>
+      </div>
+    </div>
+  );
+}
+function NoteDetectorView({ telemetry }: { telemetry?: NodeTelemetry }) {
+  const active = telemetry?.noteActive === true && telemetry.noteName;
+  const cents = telemetry?.noteCents ?? 0;
+  return (
+    <div className={`note-detector-view ${active ? 'active' : ''}`}>
+      <strong>{active ? telemetry?.noteName : '--'}</strong>
+      <span>{active ? `${cents >= 0 ? '+' : ''}${cents.toFixed(1)} cents` : 'No stable note'}</span>
+      <span>{active ? `${(telemetry?.noteHz ?? 0).toFixed(1)} Hz` : ''}</span>
+      <small>{active ? `${Math.round((telemetry?.noteConfidence ?? 0) * 100)}% confidence` : '\u00A0'}</small>
+    </div>
+  );
+}
+function TtsControls({ node }: { node: RuseFlowNode['data'] }) {
+  const { t } = useI18n();
+  const [text, setText] = useState(node.ttsText ?? '');
+  useEffect(() => setText(node.ttsText ?? ''), [node.ttsText]);
+  const installed = node.ttsModelInstalled === true;
+  const sources = node.ttsSources ?? [];
+  const voices = node.ttsVoices ?? [];
+  const commitText = () => {
+    if (text !== (node.ttsText ?? '')) {
+      send('tts-text', { id: node.id, text });
+    }
+  };
+
+  return (
+    <div className="tts-controls nodrag">
+      {!installed && (
+        <div className="tts-model-empty">
+          <span>{t('No TTS model installed.')}</span>
+          <button
+            className="small-button"
+            onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-settings', { detail: { tab: 'speech' } }))}
+          >
+            {t('Open Settings')}
+          </button>
+        </div>
+      )}
+      <textarea
+        className="tts-text"
+        value={text}
+        placeholder={t('Type text to speak')}
+        onChange={event => setText(event.target.value)}
+        onBlur={commitText}
+      />
+      <div className="tts-actions">
+        <button className="small-button" onClick={() => send('tts-open-text', { id: node.id })}>{t('Open text file')}</button>
+        <button
+          className="small-button"
+          disabled={!installed || !text.trim()}
+          onClick={() => {
+            commitText();
+            send('tts-speak', { id: node.id });
+          }}
+        >
+          <Play size={11} /> {t('Speak')}
+        </button>
+        <button className="small-button" onClick={() => send('tts-stop', { id: node.id })}>
+          <Square size={11} /> {t('Stop')}
+        </button>
+      </div>
+      <label className="tts-row">
+        <span>{t('Read from')}</span>
+        <select
+          value={node.ttsSourceNodeId ?? ''}
+          onChange={event => send('tts-source', { id: node.id, source: event.target.value })}
+        >
+          <option value="">{t('Manual text')}</option>
+          {sources.map(source => (
+            <option key={source.id} value={source.id}>{source.title}</option>
+          ))}
+        </select>
+      </label>
+      {voices.length > 0 && (
+        <label className="tts-row">
+          <span>{t('Voice')}</span>
+          <select value={node.ttsVoice ?? 0} onChange={event => send('tts-voice', { id: node.id, value: Number(event.target.value) })}>
+            {voices.map((voice, index) => <option key={voice} value={index}>{voice}</option>)}
+          </select>
+        </label>
+      )}
+      <label className="tts-row">
+        <span>{t('Speed')}</span>
+        <input
+          type="range"
+          min={0.5}
+          max={2}
+          step={0.05}
+          value={node.ttsSpeed ?? 1}
+          onChange={event => send('tts-speed', { id: node.id, value: Number(event.target.value) })}
+        />
+        <span>{(node.ttsSpeed ?? 1).toFixed(2)}x</span>
+      </label>
+      {node.ttsStatus && <div className="tts-status">{t(node.ttsStatus)}</div>}
+    </div>
+  );
+}
 function Vst3Controls({ node }: { node: RuseFlowNode['data'] }) {
   const { t } = useI18n();
   const status = node.vst3Status ?? 'Loading plugin';
@@ -487,6 +706,8 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isVst3 ? 'vst3-node' : '',
     data.isFilePlayer ? 'file-player-node' : '',
     data.isToneGenerator ? 'tone-node' : '',
+    data.isNoteDetector ? 'note-detector-node' : '',
+    data.isTts ? 'tts-node' : '',
     data.isRecorder ? 'recorder-node' : '',
     isSpectrum ? 'spectrum-node' : '',
     isSpectrogram ? 'spectrogram-node' : '',
@@ -516,6 +737,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         {data.duplicateRisk && <span className={`node-badge ${data.warningSeverity === 'info' ? 'copy-badge' : 'warn-badge'}`} title={data.duplicateWarning}>{data.warningSeverity === 'info' ? 'COPY' : 'DUP'}</span>}
         {telemetry?.clipping && <span className="node-badge clip-badge">CLIP</span>}
         {telemetry?.clipGuardActive && <span className="node-badge guard-badge" title={t('Clip guard active')}>GUARD</span>}
+        {data.isTts && data.ttsUsesGpu !== true && <span className="node-badge cpu-badge">CPU</span>}
         {(data.isTranscriber || data.isTranslator) && typeof telemetry?.usesGpu === 'boolean' && (
           <span className={`node-badge ${telemetry.usesGpu ? 'gpu-badge' : 'cpu-badge'}`}>{telemetry.usesGpu ? 'GPU' : 'CPU'}</span>
         )}
@@ -556,6 +778,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         </div>
       ) : isModifier ? (
         <div className="parameter-list">
+          {data.isNoteDetector && <NoteDetectorView telemetry={telemetry} />}
           {isSpectrum && <SpectrumView
             bands={telemetry?.spectrum}
             peakHz={telemetry?.spectrumPeakHz}
@@ -665,13 +888,18 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         </div>
       ) : (
         <>
+          {data.isNetworkInput && <NetworkInputControls node={data} />}
+          {data.isTts && <TtsControls node={data} />}
           {data.isFilePlayer && <FilePlayerControls node={data} telemetry={telemetry} />}
           {data.isToneGenerator && <ToneControls node={data} />}
           <VolumeControl id={data.id} value={data.volume} muted={data.muted} />
+          {data.isNetworkOutput && <NetworkOutputControls node={data} />}
           {data.isRecorder && <RecorderControls node={data} telemetry={telemetry} />}
         </>
       )}
-      {data.kind !== 'output' && <Handle id="out" type="source" position={Position.Right} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
+      {data.isNoteDetector
+        ? <Handle id="key" type="source" position={Position.Right} className={`ruse-handle key-handle ${flowing ? 'active' : ''}`} />
+        : data.kind !== 'output' && <Handle id="out" type="source" position={Position.Right} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
     </div>
   );
 }

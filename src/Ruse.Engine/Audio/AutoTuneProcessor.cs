@@ -8,7 +8,7 @@ namespace Ruse.App.Audio;
 /// existing phase-vocoder pitch shifter applies the correction; a short FFT
 /// keeps monitoring latency low.
 /// </summary>
-public sealed class AutoTuneProcessor : IAudioProcessor, IParameterizedProcessor
+public sealed class AutoTuneProcessor : IAudioProcessor, IParameterizedProcessor, ISidechainProcessor
 {
     public const string Id = "auto-tune";
 
@@ -30,13 +30,14 @@ public sealed class AutoTuneProcessor : IAudioProcessor, IParameterizedProcessor
     ];
 
     private readonly PitchShiftEffect _shift;
-    private readonly YinPitchDetector _detector = new();
+    private readonly NotePitchTracker _detector = new(highResolution: false);
     private readonly AudioParameter[] _parameters;
     private volatile float _key;
     private volatile float _scale;
     private volatile float _retuneMs = 40f;
     private volatile float _strength = 80f;
     private volatile float _mix = 100f;
+    private volatile int _keyTapId;
     private float _correction;
     private float _target;
 
@@ -113,6 +114,8 @@ public sealed class AutoTuneProcessor : IAudioProcessor, IParameterizedProcessor
     public string DisplayName => "Auto-tune";
     public IReadOnlyList<AudioParameter> Parameters => _parameters;
     public int LatencySamples => _shift.LatencySamples;
+    public void SetKeyTapId(int tapId) => _keyTapId = tapId;
+    public void SetSidechain(ReadOnlySpan<float> samples, int frames) { }
 
     public void Process(Span<float> samples, int frames)
     {
@@ -144,6 +147,11 @@ public sealed class AutoTuneProcessor : IAudioProcessor, IParameterizedProcessor
         }
 
         double midi = 69.0 + 12.0 * Math.Log2(hz / 440.0);
+        if (_keyTapId > 0 && NoteDetectorProcessor.TryGetReading(_keyTapId, out var keyNote))
+        {
+            return Math.Clamp((float)(keyNote.Midi - midi) * (_strength / 100f), -12f, 12f);
+        }
+
         int nearest = (int)Math.Round(midi);
         int[] scale = Scales[Math.Clamp((int)MathF.Round(_scale), 0, Scales.Length - 1)];
         int key = Math.Clamp((int)MathF.Round(_key), 0, 11);
@@ -199,6 +207,7 @@ internal sealed class YinPitchDetector
     private int _filled;
     private int _since;
     private float _pitch;
+    private float _confidence;
     private bool _hasPitch;
 
     public void Add(ReadOnlySpan<float> samples, int frames)
@@ -230,6 +239,7 @@ internal sealed class YinPitchDetector
         Detect();
     }
 
+    public float Confidence => _confidence;
     public bool TryGetPitch(out float hz)
     {
         hz = _pitch;
@@ -243,6 +253,7 @@ internal sealed class YinPitchDetector
         _filled = 0;
         _since = 0;
         _pitch = 0f;
+        _confidence = 0f;
         _hasPitch = false;
     }
 
@@ -259,6 +270,7 @@ internal sealed class YinPitchDetector
 
         if (energy / Window < 1e-7)
         {
+            _confidence = 0f;
             _hasPitch = false;
             return;
         }
@@ -303,6 +315,7 @@ internal sealed class YinPitchDetector
 
         if (best > 0.2f)
         {
+            _confidence = 0f;
             _hasPitch = false;
             return;
         }
@@ -322,11 +335,13 @@ internal sealed class YinPitchDetector
 
         if (refined <= 0)
         {
+            _confidence = 0f;
             _hasPitch = false;
             return;
         }
 
         _pitch = (float)(SampleRate / refined);
+        _confidence = Math.Clamp(1f - best, 0f, 1f);
         _hasPitch = _pitch >= 70f && _pitch <= 1100f;
     }
 }

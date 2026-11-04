@@ -1,3 +1,4 @@
+using NAudio.Effects;
 using NAudio.Wave;
 
 namespace Ruse.App.Audio;
@@ -13,6 +14,8 @@ public sealed class AudioFileCapture : IDisposable
     private readonly byte[] _bytes;
     private readonly AudioPacketEventArgs _packetArgs = new();
     private readonly float[] _lastSamples;
+    private readonly float[] _speedSamples;
+    private readonly PitchShiftEffect _pitchShift;
     private int _fadeRemaining;
     private int _fadeTotal;
 
@@ -23,17 +26,27 @@ public sealed class AudioFileCapture : IDisposable
     private volatile bool _paused;
     private volatile int _seekRequest = -1;
     private volatile float _positionSeconds;
+    private volatile float _speed = 1f;
 
-    public AudioFileCapture(string path, bool loop)
+    public AudioFileCapture(string path, bool loop, float speed = 1f)
     {
         FilePath = path;
         Loop = loop;
+        Speed = speed;
         _reader = new AudioFileReader(path);
         _channels = Math.Max(1, _reader.WaveFormat.Channels);
         _sampleRate = _reader.WaveFormat.SampleRate;
         _framesPerBlock = Math.Max(1, _sampleRate * 5 / 1000);
         _samples = new float[_framesPerBlock * _channels];
         _lastSamples = new float[_channels];
+        _speedSamples = new float[(_framesPerBlock * 2 + 2) * _channels];
+        _pitchShift = new PitchShiftEffect
+        {
+            FftSize = 2048,
+            Oversampling = 4,
+            Mix = 1f,
+        };
+        _pitchShift.Configure(WaveFormat.CreateIeeeFloatWaveFormat(_sampleRate, _channels));
         _bytes = new byte[_samples.Length * sizeof(float)];
         DurationSeconds = _reader.TotalTime.TotalSeconds;
     }
@@ -44,6 +57,11 @@ public sealed class AudioFileCapture : IDisposable
     public float PositionSeconds => _positionSeconds;
     public bool IsRunning => _thread is { IsAlive: true } && !_ended;
     public bool IsPaused => _paused;
+    public float Speed
+    {
+        get => _speed;
+        set => _speed = Math.Clamp(value, 0.5f, 2f);
+    }
     public volatile bool Loop;
 
     public static double GetDuration(string path)
@@ -198,7 +216,45 @@ public sealed class AudioFileCapture : IDisposable
 
             int frames = (int)Math.Min(_framesPerBlock, Math.Max(1, due - produced));
             int samples = frames * _channels;
-            int read = _reader.Read(_samples.AsSpan(0, samples));
+            int read;
+            if (Math.Abs(_speed - 1f) < 0.001f)
+            {
+                read = _reader.Read(_samples.AsSpan(0, samples));
+            }
+            else
+            {
+                int sourceFrames = Math.Max(1, (int)Math.Ceiling(frames * _speed));
+                int sourceSamples = sourceFrames * _channels;
+                int sourceRead = _reader.Read(_speedSamples.AsSpan(0, sourceSamples));
+                int sourceFramesRead = sourceRead / _channels;
+                if (sourceFramesRead <= 0)
+                {
+                    read = 0;
+                }
+                else
+                {
+                    for (int frame = 0; frame < frames; frame++)
+                    {
+                        double position = frame * _speed;
+                        int index = (int)position;
+                        float fraction = (float)(position - index);
+                        int a = Math.Min(index, sourceFramesRead - 1);
+                        int b = Math.Min(index + 1, sourceFramesRead - 1);
+                        int output = frame * _channels;
+                        int sampleA = a * _channels;
+                        int sampleB = b * _channels;
+                        for (int channel = 0; channel < _channels; channel++)
+                        {
+                            float first = _speedSamples[sampleA + channel];
+                            float second = _speedSamples[sampleB + channel];
+                            _samples[output + channel] = first + (second - first) * fraction;
+                        }
+                    }
+
+                    read = samples;
+                }
+            }
+
             if (read <= 0)
             {
                 if (!Loop)
@@ -226,6 +282,11 @@ public sealed class AudioFileCapture : IDisposable
             }
 
             _positionSeconds = (float)_reader.CurrentTime.TotalSeconds;
+            if (Math.Abs(_speed - 1f) >= 0.001f)
+            {
+                _pitchShift.PitchSemitones = (float)(-12.0 * Math.Log2(_speed));
+                _pitchShift.Process(_samples.AsSpan(0, read));
+            }
             ApplyFade(_samples, read, _channels);
             RememberLastSamples(_samples, read, _channels);
             Buffer.BlockCopy(_samples, 0, _bytes, 0, read * sizeof(float));

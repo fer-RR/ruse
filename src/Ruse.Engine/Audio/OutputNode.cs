@@ -258,6 +258,13 @@ public sealed class OutputNode : IDisposable
 
     /// <summary>Optional in-memory sink for tests; when set, no WASAPI device is used.</summary>
     private Action<float[], int>? _testSink;
+    private NetworkPcmSender? _networkSender;
+    private string _networkHost = "127.0.0.1";
+    private int _networkPort = NetworkPcm.DefaultPort;
+    public bool IsNetworkOutput { get; private set; }
+    public string NetworkHost => _networkHost;
+    public int NetworkPort => _networkPort;
+    public string? NetworkError => _networkSender?.LastError;
 
     public OutputNode(MMDevice device)
     {
@@ -282,6 +289,33 @@ public sealed class OutputNode : IDisposable
         node.UseGraphEngine = false;
         node._testSink = sink;
         return node;
+    }
+
+    /// <summary>Creates an output that sends the mix to another Ruse instance.</summary>
+    public static OutputNode CreateForNetwork(string host, int port)
+    {
+        var node = new OutputNode("network:" + Guid.NewGuid().ToString("N"), "Network output")
+        {
+            IsNetworkOutput = true,
+            UseGraphEngine = false,
+            PaceRealTime = true,
+            _networkHost = string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host,
+            _networkPort = Math.Clamp(port, 1, 65535),
+        };
+        return node;
+    }
+
+    /// <summary>Changes the network destination while the sender is stopped.</summary>
+    public void SetNetworkDestination(string host, int port)
+    {
+        bool wasRunning = IsRunning;
+        Stop();
+        _networkHost = string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host;
+        _networkPort = Math.Clamp(port, 1, 65535);
+        if (wasRunning)
+        {
+            Start();
+        }
     }
 
     /// <summary>Creates an output that records the mix to an audio file.</summary>
@@ -360,6 +394,13 @@ public sealed class OutputNode : IDisposable
         ClearEngineAudio();
         _clipGuard.Reset();
         ClipGuardActive = false;
+        if (IsNetworkOutput)
+        {
+            _networkSender?.Dispose();
+            _networkSender = new NetworkPcmSender(_networkHost, _networkPort);
+            _testSink = _networkSender.Send;
+            _outputLatencyMs = 0;
+        }
 
         int sampleRate = 48000;
         int channels = 2;
@@ -1052,6 +1093,13 @@ public sealed class OutputNode : IDisposable
 
             _recorder.Dispose();
             _recorder = null;
+        }
+
+        _networkSender?.Dispose();
+        _networkSender = null;
+        if (IsNetworkOutput)
+        {
+            _testSink = null;
         }
 
         _buffer = null;

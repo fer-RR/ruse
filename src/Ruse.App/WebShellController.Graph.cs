@@ -45,6 +45,29 @@ internal sealed partial class WebShellController
                 SetStatus("Added a test tone.");
                 break;
             }
+            case "tts":
+            {
+                var speech = new SourceNode("Text to speech", SourceKind.Tts);
+                entry = RegisterSource(speech, x, y);
+                entry.TtsText = "";
+                entry.TtsModel = _settings.TtsModel;
+                entry.TtsSpeed = _settings.TtsSpeed;
+                entry.TtsStatus = TtsModels.IsInstalled(_settings.TtsModel) ? "Ready" : "No model installed";
+                SetStatus("Added text to speech. Type text or choose a text source.");
+                break;
+            }
+            case "network-in":
+            {
+                var network = new SourceNode("Network input", SourceKind.Network);
+                network.SetNetworkPort(NetworkPcm.DefaultPort);
+                entry = RegisterSource(network, x, y);
+                SetStatus("Added a network input. Set the UDP port to match the sender.");
+                break;
+            }
+            case "network-out":
+                entry = RegisterOutput(OutputNode.CreateForNetwork("127.0.0.1", NetworkPcm.DefaultPort), x, y);
+                SetStatus("Added a network output. Set the destination IP and port.");
+                break;
             case "input": entry = AddDeviceInput(id, x, y); break;
             case "output": entry = AddDeviceOutput(id, x, y); break;
             case "virtual": entry = AddVirtualOutput(id, x, y); break;
@@ -151,6 +174,17 @@ internal sealed partial class WebShellController
         PublishTelemetry(force: true);
     }
 
+    private void SetFilePlayerSpeed(string id, float speed)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+        source.SetFileSpeed(speed);
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+    
     private void SetTone(string id, float frequency, string waveform, float levelDb)
     {
         if (!_nodes.TryGetValue(id, out var entry) ||
@@ -644,6 +678,10 @@ internal sealed partial class WebShellController
         {
             loudness.SetTapId(LoudnessProcessor.NextTapId());
         }
+        else if (processor is NoteDetectorProcessor note)
+        {
+            note.SetTapId(NoteDetectorProcessor.NextTapId());
+        }
         else if (processor is TranscriptionProcessor transcriber)
         {
             transcriber.SetTapId(TranscriptionProcessor.NextTapId());
@@ -759,6 +797,8 @@ internal sealed partial class WebShellController
                 SourceKind.Asio => "asio",
                 SourceKind.File => "file",
                 SourceKind.Tone => "tone",
+                SourceKind.Tts => "tts",
+                SourceKind.Network => "network",
                 _ => "system",
             },
             Title = source.Title,
@@ -769,6 +809,8 @@ internal sealed partial class WebShellController
                 SourceKind.Asio => "ASIO input",
                 SourceKind.File => "Audio file",
                 SourceKind.Tone => "Test tone",
+                SourceKind.Tts => "Text to speech",
+                SourceKind.Network => "Network input",
                 _ => "System audio",
             },
             Accent = source.Kind switch
@@ -778,6 +820,8 @@ internal sealed partial class WebShellController
                 SourceKind.Asio => "#F0DC5A",
                 SourceKind.File => "#F08CB8",
                 SourceKind.Tone => "#F0DC5A",
+                SourceKind.Tts => "#C7A6FF",
+                SourceKind.Network => "#4FD1C5",
                 _ => IsVirtualCapture(source.Title) ? "#7D5BD6" : "#F0DC5A",
             },
             X = x,
@@ -799,15 +843,15 @@ internal sealed partial class WebShellController
         {
             _graph.AddOutputNode(output);
         }
-        string flavor = output.IsFileRecorder ? "recorder" : micHint != null ? "virtual" : AsioCatalog.IsAsioId(output.DeviceId) ? "asio" : "output";
+        string flavor = output.IsFileRecorder ? "recorder" : output.IsNetworkOutput ? "network" : micHint != null ? "virtual" : AsioCatalog.IsAsioId(output.DeviceId) ? "asio" : "output";
         var entry = new NodeEntry
         {
             Id = id ?? output.Id,
             Kind = "output",
             Flavor = flavor,
             Title = output.Title,
-            Subtitle = output.IsFileRecorder ? "File output" : micHint != null ? "Virtual output" : AsioCatalog.IsAsioId(output.DeviceId) ? "ASIO output" : "Output device",
-            Accent = output.IsFileRecorder ? "#FF8B72" : micHint != null ? "#D9A8FF" : "#43E39A",
+            Subtitle = output.IsFileRecorder ? "File output" : output.IsNetworkOutput ? "Network output" : micHint != null ? "Virtual output" : AsioCatalog.IsAsioId(output.DeviceId) ? "ASIO output" : "Output device",
+            Accent = output.IsFileRecorder ? "#FF8B72" : output.IsNetworkOutput ? "#4FD1C5" : micHint != null ? "#D9A8FF" : "#43E39A",
             X = x,
             Y = y,
             MicHint = micHint,
@@ -850,6 +894,11 @@ internal sealed partial class WebShellController
         foreach (var loudness in modifier.Processors.OfType<LoudnessProcessor>())
         {
             loudness.SetTapId(loudness.TapId > 0 ? loudness.TapId : LoudnessProcessor.NextTapId());
+        }
+
+        foreach (var note in modifier.Processors.OfType<NoteDetectorProcessor>())
+        {
+            note.SetTapId(note.TapId > 0 ? note.TapId : NoteDetectorProcessor.NextTapId());
         }
 
         bool hasTranscriber = modifier.Processors.OfType<TranscriptionProcessor>().Any();
@@ -1004,6 +1053,11 @@ internal sealed partial class WebShellController
             {
                 used.Add(loudness.TapId);
             }
+
+            foreach (var note in entry.Modifier.Processors.OfType<NoteDetectorProcessor>())
+            {
+                used.Add(note.TapId);
+            }
         }
 
         foreach (var spectrum in modifier.Processors.OfType<SpectrumProcessor>())
@@ -1066,6 +1120,16 @@ internal sealed partial class WebShellController
             used.Add(loudness.TapId);
         }
 
+        foreach (var note in modifier.Processors.OfType<NoteDetectorProcessor>())
+        {
+            if (note.TapId <= 0 || used.Contains(note.TapId))
+            {
+                note.SetTapId(NoteDetectorProcessor.NextTapId());
+            }
+
+            used.Add(note.TapId);
+        }
+
         _graph.RefreshModifiers();
     }
 
@@ -1113,10 +1177,27 @@ internal sealed partial class WebShellController
             dto.FilePath = entry.Source.FilePath;
             dto.FileOutputId = entry.Source.SelectedOutputId;
             dto.FileLoop = entry.Source.FileLoop;
+            dto.FileSpeed = entry.Source.FileSpeed;
             dto.IsToneGenerator = entry.Source.Kind == SourceKind.Tone;
             dto.ToneFrequency = entry.Source.ToneFrequency;
             dto.ToneWaveform = entry.Source.ToneWave.ToString();
             dto.ToneLevelDb = entry.Source.ToneLevelDb;
+            dto.IsTts = entry.Source.Kind == SourceKind.Tts;
+            dto.IsNetworkInput = entry.Source.Kind == SourceKind.Network;
+            dto.NetworkLocalIp = entry.Source.Kind == SourceKind.Network ? NetworkPcm.GetLocalAddress() : null;
+            dto.NetworkPort = entry.Source.NetworkPort;
+            dto.NetworkError = entry.Source.NetworkError;
+            dto.NetworkBufferedMs = entry.Source.NetworkBufferedMs;
+            dto.TtsText = entry.TtsText;
+            dto.TtsSourceNodeId = entry.TtsSourceNodeId;
+            dto.TtsModel = entry.TtsModel ?? _settings.TtsModel;
+            dto.TtsSpeed = entry.TtsSpeed;
+            dto.TtsVoice = entry.TtsVoice;
+            dto.TtsUsesGpu = false;
+            dto.TtsVoices = TtsModels.Find(dto.TtsModel)?.Voices.ToList() ?? new();
+            dto.TtsStatus = entry.TtsStatus;
+            dto.TtsModelInstalled = TtsModels.IsInstalled(dto.TtsModel);
+            dto.TtsSources = entry.Source.Kind == SourceKind.Tts ? BuildTtsSources(entry.Id) : new();
         }
         else if (entry.Output != null)
         {
@@ -1126,6 +1207,11 @@ internal sealed partial class WebShellController
             dto.DeviceId = entry.Output.DeviceId;
             dto.SampleRate = entry.Output.EndpointSampleRate;
             dto.IsRecorder = entry.Output.IsFileRecorder;
+            dto.IsNetworkOutput = entry.Output.IsNetworkOutput;
+            dto.NetworkLocalIp = entry.Output.IsNetworkOutput ? NetworkPcm.GetLocalAddress() : null;
+            dto.NetworkHost = entry.Output.NetworkHost;
+            dto.NetworkPort = entry.Output.NetworkPort;
+            dto.NetworkError = entry.Output.NetworkError;
             dto.RecordingPath = entry.Output.RecordingPath;
             dto.RecordingFormat = entry.Output.RecordingFormat.ToString();
             dto.RecorderMode = entry.Output.RecorderMode.ToString();
@@ -1158,6 +1244,7 @@ internal sealed partial class WebShellController
 
             dto.IsDbMeter = entry.Modifier.Processors.OfType<DbMeterProcessor>().Any();
             dto.IsLoudness = entry.Modifier.Processors.OfType<LoudnessProcessor>().Any();
+            dto.IsNoteDetector = entry.Modifier.Processors.OfType<NoteDetectorProcessor>().Any();
             dto.IsTranscriber = entry.Modifier.Processors.OfType<TranscriptionProcessor>().Any();
             dto.IsTranslator = entry.Modifier.Processors.OfType<TranslatorProcessor>().Any();
             dto.SupportsSidechain = entry.Modifier.Processors.Any(SidechainRouting.Supports);
@@ -1278,8 +1365,40 @@ internal sealed partial class WebShellController
     private void ApplyNodeMute(string id, bool muted, bool publish)
     {
         if (!_nodes.TryGetValue(id, out var entry)) return;
-        if (entry.Source != null) entry.Source.Muted = muted;
-        if (entry.Output != null) entry.Output.Muted = muted;
+        if (entry.Source != null)
+        {
+            entry.Source.Muted = muted;
+            if (entry.Source.Kind == SourceKind.Network)
+            {
+                try
+                {
+                    if (muted) entry.Source.Stop();
+                    else entry.Source.Start();
+                }
+                catch (Exception ex)
+                {
+                    SetStatus($"Could not start network input: {ex.Message}", isError: true);
+                }
+            }
+        }
+
+        if (entry.Output != null)
+        {
+            entry.Output.Muted = muted;
+            if (entry.Output.IsNetworkOutput)
+            {
+                try
+                {
+                    if (muted) entry.Output.Stop();
+                    else entry.Output.Start();
+                }
+                catch (Exception ex)
+                {
+                    SetStatus($"Could not start network output: {ex.Message}", isError: true);
+                }
+            }
+        }
+
         if (publish) PublishGraph();
     }
 
@@ -1582,9 +1701,39 @@ internal sealed partial class WebShellController
             {
                 _graph.SetModifierOutputGain(from.Modifier, to.Output, gain);
             }
+            else if (link.Kind == "sidechain")
+            {
+                SetNoteKey(from, to, link.Enabled);
+            }
         }
 
         if (publish) PublishGraph();
+    }
+
+    private static void SetNoteKey(NodeEntry from, NodeEntry to, bool enabled)
+    {
+        if (from.Modifier == null || to.Modifier == null)
+        {
+            return;
+        }
+
+        int tapId = enabled
+            ? from.Modifier.Processors.OfType<NoteDetectorProcessor>().FirstOrDefault()?.TapId ?? 0
+            : 0;
+        if (tapId <= 0)
+        {
+            return;
+        }
+
+        foreach (var tune in to.Modifier.Processors.OfType<AutoTuneProcessor>())
+        {
+            tune.SetKeyTapId(tapId);
+        }
+
+        foreach (var tune in to.Modifier.Processors.OfType<AutoTuneExperimentalProcessor>())
+        {
+            tune.SetKeyTapId(tapId);
+        }
     }
 
     private LinkEntry ConnectEntries(NodeEntry from, NodeEntry to, float gain = 1, bool publish = false, string? linkId = null, string? kind = null)
@@ -1615,6 +1764,8 @@ internal sealed partial class WebShellController
             {
                 throw new InvalidOperationException($"Cannot use {from.Title} as a sidechain key for {to.Title}.");
             }
+
+            SetNoteKey(from, to, true);
         }
         else if (from.Source != null && to.Output != null)
         {
@@ -1695,6 +1846,11 @@ internal sealed partial class WebShellController
                 case "modifier-modifier" when from.Modifier != null && to.Modifier != null:
                     _graph.DisconnectModifierFromModifier(from.Modifier, to.Modifier);
                     break;
+            }
+
+            if (current.Kind == "sidechain")
+            {
+                SetNoteKey(from, to, false);
             }
         }
 
@@ -1847,6 +2003,9 @@ internal sealed partial class WebShellController
             case LoudnessProcessor loudness:
                 LoudnessProcessor.RemoveTap(loudness.TapId);
                 break;
+            case NoteDetectorProcessor note:
+                NoteDetectorProcessor.RemoveTap(note.TapId);
+                break;
             case ChainProcessor chain:
                 foreach (var inner in chain.Processors)
                 {
@@ -1967,6 +2126,10 @@ internal sealed partial class WebShellController
 
             try
             {
+                if (source.Kind == SourceKind.Tts)
+                {
+                    continue;
+                }
                 if (source.Kind == SourceKind.File && !source.HasFile)
                 {
                     playersWithoutFile++;
