@@ -52,6 +52,7 @@ public sealed class NetworkPcmSender : IDisposable
     private readonly UdpClient _client;
     private readonly IPEndPoint _target;
     private readonly byte[] _packet = new byte[NetworkPcm.HeaderBytes + NetworkPcm.BlockFrames * NetworkPcm.Channels * 2];
+    private readonly ushort _session = (ushort)Random.Shared.Next(0, ushort.MaxValue + 1);
     private uint _sequence;
     private long _frames;
 
@@ -91,8 +92,10 @@ public sealed class NetworkPcmSender : IDisposable
         _packet[3] = (byte)'E';
         _packet[4] = 1;
         _packet[5] = NetworkPcm.Channels;
-        _packet[6] = 0;
-        _packet[7] = 0;
+        // A fresh sender (for example, a network output that was removed and
+        // added again) restarts at sequence 0. The session byte lets the
+        // receiver tell that apart from a late packet.
+        BinaryPrimitives.WriteUInt16LittleEndian(_packet.AsSpan(6), _session);
         BinaryPrimitives.WriteInt32LittleEndian(_packet.AsSpan(8), NetworkPcm.SampleRate);
         BinaryPrimitives.WriteUInt32LittleEndian(_packet.AsSpan(12), _sequence++);
         BinaryPrimitives.WriteInt64LittleEndian(_packet.AsSpan(16), _frames);
@@ -147,11 +150,13 @@ public sealed class NetworkPcmCapture : IDisposable
     private volatile bool _stop;
     private long _lastSequence = -1;
     private int _lastPacketFrames = NetworkPcm.BlockFrames;
-    private bool _primed;
+    private int _session = -1;
+    private volatile bool _primed;
     private string? _lastError;
     private long _packets;
     private long _lostPackets;
     private long _underruns;
+    private long _streamResets;
 
     public NetworkPcmCapture(int port, int targetBufferMs = NetworkPcm.DefaultBufferMs)
     {
@@ -165,6 +170,7 @@ public sealed class NetworkPcmCapture : IDisposable
     public long Packets => Interlocked.Read(ref _packets);
     public long LostPackets => Interlocked.Read(ref _lostPackets);
     public long Underruns => Interlocked.Read(ref _underruns);
+    public long StreamResets => Interlocked.Read(ref _streamResets);
     public double BufferedMs => _ring.AvailableToRead / 2.0 * 1000.0 / NetworkPcm.SampleRate;
 
     public void Start()
@@ -177,6 +183,8 @@ public sealed class NetworkPcmCapture : IDisposable
         _stop = false;
         _primed = false;
         _lastSequence = -1;
+        _session = -1;
+        Interlocked.Exchange(ref _streamResets, 0);
         _ring.Clear();
         var client = new UdpClient(new IPEndPoint(IPAddress.Any, _port));
         client.Client.ReceiveBufferSize = 1 << 20;
@@ -239,22 +247,46 @@ public sealed class NetworkPcmCapture : IDisposable
             return;
         }
 
-        uint sequence = BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(12));
-        if (_lastSequence >= 0 && sequence <= (uint)_lastSequence)
+        ushort session = BinaryPrimitives.ReadUInt16LittleEndian(packet.AsSpan(6));
+        if (session != _session)
         {
-            return;
+            // A different sender means a new sequence space. Accept it at once
+            // instead of waiting for the old sequence number to be exceeded.
+            if (_session != -1)
+            {
+                ResetStream();
+            }
+
+            _session = session;
         }
 
+        uint sequence = BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(12));
         if (_lastSequence >= 0)
         {
-            long missing = (long)sequence - _lastSequence - 1;
-            if (missing > 0)
+            if (sequence <= (uint)_lastSequence)
             {
-                // Packets can have different sizes when a block is split, so
-                // estimate the gap from the last packet we actually saw.
-                int missingFrames = (int)Math.Min(missing * _lastPacketFrames, NetworkPcm.SampleRate / 2);
-                WriteSilence(missingFrames);
-                Interlocked.Add(ref _lostPackets, missing);
+                // A re-added sender restarts at 0. Treat a clear rewind as a
+                // new stream; only a small backwards step is a late packet.
+                if ((uint)_lastSequence - sequence > 64)
+                {
+                    ResetStream();
+                }
+                else
+                {
+                    return;
+                }
+            }
+            else
+            {
+                long missing = (long)sequence - _lastSequence - 1;
+                if (missing > 0)
+                {
+                    // Packets can have different sizes when a block is split,
+                    // so estimate the gap from the last packet we saw.
+                    int missingFrames = (int)Math.Min(missing * _lastPacketFrames, NetworkPcm.SampleRate / 2);
+                    WriteSilence(missingFrames);
+                    Interlocked.Add(ref _lostPackets, missing);
+                }
             }
         }
 
@@ -272,6 +304,13 @@ public sealed class NetworkPcmCapture : IDisposable
 
         _ring.Write(_decode.AsSpan(0, frames * NetworkPcm.Channels));
         Interlocked.Increment(ref _packets);
+    }
+
+    private void ResetStream()
+    {
+        _lastSequence = -1;
+        _primed = false;
+        Interlocked.Increment(ref _streamResets);
     }
 
     private void WriteSilence(int frames)
