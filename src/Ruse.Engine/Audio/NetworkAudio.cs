@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace Ruse.App.Audio;
 
@@ -70,12 +72,18 @@ public sealed class NetworkPcmSender : IDisposable
 
     public void Send(float[] samples, int count)
     {
-        int frames = Math.Clamp(count / NetworkPcm.Channels, 0, NetworkPcm.BlockFrames);
-        if (frames <= 0)
+        // The engine block can be any size (2.5-10 ms). Split it into packets
+        // instead of clamping: clamping silently dropped everything past the
+        // first 5 ms, which made any larger block sound like constant dropouts.
+        int totalFrames = Math.Min(count / NetworkPcm.Channels, samples.Length / NetworkPcm.Channels);
+        for (int frameOffset = 0; frameOffset < totalFrames; frameOffset += NetworkPcm.BlockFrames)
         {
-            return;
+            SendPacket(samples, frameOffset, Math.Min(NetworkPcm.BlockFrames, totalFrames - frameOffset));
         }
+    }
 
+    private void SendPacket(float[] samples, int frameOffset, int frames)
+    {
         int bytes = NetworkPcm.HeaderBytes + frames * NetworkPcm.Channels * 2;
         _packet[0] = (byte)'R';
         _packet[1] = (byte)'U';
@@ -92,7 +100,7 @@ public sealed class NetworkPcmSender : IDisposable
         int offset = NetworkPcm.HeaderBytes;
         for (int frame = 0; frame < frames; frame++)
         {
-            int index = frame * NetworkPcm.Channels;
+            int index = (frameOffset + frame) * NetworkPcm.Channels;
             short left = ToPcm16(samples[index]);
             short right = ToPcm16(samples[index + 1]);
             BinaryPrimitives.WriteInt16LittleEndian(_packet.AsSpan(offset), left);
@@ -138,6 +146,7 @@ public sealed class NetworkPcmCapture : IDisposable
     private Thread? _pump;
     private volatile bool _stop;
     private long _lastSequence = -1;
+    private int _lastPacketFrames = NetworkPcm.BlockFrames;
     private bool _primed;
     private string? _lastError;
     private long _packets;
@@ -181,6 +190,7 @@ public sealed class NetworkPcmCapture : IDisposable
 
     private void ReceiveLoop()
     {
+        using var mmcss = MmcssScope.Enter();
         var remote = new IPEndPoint(IPAddress.Any, 0);
         while (!_stop)
         {
@@ -240,13 +250,16 @@ public sealed class NetworkPcmCapture : IDisposable
             long missing = (long)sequence - _lastSequence - 1;
             if (missing > 0)
             {
-                int missingFrames = (int)Math.Min(missing * frames, NetworkPcm.SampleRate / 2);
+                // Packets can have different sizes when a block is split, so
+                // estimate the gap from the last packet we actually saw.
+                int missingFrames = (int)Math.Min(missing * _lastPacketFrames, NetworkPcm.SampleRate / 2);
                 WriteSilence(missingFrames);
                 Interlocked.Add(ref _lostPackets, missing);
             }
         }
 
         _lastSequence = sequence;
+        _lastPacketFrames = frames;
         int offset = NetworkPcm.HeaderBytes;
         for (int frame = 0; frame < frames; frame++)
         {
@@ -269,6 +282,8 @@ public sealed class NetworkPcmCapture : IDisposable
 
     private void PumpLoop()
     {
+        using var mmcss = MmcssScope.Enter();
+        using var timer = HighResolutionTimer.TryCreate();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long produced = 0;
         int targetFrames = NetworkPcm.SampleRate * _targetBufferMs / 1000;
@@ -278,7 +293,7 @@ public sealed class NetworkPcmCapture : IDisposable
             long due = (long)(clock.Elapsed.TotalSeconds * NetworkPcm.SampleRate);
             if (produced >= due)
             {
-                Thread.Sleep(1);
+                WaitForNextBlock(clock, produced, timer);
                 continue;
             }
 
@@ -311,6 +326,35 @@ public sealed class NetworkPcmCapture : IDisposable
 
             Emit(_samples, NetworkPcm.BlockFrames);
             produced += NetworkPcm.BlockFrames;
+        }
+    }
+
+    private static void WaitForNextBlock(
+        System.Diagnostics.Stopwatch clock, long producedFrames, HighResolutionTimer? timer)
+    {
+        long dueTicks = (long)(producedFrames * (double)System.Diagnostics.Stopwatch.Frequency /
+            NetworkPcm.SampleRate);
+        long remaining = dueTicks - clock.ElapsedTicks;
+        if (remaining <= 0)
+        {
+            return;
+        }
+
+        if (timer != null && timer.Wait(remaining))
+        {
+            return;
+        }
+
+        // Fallback for systems without a high-resolution waitable timer. Sleep
+        // is only a coarse lower bound, so the caller re-checks the clock.
+        double milliseconds = remaining * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        if (milliseconds > 1.6)
+        {
+            Thread.Sleep((int)(milliseconds - 1));
+        }
+        else
+        {
+            Thread.SpinWait(200);
         }
     }
 
@@ -361,4 +405,76 @@ public sealed class NetworkPcmCapture : IDisposable
     }
 
     public void Dispose() => Stop();
+}
+
+/// <summary>
+/// A waitable timer created with the high-resolution flag. It wakes the audio
+/// pump close to the requested deadline instead of the 15.6 ms Sleep quantum,
+/// which otherwise makes the pump drain several jitter-buffer blocks in one
+/// burst and then underrun. Falls back to Sleep when the OS does not support it.
+/// </summary>
+internal sealed class HighResolutionTimer : IDisposable
+{
+    private const uint CreateWaitableTimerHighResolution = 0x00000002;
+    private const uint TimerAllAccess = 0x001F0003;
+
+    private readonly SafeWaitHandle? _handle;
+
+    private HighResolutionTimer(SafeWaitHandle? handle) => _handle = handle;
+
+    public static HighResolutionTimer? TryCreate()
+    {
+        try
+        {
+            IntPtr handle = CreateWaitableTimerExW(
+                IntPtr.Zero, null, CreateWaitableTimerHighResolution, TimerAllAccess);
+            return handle == IntPtr.Zero ? null : new HighResolutionTimer(new SafeWaitHandle(handle, true));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Waits until <paramref name="remainingTicks"/> Stopwatch ticks have elapsed.</summary>
+    public bool Wait(long remainingTicks)
+    {
+        if (_handle is null || _handle.IsInvalid || remainingTicks <= 0)
+        {
+            return false;
+        }
+
+        // SetWaitableTimer uses 100 ns units; negative values are relative.
+        long due = -(remainingTicks * 10_000_000L / System.Diagnostics.Stopwatch.Frequency);
+        if (due >= 0)
+        {
+            due = -1;
+        }
+
+        if (!SetWaitableTimer(_handle.DangerousGetHandle(), ref due, 0, IntPtr.Zero, IntPtr.Zero, false))
+        {
+            return false;
+        }
+
+        // A finite timeout keeps the thread from hanging if the timer is
+        // cancelled or the handle becomes invalid during shutdown.
+        double milliseconds = remainingTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        uint timeout = (uint)Math.Clamp(Math.Ceiling(milliseconds) + 5, 1, 1000);
+        WaitForSingleObject(_handle.DangerousGetHandle(), timeout);
+        return true;
+    }
+
+    public void Dispose() => _handle?.Dispose();
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateWaitableTimerExW(
+        IntPtr lpTimerAttributes, string? lpTimerName, uint dwFlags, uint dwDesiredAccess);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetWaitableTimer(
+        IntPtr hTimer, ref long lpDueTime, int lPeriod,
+        IntPtr pfnCompletionRoutine, IntPtr lpArgToCompletionRoutine, bool fResume);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
 }
