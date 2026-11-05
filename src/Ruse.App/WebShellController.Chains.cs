@@ -51,6 +51,12 @@ internal sealed partial class WebShellController
                 element.IrPath = sourceIr.ImpulseResponsePath;
             }
 
+            if (sourceModifier != null && index < sourceModifier.Processors.Count &&
+                sourceModifier.Processors[index] is INoiseProfileProcessor sourceNoise)
+            {
+                element.NoiseProfilePath = sourceNoise.NoiseProfilePath;
+            }
+
             var live = descriptor.Create();
             if (live is ITapProcessor)
             {

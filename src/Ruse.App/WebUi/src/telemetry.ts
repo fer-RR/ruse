@@ -66,6 +66,10 @@ export function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefi
     sameArray(a.spectrogram, b.spectrogram) &&
     a.spectrogramPeakHz === b.spectrogramPeakHz &&
     a.spectrogramColumns === b.spectrogramColumns &&
+    a.spectrogramNewColumns === b.spectrogramNewColumns &&
+    a.spectrogramTotalColumns === b.spectrogramTotalColumns &&
+    a.spectrogramFull === b.spectrogramFull &&
+    a.spectrogramWindowSeconds === b.spectrogramWindowSeconds &&
     a.loudnessIntegrated === b.loudnessIntegrated &&
     a.loudnessShortTerm === b.loudnessShortTerm &&
     a.loudnessRange === b.loudnessRange &&

@@ -77,6 +77,7 @@ internal sealed class ParameterDto
 internal sealed class NodeDto
 {
     public string Id { get; set; } = "";
+    public string ControlId { get; set; } = "";
     public string Kind { get; set; } = "";
     public string Flavor { get; set; } = "";
     public string Title { get; set; } = "";
@@ -113,6 +114,10 @@ internal sealed class NodeDto
     public string? IrPath { get; set; }
     public string? IrName { get; set; }
     public string? IrError { get; set; }
+    public bool IsNoiseSuppression { get; set; }
+    public string? NoiseProfilePath { get; set; }
+    public string? NoiseProfileName { get; set; }
+    public string? NoiseProfileError { get; set; }
     public bool IsFilePlayer { get; set; }
     public string? FilePath { get; set; }
     public string? FileOutputId { get; set; }
@@ -254,6 +259,10 @@ internal sealed class NodeTelemetryDto
     public int[]? Spectrogram { get; set; }
     public float? SpectrogramPeakHz { get; set; }
     public int? SpectrogramColumns { get; set; }
+    public int? SpectrogramNewColumns { get; set; }
+    public long? SpectrogramTotalColumns { get; set; }
+    public bool? SpectrogramFull { get; set; }
+    public double? SpectrogramWindowSeconds { get; set; }
     public float? Db { get; set; }
     public float? PeakDb { get; set; }
     public float? DbLeft { get; set; }
@@ -357,6 +366,10 @@ internal sealed class SettingsDto
     public bool ShowWelcomeScreen { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
     public bool ShowDiagnostics { get; set; }
+    public bool ControlApiEnabled { get; set; } = true;
+    public int ControlApiPort { get; set; } = 47100;
+    public string ControlApiUrl { get; set; } = "";
+    public string ControlApiToken { get; set; } = "";
     public bool AggressiveOutputCushion { get; set; }
     public bool ClipGuard { get; set; } = true;
     public bool LowLatencyWasapi { get; set; } = true;

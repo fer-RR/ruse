@@ -14,6 +14,9 @@ public sealed class SubgraphElement
 
     /// <summary>For a convolution reverb: the impulse response file path.</summary>
     public string? IrPath { get; set; }
+
+    /// <summary>For noise suppression: the recorded noise-floor file path.</summary>
+    public string? NoiseProfilePath { get; set; }
 }
 
 /// <summary>
@@ -70,6 +73,20 @@ public sealed class SubgraphDefinition
                 }
             }
 
+            if (instance is INoiseProfileProcessor noiseProfile &&
+                !string.IsNullOrWhiteSpace(element.NoiseProfilePath) &&
+                IsTrustedIrPath(element.NoiseProfilePath))
+            {
+                try
+                {
+                    noiseProfile.LoadNoiseProfile(element.NoiseProfilePath);
+                }
+                catch
+                {
+                    // A missing noise floor should not stop the chain loading.
+                }
+            }
+
             if (instance is IParameterizedProcessor parameterized)
             {
                 foreach (var (name, value) in element.Parameters)
@@ -113,6 +130,7 @@ public sealed class SubgraphDefinition
             {
                 TypeId = inner.TypeId,
                 IrPath = (inner as IImpulseResponseProcessor)?.ImpulseResponsePath,
+                NoiseProfilePath = (inner as INoiseProfileProcessor)?.NoiseProfilePath,
             };
             if (inner is IParameterizedProcessor parameterized)
             {

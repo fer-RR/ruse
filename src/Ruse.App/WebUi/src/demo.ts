@@ -80,6 +80,10 @@ export const demoSettings: SettingsModel = {
   showWelcomeScreen: true,
   minimizeToTray: true,
   showDiagnostics: false,
+  controlApiEnabled: true,
+  controlApiPort: 47100,
+  controlApiUrl: '',
+  controlApiToken: '',
   aggressiveOutputCushion: false,
   useGpu: false,
   isolateVst3: true,
@@ -136,7 +140,15 @@ export function createDemoTelemetry(time: number): TelemetrySnapshot {
       recordingStatus: node.isRecorder ? 'REC' : undefined,
       recordingSeconds: node.isRecorder ? Math.floor(time / 1000) : undefined,
       ...(spectrum ? { spectrum, spectrumPeakHz: 1000 } : {}),
-      ...(spectrogram ? { spectrogram, spectrogramColumns: 128, spectrogramPeakHz: 1000 } : {}),
+      ...(spectrogram ? {
+        spectrogram,
+        spectrogramColumns: 128,
+        spectrogramNewColumns: 128,
+        spectrogramTotalColumns: Math.floor(time / 100) + 1,
+        spectrogramFull: true,
+        spectrogramPeakHz: 1000,
+        spectrogramWindowSeconds: 4.1,
+      } : {}),
     };
   }
 

@@ -88,6 +88,7 @@ VST3 plugins, and ASIO drivers are not bundled.
 
 - [Handoff and project state](docs/STATE.md)
 - [Backlog](docs/BACKLOG.md)
+- [Control API (WebSocket)](docs/CONTROL-API.md)
 - [Third-party notices](THIRD-PARTY-NOTICES.md)
 
 ## License

@@ -14,6 +14,7 @@ import { I18nProvider, normalizeLanguage, translate } from './i18n';
 import type { RuseFlowNode } from './flow';
 import { nearestFreePosition } from './layout';
 import { catalogKey } from './library';
+import { SHORTCUTS } from './shortcuts';
 import { getNodeTelemetry, publishTelemetry, setNodeTitles, useUiTelemetry } from './telemetry';
 import RuseNode from './components/RuseNode';
 import RuseEdge from './components/RuseEdge';
@@ -99,6 +100,7 @@ export default function App() {
   }, [theme]);
   const t = (text: string, vars?: Record<string, string | number>) => translate(language, text, vars);
   const ui = useUiTelemetry();
+  const running = ui.running || graph.running;
   const [status, setStatus] = useState<StatusMessage>({ text: isHosted ? 'Starting native audio engine.' : 'Interface preview - native engine not attached.', isError: false });
   const [startup, setStartup] = useState({ visible: isHosted, progress: 0.08 });
   const [alert, setAlert] = useState<StatusMessage | null>(null);
@@ -820,6 +822,11 @@ export default function App() {
         setShowSettings(true);
         return;
       }
+      if (event.key === 'F5') {
+        event.preventDefault();
+        send('refresh');
+        return;
+      }
       if (editing) return;
       const modifier = event.ctrlKey || event.metaKey;
       if (modifier && event.key.toLowerCase() === 'z') {
@@ -831,6 +838,13 @@ export default function App() {
       } else if (modifier && event.shiftKey && event.key.toLowerCase() === 'd') {
         event.preventDefault();
         toggleDiagnostics();
+      } else if (modifier && event.shiftKey && event.key.toLowerCase() === 'm') {
+        event.preventDefault();
+        send('mic-mute', { value: !ui.micMuted });
+      } else if (modifier && event.key === ',') {
+        event.preventDefault();
+        setSettingsTab('behavior');
+        setShowSettings(true);
       } else if (modifier && event.key.toLowerCase() === 'd') {
         event.preventDefault();
         duplicateSelected();
@@ -868,6 +882,19 @@ export default function App() {
         event.preventDefault();
         setSettingsTab('diagnostics');
         setShowSettings(true);
+      } else if (event.key === ' ' &&
+                 !(target instanceof HTMLButtonElement) &&
+                 !(target instanceof HTMLInputElement) &&
+                 !(target instanceof HTMLSelectElement) &&
+                 !(target instanceof HTMLTextAreaElement)) {
+        event.preventDefault();
+        send('transport', { running: !running });
+      } else if (event.key.toLowerCase() === 'b') {
+        const selected = nodesRef.current.find(node =>
+          node.selected && node.data.kind === 'modifier' && !node.data.diagnostics);
+        if (selected) {
+          send('effect-enabled', { id: selected.id, value: selected.data.enabled === false });
+        }
       } else if (event.key.toLowerCase() === 'f') {
         fitGraph();
       } else if (event.key.toLowerCase() === 'm') {
@@ -886,7 +913,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [flow, toggleDiagnostics, modalOpen]);
+  }, [flow, toggleDiagnostics, modalOpen, running, ui.micMuted]);
 
   const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -958,7 +985,6 @@ export default function App() {
     [nodes],
   );
   const showMiniMap = graphNodeCount > 0 && settings.minimapMode !== 1 && anyNodeOffscreen;
-  const running = ui.running || graph.running;
   const audioPlaying = catalog.apps.some(item => item.active === true);
   const primaryWarning = graph.warnings?.find(warning => warning.severity === 'warning') ?? graph.warnings?.[0];
   const warningSignature = primaryWarning
@@ -1322,12 +1348,12 @@ export default function App() {
         <div className="context-menu" role="menu" onKeyDown={onContextMenuKeyDown} style={{ left: menuLeft, top: menuTop } }>
           {canvasMenu.kind === 'node' && menuNode && <>
             <button role="menuitem" tabIndex={-1} onClick={() => { setRenamePrompt({ id: menuNode.id, title: menuNode.data.title }); setCanvasMenu(null); } }><Pencil size={14} /> {t('Rename')}</button>
-            <button role="menuitem" tabIndex={-1} onClick={() => { send('duplicate', { id: menuNode.id }); setCanvasMenu(null); } }><Copy size={14} /> {t('Duplicate')} <kbd>Ctrl D</kbd></button>
-            <button role="menuitem" tabIndex={-1} onClick={() => { send('mute', { id: menuNode.id, value: !menuNode.data.muted }); setCanvasMenu(null); } }>{menuNode.data.muted ? <Volume2 size={14} /> : <VolumeX size={14} />} {menuNode.data.muted ? t('Unmute node') : t('Mute node')} <kbd>M</kbd></button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { send('duplicate', { id: menuNode.id }); setCanvasMenu(null); } }><Copy size={14} /> {t('Duplicate')} <kbd>{SHORTCUTS.duplicate}</kbd></button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { send('mute', { id: menuNode.id, value: !menuNode.data.muted }); setCanvasMenu(null); } }>{menuNode.data.muted ? <Volume2 size={14} /> : <VolumeX size={14} />} {menuNode.data.muted ? t('Unmute node') : t('Mute node')} <kbd>{SHORTCUTS.muteSelected}</kbd></button>
             {menuNode.data.isDbMeter && <button role="menuitem" tabIndex={-1} onClick={() => { send('db-meter-orientation', { id: menuNode.id, vertical: !menuDbVertical }); setCanvasMenu(null); } }><ArrowUpDown size={14} /> {menuDbVertical ? t('Make horizontal') : t('Make vertical')}</button>}
             <button role="menuitem" tabIndex={-1} onClick={() => { send('disconnect-node', { id: menuNode.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect routes')}</button>
             <div className="menu-separator" role="separator" />
-            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('remove', { id: menuNode.id }); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Remove node')} <kbd>Del</kbd></button>
+            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('remove', { id: menuNode.id }); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Remove node')} <kbd>{SHORTCUTS.remove}</kbd></button>
           </>}
           {canvasMenu.kind === 'edge' && menuLink && <>
             <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('disconnect', { id: menuLink.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect cable')}</button>
@@ -1337,8 +1363,8 @@ export default function App() {
               if (canvasMenu.flowX != null && canvasMenu.flowY != null) sendAdd(systemItem, findFreeSpot({ x: canvasMenu.flowX, y: canvasMenu.flowY }));
               setCanvasMenu(null);
             } }><Plus size={14} /> {t('Add system audio')}</button>
-            <button role="menuitem" tabIndex={-1} onClick={() => { fitGraph(); setCanvasMenu(null); } }><Maximize2 size={14} /> {t('Fit graph')} <kbd>F</kbd></button>
-            <button role="menuitem" tabIndex={-1} onClick={tidyGraph }><LayoutGrid size={14} /> {t('Tidy up')}</button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { fitGraph(); setCanvasMenu(null); } }><Maximize2 size={14} /> {t('Fit graph')} <kbd>{SHORTCUTS.fit}</kbd></button>
+            <button role="menuitem" tabIndex={-1} onClick={tidyGraph }><LayoutGrid size={14} /> {t('Tidy up')} <kbd>{SHORTCUTS.tidy}</kbd></button>
             <div className="menu-separator" role="separator" />
             <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { setShowClear(true); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Clear graph')}</button>
           </>}

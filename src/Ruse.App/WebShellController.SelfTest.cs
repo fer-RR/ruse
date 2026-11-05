@@ -41,7 +41,7 @@ internal sealed partial class WebShellController
         spectrogram.SetTapId(SpectrogramProcessor.NextTapId());
         spectrogram.Process(fftTone, fftFrames);
         var columns = SpectrogramProcessor.GetColumns(spectrogram.TapId);
-        Check("spectrogram tap", columns is { Length: 128 * 128 } &&
+        Check("spectrogram tap", columns is { Length: SpectrogramProcessor.Columns * 128 } &&
                                  columns.Any(value => value > 0));
         SpectrogramProcessor.RemoveTap(spectrogram.TapId);
 

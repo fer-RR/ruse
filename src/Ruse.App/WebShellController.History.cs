@@ -65,7 +65,8 @@ internal sealed partial class WebShellController
         string? NetworkHost = null,
         bool IsNetworkOutput = false,
         float FileSpeed = 1f,
-        int TtsVoice = 0);
+        int TtsVoice = 0,
+        string? ControlId = null);
 
     private void PushAction(string label, Action undo, Action redo, string? coalesceKey = null)
     {
@@ -150,7 +151,8 @@ internal sealed partial class WebShellController
             entry.Id, entry.Kind, entry.Flavor, entry.Title, entry.Subtitle, entry.Accent,
             entry.X, entry.Y, entry.Width, entry.Height, entry.MicHint, SourceKind.Application, null, null, null, null,
             Array.Empty<int>(), false, false, null, AudioFileFormat.Wav24, RecorderMode.Off.ToString(), false,
-            new List<PresetProcessor>(), 1, false, true, null, null, null, false);
+            new List<PresetProcessor>(), 1, false, true, null, null, null, false,
+            ControlId: entry.ControlId);
 
         if (entry.Source != null)
         {
@@ -245,7 +247,7 @@ internal sealed partial class WebShellController
 
                 source.Gain = snapshot.Volume;
                 source.Muted = snapshot.Muted;
-                var sourceEntry = RegisterSource(source, snapshot.X, snapshot.Y, snapshot.Id);
+                var sourceEntry = RegisterSource(source, snapshot.X, snapshot.Y, snapshot.Id, snapshot.ControlId);
                 if (snapshot.SourceKind == SourceKind.Tts)
                 {
                     sourceEntry.TtsText = snapshot.TtsText ?? "";
@@ -299,7 +301,7 @@ internal sealed partial class WebShellController
                 output.AutoSave = snapshot.AutoSave;
                 output.RecorderSilenceStopSeconds = snapshot.RecorderSilenceStopSeconds;
                 output.RecorderStartThresholdDb = snapshot.RecorderStartThresholdDb;
-                var outputEntry = RegisterOutput(output, snapshot.X, snapshot.Y, micHint, snapshot.Id);
+                var outputEntry = RegisterOutput(output, snapshot.X, snapshot.Y, micHint, snapshot.Id, snapshot.ControlId);
                 outputEntry.Width = snapshot.Width;
                 outputEntry.Height = snapshot.Height;
                 return outputEntry;
@@ -324,7 +326,7 @@ internal sealed partial class WebShellController
                 modifier.Send = snapshot.Send;
                 var modifierEntry = RegisterModifier(modifier, snapshot.X, snapshot.Y,
                     snapshot.Flavor, snapshot.Subtitle, snapshot.Id, snapshot.TranscriberModel,
-                    snapshot.TranslatorTarget, snapshot.TranslatorModel);
+                    snapshot.TranslatorTarget, snapshot.TranslatorModel, snapshot.ControlId);
                 modifierEntry.Width = snapshot.Width;
                 modifierEntry.Height = snapshot.Height;
                 return modifierEntry;

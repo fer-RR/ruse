@@ -63,6 +63,7 @@ export interface ParameterModel {
 
 export interface NodeModel {
   id: string;
+  controlId?: string;
   kind: NodeKind;
   flavor: string;
   title: string;
@@ -92,6 +93,10 @@ export interface NodeModel {
   irPath?: string;
   irName?: string;
   irError?: string;
+  isNoiseSuppression?: boolean;
+  noiseProfilePath?: string;
+  noiseProfileName?: string;
+  noiseProfileError?: string;
   isParallel?: boolean;
   send?: number;
   isFilePlayer?: boolean;
@@ -218,6 +223,10 @@ export interface NodeTelemetry {
   spectrogram?: number[];
   spectrogramPeakHz?: number;
   spectrogramColumns?: number;
+  spectrogramNewColumns?: number;
+  spectrogramTotalColumns?: number;
+  spectrogramFull?: boolean;
+  spectrogramWindowSeconds?: number;
   db?: number;
   peakDb?: number;
   dbLeft?: number;
@@ -385,6 +394,10 @@ export interface SettingsModel {
   showWelcomeScreen: boolean;
   minimizeToTray: boolean;
   showDiagnostics: boolean;
+  controlApiEnabled: boolean;
+  controlApiPort: number;
+  controlApiUrl?: string;
+  controlApiToken?: string;
   aggressiveOutputCushion: boolean;
   clipGuard?: boolean;
   lowLatencyWasapi?: boolean;

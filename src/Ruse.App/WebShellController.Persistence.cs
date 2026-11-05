@@ -27,6 +27,7 @@ internal sealed partial class WebShellController
                 preset.Sources.Add(new PresetSource
                 {
                     Title = entry.Title,
+                    ControlId = entry.ControlId,
                     Kind = entry.Source.Kind.ToString(),
                     ProcessId = entry.Source.ProcessId,
                     ProcessName = entry.Source.ProcessName,
@@ -61,6 +62,7 @@ internal sealed partial class WebShellController
                 {
                     DeviceId = entry.Output.DeviceId,
                     Title = entry.Title,
+                    ControlId = entry.ControlId,
                     IsVirtual = entry.MicHint != null,
                     MicHint = entry.MicHint,
                     IsFile = entry.Output.IsFileRecorder,
@@ -89,6 +91,7 @@ internal sealed partial class WebShellController
                 preset.Modifiers.Add(new PresetModifier
                 {
                     Title = entry.Title,
+                    ControlId = entry.ControlId,
                     Enabled = entry.Modifier.Enabled,
                     Parallel = entry.Modifier.Parallel,
                     Send = entry.Modifier.Send,
@@ -240,7 +243,8 @@ internal sealed partial class WebShellController
                 source.Muted = saved.Muted;
                 source.Solo = saved.Solo;
                 source.SelectedOutputId = saved.OutputId;
-                var sourceEntry = RegisterSource(source, saved.X + offsetX, saved.Y + offsetY);
+                var sourceEntry = RegisterSource(source, saved.X + offsetX, saved.Y + offsetY,
+                    controlId: saved.ControlId);
                 if (kind == SourceKind.Tts)
                 {
                     sourceEntry.TtsText = saved.TtsText ?? "";
@@ -319,7 +323,8 @@ internal sealed partial class WebShellController
                     output.RecorderMode = RecorderMode.Off;
                     output.AutoSave = false;
                 }
-                var outputEntry = RegisterOutput(output, saved.X + offsetX, saved.Y + offsetY, micHint);
+                var outputEntry = RegisterOutput(output, saved.X + offsetX, saved.Y + offsetY, micHint,
+                    controlId: saved.ControlId);
                 outputEntry.Width = saved.Width;
                 outputEntry.Height = saved.Height;
                 outputEntry.Color = NormalizeNodeColor(saved.Color);
@@ -355,7 +360,8 @@ internal sealed partial class WebShellController
                 subtitle: isChain ? "Saved chain" : "Processing",
                 transcriberModel: saved.TranscriberModel,
                 translatorTarget: saved.TranslatorTarget,
-                translatorModel: saved.TranslatorModel);
+                translatorModel: saved.TranslatorModel,
+                controlId: saved.ControlId);
             modifierEntry.Width = saved.Width;
             modifierEntry.Height = saved.Height;
             modifierEntry.Color = NormalizeNodeColor(saved.Color);
@@ -555,6 +561,11 @@ internal sealed partial class WebShellController
         }
 
         _settings.ShowDiagnostics = settings.ShowDiagnostics;
+        bool controlApiChanged =
+            _settings.ControlApiEnabled != settings.ControlApiEnabled ||
+            _settings.ControlApiPort != Math.Clamp(settings.ControlApiPort, 0, 65535);
+        _settings.ControlApiEnabled = settings.ControlApiEnabled;
+        _settings.ControlApiPort = Math.Clamp(settings.ControlApiPort, 0, 65535);
         bool audioEngineChanged =
             _settings.AudioAutoMode != settings.AudioAutoMode ||
             Math.Abs(_settings.AudioBlockSizeMs - settings.AudioBlockSizeMs) > 0.001 ||
@@ -665,6 +676,11 @@ internal sealed partial class WebShellController
 
         PublishSettings();
         PublishGraph();
+        if (controlApiChanged)
+        {
+            _ = RestartControlServerAsync();
+        }
+
         if (audioEngineChanged && _running)
         {
             StopRouting();

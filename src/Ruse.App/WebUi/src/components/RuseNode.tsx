@@ -9,11 +9,14 @@ import {
 import { send } from '../bridge';
 import type { RuseFlowNode } from '../flow';
 import { useI18n } from '../i18n';
+import { withShortcut } from '../shortcuts';
 import { TRANSLATION_TARGETS, translationTarget } from '../languages';
 import { useNodeActive, useNodeTelemetry } from '../telemetry';
 import type { NodeTelemetry } from '../types';
 import DiagnosticsNode from './DiagnosticsNode';
 import IrControls from './IrControls';
+import NoiseProfileControls from './NoiseProfileControls';
+import NumberField from './NumberField';
 import LoudnessView from './LoudnessView';
 import ParameterControl from './ParameterControl';
 import ParametricEqView from './ParametricEqView';
@@ -77,7 +80,7 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
       <span>{Math.round(local * 100)}%</span>
       <button
         className={`icon-button compact ${muted ? 'danger-text' : ''}`}
-        title={muted ? t('Unmute node') : t('Mute node')}
+        title={withShortcut(muted ? t('Unmute node') : t('Mute node'), 'muteSelected')}
         aria-label={muted ? t('Unmute node') : t('Mute node')}
         onClick={() => send('mute', { id, value: !muted })}
       >
@@ -206,12 +209,6 @@ function NetworkAddress({ node }: { node: RuseFlowNode['data'] }) {
 }
 function NetworkInputControls({ node }: { node: RuseFlowNode['data'] }) {
   const { t } = useI18n();
-  const [port, setPort] = useState(String(node.networkPort ?? 7890));
-  useEffect(() => setPort(String(node.networkPort ?? 7890)), [node.networkPort]);
-  const commit = () => {
-    const value = Number(port);
-    if (Number.isFinite(value)) send('network-input-port', { id: node.id, value });
-  };
   return (
     <div className="network-controls nodrag">
       <label className="network-row">
@@ -220,14 +217,13 @@ function NetworkInputControls({ node }: { node: RuseFlowNode['data'] }) {
       </label>
       <label className="network-row">
         <span>{t('UDP port')}</span>
-        <input
-          type="number"
+        <NumberField
+          value={node.networkPort ?? 7890}
           min={1}
           max={65535}
-          value={port}
-          onChange={event => setPort(event.target.value)}
-          onBlur={commit}
-          onKeyDown={event => { if (event.key === 'Enter') { event.currentTarget.blur(); } }}
+          step={1}
+          onChange={value => send('network-input-port', { id: node.id, value })}
+          ariaLabel={t('UDP port')}
         />
       </label>
       {node.muted
@@ -246,15 +242,9 @@ function NetworkInputControls({ node }: { node: RuseFlowNode['data'] }) {
 function NetworkOutputControls({ node }: { node: RuseFlowNode['data'] }) {
   const { t } = useI18n();
   const [host, setHost] = useState(node.networkHost ?? '127.0.0.1');
-  const [port, setPort] = useState(String(node.networkPort ?? 7890));
   useEffect(() => setHost(node.networkHost ?? '127.0.0.1'), [node.networkHost]);
-  useEffect(() => setPort(String(node.networkPort ?? 7890)), [node.networkPort]);
   const commitHost = () => {
     if (host.trim()) send('network-output-host', { id: node.id, value: host.trim() });
-  };
-  const commitPort = () => {
-    const value = Number(port);
-    if (Number.isFinite(value)) send('network-output-port', { id: node.id, value });
   };
   return (
     <div className="network-controls nodrag">
@@ -264,14 +254,13 @@ function NetworkOutputControls({ node }: { node: RuseFlowNode['data'] }) {
       </label>
       <label className="network-row">
         <span>{t('UDP port')}</span>
-        <input
-          type="number"
+        <NumberField
+          value={node.networkPort ?? 7890}
           min={1}
           max={65535}
-          value={port}
-          onChange={event => setPort(event.target.value)}
-          onBlur={commitPort}
-          onKeyDown={event => { if (event.key === 'Enter') { event.currentTarget.blur(); } }}
+          step={1}
+          onChange={value => send('network-output-port', { id: node.id, value })}
+          ariaLabel={t('UDP port')}
         />
       </label>
       {node.muted
@@ -545,16 +534,13 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
           <label className="recorder-advanced-row">
             <span>{t('Stop after silence')}</span>
             <span className="recorder-advanced-value">
-              <input
-                type="number"
+              <NumberField
+                value={silenceSeconds}
                 min={0}
                 max={3600}
                 step={1}
-                value={silenceSeconds}
-                onChange={event => send('recorder-silence', {
-                  id: node.id,
-                  value: Number(event.target.value),
-                })}
+                onChange={value => send('recorder-silence', { id: node.id, value })}
+                ariaLabel={t('Stop after silence')}
               />
               <span>{t('seconds')}</span>
             </span>
@@ -562,16 +548,13 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
           <label className="recorder-advanced-row">
             <span>{t('Start threshold')}</span>
             <span className="recorder-advanced-value">
-              <input
-                type="number"
+              <NumberField
+                value={startThresholdDb}
                 min={-80}
                 max={0}
                 step={1}
-                value={startThresholdDb}
-                onChange={event => send('recorder-threshold', {
-                  id: node.id,
-                  value: Number(event.target.value),
-                })}
+                onChange={value => send('recorder-threshold', { id: node.id, value })}
+                ariaLabel={t('Start threshold')}
               />
               <span>dB</span>
             </span>
@@ -749,10 +732,10 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             {formatRate(formatRateValue)} · {formatBits}-bit
           </span>
         ) : null}
-        {isModifier && <button className={`node-power nodrag ${enabled ? '' : 'off'}`} title={enabled ? t('Bypass effect') : t('Enable effect')} aria-label={enabled ? t('Bypass effect') : t('Enable effect')} onClick={() => send('effect-enabled', { id: data.id, value: !enabled })}>
+        {isModifier && <button className={`node-power nodrag ${enabled ? '' : 'off'}`} title={withShortcut(enabled ? t('Bypass effect') : t('Enable effect'), 'bypass')} aria-label={enabled ? t('Bypass effect') : t('Enable effect')} onClick={() => send('effect-enabled', { id: data.id, value: !enabled })}>
           <Power size={13} />
         </button>}
-        <button className="node-remove nodrag" title={t('Remove node')} aria-label={t('Remove {name}', { name: data.title })} onClick={() => {
+        <button className="node-remove nodrag" title={withShortcut(t('Remove node'), 'remove')} aria-label={t('Remove {name}', { name: data.title })} onClick={() => {
           if (data.isRecorder && telemetry?.recordingStatus === 'REC') {
             window.dispatchEvent(new CustomEvent('ruse-remove-recorder', { detail: { id: data.id, title: data.title } }));
           } else {
@@ -764,6 +747,12 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
       </header>
       {!isDbMeter && !isLoudness && <div className="node-subtitle">{t(data.subtitle)}</div>}
       {!isDbMeter && !isLoudness && data.micHint && <div className="node-hint" title={data.micHint}>{t('Use {name} as the microphone', { name: data.micHint })}</div>}
+      {data.showDiagnostics && data.controlId && (
+        <div className="node-control-id nodrag" title={`${t('Control ID')}: ${data.controlId}`}>
+          <span>{t('Control ID')}</span>
+          <code>{data.controlId}</code>
+        </div>
+      )}
       {isLoudness ? (
         <LoudnessView
           id={data.id}
@@ -788,7 +777,11 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
           />}
           {isSpectrogram && <SpectrogramView
             values={telemetry?.spectrogram}
-            columns={telemetry?.spectrogramColumns}
+            newColumns={telemetry?.spectrogramNewColumns}
+            totalColumns={telemetry?.spectrogramTotalColumns}
+            full={telemetry?.spectrogramFull}
+            capacity={telemetry?.spectrogramColumns}
+            windowSeconds={telemetry?.spectrogramWindowSeconds}
             peakHz={telemetry?.spectrogramPeakHz}
           />}
           {data.isGraphicEq && <GraphicEqualizerView
@@ -839,6 +832,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             {data.chainElements.map((name, index) => <span className="chain-chip" key={`${name}-${index}`}>{name}</span>)}
           </div>}
           {data.isConvolutionReverb && <IrControls node={data} />}
+          {data.isNoiseSuppression && <NoiseProfileControls node={data} />}
           {canParallel && (
             <div className="parallel-controls nodrag">
               <label className="parallel-toggle">

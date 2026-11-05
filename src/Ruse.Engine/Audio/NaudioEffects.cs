@@ -34,8 +34,9 @@ public static class NaudioEffects
         Register("saturation", "Saturation",
             "Soft-clip drive with optional oversampling.", () => new SaturationEffect());
 
-        Register("noise-suppression", "Noise suppression",
-            "Spectral background-noise reduction for voice.", () => new NoiseSuppressionEffect());
+        RegisterProcessor("noise-suppression", "Noise suppression",
+            "Spectral background-noise reduction for voice, with an optional recorded noise floor.",
+            () => new NoiseSuppressionProcessor());
 
         Register("agc", "AGC",
             "Automatic gain control that levels voice.", () => new AutomaticGainControlEffect());

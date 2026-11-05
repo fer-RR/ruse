@@ -305,7 +305,15 @@ button { -webkit-tap-highlight-color: transparent; }
 .library-group { margin-bottom: 12px; min-width: 0; }
 .group-title { margin: 13px 5px 6px; color: var(--text-3); font-size: 10px; font-weight: 650; letter-spacing: 1.2px; text-transform: uppercase; }
 .library-section { margin-bottom: 4px; }
-.section-toggle { width: 100%; height: 29px; display: flex; align-items: center; gap: 7px; padding: 0 5px; border: 0; background: transparent; color: var(--text-2); text-align: left; font-size: 11px; }
+.library-section.dragging { position: relative; z-index: 2; opacity: 0.7; }
+.section-header { display: flex; align-items: center; gap: 1px; }
+.section-drag { width: 20px; height: 29px; flex: 0 0 20px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-3); opacity: 0.35; cursor: grab; touch-action: none; }
+.section-drag:hover { background: var(--surface-2); color: var(--text); opacity: 1; }
+.section-drag:focus-visible { opacity: 1; }
+.section-drag:active { cursor: grabbing; }
+.section-drag:disabled { opacity: 0.12; cursor: default; }
+.library-section:hover .section-drag { opacity: 1; }
+.section-toggle { flex: 1; min-width: 0; height: 29px; display: flex; align-items: center; gap: 7px; padding: 0 5px; border: 0; background: transparent; color: var(--text-2); text-align: left; font-size: 11px; }
 .section-toggle:hover { color: var(--text); }
 .section-toggle svg { margin-left: auto; transition: transform 120ms ease; }
 .section-toggle svg.collapsed { transform: rotate(-90deg); }
@@ -453,6 +461,9 @@ body.sidebar-resizing *, body.mixer-resizing * { cursor: col-resize !important; 
 .ruse-node.copy { border-color: rgba(101, 214, 208, 0.5); }
 .node-subtitle { padding: 5px 9px 0; color: var(--text-3); font-size: 9.5px; }
 .node-hint { margin: 6px 9px 0; padding: 5px 7px; overflow: hidden; border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 5px; background: color-mix(in srgb, var(--accent) 6%, transparent); color: var(--text-2); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.node-control-id { display: flex; align-items: baseline; gap: 5px; min-width: 0; margin: 5px 9px 0; color: var(--text-3); font-size: 9px; }
+.node-control-id span { flex: 0 0 auto; font: 650 8px Consolas, monospace; letter-spacing: 0.4px; text-transform: uppercase; }
+.node-control-id code { overflow: hidden; color: var(--text-2); font: 9px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .node-volume { display: flex; align-items: center; gap: 6px; padding: 6px 7px 7px 9px; }
 .node-volume > input { flex: 1; min-width: 0; }
 .node-volume > span { width: 32px; color: var(--text-3); font: 9.5px Consolas, monospace; text-align: right; }
@@ -907,7 +918,11 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .chain-elements { max-height: 46vh; display: grid; gap: 7px; overflow: auto; padding-right: 3px; }
 .chain-empty { padding: 24px; border: 1px dashed var(--line-strong); border-radius: 8px; color: var(--text-3); font-size: 11px; text-align: center; }
 .chain-element { padding: 10px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-0); }
+.chain-element.dragging { position: relative; z-index: 2; opacity: 0.7; }
 .chain-element header { display: flex; align-items: center; gap: 6px; }
+.chain-drag-handle { width: 22px; height: 22px; flex: 0 0 22px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-3); cursor: grab; touch-action: none; }
+.chain-drag-handle:hover { background: var(--surface-2); color: var(--text); }
+.chain-drag-handle:active { cursor: grabbing; }
 .chain-element header strong { flex: 1; font-size: 12px; font-weight: 600; }
 .chain-element-index { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px; background: rgba(229, 173, 81, 0.12); color: var(--amber); font: 600 9px Consolas, monospace; }
 .chain-parameters { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 18px; margin-top: 10px; }
@@ -953,6 +968,27 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .setting-row strong { display: block; margin-bottom: 3px; font-size: 12px; font-weight: 550; }
 .setting-row small { display: block; color: var(--text-3); font-size: 10px; line-height: 1.5; }
 .setting-row select { min-width: 120px; }
+.setting-row input.settings-text-field { width: 220px; max-width: 40vw; height: 30px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--inset); color: var(--text-2); font: 10px Consolas, monospace; }
+.secret-field { display: flex; align-items: center; gap: 5px; min-width: 0; }
+.secret-field .settings-text-field { width: 196px; max-width: 36vw; }
+.number-field { position: relative; width: 92px; height: 30px; flex: 0 0 auto; }
+.number-field input { width: 100%; height: 100%; padding: 0 24px 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--inset); color: var(--text-2); font: 10px Consolas, monospace; text-align: right; }
+.number-field input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.number-field input:disabled { opacity: 0.5; }
+.number-field input[type="number"] { appearance: textfield; -moz-appearance: textfield; }
+.number-field input[type="number"]::-webkit-inner-spin-button,
+.number-field input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.number-field-arrows { position: absolute; top: 1px; right: 1px; bottom: 1px; width: 20px; display: flex; flex-direction: column; overflow: hidden; border-left: 1px solid var(--line); border-radius: 0 5px 5px 0; }
+.number-field-arrows button { flex: 1; min-height: 0; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: var(--text-3); cursor: pointer; }
+.number-field-arrows button:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.number-field-arrows button:disabled { opacity: 0.35; cursor: default; }
+.number-field-arrows svg { width: 70%; height: 70%; }
+.network-row .number-field { flex: 1; width: auto; min-width: 0; height: 24px; }
+.network-row .number-field input { padding-right: 20px; font-size: 9px; }
+.network-row .number-field-arrows { width: 18px; }
+.recorder-advanced-value .number-field { width: 62px; height: 24px; }
+.recorder-advanced-value .number-field input { padding-right: 18px; font-size: 9px; }
+.recorder-advanced-value .number-field-arrows { width: 16px; }
 .setting-row input[role="switch"] { position: relative; width: 36px; height: 20px; flex: 0 0 auto; margin: 0; appearance: none; border-radius: 10px; background: #303b49; cursor: pointer; }
 .setting-row input[role="switch"]::after { content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #8996a8; transition: transform 120ms ease, background 120ms ease; }
 .setting-row input[role="switch"]:checked { background: #1f6947; }

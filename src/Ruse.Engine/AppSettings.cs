@@ -87,6 +87,12 @@ public sealed class AppSettings
     /// <summary>Show the live engine/UI diagnostics overlay for troubleshooting.</summary>
     public bool ShowDiagnostics { get; set; }
 
+    /// <summary>Allow other local apps to control Ruse through the loopback API.</summary>
+    public bool ControlApiEnabled { get; set; } = true;
+
+    /// <summary>Preferred loopback port; 0 or a busy port falls back to a free one.</summary>
+    public int ControlApiPort { get; set; } = 47100;
+
     /// <summary>Ask WASAPI for an IAudioClient3 low-latency shared stream.</summary>
     public bool LowLatencyWasapi { get; set; } = true;
 

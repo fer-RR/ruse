@@ -266,6 +266,56 @@ internal sealed partial class WebShellController
         PublishTelemetry(force: true);
     }
 
+    private void ChooseNoiseProfile(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null ||
+            entry.Modifier.Processors.OfType<INoiseProfileProcessor>().FirstOrDefault() is not { } processor)
+        {
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Choose a noise floor recording",
+            Filter = "Audio files|*.wav;*.aif;*.aiff;*.flac;*.mp3|All files|*.*",
+            CheckFileExists = true,
+            FileName = processor.NoiseProfilePath ?? "",
+        };
+        if (dialog.ShowDialog(_window) != true)
+        {
+            return;
+        }
+
+        try
+        {
+            processor.LoadNoiseProfile(dialog.FileName);
+            _graph.RefreshModifiers();
+            SetStatus($"Noise floor loaded: {processor.NoiseProfileName}.");
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not load the noise floor: " + ex.Message, ex);
+        }
+
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private void ClearNoiseProfile(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null ||
+            entry.Modifier.Processors.OfType<INoiseProfileProcessor>().FirstOrDefault() is not { } processor)
+        {
+            return;
+        }
+
+        processor.ClearNoiseProfile();
+        _graph.RefreshModifiers();
+        SetStatus("Noise floor cleared.");
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
     private void SetFilePlayerOutput(string id, string outputId)
     {
         if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
@@ -783,7 +833,7 @@ internal sealed partial class WebShellController
             !entry.Output.IsFileRecorder && string.Equals(entry.Output.DeviceId, id, StringComparison.OrdinalIgnoreCase));
     }
 
-    private NodeEntry RegisterSource(SourceNode source, double x, double y, string? id = null)
+    private NodeEntry RegisterSource(SourceNode source, double x, double y, string? id = null, string? controlId = null)
     {
         _graph.AddSource(source);
         var entry = new NodeEntry
@@ -829,13 +879,14 @@ internal sealed partial class WebShellController
             Source = source,
         };
         _nodes.Add(entry.Id, entry);
+        entry.ControlId = MakeUniqueControlId(entry, controlId);
         UpdateSourceEndpoint(entry);
         source.Faulted += (node, reason) => _window.Dispatcher.BeginInvoke(new Action(() =>
             OnNodeFault(entry.Id, $"Capture '{node.Title}' stopped: {reason}")));
         return entry;
     }
 
-    private NodeEntry RegisterOutput(OutputNode output, double x, double y, string? micHint = null, string? id = null)
+    private NodeEntry RegisterOutput(OutputNode output, double x, double y, string? micHint = null, string? id = null, string? controlId = null)
     {
         // A file recorder with no destination cannot carry audio yet. Keep it
         // out of the render graph until it is connected or actually recording.
@@ -858,6 +909,7 @@ internal sealed partial class WebShellController
             Output = output,
         };
         _nodes.Add(entry.Id, entry);
+        entry.ControlId = MakeUniqueControlId(entry, controlId);
         output.Faulted += (node, reason) => _window.Dispatcher.BeginInvoke(new Action(() =>
             OnNodeFault(entry.Id, $"Output '{node.Title}' stopped: {reason}")));
         return entry;
@@ -872,7 +924,8 @@ internal sealed partial class WebShellController
         string? id = null,
         string? transcriberModel = null,
         string? translatorTarget = null,
-        string? translatorModel = null)
+        string? translatorModel = null,
+        string? controlId = null)
     {
         EnsureUniqueTapIds(modifier);
         _graph.AddModifier(modifier);
@@ -956,6 +1009,7 @@ internal sealed partial class WebShellController
             Modifier = modifier,
         };
         _nodes.Add(entry.Id, entry);
+        entry.ControlId = MakeUniqueControlId(entry, controlId);
 
         if (modifier.Processors.OfType<IVst3Processor>().FirstOrDefault() is { } vst)
         {
@@ -1154,6 +1208,7 @@ internal sealed partial class WebShellController
         var dto = new NodeDto
         {
             Id = entry.Id,
+            ControlId = entry.ControlId,
             Kind = entry.Kind,
             Flavor = entry.Flavor,
             Title = entry.Title,
@@ -1240,6 +1295,14 @@ internal sealed partial class WebShellController
                 dto.IrPath = impulse.ImpulseResponsePath;
                 dto.IrName = impulse.ImpulseResponseName;
                 dto.IrError = impulse.ImpulseResponseError;
+            }
+
+            if (entry.Modifier.Processors.OfType<INoiseProfileProcessor>().FirstOrDefault() is { } noise)
+            {
+                dto.IsNoiseSuppression = true;
+                dto.NoiseProfilePath = noise.NoiseProfilePath;
+                dto.NoiseProfileName = noise.NoiseProfileName;
+                dto.NoiseProfileError = noise.NoiseProfileError;
             }
 
             dto.IsDbMeter = entry.Modifier.Processors.OfType<DbMeterProcessor>().Any();
@@ -1972,6 +2035,7 @@ internal sealed partial class WebShellController
 
         _nodes.Remove(id);
         _nodeClipHoldUntil.Remove(id);
+        _spectrogramCursors.Remove(id);
         _midiBindings.RemoveAll(binding => binding.NodeId == id);
         if (_midiLearnTarget?.NodeId == id)
         {
@@ -2045,6 +2109,7 @@ internal sealed partial class WebShellController
         _nodes.Clear();
         _links.Clear();
         _frames.Clear();
+        _spectrogramCursors.Clear();
         ClearMidiBindings();
         _running = false;
         PublishTelemetry();

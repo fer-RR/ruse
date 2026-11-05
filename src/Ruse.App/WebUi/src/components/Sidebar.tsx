@@ -1,9 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
-import type { RefObject } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, FileAudio, Headphones, MessageSquare,
+  AppWindow, AudioLines, Check, ChevronDown, FileAudio, GripVertical, Headphones, MessageSquare,
   Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, Search, SlidersHorizontal, Speaker, Trash2, X,
 } from 'lucide-react';
+import {
+  DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors,
+} from '@dnd-kit/core';
+import type { DragEndEvent } from '@dnd-kit/core';
+import {
+  SortableContext, arrayMove, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 import { useI18n } from '../i18n';
 import { catalogKey } from '../library';
 import { useTitleActive } from '../telemetry';
@@ -139,8 +147,76 @@ function LibraryItem({ item, name, onAdd, onEdit, onRename, onDelete, onCanvas }
 }
 
 interface Section {
+  id: string;
   label: string;
   items: CatalogItem[];
+}
+
+const LIBRARY_ORDER_KEY = 'ruse.librarySectionOrder';
+const DEFAULT_SECTION_ORDER = [
+  'applications', 'network', 'physicalOutputs', 'physicalInputs', 'recording',
+  'virtualBuses', 'virtualInputs', 'asioOutputs', 'asioInputs', 'effects',
+  'plugins', 'chains', 'templates',
+] as const;
+
+function loadSectionOrder(): string[] {
+  try {
+    const raw = localStorage.getItem(LIBRARY_ORDER_KEY);
+    const parsed = raw ? JSON.parse(raw) as unknown : null;
+    if (Array.isArray(parsed)) {
+      const known = new Set<string>(DEFAULT_SECTION_ORDER);
+      const order = [...new Set(parsed.filter((value): value is string =>
+        typeof value === 'string' && known.has(value)))];
+      for (const id of DEFAULT_SECTION_ORDER) {
+        if (!order.includes(id)) order.push(id);
+      }
+      return order;
+    }
+  } catch {
+    // Preferences are optional; fall back to the default order.
+  }
+
+  return [...DEFAULT_SECTION_ORDER];
+}
+
+function SortableSection({ section, collapsed, reorderEnabled, onToggle, children }: {
+  section: Section;
+  collapsed: boolean;
+  reorderEnabled: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  const { t } = useI18n();
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: section.id,
+    disabled: !reorderEnabled,
+  });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`library-section ${isDragging ? 'dragging' : ''}`}
+      data-section-label={section.label}
+    >
+      <div className="section-header">
+        <button
+          type="button"
+          className="section-drag"
+          {...attributes}
+          {...listeners}
+          disabled={!reorderEnabled}
+          title={t('Drag to reorder')}
+          aria-label={t('Reorder {name}', { name: t(section.label) })}
+        ><GripVertical size={13} /></button>
+        <button type="button" className="section-toggle" onClick={onToggle} aria-expanded={!collapsed}>
+          <span>{t(section.label)}</span><span className="section-count">{section.items.length}</span><ChevronDown size={13} className={collapsed ? 'collapsed' : ''} />
+        </button>
+      </div>
+      {!collapsed && <div className="section-items">{children}</div>}
+    </div>
+  );
 }
 
 interface Group {
@@ -174,6 +250,22 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
   const [view, setView] = useState<View>('all');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [searching, setSearching] = useState(false);
+  const [sectionOrder, setSectionOrder] = useState<string[]>(loadSectionOrder);
+  const sectionRank = useMemo(
+    () => new Map(sectionOrder.map((id, index) => [id, index])),
+    [sectionOrder],
+  );
+  const ordered = useCallback((sections: Section[]) => [...sections].sort((a, b) =>
+    (sectionRank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+    (sectionRank.get(b.id) ?? Number.MAX_SAFE_INTEGER)), [sectionRank]);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  useEffect(() => {
+    localStorage.setItem(LIBRARY_ORDER_KEY, JSON.stringify(sectionOrder));
+  }, [sectionOrder]);
 
   const openSearch = () => {
     setSearching(true);
@@ -198,49 +290,49 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     const physicalOutputs = catalog.outputs.filter(item => item.provider !== 'ASIO');
     const asioOutputs = catalog.outputs.filter(item => item.provider === 'ASIO');
     return {
-      applications: { label: 'Applications', items: [systemItem, ...catalog.apps] },
-      network: { label: 'Network', items: [networkInputItem, networkOutputItem] },
-      physicalOutputs: { label: 'Speakers & headphones', items: physicalOutputs },
-      physicalInputs: { label: 'Microphones & inputs', items: [ttsItem, toneItem, ...physicalInputs] },
-      recording: { label: 'Record & Play', items: [recorderItem, filePlayerItem] },
-      virtualBuses: { label: 'Virtual buses', items: virtualInputs },
-      virtualInputs: { label: 'Virtual inputs', items: catalog.virtuals },
-      asioOutputs: { label: 'ASIO outputs', items: asioOutputs },
-      asioInputs: { label: 'ASIO inputs', items: asioInputs },
-      effects: { label: 'Effects', items: catalog.effects },
-      plugins: { label: 'VST3 plugins', items: catalog.vst3Plugins },
-      chains: { label: 'Saved chains', items: catalog.chains },
-      templates: { label: 'Frame templates', items: catalog.frameTemplates },
+      applications: { id: 'applications', label: 'Applications', items: [systemItem, ...catalog.apps] },
+      network: { id: 'network', label: 'Network', items: [networkInputItem, networkOutputItem] },
+      physicalOutputs: { id: 'physicalOutputs', label: 'Speakers & headphones', items: physicalOutputs },
+      physicalInputs: { id: 'physicalInputs', label: 'Microphones & inputs', items: [ttsItem, toneItem, ...physicalInputs] },
+      recording: { id: 'recording', label: 'Record & Play', items: [recorderItem, filePlayerItem] },
+      virtualBuses: { id: 'virtualBuses', label: 'Virtual buses', items: virtualInputs },
+      virtualInputs: { id: 'virtualInputs', label: 'Virtual inputs', items: catalog.virtuals },
+      asioOutputs: { id: 'asioOutputs', label: 'ASIO outputs', items: asioOutputs },
+      asioInputs: { id: 'asioInputs', label: 'ASIO inputs', items: asioInputs },
+      effects: { id: 'effects', label: 'Effects', items: catalog.effects },
+      plugins: { id: 'plugins', label: 'VST3 plugins', items: catalog.vst3Plugins },
+      chains: { id: 'chains', label: 'Saved chains', items: catalog.chains },
+      templates: { id: 'templates', label: 'Frame templates', items: catalog.frameTemplates },
     };
   }, [catalog]);
 
   const groups = useMemo<Group[]>(() => [
     {
       title: 'Sources',
-      sections: [
+      sections: ordered([
         catalogSections.applications,
         catalogSections.network,
         catalogSections.physicalInputs,
         catalogSections.virtualBuses,
         catalogSections.asioInputs,
-      ],
+      ]),
     },
     {
       title: 'Destinations',
-      sections: [
+      sections: ordered([
         catalogSections.physicalOutputs,
         catalogSections.recording,
         catalogSections.virtualInputs,
         catalogSections.asioOutputs,
-      ],
+      ]),
     },
     {
       title: 'Processing',
-      sections: [catalogSections.effects, catalogSections.plugins, catalogSections.chains, catalogSections.templates],
+      sections: ordered([catalogSections.effects, catalogSections.plugins, catalogSections.chains, catalogSections.templates]),
     },
-  ], [catalogSections]);
+  ], [catalogSections, ordered]);
 
-  const allSections = useMemo(() => [
+  const allSections = useMemo(() => ordered([
     catalogSections.applications,
     catalogSections.network,
     catalogSections.physicalOutputs,
@@ -254,7 +346,7 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     catalogSections.plugins,
     catalogSections.chains,
     catalogSections.templates,
-  ].filter(section => section.items.length > 0 || section.label === 'Saved chains'), [catalogSections]);
+  ]).filter(section => section.items.length > 0 || section.label === 'Saved chains'), [catalogSections, ordered]);
 
   useEffect(() => {
     const focusSection = (event: Event) => {
@@ -298,6 +390,26 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
           ((view === 'sources' && group.title === 'Sources') ||
             (view === 'destinations' && group.title === 'Destinations') ||
             (view === 'processing' && group.title === 'Processing')));
+
+  const visibleSectionIds = useMemo(
+    () => visible.flatMap(group => group.sections.map(section => section.id)),
+    [visible],
+  );
+
+  const onSectionDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = visibleSectionIds.indexOf(String(active.id));
+    const newIndex = visibleSectionIds.indexOf(String(over.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+
+    const reordered = arrayMove(visibleSectionIds, oldIndex, newIndex);
+    setSectionOrder(current => {
+      const visibleIds = new Set(visibleSectionIds);
+      let cursor = 0;
+      return current.map(id => visibleIds.has(id) ? reordered[cursor++] : id);
+    });
+  };
 
   const isOnCanvas = (item: CatalogItem) =>
     (item.kind === 'output' || item.kind === 'virtual') && usedDeviceIds.has(item.id);
@@ -354,39 +466,44 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
           </button>
         </div>
       )}
-      <div className="library-scroll">
-        {visible.map(group => (
-          <section className="library-group" key={group.title || 'all'}>
-            {group.title && <div className="group-title">{t(group.title)}</div>}
-            {group.sections.map(section => {
-              const key = `${group.title}-${section.label}`;
-              const isCollapsed = !expanded[key] && !normalized;
-              return (
-                <div className="library-section" key={key} data-section-label={section.label}>
-                  <button className="section-toggle" onClick={() => setExpanded(current => ({ ...current, [key]: !current[key] }))} aria-expanded={!isCollapsed}>
-                    <span>{t(section.label)}</span><span className="section-count">{section.items.length}</span><ChevronDown size={13} className={isCollapsed ? 'collapsed' : ''} />
-                  </button>
-                  {!isCollapsed && <div className="section-items">
-                    {section.items.map(item => <LibraryItem
-                      key={`${item.kind}-${item.id}`}
-                      item={item}
-                      name={displayName(item)}
-                      onAdd={onAdd}
-                      onRename={onRename}
-                      onEdit={item.kind === 'chain' ? onEditChain : undefined}
-                      onDelete={item.kind === 'chain' || item.kind === 'template' ? onDelete : undefined}
-                      onCanvas={isOnCanvas(item)}
-                    />)}
-                    {section.label === 'Saved chains' && <button className="new-chain-button" onClick={onNewChain}><Plus size={13} /> {t('New chain')}</button>}
-                    {section.label === 'VST3 plugins' && <button className="new-chain-button" onClick={onRescanPlugins}><Plus size={13} /> {t('Rescan VST3 plugins')}</button>}
-                  </div>}
-                </div>
-              );
-            })}
-          </section>
-        ))}
-        {visible.length === 0 && <div className="library-empty">{normalized ? t('Nothing matches “{query}”. Try a device, app, or effect name.', { query }) : t('Nothing here yet.')}</div>}
-      </div>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onSectionDragEnd}>
+        <SortableContext items={visibleSectionIds} strategy={verticalListSortingStrategy}>
+          <div className="library-scroll">
+            {visible.map(group => (
+              <section className="library-group" key={group.title || 'all'}>
+                {group.title && <div className="group-title">{t(group.title)}</div>}
+                {group.sections.map(section => {
+                  const key = `${group.title}-${section.label}`;
+                  const isCollapsed = !expanded[key] && !normalized;
+                  return (
+                    <SortableSection
+                      key={section.id}
+                      section={section}
+                      collapsed={isCollapsed}
+                      reorderEnabled={!normalized}
+                      onToggle={() => setExpanded(current => ({ ...current, [key]: !current[key] }))}
+                    >
+                      {section.items.map(item => <LibraryItem
+                        key={`${item.kind}-${item.id}`}
+                        item={item}
+                        name={displayName(item)}
+                        onAdd={onAdd}
+                        onRename={onRename}
+                        onEdit={item.kind === 'chain' ? onEditChain : undefined}
+                        onDelete={item.kind === 'chain' || item.kind === 'template' ? onDelete : undefined}
+                        onCanvas={isOnCanvas(item)}
+                      />)}
+                      {section.label === 'Saved chains' && <button className="new-chain-button" onClick={onNewChain}><Plus size={13} /> {t('New chain')}</button>}
+                      {section.label === 'VST3 plugins' && <button className="new-chain-button" onClick={onRescanPlugins}><Plus size={13} /> {t('Rescan VST3 plugins')}</button>}
+                    </SortableSection>
+                  );
+                })}
+              </section>
+            ))}
+            {visible.length === 0 && <div className="library-empty">{normalized ? t('Nothing matches “{query}”. Try a device, app, or effect name.', { query }) : t('Nothing here yet.')}</div>}
+          </div>
+        </SortableContext>
+      </DndContext>
     </aside>
   );
 }

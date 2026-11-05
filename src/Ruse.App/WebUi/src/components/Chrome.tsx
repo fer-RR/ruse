@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { send } from '../bridge';
 import { useI18n } from '../i18n';
+import { withShortcut } from '../shortcuts';
 import { useGlobalTelemetry, useRecordingSummary } from '../telemetry';
 import type { StatusMessage } from '../types';
 import RuseLogo from './RuseLogo';
@@ -108,28 +109,28 @@ export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, und
   const { t } = useI18n();
   return (
     <div className="toolbar">
-      <button className={`routing-switch ${running ? 'on' : ''} ${!running && audioPlaying ? 'off-alert' : ''}`} role="switch" aria-checked={running} aria-label={t('Routing')} title={running ? t('Stop routing') : t('Start routing')} onClick={() => onTransport(!running)}>
+      <button className={`routing-switch ${running ? 'on' : ''} ${!running && audioPlaying ? 'off-alert' : ''}`} role="switch" aria-checked={running} aria-label={t('Routing')} title={withShortcut(running ? t('Stop routing') : t('Start routing'), 'transport')} onClick={() => onTransport(!running)}>
         <span className="switch-track"><span className="switch-knob" /></span><span className="switch-state">{running ? t('ON') : t('OFF')}</span>
       </button>
       <span className="toolbar-separator" />
       <div className="toolbar-group" aria-label={t('History and layout')}>
-        <button className="toolbar-icon" disabled={!canUndo} title={canUndo ? t('Undo {label}', { label: t(undoLabel) }) : t('Nothing to undo')} aria-label={t('Undo')} onClick={onUndo}><Undo2 size={15} /></button>
-        <button className="toolbar-icon" disabled={!canRedo} title={canRedo ? t('Redo {label}', { label: t(redoLabel) }) : t('Nothing to redo')} aria-label={t('Redo')} onClick={onRedo}><Redo2 size={15} /></button>
-        <button className="toolbar-icon" title={t('Tidy up the graph')} aria-label={t('Tidy up the graph')} onClick={onTidy}><LayoutGrid size={15} /></button>
-        <ToolButton icon={<SlidersHorizontal size={14} />} title={mixerOpen ? t('Hide mixer') : t('Show mixer')} onClick={onMixer} active={mixerOpen} accent>{t('Mixer')}</ToolButton>
+        <button className="toolbar-icon" disabled={!canUndo} title={withShortcut(canUndo ? t('Undo {label}', { label: t(undoLabel) }) : t('Nothing to undo'), 'undo')} aria-label={t('Undo')} onClick={onUndo}><Undo2 size={15} /></button>
+        <button className="toolbar-icon" disabled={!canRedo} title={withShortcut(canRedo ? t('Redo {label}', { label: t(redoLabel) }) : t('Nothing to redo'), 'redo')} aria-label={t('Redo')} onClick={onRedo}><Redo2 size={15} /></button>
+        <button className="toolbar-icon" title={withShortcut(t('Tidy up the graph'), 'tidy')} aria-label={t('Tidy up the graph')} onClick={onTidy}><LayoutGrid size={15} /></button>
+        <ToolButton icon={<SlidersHorizontal size={14} />} title={withShortcut(mixerOpen ? t('Hide mixer') : t('Show mixer'), 'mixer')} onClick={onMixer} active={mixerOpen} accent>{t('Mixer')}</ToolButton>
       </div>
       <span className="toolbar-separator" />
       <div className="toolbar-group" aria-label={t('Workspace actions')}>
-        <ToolButton icon={<RefreshCw size={14} />} title={t('Refresh applications and devices')} onClick={onRefresh}>{t('Refresh')}</ToolButton>
+        <ToolButton icon={<RefreshCw size={14} />} title={withShortcut(t('Refresh applications and devices'), 'refresh')} onClick={onRefresh}>{t('Refresh')}</ToolButton>
         <ToolButton icon={<Save size={14} />} title={t('Save routing preset (Ctrl S)')} onClick={onSave}>{t('Save')}</ToolButton>
         <ToolButton icon={<FolderOpen size={14} />} title={t('Load routing preset (Ctrl O)')} onClick={onLoad}>{t('Load')}</ToolButton>
         <ToolButton icon={<Trash2 size={14} />} title={t('Clear the graph')} onClick={onClear} danger>{t('Clear')}</ToolButton>
       </div>
       <div className="toolbar-spacer" />
       <div className="toolbar-group" aria-label={t('Application actions')}>
-        <ToolButton icon={<MicOff size={14} />} title={micMuted ? t('Unmute every microphone input') : t('Mute every microphone input')} onClick={onMicMute} active={micMuted}>{micMuted ? t('Mics muted') : t('Mute mics')}</ToolButton>
-        <ToolButton icon={<Activity size={14} />} title={diagnosticsOpen ? t('Hide diagnostics') : t('Show live diagnostics')} onClick={onDiagnostics} active={diagnosticsOpen} accent>{t('Diagnostics')}</ToolButton>
-        <ToolButton icon={<Settings size={14} />} title={t('Settings')} onClick={onSettings}>{t('Settings')}</ToolButton>
+        <ToolButton icon={<MicOff size={14} />} title={withShortcut(micMuted ? t('Unmute every microphone input') : t('Mute every microphone input'), 'muteMics')} onClick={onMicMute} active={micMuted}>{micMuted ? t('Mics muted') : t('Mute mics')}</ToolButton>
+        <ToolButton icon={<Activity size={14} />} title={withShortcut(diagnosticsOpen ? t('Hide diagnostics') : t('Show live diagnostics'), 'diagnostics')} onClick={onDiagnostics} active={diagnosticsOpen} accent>{t('Diagnostics')}</ToolButton>
+        <ToolButton icon={<Settings size={14} />} title={withShortcut(t('Settings'), 'settings')} onClick={onSettings}>{t('Settings')}</ToolButton>
         <button className="toolbar-icon" title={t('Device guide')} aria-label={t('Device guide')} onClick={onDeviceHelp}><CircleHelp size={15} /></button>
       </div>
     </div>

@@ -28,6 +28,7 @@ internal sealed partial class WebShellController : IDisposable
     private readonly Dictionary<string, NodeEntry> _nodes = new();
     private readonly List<LinkEntry> _links = new();
     private readonly Dictionary<string, long> _nodeClipHoldUntil = new();
+    private readonly Dictionary<string, long> _spectrogramCursors = new();
     private readonly DispatcherTimer _telemetryTimer;
     private readonly DispatcherTimer _appsTimer;
     private readonly DispatcherTimer _devicesTimer;
@@ -75,7 +76,7 @@ internal sealed partial class WebShellController : IDisposable
         OutputNode.LowLatencyWasapi = _settings.LowLatencyWasapi;
         ConfigureAudioEngine();
         _telemetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
-        _telemetryTimer.Tick += (_, _) => { CheckArmedRecorders(); CheckRecorderSilence(); PublishTelemetry(); FlushMidiParameterChanges(); };
+        _telemetryTimer.Tick += (_, _) => { CheckArmedRecorders(); CheckRecorderSilence(); PublishTelemetry(); FlushMidiParameterChanges(); FlushControlParameterChanges(); };
         _appsTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(_settings.FollowPlayingApps ? 750 : 4000),
@@ -156,6 +157,17 @@ internal sealed partial class WebShellController : IDisposable
         {
             BuildDemoGraph();
         }
+        else if (App.ControlTestMode)
+        {
+            if (File.Exists(AppSettings.SessionPath))
+            {
+                TryLoadSession();
+            }
+            else
+            {
+                BuildDemoGraph();
+            }
+        }
         else if (_settings.AutoLoadSession)
         {
             TryLoadSession();
@@ -165,6 +177,7 @@ internal sealed partial class WebShellController : IDisposable
         InitializeMidi();
         _startupLoaded = true;
         CompleteUiReady();
+        await StartControlServerAsync();
     }
 
     private void PostStartupProgress(double progress, string label)
@@ -251,6 +264,7 @@ internal sealed partial class WebShellController : IDisposable
             case "ready":
                 _uiReady = true;
                 _uiReadySignal.TrySetResult(true);
+                _spectrogramCursors.Clear();
                 if (!_startupLoaded)
                 {
                     PostStartupProgress(_startupProgress, _startupLabel);
@@ -303,6 +317,8 @@ internal sealed partial class WebShellController : IDisposable
             case "tone": SetTone(String(message, "id"), (float)Number(message, "frequency", 1000), String(message, "waveform"), (float)Number(message, "level", -18)); break;
             case "ir-file": ChooseImpulseResponse(String(message, "id")); break;
             case "ir-clear": ClearImpulseResponse(String(message, "id")); break;
+            case "noise-profile-file": ChooseNoiseProfile(String(message, "id")); break;
+            case "noise-profile-clear": ClearNoiseProfile(String(message, "id")); break;
             case "loudness-reset": ResetLoudness(String(message, "id")); break;
             case "db-meter-orientation": SetDbMeterOrientation(String(message, "id"), Bool(message, "vertical")); break;
             case "transcriber-model": SetTranscriberModel(String(message, "id"), String(message, "model")); break;
@@ -513,6 +529,7 @@ internal sealed partial class WebShellController : IDisposable
             Warnings = warnings,
         };
         Post("graph", dto);
+        PublishControlGraphIfDue();
     }
 
     /// <summary>Flags routes that copy audio already playing on the output.</summary>
@@ -713,6 +730,10 @@ internal sealed partial class WebShellController : IDisposable
             ShowWelcomeScreen = _settings.ShowWelcomeScreen,
             MinimizeToTray = _settings.MinimizeToTray,
             ShowDiagnostics = _settings.ShowDiagnostics,
+            ControlApiEnabled = _settings.ControlApiEnabled,
+            ControlApiPort = _settings.ControlApiPort,
+            ControlApiUrl = _controlServer?.Url ?? "",
+            ControlApiToken = _controlServer?.Token ?? "",
             AggressiveOutputCushion = _settings.AggressiveOutputCushion,
             ClipGuard = _settings.ClipGuard,
             LowLatencyWasapi = _settings.LowLatencyWasapi,
@@ -877,9 +898,20 @@ internal sealed partial class WebShellController : IDisposable
 
                     if (modifier.Enabled && modifier.Processors.OfType<SpectrogramProcessor>().FirstOrDefault() is { } spectrogram)
                     {
-                        meter.Spectrogram = SpectrogramProcessor.GetColumns(spectrogram.TapId);
+                        long cursor = _spectrogramCursors.TryGetValue(entry.Id, out var value) ? value : -1;
+                        var update = SpectrogramProcessor.GetUpdate(spectrogram.TapId, cursor);
+                        if (update is { } next)
+                        {
+                            meter.Spectrogram = next.Data;
+                            meter.SpectrogramNewColumns = next.Count;
+                            meter.SpectrogramTotalColumns = next.Total;
+                            meter.SpectrogramFull = next.Full;
+                            _spectrogramCursors[entry.Id] = next.Total;
+                        }
+
                         meter.SpectrogramPeakHz = SpectrogramProcessor.GetPeakHz(spectrogram.TapId);
                         meter.SpectrogramColumns = SpectrogramProcessor.Columns;
+                        meter.SpectrogramWindowSeconds = SpectrogramProcessor.WindowSeconds;
                     }
 
                     if (modifier.Enabled && modifier.Processors.OfType<DbMeterProcessor>().FirstOrDefault() is { } dbMeter)
@@ -1231,6 +1263,7 @@ internal sealed partial class WebShellController : IDisposable
         TranslationModelCache.DropAll();
         _midi.MessageReceived -= OnMidiMessageReceived;
         _midi.Dispose();
+        StopControlServer();
         DisposeInactiveOutputs();
         _graph.Dispose();
     }
@@ -1243,6 +1276,9 @@ internal sealed partial class WebShellController : IDisposable
         public required string Title { get; set; }
         public required string Subtitle { get; set; }
         public required string Accent { get; init; }
+
+        /// <summary>Stable, human-readable key for the control API.</summary>
+        public string ControlId { get; set; } = "";
         public string? Color { get; set; }
         public double X { get; set; }
         public double Y { get; set; }

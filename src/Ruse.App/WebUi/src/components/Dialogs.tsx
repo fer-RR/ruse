@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Activity, AudioLines, Cable, ChevronRight, Copy, FileText, FolderOpen, Headphones, LayoutGrid, Mic, MonitorSpeaker, SlidersHorizontal, Volume2, X } from 'lucide-react';
+import { Activity, AudioLines, Cable, ChevronRight, Copy, Eye, EyeOff, FileText, FolderOpen, Headphones, LayoutGrid, Mic, MonitorSpeaker, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { TRANSLATION_TARGETS } from '../languages';
+import { SHORTCUTS } from '../shortcuts';
 import type { CatalogItem, GraphWarning, SettingsModel } from '../types';
 import ModelCatalog from './ModelCatalog';
+import NumberField from './NumberField';
 import TranslationModelCatalog from './TranslationModelCatalog';
 import OpusModelCatalog from './OpusModelCatalog';
 import TtsModelCatalog from './TtsModelCatalog';
@@ -235,16 +237,33 @@ function ToggleSetting({ label, description, checked, onChange }: {
   );
 }
 
-const SHORTCUTS: ReadonlyArray<readonly [string, string]> = [
-  ['Ctrl Z', 'Undo'], ['Ctrl Y / Ctrl Shift Z', 'Redo'], ['Ctrl D', 'Duplicate selected node'],
-  ['Ctrl F', 'Focus library search'], ['Ctrl L', 'Show or hide the library'], ['Ctrl S', 'Save preset'], ['Ctrl O', 'Load preset'], ['Ctrl M', 'Show or hide the mixer'],
-  ['Ctrl Shift D', 'Show live diagnostics'],
-  ['Ctrl 1-5', 'Jump to Sources, Outputs, Inputs, Virtuals or Effects'],
-  ['Delete / Backspace', 'Remove selected nodes or cables'], ['M', 'Mute selected node'],
-  ['F', 'Fit graph'], ['T', 'Tidy graph'], ['0', 'Reset zoom'], ['+ / -', 'Zoom in or out'],
-  ['Escape', 'Cancel a connection or close a menu'],
-  ['Ctrl drag', 'Draw a group frame'], ['Alt drag frame edge', 'Resize a group frame'],
-  ['Middle drag', 'Pan the canvas'], ['F1 or ?', 'Open Settings > Info'],
+const SHORTCUT_LIST: ReadonlyArray<readonly [string, string]> = [
+  [SHORTCUTS.undo, 'Undo'],
+  [`${SHORTCUTS.redo} / ${SHORTCUTS.redoAlt}`, 'Redo'],
+  [SHORTCUTS.duplicate, 'Duplicate selected node'],
+  [SHORTCUTS.search, 'Focus library search'],
+  [SHORTCUTS.library, 'Show or hide the library'],
+  [SHORTCUTS.save, 'Save preset'],
+  [SHORTCUTS.load, 'Load preset'],
+  [SHORTCUTS.mixer, 'Show or hide the mixer'],
+  [SHORTCUTS.diagnostics, 'Show live diagnostics'],
+  [SHORTCUTS.librarySections, 'Jump to Sources, Outputs, Inputs, Virtuals or Effects'],
+  [`${SHORTCUTS.remove} / ${SHORTCUTS.removeAlt}`, 'Remove selected nodes or cables'],
+  [SHORTCUTS.muteSelected, 'Mute selected node'],
+  [SHORTCUTS.bypass, 'Bypass effect'],
+  [SHORTCUTS.fit, 'Fit graph'],
+  [SHORTCUTS.tidy, 'Tidy graph'],
+  [SHORTCUTS.resetZoom, 'Reset zoom'],
+  [`${SHORTCUTS.zoomIn} / ${SHORTCUTS.zoomOut}`, 'Zoom in or out'],
+  [SHORTCUTS.transport, 'Start or stop routing'],
+  [SHORTCUTS.muteMics, 'Mute every microphone input'],
+  [SHORTCUTS.settings, 'Open Settings'],
+  [SHORTCUTS.refresh, 'Refresh applications and devices'],
+  [SHORTCUTS.escape, 'Cancel a connection or close a menu'],
+  ['Ctrl drag', 'Draw a group frame'],
+  ['Alt drag frame edge', 'Resize a group frame'],
+  ['Middle drag', 'Pan the canvas'],
+  [SHORTCUTS.help, 'Open Settings'],
 ];
 
 const LICENSES: ReadonlyArray<readonly [string, string, string]> = [
@@ -336,6 +355,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
   const { t } = useI18n();
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [gpuAtOpen] = useState(settings.useGpu);
+  const [showToken, setShowToken] = useState(false);
   useEffect(() => setTab(initialTab), [initialTab]);
   const installed = settings.transcriberModels.filter(model => model.installed);
   const selectedModel = installed.some(model => model.id === settings.transcriberModel)
@@ -490,6 +510,65 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <label className="setting-row"><span><strong>{t('Auto-add new apps to')}</strong><small>{t('Add a source and connect it to this output when an app starts playing.')}</small></span><select disabled={!settings.followPlayingApps} value={settings.followOutputId} onChange={event => onChange({ ...settings, followOutputId: event.target.value })}><option value="">{t('Do not auto-add')}</option>{outputs.map(output => <option key={output.id} value={output.id}>{output.name}</option>)}</select></label>
             </SettingsSection>
 
+            <SettingsSection title="Control API" summary={settings.controlApiEnabled ? t('On') : t('Off')}>
+              <ToggleSetting
+                label={t('Enable control API')}
+                description={t('Allow local apps to control Ruse over HTTP and WebSocket.')}
+                checked={settings.controlApiEnabled}
+                onChange={value => {
+                  setShowToken(false);
+                  onChange({ ...settings, controlApiEnabled: value });
+                }}
+              />
+              <label className="setting-row settings-row-tight">
+                <span><strong>{t('Port')}</strong><small>{t('0 chooses a free port.')}</small></span>
+                <NumberField
+                  value={settings.controlApiPort ?? 47100}
+                  min={0}
+                  max={65535}
+                  step={1}
+                  disabled={!settings.controlApiEnabled}
+                  onChange={value => onChange({ ...settings, controlApiPort: value })}
+                  ariaLabel={t('Port')}
+                />
+              </label>
+              {settings.controlApiEnabled && (
+                <>
+                  <label className="setting-row settings-row-tight">
+                    <span><strong>{t('API URL')}</strong></span>
+                    <input
+                      className="settings-text-field"
+                      readOnly
+                      value={settings.controlApiUrl ?? ''}
+                      onFocus={event => event.currentTarget.select()}
+                    />
+                  </label>
+                  <div className="setting-row settings-row-tight">
+                    <span><strong>{t('API token')}</strong></span>
+                    <span className="secret-field">
+                      <input
+                        className="settings-text-field"
+                        type={showToken ? 'text' : 'password'}
+                        readOnly
+                        value={settings.controlApiToken ?? ''}
+                        onFocus={event => event.currentTarget.select()}
+                      />
+                      <button
+                        type="button"
+                        className="icon-button compact"
+                        title={showToken ? t('Hide token') : t('Show token')}
+                        aria-label={showToken ? t('Hide token') : t('Show token')}
+                        onClick={() => setShowToken(value => !value)}
+                      >
+                        {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+                      </button>
+                    </span>
+                  </div>
+                </>
+              )}
+              <p className="settings-note">{t('Changes restart the control server.')}</p>
+            </SettingsSection>
+
             <SettingsSection title="Help">
               <div className="settings-actions">
                 <button className="tool-button" onClick={() => send('show-splash')}>{t('Show welcome screen')}</button>
@@ -529,7 +608,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 </select>
               </label>
               {settings.audioAutoMode === false && settings.outputBufferMode === 'manual' && (
-                <label className="setting-row"><span><strong>{t('Manual buffer')}</strong><small>{t('Target device buffer in milliseconds.')}</small></span><input type="number" min={2} max={40} value={settings.outputBufferManualMs ?? 10} onChange={event => onChange({ ...settings, outputBufferManualMs: Number(event.target.value) })} /></label>
+                <label className="setting-row"><span><strong>{t('Manual buffer')}</strong><small>{t('Target device buffer in milliseconds.')}</small></span><NumberField value={settings.outputBufferManualMs ?? 10} min={2} max={40} step={1} onChange={value => onChange({ ...settings, outputBufferManualMs: value })} ariaLabel={t('Manual buffer')} /></label>
               )}
               <label className="setting-row">
                 <span><strong>{t('Engine cushion')}</strong><small>{t('Audio queued between the renderer and the output pump.')}</small></span>
@@ -539,7 +618,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 </select>
               </label>
               {settings.audioAutoMode === false && settings.engineCushionMode === 'manual' && (
-                <label className="setting-row"><span><strong>{t('Manual cushion')}</strong><small>{t('Engine queue target in milliseconds.')}</small></span><input type="number" min={2} max={50} value={settings.engineCushionManualMs ?? 10} onChange={event => onChange({ ...settings, engineCushionManualMs: Number(event.target.value) })} /></label>
+                <label className="setting-row"><span><strong>{t('Manual cushion')}</strong><small>{t('Engine queue target in milliseconds.')}</small></span><NumberField value={settings.engineCushionManualMs ?? 10} min={2} max={50} step={1} onChange={value => onChange({ ...settings, engineCushionManualMs: value })} ariaLabel={t('Manual cushion')} /></label>
               )}
               {settings.audioAutoMode === false && (
                 <ToggleSetting
@@ -657,9 +736,9 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 <button className="tool-button" onClick={() => send('copy-diagnostics')}><Copy size={14} /> {t('Copy diagnostics')}</button>
               </div>
             </SettingsSection>
-            <SettingsSection title="Keyboard shortcuts" summary={SHORTCUTS.length}>
+            <SettingsSection title="Keyboard shortcuts" summary={SHORTCUT_LIST.length}>
               <div className="shortcut-list settings-shortcut-list">
-                {SHORTCUTS.map(([key, description]) => <div key={key}><kbd>{key}</kbd><span>{t(description)}</span></div>)}
+                {SHORTCUT_LIST.map(([key, description]) => <div key={key}><kbd>{key}</kbd><span>{t(description)}</span></div>)}
               </div>
               <p className="settings-note">{t("Drag from a node's OUT port to another node's IN port. Drop an effect or saved chain directly on a cable to insert it inline. Double-click a node's name to rename it.")}</p>
             </SettingsSection>

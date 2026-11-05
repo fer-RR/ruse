@@ -50,6 +50,7 @@ public sealed class Preset
 public sealed class PresetSource
 {
     public string Title { get; set; } = "";
+    public string ControlId { get; set; } = "";
     public string Kind { get; set; } = "Application";
     public uint? ProcessId { get; set; }
     public string? ProcessName { get; set; }
@@ -81,6 +82,7 @@ public sealed class PresetOutput
 {
     public string DeviceId { get; set; } = "";
     public string Title { get; set; } = "";
+    public string ControlId { get; set; } = "";
     public bool IsVirtual { get; set; }
     public string? MicHint { get; set; }
     public bool IsFile { get; set; }
@@ -116,6 +118,7 @@ public sealed class PresetRoute
 public sealed class PresetModifier
 {
     public string Title { get; set; } = "Modifier";
+    public string ControlId { get; set; } = "";
     public bool Enabled { get; set; } = true;
     public bool Parallel { get; set; }
     public float Send { get; set; } = 0.5f;
@@ -155,6 +158,9 @@ public sealed class PresetProcessor
 
     /// <summary>For a convolution reverb: the impulse response file path.</summary>
     public string? IrPath { get; set; }
+
+    /// <summary>For noise suppression: the recorded noise-floor file path.</summary>
+    public string? NoiseProfilePath { get; set; }
 
     /// <summary>For a parallel send chain: the wet amount.</summary>
     public float Send { get; set; } = 0.5f;
@@ -274,6 +280,11 @@ public static class PresetSerializer
             }
         }
 
+        if (processor is INoiseProfileProcessor noiseProfile)
+        {
+            entry.NoiseProfilePath = noiseProfile.NoiseProfilePath;
+        }
+
         return entry;
     }
 
@@ -339,7 +350,7 @@ public static class PresetSerializer
         var created = AudioProcessorCatalog.Create(entry.TypeId);
         if (created is IImpulseResponseProcessor impulseResponse &&
             !string.IsNullOrWhiteSpace(entry.IrPath) &&
-            IsTrustedIrPath(entry.IrPath))
+            IsTrustedExternalAudioPath(entry.IrPath))
         {
             try
             {
@@ -348,6 +359,20 @@ public static class PresetSerializer
             catch (Exception ex)
             {
                 AppLog.Warning($"Could not restore impulse response '{entry.IrPath}': {ex.Message}");
+            }
+        }
+
+        if (created is INoiseProfileProcessor noiseProfile &&
+            !string.IsNullOrWhiteSpace(entry.NoiseProfilePath) &&
+            IsTrustedExternalAudioPath(entry.NoiseProfilePath))
+        {
+            try
+            {
+                noiseProfile.LoadNoiseProfile(entry.NoiseProfilePath);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning($"Could not restore noise floor '{entry.NoiseProfilePath}': {ex.Message}");
             }
         }
 
@@ -371,7 +396,7 @@ public static class PresetSerializer
         return created;
     }
 
-    private static bool IsTrustedIrPath(string path) =>
+    private static bool IsTrustedExternalAudioPath(string path) =>
         Path.IsPathFullyQualified(path) &&
         !path.StartsWith(@"\\", StringComparison.Ordinal) &&
         !path.StartsWith("//", StringComparison.Ordinal);

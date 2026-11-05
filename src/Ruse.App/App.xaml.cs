@@ -20,6 +20,9 @@ public partial class App : Application
     /// real audio instead of restoring the saved session.</summary>
     public static bool LiveDemoMode { get; private set; }
 
+    /// <summary>True when launched with --control-test; uses a temp profile.</summary>
+    public static bool ControlTestMode { get; private set; }
+
     /// <summary>The process whose audio --live-demo captures.</summary>
     public static uint LiveDemoProcessId { get; private set; }
 
@@ -335,6 +338,31 @@ public partial class App : Application
                 File.WriteAllText(output, "FAILED: " + ex);
                 Environment.Exit(3);
             }
+        }
+
+        int controlTestIndex = Array.FindIndex(e.Args, a => a.Equals("--control-test", StringComparison.OrdinalIgnoreCase));
+        if (controlTestIndex >= 0)
+        {
+            string controlTestDir = Path.Combine(Path.GetTempPath(), "Ruse-control-test");
+            try
+            {
+                if (Directory.Exists(controlTestDir) &&
+                    !e.Args.Contains("--keep-control-test", StringComparer.OrdinalIgnoreCase))
+                {
+                    Directory.Delete(controlTestDir, recursive: true);
+                }
+            }
+            catch
+            {
+            }
+
+            ControlTestMode = true;
+            AppSettings.OverrideDirectory = controlTestDir;
+            Directory.CreateDirectory(controlTestDir);
+            File.WriteAllText(Path.Combine(controlTestDir, "settings.json"),
+                "{\"MinimizeToTray\":false,\"TrayPromptShown\":true,\"ShowWelcomeScreen\":false," +
+                "\"AutoLoadSession\":false,\"StartRoutingOnLaunch\":false," +
+                "\"ControlApiEnabled\":true,\"ControlApiPort\":47100}");
         }
 
         if (e.Args.Contains("--demo", StringComparer.OrdinalIgnoreCase))

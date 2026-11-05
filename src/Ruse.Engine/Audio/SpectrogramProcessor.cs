@@ -7,7 +7,10 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
 {
     public const string Id = "spectrogram";
     public const string TapParameterName = "__tap";
-    public const int Columns = 128;
+    public const int Columns = 256;
+
+    public static double WindowSeconds =>
+        Columns * (double)FftAnalyzer.HopSize / FftAnalyzer.SampleRate;
 
     private static readonly ConcurrentDictionary<int, SpectrogramTap> Taps = new();
     private static int _nextTapId = Random.Shared.Next(1, 1_000_000);
@@ -94,6 +97,9 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
     public static int[]? GetColumns(int id) =>
         Taps.TryGetValue(id, out var tap) ? tap.Snapshot() : null;
 
+    public static SpectrogramUpdate? GetUpdate(int id, long since) =>
+        Taps.TryGetValue(id, out var tap) ? tap.SnapshotSince(since) : null;
+
     public static float GetPeakHz(int id) =>
         Taps.TryGetValue(id, out var tap) ? tap.PeakHz : 0f;
 
@@ -101,12 +107,15 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
     public static void RemoveTap(int id) => Taps.TryRemove(id, out _);
 }
 
+public readonly record struct SpectrogramUpdate(int[] Data, int Count, long Total, bool Full);
+
 internal sealed class SpectrogramTap
 {
     private readonly object _lock = new();
     private readonly FftAnalyzer _fft = new();
     private readonly int[] _columns = new int[SpectrogramProcessor.Columns * FftAnalyzer.Bands];
     private int _write;
+    private long _totalColumns;
 
     public float PeakHz
     {
@@ -133,6 +142,46 @@ internal sealed class SpectrogramTap
             }
 
             _write = (_write + 1) % SpectrogramProcessor.Columns;
+            _totalColumns++;
+        }
+    }
+
+    public SpectrogramUpdate? SnapshotSince(long since)
+    {
+        lock (_lock)
+        {
+            long total = _totalColumns;
+            if (since < 0 || total < since || total - since > SpectrogramProcessor.Columns)
+            {
+                var full = new int[_columns.Length];
+                int offset = 0;
+                for (int column = 0; column < SpectrogramProcessor.Columns; column++)
+                {
+                    int source = (_write + column) % SpectrogramProcessor.Columns;
+                    Array.Copy(_columns, source * FftAnalyzer.Bands, full, offset, FftAnalyzer.Bands);
+                    offset += FftAnalyzer.Bands;
+                }
+
+                return new SpectrogramUpdate(full, SpectrogramProcessor.Columns, total, true);
+            }
+
+            int count = (int)(total - since);
+            if (count <= 0)
+            {
+                return null;
+            }
+
+            var data = new int[count * FftAnalyzer.Bands];
+            int start = (_write - count + SpectrogramProcessor.Columns) % SpectrogramProcessor.Columns;
+            int dataOffset = 0;
+            for (int column = 0; column < count; column++)
+            {
+                int source = (start + column) % SpectrogramProcessor.Columns;
+                Array.Copy(_columns, source * FftAnalyzer.Bands, data, dataOffset, FftAnalyzer.Bands);
+                dataOffset += FftAnalyzer.Bands;
+            }
+
+            return new SpectrogramUpdate(data, count, total, false);
         }
     }
 
