@@ -193,13 +193,18 @@ public sealed class TtsAudioCapture : IDisposable
     public void Stop()
     {
         _stop = true;
+        Thread? thread = _thread;
+        _thread = null;
+        if (thread != null && thread.IsAlive && thread != Thread.CurrentThread)
+        {
+            thread.Join(500);
+        }
+
         string? current = _currentPath;
         _reader?.Dispose();
         _reader = null;
         _currentPath = null;
         TryDelete(current);
-        _thread?.Join(500);
-        _thread = null;
         _ended = true;
         lock (_sync)
         {

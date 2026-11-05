@@ -1,4 +1,6 @@
 export const zhCN: Record<string, string> = {
+  "Sample rate": "采样率",
+  "Native passthrough": "原生直通",
   "Minimize": "最小化",
   "Maximize or restore": "最大化或恢复",
   "Close": "关闭",
@@ -682,6 +684,8 @@ export const zhCN: Record<string, string> = {
   "Saw": "锯齿波",
   "Triangle": "三角波",
   "Noise": "噪声",
+  "Pink noise": "粉红噪声",
+  "Brown noise": "布朗噪声",
   "Test tone": "测试音",
   "Sine, square, saw, noise": "正弦波、方波、锯齿波、噪声",
   "Generate a test signal for routing and level checks": "生成测试信号以检查路由和电平",

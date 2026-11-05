@@ -120,6 +120,7 @@ internal sealed partial class WebShellController
                     OutputIndex = directOutput,
                     Gain = link.Gain,
                     Enabled = link.Enabled,
+                    Native = link.Native,
                 });
             }
             else if (link.Kind == "sidechain" &&
@@ -374,6 +375,7 @@ internal sealed partial class WebShellController
             {
                 var link = ConnectEntries(source, output, route.Gain, publish: false);
                 link.Enabled = route.Enabled;
+                link.Native = route.Native;
                 ApplyLinkRouting(link, publish: false);
             }
         }

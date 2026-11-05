@@ -88,6 +88,7 @@ $tests = @(
     @{ Name = "web";       Arguments = @("--web-test");       File = "web-test.txt" },
     @{ Name = "selftest";  Arguments = @("--selftest");       File = "latency-selftest.txt" },
     @{ Name = "effects";   Arguments = @("--effects-test");   File = "effects-test.txt" },
+    @{ Name = "dsp";       Arguments = @("--dsp-test");       File = "dsp-test.txt" },
     @{ Name = "sidechain"; Arguments = @("--sidechain-test"); File = "sidechain-test.txt" },
     @{ Name = "clipguard"; Arguments = @("--clip-guard-test"); File = "clip-guard-test.txt" },
     @{ Name = "ring"; Arguments = @("--ring-test"); File = "ring-test.txt" },

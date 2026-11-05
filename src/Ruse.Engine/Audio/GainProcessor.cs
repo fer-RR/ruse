@@ -45,7 +45,7 @@ public sealed class AudioParameter
 /// <summary>
 /// Linear gain applied to every sample. Gain of 1.0 is unity (pass-through).
 /// </summary>
-public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor
+public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor, INativeProcessor
 {
     public const string Id = "gain";
 

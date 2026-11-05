@@ -70,6 +70,8 @@ export function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefi
     a.spectrogramTotalColumns === b.spectrogramTotalColumns &&
     a.spectrogramFull === b.spectrogramFull &&
     a.spectrogramWindowSeconds === b.spectrogramWindowSeconds &&
+    sameArray(a.waveform, b.waveform) &&
+    a.waveformPeak === b.waveformPeak &&
     a.loudnessIntegrated === b.loudnessIntegrated &&
     a.loudnessShortTerm === b.loudnessShortTerm &&
     a.loudnessRange === b.loudnessRange &&
@@ -110,6 +112,10 @@ export function publishTelemetry(next: TelemetrySnapshot): void {
     }
   }
 
+  for (const id of nodeActive.keys()) {
+    if (!(id in next.meters)) nodeActive.delete(id);
+  }
+
   recomputeTitleLevels();
   for (const listener of globalListeners) listener();
 
@@ -144,6 +150,7 @@ export function setNodeTitles(titles: Record<string, string>): void {
 }
 
 function recomputeTitleLevels(): void {
+  if (titleListeners.size === 0) return;
   const next = new Map<string, number>();
   for (const [id, meter] of Object.entries(snapshot.meters)) {
     const title = nodeTitles[id];
@@ -161,6 +168,10 @@ function recomputeTitleLevels(): void {
       titleActive.set(title, active);
       for (const listener of titleListeners.get(title) ?? []) listener();
     }
+  }
+
+  for (const title of titleActive.keys()) {
+    if (!next.has(title)) titleActive.delete(title);
   }
 }
 

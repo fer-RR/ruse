@@ -38,6 +38,10 @@ public sealed class SourceNode : IDisposable
     private readonly object _subscriptionLock = new();
     private Subscription[] _subscriptionSnapshot = Array.Empty<Subscription>();
 
+    private readonly List<NativeSubscription> _nativeSubscriptions = new();
+    private readonly object _nativeSubscriptionLock = new();
+    private NativeSubscription[] _nativeSnapshot = Array.Empty<NativeSubscription>();
+
     // Everything is normalized to the mixer's 48 kHz stereo format before it
     // reaches the subscribers, so mixed sources never drift out of pitch/channel.
     private FormatConverter? _converter;
@@ -289,7 +293,9 @@ public sealed class SourceNode : IDisposable
         private const double KeepMs = 50;
 
         private const int FadeFrames = 240;
-        private readonly FloatRingBuffer _buffer = new(1_000_000);
+        // One second of stereo audio is over six times the 150 ms stale limit
+        // and keeps each consumer's buffer off the large-object heap.
+        private readonly FloatRingBuffer _buffer = new(96_000);
         private int _fadeRemaining;
         private float _lastLeft;
         private float _lastRight;
@@ -361,6 +367,44 @@ public sealed class SourceNode : IDisposable
         }
     }
 
+    /// <summary>Raw native-rate copy used by a native passthrough output.</summary>
+    public sealed class NativeSubscription : IDisposable
+    {
+        private readonly FloatRingBuffer _buffer;
+        private SourceNode? _owner;
+        private bool _invalidated;
+
+        internal NativeSubscription(SourceNode owner, int sampleRate, int channels)
+        {
+            _owner = owner;
+            SampleRate = sampleRate;
+            Channels = channels;
+            _buffer = new FloatRingBuffer(Math.Max(48_000, sampleRate) * channels);
+        }
+
+        public int SampleRate { get; }
+        public int Channels { get; }
+        public bool Invalidated => _invalidated;
+        public double BufferedMs => _buffer.AvailableToRead / (double)Math.Max(1, Channels) * 1000.0 / SampleRate;
+
+        internal void Write(ReadOnlySpan<float> samples) => _buffer.Write(samples);
+
+        public int Read(Span<float> destination) => _buffer.Read(destination);
+
+        internal void Invalidate()
+        {
+            _invalidated = true;
+            _buffer.Clear();
+        }
+
+        public void Dispose()
+        {
+            SourceNode? owner = _owner;
+            _owner = null;
+            owner?.RemoveNativeSubscription(this);
+        }
+    }
+
     /// <summary>Creates a private copy of this source for one consumer.</summary>
     public Subscription Subscribe()
     {
@@ -380,6 +424,63 @@ public sealed class SourceNode : IDisposable
         {
             _subscriptions.Remove(subscription);
             _subscriptionSnapshot = _subscriptions.ToArray();
+        }
+    }
+
+    /// <summary>
+    /// Creates a raw, native-rate copy of this source for a passthrough output.
+    /// Returns null until the capture format is known and is mono or stereo.
+    /// </summary>
+    public NativeSubscription? SubscribeNative()
+    {
+        int rate = _sourceSampleRate;
+        int channels = _sourceChannels;
+        if (rate <= 0 || channels is < 1 or > 2)
+        {
+            return null;
+        }
+
+        var subscription = new NativeSubscription(this, rate, channels);
+        lock (_nativeSubscriptionLock)
+        {
+            _nativeSubscriptions.Add(subscription);
+            _nativeSnapshot = _nativeSubscriptions.ToArray();
+        }
+
+        return subscription;
+    }
+
+    private void RemoveNativeSubscription(NativeSubscription subscription)
+    {
+        lock (_nativeSubscriptionLock)
+        {
+            _nativeSubscriptions.Remove(subscription);
+            _nativeSnapshot = _nativeSubscriptions.ToArray();
+        }
+    }
+
+    private void PublishNative(ReadOnlySpan<float> samples)
+    {
+        var subscriptions = Volatile.Read(ref _nativeSnapshot);
+        for (int i = 0; i < subscriptions.Length; i++)
+        {
+            subscriptions[i].Write(samples);
+        }
+    }
+
+    private void InvalidateNativeSubscriptions()
+    {
+        NativeSubscription[] subscriptions;
+        lock (_nativeSubscriptionLock)
+        {
+            subscriptions = _nativeSubscriptions.ToArray();
+            _nativeSubscriptions.Clear();
+            _nativeSnapshot = Array.Empty<NativeSubscription>();
+        }
+
+        for (int i = 0; i < subscriptions.Length; i++)
+        {
+            subscriptions[i].Invalidate();
         }
     }
 
@@ -468,6 +569,25 @@ public sealed class SourceNode : IDisposable
         }
     }
 
+    private void UnwireStopEvents(object capture)
+    {
+        switch (capture)
+        {
+            case ProcessLoopbackCapture plc:
+                plc.RecordingStopped -= OnCaptureStopped;
+                break;
+            case DeviceCapture dc:
+                dc.RecordingStopped -= OnCaptureStopped;
+                break;
+            case WasapiRecorder wlc:
+                wlc.RecordingStopped -= OnCaptureStopped;
+                break;
+            case AsioCapture ac:
+                ac.Stopped -= OnAsioStopped;
+                break;
+        }
+    }
+
     private void OnAsioStopped(AsioCapture capture, string reason)
     {
         if (_stopRequested)
@@ -518,6 +638,7 @@ public sealed class SourceNode : IDisposable
         {
             _capture = null;
             capture.DataAvailable -= OnDataAvailable;
+            UnwireStopEvents(capture);
             capture.Dispose();
             throw;
         }
@@ -540,6 +661,7 @@ public sealed class SourceNode : IDisposable
         {
             _capture = null;
             capture.DataAvailable -= OnDataAvailable;
+            UnwireStopEvents(capture);
             capture.Dispose();
             throw;
         }
@@ -656,6 +778,7 @@ public sealed class SourceNode : IDisposable
         {
             _capture = null;
             capture.DataAvailable -= OnAsioData;
+            UnwireStopEvents(capture);
             capture.Dispose();
             throw;
         }
@@ -663,9 +786,9 @@ public sealed class SourceNode : IDisposable
 
     private readonly AudioPacketEventArgs _asioArgs = new();
 
-    private void OnAsioData(AsioCapture capture, byte[] data)
+    private void OnAsioData(AsioCapture capture, byte[] data, int bytesRecorded)
     {
-        _asioArgs.Set(data, data.Length);
+        _asioArgs.Set(data, bytesRecorded);
         OnDataAvailable(this, _asioArgs);
     }
 
@@ -698,6 +821,7 @@ public sealed class SourceNode : IDisposable
         {
             _capture = null;
             capture.DataAvailable -= OnLoopbackData;
+            UnwireStopEvents(capture);
             capture.Dispose();
             throw;
         }
@@ -740,11 +864,16 @@ public sealed class SourceNode : IDisposable
 
     private void SetSourceFormat(int channels, int sampleRate, bool isFloat = true, int bitsPerSample = 0)
     {
+        bool formatChanged = channels != _sourceChannels || sampleRate != _sourceSampleRate;
         _sourceChannels = channels;
         _sourceSampleRate = sampleRate;
         _sourceIsFloat = isFloat;
         _sourceBitsPerSample = bitsPerSample > 0 ? bitsPerSample : isFloat ? 32 : 16;
         _converter = new FormatConverter(channels, sampleRate);
+        if (formatChanged)
+        {
+            InvalidateNativeSubscriptions();
+        }
     }
 
     private void OnDataAvailable(object? sender, AudioPacketEventArgs e)
@@ -845,6 +974,7 @@ public sealed class SourceNode : IDisposable
         if (sourceFrames > 0)
         {
             Interlocked.Add(ref _sourceFrames, sourceFrames);
+            PublishNative(samples);
         }
 
         _convertScratch.Clear();
@@ -926,7 +1056,14 @@ public sealed class SourceNode : IDisposable
     public void WriteTestSamples(ReadOnlySpan<float> samples)
     {
         Publish(samples);
+        if (_sourceSampleRate > 0 && _sourceChannels > 0)
+        {
+            PublishNative(samples);
+        }
     }
+
+    internal void SetTestNativeFormat(int channels, int sampleRate) =>
+        SetSourceFormat(channels, sampleRate);
 
     public void Stop()
     {
@@ -936,6 +1073,7 @@ public sealed class SourceNode : IDisposable
         }
 
         _stopRequested = true;
+        UnwireStopEvents(_capture);
 
         switch (_capture)
         {
@@ -988,15 +1126,17 @@ public sealed class SourceNode : IDisposable
     {
         Stop();
 
+        Subscription[] subscriptions;
         lock (_subscriptionLock)
         {
-            for (int i = 0; i < _subscriptions.Count; i++)
-            {
-                _subscriptions[i].Dispose();
-            }
-
+            subscriptions = _subscriptions.ToArray();
             _subscriptions.Clear();
             _subscriptionSnapshot = Array.Empty<Subscription>();
+        }
+
+        for (int i = 0; i < subscriptions.Length; i++)
+        {
+            subscriptions[i].Dispose();
         }
     }
 }

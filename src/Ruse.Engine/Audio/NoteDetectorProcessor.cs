@@ -7,7 +7,7 @@ namespace Ruse.App.Audio;
 /// runs on the tap worker so it never enters the audible chain; Auto-tune reads
 /// the latest stable note from <see cref="TryGetReading"/>.
 /// </summary>
-public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
+public sealed class NoteDetectorProcessor : IAudioProcessor, IParameterizedProcessor, ITapProcessor
 {
     public const string Id = "note-detector";
 
@@ -17,18 +17,45 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
     private static readonly ConcurrentDictionary<int, NoteState> States = new();
     private static int _nextTapId;
 
+    private volatile float _trackerMode;
+
+    public NoteDetectorProcessor()
+    {
+        Parameters =
+        [
+            new AudioParameter
+            {
+                Name = "Tracker",
+                Min = 0f,
+                Max = 1f,
+                Default = 0f,
+                IsChoice = true,
+                IsInteger = true,
+                Options = ["Autocorrelation", "AMDF"],
+                Get = () => _trackerMode,
+                Set = value => SetTracker((int)MathF.Round(value)),
+            },
+        ];
+    }
+
     public int TapId { get; private set; }
 
     public string TypeId => Id;
     public string DisplayName => "Note detector";
+    public IReadOnlyList<AudioParameter> Parameters { get; }
     public int LatencySamples => 0;
+
+    private PitchTrackerMode CurrentMode =>
+        (PitchTrackerMode)Math.Clamp((int)MathF.Round(_trackerMode), 0, 1);
 
     public void SetTapId(int tapId)
     {
         TapId = tapId;
         if (tapId > 0)
         {
-            States.TryAdd(tapId, new NoteState());
+            PitchTrackerMode mode = CurrentMode;
+            var state = States.GetOrAdd(tapId, _ => new NoteState(mode));
+            state.SetTrackerMode(mode);
         }
     }
 
@@ -38,7 +65,7 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
     {
         if (tapId > 0)
         {
-            States.TryAdd(tapId, new NoteState());
+            States.TryAdd(tapId, new NoteState(PitchTrackerMode.Autocorrelation));
         }
     }
 
@@ -51,7 +78,17 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
             return;
         }
 
-        States.GetOrAdd(tapId, _ => new NoteState()).Write(samples, frames);
+        States.GetOrAdd(tapId, _ => new NoteState(PitchTrackerMode.Autocorrelation))
+            .Write(samples, frames);
+    }
+
+    private void SetTracker(int mode)
+    {
+        _trackerMode = Math.Clamp(mode, 0, 1);
+        if (TapId > 0 && States.TryGetValue(TapId, out var state))
+        {
+            state.SetTrackerMode(CurrentMode);
+        }
     }
 
     public static bool TryGetReading(int tapId, out NoteReading reading)
@@ -76,7 +113,7 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
         if (TapId > 0)
         {
             States.TryRemove(TapId, out _);
-            States.TryAdd(TapId, new NoteState());
+            States.TryAdd(TapId, new NoteState(CurrentMode));
         }
     }
 
@@ -89,17 +126,50 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
         private const float ConfidenceMargin = 0.06f;
 
         private readonly object _sync = new();
-        private readonly NotePitchTracker _detector = new(highResolution: true);
+        private volatile IPitchTracker _detector;
+        private volatile PitchTrackerMode _mode;
         private int _candidateMidi = -1;
         private float _candidateConfidence;
         private int _stable;
         private int _silence;
-        private NoteReading _reading;
+        private ReadingSnapshot? _published;
+
+        private sealed class ReadingSnapshot
+        {
+            public ReadingSnapshot(NoteReading reading) => Reading = reading;
+            public NoteReading Reading { get; }
+        }
+
+        public NoteState(PitchTrackerMode mode)
+        {
+            _mode = mode;
+            _detector = PitchTrackerFactory.Create(mode, highResolution: true);
+        }
+
+        public void SetTrackerMode(PitchTrackerMode mode)
+        {
+            if (_mode == mode)
+            {
+                return;
+            }
+
+            _mode = mode;
+            _detector = PitchTrackerFactory.Create(mode, highResolution: true);
+            lock (_sync)
+            {
+                _candidateMidi = -1;
+                _candidateConfidence = 0;
+                _stable = 0;
+                _silence = 0;
+                Volatile.Write(ref _published, null);
+            }
+        }
 
         public void Write(ReadOnlySpan<float> samples, int frames)
         {
-            _detector.Add(samples, frames);
-            if (!_detector.TryGetPitch(out float hz) || _detector.Confidence < MinConfidence)
+            IPitchTracker detector = _detector;
+            detector.Add(samples, frames);
+            if (!detector.TryGetPitch(out float hz) || detector.Confidence < MinConfidence)
             {
                 _silence++;
                 if (_silence >= SilenceBlocks)
@@ -109,7 +179,7 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
                         _candidateMidi = -1;
                         _candidateConfidence = 0;
                         _stable = 0;
-                        _reading = default;
+                        Volatile.Write(ref _published, null);
                     }
                 }
 
@@ -120,7 +190,7 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
             double midi = 69.0 + 12.0 * Math.Log2(hz / 440.0);
             int nearest = (int)Math.Round(midi);
             float cents = (float)((midi - nearest) * 100.0);
-            float confidence = _detector.Confidence;
+            float confidence = detector.Confidence;
             if (nearest != _candidateMidi)
             {
                 _candidateMidi = nearest;
@@ -139,9 +209,23 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
             }
 
             long now = Environment.TickCount64;
-            bool currentValid = _reading.Midi > 0 && now - _reading.UpdatedAt <= StaleMs;
-            if (currentValid && nearest != _reading.Midi &&
-                _candidateConfidence < _reading.Confidence + ConfidenceMargin)
+            var previous = Volatile.Read(ref _published);
+            NoteReading current = previous?.Reading ?? default;
+            bool currentValid = current.Midi > 0 && now - current.UpdatedAt <= StaleMs;
+            if (currentValid && nearest != current.Midi &&
+                _candidateConfidence < current.Confidence + ConfidenceMargin)
+            {
+                return;
+            }
+
+            // Publish a fresh immutable snapshot only when the note changes or
+            // roughly every 100 ms. Auto-tune reads this from the render thread,
+            // so it never takes the tap worker's lock.
+            if (previous != null &&
+                current.Midi == nearest &&
+                Math.Abs(current.Cents - cents) < 0.1f &&
+                Math.Abs(current.Confidence - _candidateConfidence) < 0.01f &&
+                now - current.UpdatedAt < 100)
             {
                 return;
             }
@@ -153,19 +237,12 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
                 hz,
                 _candidateConfidence,
                 now);
-            lock (_sync)
-            {
-                _reading = reading;
-            }
+            Volatile.Write(ref _published, new ReadingSnapshot(reading));
         }
 
         public bool TryGetReading(out NoteReading reading)
         {
-            lock (_sync)
-            {
-                reading = _reading;
-            }
-
+            reading = Volatile.Read(ref _published)?.Reading ?? default;
             if (reading.Midi <= 0 ||
                 Environment.TickCount64 - reading.UpdatedAt > StaleMs)
             {
@@ -186,7 +263,7 @@ public sealed class NoteDetectorProcessor : IAudioProcessor, ITapProcessor
 }
 
 /// <summary>Normalized autocorrelation tracker tuned for a stable sung note.</summary>
-internal sealed class NotePitchTracker
+internal sealed class NotePitchTracker : IPitchTracker
 {
     private readonly int _sampleRate;
     private readonly int _decimation;
@@ -197,6 +274,7 @@ internal sealed class NotePitchTracker
     private readonly float[] _ring;
     private readonly float[] _window;
     private readonly double[] _correlation;
+    private readonly double[] _prefixEnergy;
     private int _write;
     private int _filled;
     private int _since;
@@ -217,6 +295,7 @@ internal sealed class NotePitchTracker
         _ring = new float[_windowSize];
         _window = new float[_windowSize];
         _correlation = new double[_maxLag + 1];
+        _prefixEnergy = new double[_windowSize + 1];
     }
 
     public float Confidence => _confidence;
@@ -241,7 +320,8 @@ internal sealed class NotePitchTracker
             _ring[_write] = _decimateSum / _decimation;
             _decimateSum = 0;
             _decimateCount = 0;
-            _write = (_write + 1) % _windowSize;
+            _write++;
+            if (_write == _windowSize) _write = 0;
             if (_filled < _windowSize)
             {
                 _filled++;
@@ -278,15 +358,18 @@ internal sealed class NotePitchTracker
 
     private void Detect()
     {
-        int start = _write;
-        double energy = 0;
+        int ringIndex = _write;
+        _prefixEnergy[0] = 0.0;
         for (int i = 0; i < _windowSize; i++)
         {
-            float sample = _ring[(start + i) % _windowSize];
+            float sample = _ring[ringIndex];
             _window[i] = sample;
-            energy += sample * sample;
+            _prefixEnergy[i + 1] = _prefixEnergy[i] + ((double)sample * sample);
+            ringIndex++;
+            if (ringIndex == _windowSize) ringIndex = 0;
         }
 
+        double energy = _prefixEnergy[_windowSize];
         if (energy / _windowSize < 1e-7)
         {
             _confidence = 0f;
@@ -299,18 +382,14 @@ internal sealed class NotePitchTracker
         for (int lag = _minLag; lag <= _maxLag; lag++)
         {
             double correlation = 0;
-            double energyA = 0;
-            double energyB = 0;
             int limit = _windowSize - lag;
             for (int i = 0; i < limit; i++)
             {
-                float a = _window[i];
-                float b = _window[i + lag];
-                correlation += a * b;
-                energyA += a * a;
-                energyB += b * b;
+                correlation += (double)_window[i] * _window[i + lag];
             }
 
+            double energyA = _prefixEnergy[limit];
+            double energyB = _prefixEnergy[_windowSize] - _prefixEnergy[lag];
             double denominator = Math.Sqrt(energyA * energyB);
             if (denominator <= 1e-12)
             {

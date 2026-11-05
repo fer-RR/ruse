@@ -62,6 +62,7 @@ internal sealed class GraphEngine : IDisposable
 
     internal void RenderOnceForTest()
     {
+        CompiledGraph? compiled;
         lock (_sync)
         {
             if (_compiled == null)
@@ -69,8 +70,22 @@ internal sealed class GraphEngine : IDisposable
                 CompileLocked();
             }
 
-            _compiled?.ForceRenderForTest();
-            _compiled?.Render();
+            compiled = _compiled;
+        }
+
+        if (compiled == null || !compiled.TryAcquire())
+        {
+            return;
+        }
+
+        try
+        {
+            compiled.ForceRenderForTest();
+            compiled.Render();
+        }
+        finally
+        {
+            compiled.Release();
         }
     }
 
@@ -104,18 +119,75 @@ internal sealed class GraphEngine : IDisposable
     }
 
     /// <summary>Rebuilds the processing snapshot after a graph change.</summary>
-    internal void Invalidate()
+    /// <param name="afterDrain">
+    /// Cleanup that must wait until no renderer still holds the old snapshot.
+    /// Used to dispose removed nodes only after the audio thread has let go.
+    /// </param>
+    internal void Invalidate(Action? afterDrain = null)
     {
-        lock (_sync)
+        // Callers that already hold the render lock (for example a mutation
+        // wrapped in RunExclusive) must compile in place.
+        if (Monitor.IsEntered(_sync))
         {
             if (_running)
             {
-                CompileLocked();
+                CompileLocked(afterDrain);
             }
+            else
+            {
+                afterDrain?.Invoke();
+            }
+
+            return;
+        }
+
+        if (!_running)
+        {
+            afterDrain?.Invoke();
+            return;
+        }
+
+        CompiledGraph next;
+        try
+        {
+            next = new CompiledGraph(_graph, _wakeCallback, AudioEngineConfig.BlockFrames);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("The graph renderer could not build the processing graph.", ex);
+            RetireAfterFailedCompile(afterDrain);
+            return;
+        }
+
+        CompiledGraph? old;
+        lock (_sync)
+        {
+            if (!_running)
+            {
+                next.Dispose();
+                afterDrain?.Invoke();
+                return;
+            }
+
+            old = _compiled;
+            _compiled = next;
+            _wake.Set();
+        }
+
+        if (old == null)
+        {
+            afterDrain?.Invoke();
+            return;
+        }
+
+        old.Dispose();
+        if (afterDrain != null)
+        {
+            old.Retire(afterDrain);
         }
     }
 
-    /// <summary>Runs a graph mutation with the renderer paused.</summary>
+    /// <summary>Serializes a graph mutation with snapshot swaps.</summary>
     internal void RunExclusive(Action action)
     {
         lock (_sync)
@@ -140,14 +212,26 @@ internal sealed class GraphEngine : IDisposable
         }
     }
 
-    private void CompileLocked()
+    private void CompileLocked(Action? afterDrain = null)
     {
         try
         {
             var next = new CompiledGraph(_graph, _wakeCallback, AudioEngineConfig.BlockFrames);
             var old = _compiled;
             _compiled = next;
-            old?.Dispose();
+            if (old == null)
+            {
+                afterDrain?.Invoke();
+            }
+            else
+            {
+                old.Dispose();
+                if (afterDrain != null)
+                {
+                    old.Retire(afterDrain);
+                }
+            }
+
             _wake.Set();
         }
         catch (Exception ex)
@@ -155,6 +239,30 @@ internal sealed class GraphEngine : IDisposable
             // Keep the previous graph running rather than silencing the app on
             // a transient compile error (for example a device removed mid-edit).
             AppLog.Error("The graph renderer could not build the processing graph.", ex);
+            RetireAfterFailedCompile(afterDrain);
+        }
+    }
+
+    private void RetireAfterFailedCompile(Action? afterDrain)
+    {
+        if (afterDrain == null)
+        {
+            return;
+        }
+
+        CompiledGraph? current;
+        lock (_sync)
+        {
+            current = _compiled;
+        }
+
+        if (current != null)
+        {
+            current.Retire(afterDrain);
+        }
+        else
+        {
+            afterDrain();
         }
     }
 
@@ -168,6 +276,7 @@ internal sealed class GraphEngine : IDisposable
             {
                 bool rendered = false;
                 int waitMs = 20;
+                CompiledGraph? compiled;
                 lock (_sync)
                 {
                     if (!_running)
@@ -175,17 +284,25 @@ internal sealed class GraphEngine : IDisposable
                         break;
                     }
 
-                    var compiled = _compiled;
+                    compiled = _compiled;
                     if (compiled == null)
                     {
                         Monitor.Wait(_sync, 20);
                         continue;
                     }
+                }
 
+                if (!compiled.TryAcquire())
+                {
+                    continue;
+                }
+
+                try
+                {
                     if (compiled.HasRunningOutputs)
                     {
                         int guard = 0;
-                        while (compiled.NeedsData && guard++ < 8)
+                        while (_running && compiled.NeedsData && guard++ < 8)
                         {
                             compiled.Render();
                             rendered = true;
@@ -202,6 +319,10 @@ internal sealed class GraphEngine : IDisposable
                             rendered = true;
                         }
                     }
+                }
+                finally
+                {
+                    compiled.Release();
                 }
 
                 if (rendered)
@@ -247,9 +368,71 @@ internal sealed class GraphEngine : IDisposable
         public List<OutputState> Outputs { get; } = new();
         public List<TapWorker> TapWorkers { get; } = new();
         public bool HasNative { get; private set; }
+        private readonly object _leaseGate = new();
+        private readonly List<Action> _retireActions = new();
+        private int _leases;
+        private bool _disposeRequested;
+        private bool _disposed;
         private bool _forceRenderForTest;
 
         internal void ForceRenderForTest() => _forceRenderForTest = true;
+
+        /// <summary>Claims the snapshot for one render pass.</summary>
+        public bool TryAcquire()
+        {
+            lock (_leaseGate)
+            {
+                if (_disposeRequested)
+                {
+                    return false;
+                }
+
+                _leases++;
+                return true;
+            }
+        }
+
+        public void Release()
+        {
+            bool dispose = false;
+            lock (_leaseGate)
+            {
+                if (_leases > 0)
+                {
+                    _leases--;
+                }
+
+                if (_leases == 0 && _disposeRequested && !_disposed)
+                {
+                    _disposed = true;
+                    dispose = true;
+                }
+            }
+
+            if (dispose)
+            {
+                // The last lease is normally released on the render thread.
+                // Disposing tap workers joins them, so move teardown off the
+                // audio path instead of stalling the callback.
+                ThreadPool.QueueUserWorkItem(
+                    static state => ((CompiledGraph)state!).DisposeCore(), this);
+            }
+        }
+
+        /// <summary>Schedules cleanup that may only run after the last lease ends.</summary>
+        public void Retire(Action action)
+        {
+            lock (_leaseGate)
+            {
+                if (!_disposed)
+                {
+                    _retireActions.Add(action);
+                    return;
+                }
+            }
+
+            action();
+        }
 
         public void UpdateModifierOutputGain(ModifierNode modifier, OutputNode output, float gain)
         {
@@ -725,6 +908,25 @@ internal sealed class GraphEngine : IDisposable
 
         public void Dispose()
         {
+            bool dispose = false;
+            lock (_leaseGate)
+            {
+                _disposeRequested = true;
+                if (_leases == 0 && !_disposed)
+                {
+                    _disposed = true;
+                    dispose = true;
+                }
+            }
+
+            if (dispose)
+            {
+                DisposeCore();
+            }
+        }
+
+        private void DisposeCore()
+        {
             for (int i = 0; i < Sources.Count; i++)
             {
                 Sources[i].Dispose();
@@ -733,6 +935,18 @@ internal sealed class GraphEngine : IDisposable
             for (int i = 0; i < TapWorkers.Count; i++)
             {
                 TapWorkers[i].Dispose();
+            }
+
+            Action[] actions;
+            lock (_leaseGate)
+            {
+                actions = _retireActions.ToArray();
+                _retireActions.Clear();
+            }
+
+            for (int i = 0; i < actions.Length; i++)
+            {
+                actions[i]();
             }
         }
 
@@ -792,6 +1006,7 @@ internal sealed class GraphEngine : IDisposable
             private readonly float[] _input;
             private float _wet;
             private bool _chainFaulted;
+            private bool _nonFiniteLogged;
 
             public NodeState(ModifierNode modifier, int blockFrames)
             {
@@ -819,28 +1034,40 @@ internal sealed class GraphEngine : IDisposable
 
             public void Process()
             {
-                Array.Clear(_block);
+                bool firstInput = true;
                 for (int i = 0; i < Inputs.Count; i++)
                 {
                     var input = Inputs[i];
                     var source = input.Source;
+                    ReadOnlySpan<float> block;
                     if (source != null)
                     {
                         float targetGain = source.Source.Muted ? 0f : source.Source.Gain;
                         float applied = float.IsNaN(input.AppliedGain) ? targetGain : input.AppliedGain;
-                        source.Block.AsSpan().CopyTo(_temp);
-                        input.Delay?.Process(_temp, Channels);
+                        if (input.Delay != null)
+                        {
+                            source.Block.AsSpan().CopyTo(_temp);
+                            input.Delay.Process(_temp, Channels);
+                            block = _temp;
+                        }
+                        else
+                        {
+                            block = source.Block;
+                        }
+
                         if (applied == targetGain)
                         {
                             if (targetGain == 1f)
                             {
-                                Add(_temp);
+                                if (firstInput) block.CopyTo(_block);
+                                else Add(block);
                             }
                             else
                             {
-                                for (int s = 0; s < _temp.Length; s++)
+                                for (int s = 0; s < block.Length; s++)
                                 {
-                                    _block[s] += _temp[s] * targetGain;
+                                    if (firstInput) _block[s] = block[s] * targetGain;
+                                    else _block[s] += block[s] * targetGain;
                                 }
                             }
                         }
@@ -851,19 +1078,44 @@ internal sealed class GraphEngine : IDisposable
                             {
                                 applied += step;
                                 int index = frame * Channels;
-                                _block[index] += _temp[index] * applied;
-                                _block[index + 1] += _temp[index + 1] * applied;
+                                if (firstInput)
+                                {
+                                    _block[index] = block[index] * applied;
+                                    _block[index + 1] = block[index + 1] * applied;
+                                }
+                                else
+                                {
+                                    _block[index] += block[index] * applied;
+                                    _block[index + 1] += block[index + 1] * applied;
+                                }
                             }
                         }
 
+                        firstInput = false;
                         input.AppliedGain = targetGain;
                     }
                     else if (input.Upstream is { } upstream)
                     {
-                        upstream.Block.AsSpan().CopyTo(_temp);
-                        input.Delay?.Process(_temp, Channels);
-                        Add(_temp);
+                        if (input.Delay != null)
+                        {
+                            upstream.Block.AsSpan().CopyTo(_temp);
+                            input.Delay.Process(_temp, Channels);
+                            block = _temp;
+                        }
+                        else
+                        {
+                            block = upstream.Block;
+                        }
+
+                        if (firstInput) block.CopyTo(_block);
+                        else Add(block);
+                        firstInput = false;
                     }
+                }
+
+                if (firstInput)
+                {
+                    Array.Clear(_block);
                 }
 
                 bool hasChainLatency = ChainLatency > 0;
@@ -957,6 +1209,34 @@ internal sealed class GraphEngine : IDisposable
                     }
                 }
 
+                bool finite = true;
+                for (int s = 0; s < _block.Length; s++)
+                {
+                    if (!float.IsFinite(_block[s]))
+                    {
+                        finite = false;
+                        break;
+                    }
+                }
+
+                if (!finite)
+                {
+                    // A recursive effect that hits NaN would otherwise stay
+                    // poisoned forever. Reset the chain and emit one silent block.
+                    for (int i = 0; i < Chain.Length; i++)
+                    {
+                        Chain[i].Reset();
+                    }
+
+                    Array.Clear(_block);
+                    if (!_nonFiniteLogged)
+                    {
+                        _nonFiniteLogged = true;
+                        AppLog.Warning(
+                            $"Effect chain '{_modifier.Title}' produced non-finite samples; state was reset.");
+                    }
+                }
+
                 if (fade)
                 {
                     float step = (targetWet - _wet) / _blockFrames;
@@ -974,7 +1254,7 @@ internal sealed class GraphEngine : IDisposable
                 TapWorker?.Feed(_block);
             }
 
-            private void Add(float[] source)
+            private void Add(ReadOnlySpan<float> source)
             {
                 for (int i = 0; i < _block.Length; i++)
                 {
@@ -1210,6 +1490,7 @@ internal sealed class GraphEngine : IDisposable
         private readonly int[] _speechTaps;
         private readonly SpectrumProcessor[] _spectra;
         private readonly SpectrogramProcessor[] _spectrograms;
+        private readonly WaveformProcessor[] _waveforms;
         private readonly int[] _dbTaps;
         private readonly int[] _loudnessTaps;
         private readonly int[] _noteTaps;
@@ -1234,6 +1515,10 @@ internal sealed class GraphEngine : IDisposable
                 .ToArray();
             _spectrograms = modifier.Processors
                 .OfType<SpectrogramProcessor>()
+                .Where(processor => processor.TapId > 0)
+                .ToArray();
+            _waveforms = modifier.Processors
+                .OfType<WaveformProcessor>()
                 .Where(processor => processor.TapId > 0)
                 .ToArray();
             _dbTaps = modifier.Processors
@@ -1299,6 +1584,11 @@ internal sealed class GraphEngine : IDisposable
                         var spectrogram = _spectrograms[i];
                         SpectrogramProcessor.WriteTap(spectrogram.TapId, samples, frames,
                             spectrogram.Contrast, spectrogram.Floor, spectrogram.Ceiling);
+                    }
+
+                    for (int i = 0; i < _waveforms.Length; i++)
+                    {
+                        WaveformProcessor.WriteTap(_waveforms[i].TapId, samples, frames);
                     }
 
                     for (int i = 0; i < _dbTaps.Length; i++)

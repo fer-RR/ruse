@@ -67,6 +67,7 @@ public sealed class ClipGuardProcessor : IAudioProcessor, IParameterizedProcesso
     public string TypeId => Id;
     public string DisplayName => "Clip guard";
     public IReadOnlyList<AudioParameter> Parameters { get; }
+    public int LatencySamples => _guard.LatencySamples;
     public bool Engaged => _guard.Engaged;
     public float GainReductionDb => _guard.GainReductionDb;
 

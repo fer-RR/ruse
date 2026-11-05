@@ -1,4 +1,6 @@
 export const fr: Record<string, string> = {
+  "Sample rate": "Fréquence d'échantillonnage",
+  "Native passthrough": "Passage natif",
   "Minimize": "Réduire",
   "Maximize or restore": "Maximiser ou restaurer",
   "Close": "Fermer",
@@ -682,6 +684,8 @@ export const fr: Record<string, string> = {
   "Saw": "Dent de scie",
   "Triangle": "Triangle",
   "Noise": "Bruit",
+  "Pink noise": "Bruit rose",
+  "Brown noise": "Bruit brown",
   "Test tone": "Tonalité de test",
   "Sine, square, saw, noise": "Sinusoïde, carré, dents de scie et bruit",
   "Generate a test signal for routing and level checks": "Générer un signal de test pour vérifier le routage et les niveaux",

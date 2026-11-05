@@ -17,6 +17,8 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
 
     private readonly AudioEffect _effect;
     private readonly AudioParameter[] _parameters;
+    private readonly VibratoProcessor? _vibrato;
+    private volatile bool _vibratoOn;
 
     private Func<float>? _rateGet;
     private Action<float>? _rateSet;
@@ -35,6 +37,12 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
         DisplayName = displayName;
         _effect = effect;
         _effect.Configure(WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels));
+
+        if (_effect is PhaserEffect)
+        {
+            _vibrato = new VibratoProcessor();
+            _vibrato.Parameters.First(parameter => parameter.Name == "Mix").Set(1f);
+        }
 
         if (_effect is ChorusEffect chorus)
         {
@@ -255,7 +263,39 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
         }
 
 
+        if (_vibrato != null)
+        {
+            mapped.Add(new AudioParameter
+            {
+                Name = "Vibrato",
+                Min = 0f,
+                Max = 1f,
+                Default = 0f,
+                IsToggle = true,
+                Get = () => _vibratoOn ? 1f : 0f,
+                Set = value => _vibratoOn = value >= 0.5f,
+            });
+            mapped.Add(VibratoParameter(_vibrato, "Rate", "Vibrato Rate"));
+            mapped.Add(VibratoParameter(_vibrato, "Depth", "Vibrato Depth"));
+        }
+
         _parameters = mapped.ToArray();
+    }
+
+    private static AudioParameter VibratoParameter(
+        VibratoProcessor vibrato, string sourceName, string displayName)
+    {
+        var source = vibrato.Parameters.First(parameter => parameter.Name == sourceName);
+        return new AudioParameter
+        {
+            Name = displayName,
+            Min = source.Min,
+            Max = source.Max,
+            Default = source.Default,
+            Unit = source.Unit,
+            Get = () => source.Get(),
+            Set = value => source.Set(value),
+        };
     }
 
     public string TypeId { get; }
@@ -298,10 +338,19 @@ public sealed class NaudioEffectProcessor : IAudioProcessor, IParameterizedProce
             _syncDirty = false;
         }
 
+        if (_vibratoOn && _vibrato != null)
+        {
+            _vibrato.Process(samples, frames);
+        }
+
         _effect.Process(samples);
     }
 
-    public void Reset() => _effect.Reset();
+    public void Reset()
+    {
+        _vibrato?.Reset();
+        _effect.Reset();
+    }
 
     private static NoteDivision ToNoteDivision(int index) => index switch
     {

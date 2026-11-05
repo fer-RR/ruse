@@ -112,6 +112,7 @@ public sealed class PresetRoute
     public int OutputIndex { get; set; }
     public float Gain { get; set; } = 1.0f;
     public bool Enabled { get; set; } = true;
+    public bool Native { get; set; }
 }
 
 /// <summary>A modifier node placed on the canvas, with its effect chain.</summary>

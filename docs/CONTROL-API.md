@@ -91,11 +91,31 @@ for effect bypass. Replies are:
 {"type":"error","id":2,"message":"Effect or parameter index is out of range."}
 ```
 
-After changes the server also broadcasts throttled graph events:
+Structural changes broadcast a throttled full graph event:
 
 ```json
 {"type":"graph","version":42,"running":true,"nodes":[...]}
 ```
+
+Gain, mute, solo, bypass, send and cable state use small deltas instead:
+
+```json
+{"type":"node-state","graphVersion":42,"payload":{"id":"compressor","enabled":false,"send":0.5,"parallel":false,"color":"","accent":"#4F8DFF"}}
+{"type":"link-state","graphVersion":42,"payload":{"id":"cable-7","gain":0.8,"enabled":true,"native":false}}
+```
+
+Apply deltas to your local copy. A full `graph` event is still authoritative
+after structural edits such as adding, removing or reconnecting nodes. The
+server keeps structural graph events in a reliable outbox; if topology might
+have been missed, request a resync:
+
+```json
+{"type":"resync"}
+```
+
+The server replies with its latest full `graph` event. Compare
+`graphVersion` in deltas with your local `graph.version`; if they differ, send
+`resync` before applying further deltas.
 
 ## Tiny Node.js example
 

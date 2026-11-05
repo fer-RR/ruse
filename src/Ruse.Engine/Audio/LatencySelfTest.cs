@@ -1121,6 +1121,161 @@ public static class LatencySelfTest
         return boostedSum > flatSum * 2.0;
     }
 
+    public static bool TestNativePassthroughMono()
+    {
+        const int sampleRate = 48000;
+        const int frames = 480;
+        var source = new SourceNode("native-mono-test", SourceKind.Application);
+        source.SetTestNativeFormat(1, sampleRate);
+        var received = new List<float>();
+        var done = new ManualResetEventSlim(false);
+        var output = OutputNode.CreateForTest((mix, length) =>
+        {
+            lock (received)
+            {
+                received.AddRange(mix.AsSpan(0, length).ToArray());
+                if (received.Count >= frames * 2)
+                {
+                    done.Set();
+                }
+            }
+        });
+        output.SetNativeSource(source);
+        float oldMaster = OutputNode.MasterGain;
+        try
+        {
+            OutputNode.MasterGain = 1f;
+            var input = new float[frames];
+            for (int i = 0; i < input.Length; i++)
+            {
+                input[i] = (float)Math.Sin(i * 0.017) * 0.25f;
+            }
+
+            source.WriteTestSamples(input);
+            output.Start();
+            if (!done.Wait(2000))
+            {
+                return false;
+            }
+
+            lock (received)
+            {
+                for (int i = 0; i < frames; i++)
+                {
+                    if (Math.Abs(received[i * 2] - input[i]) > 1e-6f ||
+                        Math.Abs(received[(i * 2) + 1] - input[i]) > 1e-6f)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            output.Stop();
+            output.Dispose();
+            source.Dispose();
+            OutputNode.MasterGain = oldMaster;
+        }
+    }
+
+    public static bool TestRecorderSampleRate()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(), $"ruse-rate-{Guid.NewGuid():N}.wav");
+        try
+        {
+            using (var recorder = new AudioFileRecorder(
+                path, AudioFileFormat.Wav32Float, 96000, 2))
+            {
+                var block = new float[480 * 2];
+                Array.Fill(block, 0.25f);
+                recorder.Write(block, block.Length);
+                recorder.Stop();
+            }
+
+            using var reader = new WaveFileReader(path);
+            return reader.WaveFormat.SampleRate == 96000 &&
+                   reader.WaveFormat.Channels == 2 &&
+                   reader.Length / reader.WaveFormat.BlockAlign == 480;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
+    public static bool TestNativePassthrough()
+    {
+        const int channels = 2;
+        const int sampleRate = 96000;
+        const int frames = 480;
+        var source = new SourceNode("native-test", SourceKind.Application);
+        source.SetTestNativeFormat(channels, sampleRate);
+        var received = new List<float>();
+        var done = new ManualResetEventSlim(false);
+        var output = OutputNode.CreateForTest((mix, length) =>
+        {
+            lock (received)
+            {
+                received.AddRange(mix.AsSpan(0, length).ToArray());
+                if (received.Count >= frames * channels)
+                {
+                    done.Set();
+                }
+            }
+        });
+        output.SetNativeSource(source);
+        float oldMaster = OutputNode.MasterGain;
+        try
+        {
+            OutputNode.MasterGain = 1f;
+            var input = new float[frames * channels];
+            for (int i = 0; i < input.Length; i++)
+            {
+                input[i] = (float)Math.Sin(i * 0.017) * 0.25f;
+            }
+
+            source.WriteTestSamples(input);
+            output.Start();
+            if (!done.Wait(2000))
+            {
+                return false;
+            }
+
+            lock (received)
+            {
+                if (received.Count < input.Length)
+                {
+                    return false;
+                }
+
+                for (int i = 0; i < input.Length; i++)
+                {
+                    if (Math.Abs(received[i] - input[i]) > 1e-6f)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            output.Stop();
+            output.Dispose();
+            source.Dispose();
+            OutputNode.MasterGain = oldMaster;
+        }
+    }
+
     private static bool TestClipGuardEffect()
     {
         var guard = new ClipGuardProcessor();
@@ -1146,7 +1301,7 @@ public static class LatencySelfTest
     {
         int tapId = NoteDetectorProcessor.NextTapId();
         NoteDetectorProcessor.EnsureTap(tapId);
-        var tune = new AutoTuneProcessor();
+        using var tune = new AutoTuneProcessor();
         tune.SetKeyTapId(tapId);
         tune.Parameters.First(parameter => parameter.Name == "Retune").Set(0);
         tune.Parameters.First(parameter => parameter.Name == "Strength").Set(100);
@@ -1171,6 +1326,11 @@ public static class LatencySelfTest
 
                 NoteDetectorProcessor.WriteTap(tapId, keyBlock, 240);
                 tune.Process(tuneBlock, 240);
+                if (pass == 149)
+                {
+                    Thread.Sleep(150);
+                }
+
                 if (pass < 150)
                 {
                     continue;
@@ -1226,7 +1386,7 @@ public static class LatencySelfTest
     }
     private static bool TestAutoTune()
     {
-        var tune = new AutoTuneProcessor();
+        using var tune = new AutoTuneProcessor();
         tune.Parameters.First(parameter => parameter.Name == "Scale").Set(0);
         tune.Parameters.First(parameter => parameter.Name == "Retune").Set(0);
         tune.Parameters.First(parameter => parameter.Name == "Strength").Set(100);
@@ -1244,6 +1404,11 @@ public static class LatencySelfTest
             }
 
             tune.Process(block, 240);
+            if (pass == 149)
+            {
+                Thread.Sleep(150);
+            }
+
             if (pass < 150)
             {
                 continue;
@@ -1324,13 +1489,22 @@ public static class LatencySelfTest
         const int frames = 240; // matches the mixer pump
         const int blocks = sampleRate / frames * 5; // 5 seconds of audio
 
-        const int expectedEffectCount = 51;
+        const int expectedEffectCount = 61;
         string[] requiredIds =
         [
             GainProcessor.Id,
             HighPassProcessor.Id,
             ParametricEqProcessor.Id,
             GraphicEqualizerProcessor.Id,
+            MoogLadderProcessor.Id,
+            AutowahProcessor.Id,
+            FrequencyShifterProcessor.Id,
+            VocoderProcessor.Id,
+            StringResonatorProcessor.Id,
+            FormantFilterProcessor.Id,
+            ReverseDelayProcessor.Id,
+            WavesetProcessor.Id,
+            PhaseDistortionProcessor.Id,
             ConvolutionReverbProcessor.Id,
             SidechainDuckerProcessor.Id,
             ClipGuardProcessor.Id,
@@ -1440,6 +1614,11 @@ public static class LatencySelfTest
                     buffer[f * channels + 1] = s;
                 }
 
+                if (processor is ISidechainProcessor sidechain)
+                {
+                    sidechain.SetSidechain(buffer, frames);
+                }
+
                 processor.Process(buffer, frames);
 
                 for (int i = 0; i < buffer.Length; i++)
@@ -1458,6 +1637,14 @@ public static class LatencySelfTest
 
             double msPerBlock = clock.Elapsed.TotalMilliseconds / blocks;
             timings.Add((descriptor.DisplayName, msPerBlock));
+
+            double budgetMs = EffectBudgetMs(descriptor.TypeId);
+            if (msPerBlock > budgetMs)
+            {
+                failures.Add(
+                    $"{descriptor.DisplayName}: {msPerBlock:0.000} ms per 5 ms block " +
+                    $"(budget {budgetMs:0.0} ms)");
+            }
 
             if (!finite)
             {
@@ -1548,10 +1735,23 @@ public static class LatencySelfTest
             ? string.Empty
             : $" Slowest: {slowest.Name} {slowest.Ms:0.00} ms per 5 ms block.";
         string summary = passed
-            ? $"{timings.Count} effects OK (parameters round-trip, output finite, presets restore).{cost}"
+            ? $"{timings.Count} effects OK (parameters round-trip, output finite, presets restore, CPU budgets).{cost}"
             : "Effects FAILED: " + string.Join("; ", failures);
         return new EffectsTestResult(passed, summary);
     }
+
+    /// <summary>
+    /// Per-block CPU budget for one effect. The default is deliberately loose
+    /// enough for cheap effects and tight enough to catch accidental O(n)
+    /// work; pitch/auto-tune/reverb/noise-suppression get extra headroom.
+    /// </summary>
+    private static double EffectBudgetMs(string typeId) => typeId switch
+    {
+        "pitch-shift" or "pitch-shift-hq" or "auto-tune" or "auto-tune-experimental" or
+            "convolution-reverb" or "noise-suppression" or "multiband-compressor" or
+            "room-reverb" => 2.5,
+        _ => 1.0,
+    };
 
     public sealed record BenchResult(int Sources, int Outputs, double Seconds, long FramesMixed, double CpuMs, long AllocBytes);
 

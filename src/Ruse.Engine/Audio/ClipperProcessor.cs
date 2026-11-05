@@ -8,7 +8,7 @@ namespace Ruse.App.Audio;
 /// NAudio saturation stage oversamples 4x, so the harmonics it creates do not
 /// fold back into the audible band as badly as a naive per-sample clamp.
 /// </summary>
-public sealed class ClipperProcessor : IAudioProcessor, IParameterizedProcessor
+public sealed class ClipperProcessor : IAudioProcessor, IParameterizedProcessor, INativeProcessor
 {
     public const string Id = "clipper";
 

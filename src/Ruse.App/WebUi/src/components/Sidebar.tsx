@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import type { ReactNode, RefObject } from 'react';
 import {
   AppWindow, AudioLines, Check, ChevronDown, FileAudio, GripVertical, Headphones, MessageSquare,
@@ -50,7 +50,7 @@ const filePlayerItem: CatalogItem = {
   details: 'Play an audio file into a route',
 };
 
-function ItemIcon({ item }: { item: CatalogItem }) {
+const ItemIcon = memo(function ItemIcon({ item }: { item: CatalogItem }) {
   const props = { size: 15, strokeWidth: 1.7, 'aria-hidden': true } as const;
   if (item.iconDataUrl) return <img className="library-app-icon" src={item.iconDataUrl} alt="" />;
   switch (item.kind) {
@@ -74,9 +74,9 @@ function ItemIcon({ item }: { item: CatalogItem }) {
     case 'file-player': return <FileAudio {...props} />;
     case 'recorder': return <FileAudio {...props} />;
   }
-}
+});
 
-function LibraryItem({ item, name, onAdd, onEdit, onRename, onDelete, onCanvas }: {
+const LibraryItem = memo(function LibraryItem({ item, name, onAdd, onEdit, onRename, onDelete, onCanvas }: {
   item: CatalogItem;
   name: string;
   onAdd: (item: CatalogItem) => void;
@@ -144,7 +144,7 @@ function LibraryItem({ item, name, onAdd, onEdit, onRename, onDelete, onCanvas }
           </span>}
     </div>
   );
-}
+});
 
 interface Section {
   id: string;
@@ -233,7 +233,7 @@ const VIEWS: ReadonlyArray<{ id: View; label: string }> = [
   { id: 'processing', label: 'Processing' },
 ];
 
-export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onDelete, onNewChain, onEditChain, onRescanPlugins }: {
+function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onDelete, onNewChain, onEditChain, onRescanPlugins }: {
   catalog: CatalogSnapshot;
   searchRef: RefObject<HTMLInputElement | null>;
   aliases: Record<string, string>;
@@ -369,7 +369,8 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
   }, [groups]);
 
   const displayName = (item: CatalogItem) => aliases[catalogKey(item)]?.trim() || t(item.name);
-  const normalized = query.trim().toLowerCase();
+  const deferredQuery = useDeferredValue(query);
+  const normalized = deferredQuery.trim().toLowerCase();
   const filtered = groups.map(group => ({
     ...group,
     sections: group.sections.map(section => ({
@@ -507,3 +508,5 @@ export default function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, on
     </aside>
   );
 }
+
+export default memo(Sidebar);

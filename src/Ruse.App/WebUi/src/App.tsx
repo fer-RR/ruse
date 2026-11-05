@@ -6,7 +6,7 @@ import {
 import type { Connection, Edge, EdgeChange, NodeChange } from '@xyflow/react';
 import {
   AlertTriangle, ArrowUpDown, AudioLines, ChevronLeft, ChevronRight, Copy, Info, LayoutGrid, Maximize2,
-  LayoutTemplate, Minus, Pencil, Plus, Trash2, Unplug, Volume2, VolumeX, X,
+  LayoutTemplate, Minus, Pencil, Plus, Trash2, Unplug, Volume2, VolumeX, X, Zap,
 } from 'lucide-react';
 import { isHosted, send, subscribe } from './bridge';
 import { createDemoTelemetry, demoCatalog, demoGraph, demoSettings } from './demo';
@@ -29,7 +29,7 @@ import MixerPanel from './components/MixerPanel';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
   CatalogItem, CatalogSnapshot, ChainEditorRequest, FrameModel, GraphSnapshot, HistorySnapshot,
-  SettingsModel, StatusMessage, TelemetrySnapshot,
+  LinkStateUpdate, NodeStateUpdate, SettingsModel, StatusMessage, TelemetrySnapshot,
 } from './types';
 
 const nodeTypes = { ruseNode: RuseNode };
@@ -153,6 +153,7 @@ export default function App() {
   const framesRef = useRef<FrameModel[]>([]);
   const frameEditing = useRef(false);
   const graphSeen = useRef(false);
+  const [rejectedLinkId, setRejectedLinkId] = useState<string | null>(null);
 
   const nodesRef = useRef(nodes);
   const settingsRef = useRef(settings);
@@ -348,6 +349,74 @@ export default function App() {
     switch (type) {
       case 'catalog': setCatalog(payload as CatalogSnapshot); break;
       case 'graph': setGraph(payload as GraphSnapshot); break;
+      case 'node-state': {
+        const update = payload as NodeStateUpdate;
+        setGraph(current => ({
+          ...current,
+          nodes: current.nodes.map(node => node.id === update.id
+            ? {
+                ...node,
+                volume: update.volume ?? node.volume,
+                muted: update.muted ?? node.muted,
+                solo: update.solo ?? node.solo,
+                enabled: update.enabled ?? node.enabled,
+                send: update.send ?? node.send,
+                isParallel: update.parallel ?? node.isParallel,
+                color: update.color !== undefined ? (update.color || undefined) : node.color,
+                accent: update.accent ?? node.accent,
+              }
+            : node),
+        }));
+        setNodes(current => current.map(node => node.id === update.id
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                volume: update.volume ?? node.data.volume,
+                muted: update.muted ?? node.data.muted,
+                solo: update.solo ?? node.data.solo,
+                enabled: update.enabled ?? node.data.enabled,
+                send: update.send ?? node.data.send,
+                isParallel: update.parallel ?? node.data.isParallel,
+                color: update.color !== undefined ? (update.color || undefined) : node.data.color,
+                accent: update.accent ?? node.data.accent,
+              },
+            }
+          : node));
+        break;
+      }
+      case 'link-state': {
+        const update = payload as LinkStateUpdate;
+        setGraph(current => ({
+          ...current,
+          links: current.links.map(link => link.id === update.id
+            ? { ...link, gain: update.gain, enabled: update.enabled, native: update.native, nativeRate: update.nativeRate }
+            : link),
+        }));
+        break;
+      }
+      case 'link-reject': {
+        const reject = payload as { id?: string; reason?: string };
+        if (reject.id) {
+          setRejectedLinkId(reject.id);
+          window.setTimeout(() => {
+            setRejectedLinkId(current => current === reject.id ? null : current);
+          }, 900);
+        }
+        break;
+      }
+      case 'param': {
+        const update = payload as { id: string; processor: number; parameter: number; value: number };
+        setNodes(current => current.map(node => {
+          if (node.id !== update.id) return node;
+          const parameters = node.data.parameters.map(parameter =>
+            parameter.processorIndex === update.processor && parameter.parameterIndex === update.parameter
+              ? { ...parameter, value: update.value }
+              : parameter);
+          return { ...node, data: { ...node.data, parameters } };
+        }));
+        break;
+      }
       case 'telemetry':
         if (connectingRef.current || draggingRef.current) {
           pendingTelemetry.current = payload as TelemetrySnapshot;
@@ -396,6 +465,9 @@ export default function App() {
       if (!graphIds.has(id)) pendingMoves.current.delete(id);
       else if (now - pendingMoves.current.get(id)!.at > 2500) pendingMoves.current.delete(id);
     }
+    const fileOutputs = graph.nodes
+      .filter(node => node.kind === 'output' && !node.isRecorder)
+      .map(node => ({ id: node.id, name: node.title }));
     const mapped: RuseFlowNode[] = graph.nodes.map(model => {
       const existing = current.get(model.id);
       let x = model.x;
@@ -408,9 +480,6 @@ export default function App() {
           y = pending.y;
         }
       }
-      const fileOutputs = graph.nodes
-        .filter(node => node.kind === 'output' && !node.isRecorder)
-        .map(node => ({ id: node.id, name: node.title }));
       return {
         id: model.id,
         type: 'ruseNode',
@@ -545,23 +614,26 @@ export default function App() {
     setNodeTitles(titles);
   }, [graph.version]);
 
-  const edges = useMemo<Edge[]>(() => graph.links.map(link => {
-    const source = graph.nodes.find(node => node.id === link.from);
-    return {
-      id: link.id,
-      source: link.from,
-      target: link.to,
-      sourceHandle: source?.isNoteDetector ? 'key' : 'out',
-      targetHandle: link.kind === 'sidechain' ? 'sidechain' : 'in',
-      type: 'ruseEdge',
-      data: { kind: link.kind },
-      animated: false,
-      interactionWidth: 22,
-      style: { stroke: source?.accent ?? '#5B8DEF', strokeWidth: 2, opacity: 0.84 },
-    };
-  }), [graph.links, graph.nodes]);
+  const edges = useMemo<Edge[]>(() => {
+    const byId = new Map(graph.nodes.map(node => [node.id, node]));
+    return graph.links.map(link => {
+      const source = byId.get(link.from);
+      return {
+        id: link.id,
+        source: link.from,
+        target: link.to,
+        sourceHandle: source?.isNoteDetector ? 'key' : 'out',
+        targetHandle: link.kind === 'sidechain' ? 'sidechain' : 'in',
+        type: 'ruseEdge',
+        data: { kind: link.kind, native: link.native === true, nativeRate: link.native === true ? (link.nativeRate || source?.sampleRate) : undefined, rejected: rejectedLinkId === link.id },
+        animated: false,
+        interactionWidth: 22,
+        style: { stroke: source?.accent ?? '#5B8DEF', strokeWidth: 2, opacity: 0.84 },
+      };
+    });
+  }, [graph.links, graph.nodes, rejectedLinkId]);
 
-  const sendAdd = (item: CatalogItem, position: { x: number; y: number }, linkId?: string) => {
+  const sendAdd = useCallback((item: CatalogItem, position: { x: number; y: number }, linkId?: string) => {
     send('add', {
       kind: item.kind,
       id: item.id,
@@ -572,7 +644,7 @@ export default function App() {
       x: Math.round(position.x / 20) * 20,
       y: Math.round(position.y / 20) * 20,
     });
-  };
+  }, [aliases, t]);
 
   const findLinkAtPoint = (point: { x: number; y: number }): string | undefined => {
     const threshold = Math.max(10, 18 / Math.max(0.25, flow.getViewport().zoom));
@@ -630,7 +702,7 @@ export default function App() {
     });
   }, [flow, setNodes]);
 
-  const findFreeSpot = (position: { x: number; y: number }) => {
+  const findFreeSpot = useCallback((position: { x: number; y: number }) => {
     const others = nodesRef.current.map(node => ({
       id: node.id,
       x: node.position.x,
@@ -639,13 +711,14 @@ export default function App() {
       height: node.measured?.height ?? 140,
     }));
     return nearestFreePosition({ id: 'new', x: position.x, y: position.y, width: 204, height: 140 }, others);
-  };
+  }, []);
 
-  const quickAdd = (item: CatalogItem) => {
+  const quickAdd = useCallback((item: CatalogItem) => {
     const bounds = graphElement.current?.getBoundingClientRect();
+    const count = nodesRef.current.length;
     const position = bounds
       ? flow.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
-      : { x: 60 + graph.nodes.length * 30, y: 60 + graph.nodes.length * 30 };
+      : { x: 60 + count * 30, y: 60 + count * 30 };
     if (item.kind === 'template') {
       send('insert-template', {
         id: item.id,
@@ -656,7 +729,16 @@ export default function App() {
     }
 
     sendAdd(item, findFreeSpot({ x: position.x - 102, y: position.y - 60 }));
-  };
+  }, [flow, sendAdd, findFreeSpot]);
+
+  const newChain = useCallback(
+    () => setChainEditor({ name: 'My chain', elements: [] }), []);
+  const rescanPlugins = useCallback(() => send('vst3-rescan'), []);
+  const editChain = useCallback((item: CatalogItem) => setChainEditor({
+    name: item.name,
+    previousName: item.name,
+    elements: (item.elements ?? []).map(element => ({ typeId: element.typeId, parameters: { ...element.parameters } })),
+  }), []);
 
   const tidyGraph = () => {
     const rank = { source: 0, modifier: 1, output: 2 };
@@ -1071,13 +1153,9 @@ export default function App() {
               onAdd={quickAdd}
               onRename={setRenameLibrary}
               onDelete={setLibraryRemoval}
-              onNewChain={() => setChainEditor({ name: 'My chain', elements: [] })}
-              onRescanPlugins={() => send('vst3-rescan')}
-              onEditChain={item => setChainEditor({
-                name: item.name,
-                previousName: item.name,
-                elements: (item.elements ?? []).map(element => ({ typeId: element.typeId, parameters: { ...element.parameters } })),
-              })}
+              onNewChain={newChain}
+              onRescanPlugins={rescanPlugins}
+              onEditChain={editChain}
             />
             <div className="sidebar-edge">
               <div className="sidebar-resizer" role="separator" aria-label={t('Resize library')} title={t('Drag to resize · double-click to hide')} onDoubleClick={() => setSidebarCollapsed(true)} onPointerDown={startSidebarResize} />
@@ -1356,6 +1434,7 @@ export default function App() {
             <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('remove', { id: menuNode.id }); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Remove node')} <kbd>{SHORTCUTS.remove}</kbd></button>
           </>}
           {canvasMenu.kind === 'edge' && menuLink && <>
+            {menuLink.kind === 'direct' && <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.native === true} onClick={() => { send('link-native', { id: menuLink.id, value: menuLink.native !== true }); setCanvasMenu(null); } }><Zap size={14} /> {t('Native passthrough')}{menuLink.native === true ? ' ✓' : ''}</button>}
             <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('disconnect', { id: menuLink.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect cable')}</button>
           </>}
           {canvasMenu.kind === 'pane' && <>

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO;
+using Vector = System.Numerics.Vector<float>;
 using NAudio.Dsp;
 using NAudio.Effects;
 using NAudio.Wave;
@@ -23,8 +24,14 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
     private int _historyPosition;
     private int _resetRequested;
     private float[]? _profile;
-    private float[]? _kernel;
+    private FirKernel? _fir;
     private float _removePercent = 50f;
+
+    private sealed class FirKernel
+    {
+        public required float[] Taps { get; init; }
+        public required float[] Reversed { get; init; }
+    }
     private string? _noiseProfilePath;
     private string _noiseProfileName = "";
     private string? _noiseProfileError;
@@ -54,7 +61,7 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
     public IReadOnlyList<AudioParameter> Parameters => _parameters;
 
     public int LatencySamples =>
-        _inner.LatencySamples + (Volatile.Read(ref _kernel) != null ? NoiseProfileAnalyzer.FirLatency : 0);
+        _inner.LatencySamples + (Volatile.Read(ref _fir) != null ? NoiseProfileAnalyzer.FirLatency : 0);
 
     public string? NoiseProfilePath => _noiseProfilePath;
     public string NoiseProfileName => _noiseProfileName;
@@ -83,7 +90,7 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
     public void ClearNoiseProfile()
     {
         _profile = null;
-        Volatile.Write(ref _kernel, null);
+        Volatile.Write(ref _fir, null);
         _noiseProfilePath = null;
         _noiseProfileName = "";
         _noiseProfileError = null;
@@ -94,8 +101,8 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
     {
         _inner.Process(samples, frames);
 
-        var kernel = Volatile.Read(ref _kernel);
-        if (kernel == null)
+        var fir = Volatile.Read(ref _fir);
+        if (fir == null)
         {
             return;
         }
@@ -107,27 +114,35 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
             _historyPosition = 0;
         }
 
-        int taps = kernel.Length;
+        float[] taps = fir.Taps;
+        float[] reversed = fir.Reversed;
+        int tapCount = taps.Length;
         for (int frame = 0; frame < frames; frame++)
         {
             int index = frame * 2;
             _historyLeft[_historyPosition] = samples[index];
             _historyRight[_historyPosition] = samples[index + 1];
 
+            int olderStart = _historyPosition + 1;
+            int olderCount = tapCount - olderStart;
+            int newerCount = olderStart;
             float sumLeft = 0f;
             float sumRight = 0f;
-            int historyIndex = _historyPosition;
-            for (int tap = 0; tap < taps; tap++)
+            if (olderCount > 0)
             {
-                float weight = kernel[tap];
-                sumLeft += _historyLeft[historyIndex] * weight;
-                sumRight += _historyRight[historyIndex] * weight;
-                historyIndex = historyIndex == 0 ? taps - 1 : historyIndex - 1;
+                sumLeft += Dot(_historyLeft, olderStart, reversed, 0, olderCount);
+                sumRight += Dot(_historyRight, olderStart, reversed, 0, olderCount);
+            }
+
+            if (newerCount > 0)
+            {
+                sumLeft += Dot(_historyLeft, 0, reversed, olderCount, newerCount);
+                sumRight += Dot(_historyRight, 0, reversed, olderCount, newerCount);
             }
 
             samples[index] = sumLeft;
             samples[index + 1] = sumRight;
-            _historyPosition = _historyPosition + 1 == taps ? 0 : _historyPosition + 1;
+            _historyPosition = olderStart == tapCount ? 0 : olderStart;
         }
     }
 
@@ -146,9 +161,46 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
     private void RebuildKernel()
     {
         var profile = _profile;
-        Volatile.Write(
-            ref _kernel,
-            profile == null ? null : NoiseProfileAnalyzer.BuildKernel(profile, _removePercent / 100f));
+        if (profile == null)
+        {
+            Volatile.Write(ref _fir, null);
+            return;
+        }
+
+        float[] taps = NoiseProfileAnalyzer.BuildKernel(profile, _removePercent / 100f);
+        var reversed = new float[taps.Length];
+        for (int i = 0; i < taps.Length; i++)
+        {
+            reversed[i] = taps[taps.Length - 1 - i];
+        }
+
+        Volatile.Write(ref _fir, new FirKernel { Taps = taps, Reversed = reversed });
+    }
+
+    private static float Dot(
+        float[] history, int historyOffset, float[] kernel, int kernelOffset, int count)
+    {
+        int i = 0;
+        Vector vector = Vector.Zero;
+        int width = Vector.Count;
+        for (; i + width <= count; i += width)
+        {
+            vector += new Vector(history, historyOffset + i) *
+                      new Vector(kernel, kernelOffset + i);
+        }
+
+        float sum = 0f;
+        for (int lane = 0; lane < width; lane++)
+        {
+            sum += vector[lane];
+        }
+
+        for (; i < count; i++)
+        {
+            sum += history[historyOffset + i] * kernel[kernelOffset + i];
+        }
+
+        return sum;
     }
 }
 

@@ -82,8 +82,12 @@ internal sealed partial class WebShellController : IDisposable
             Interval = TimeSpan.FromMilliseconds(_settings.FollowPlayingApps ? 750 : 4000),
         };
         _appsTimer.Tick += (_, _) => RefreshApps();
-        _devicesTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        _devicesTimer.Tick += (_, _) => RefreshDevicesIfChanged();
+        _devicesTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _devicesTimer.Tick += (_, _) =>
+        {
+            _devicesTimer.Stop();
+            RefreshDevicesIfChanged(force: true);
+        };
     }
 
     public async Task InitializeAsync(WebView2 webView)
@@ -112,15 +116,9 @@ internal sealed partial class WebShellController : IDisposable
 #endif
 
         _core.WebMessageReceived += OnWebMessageReceived;
-        _core.ProcessFailed += (_, _) => ShowError("The WebView2 UI process failed. Restart Ruse to recover the interface.");
-        _core.NavigationStarting += (_, args) =>
-        {
-            if (!args.Uri.StartsWith("https://ui.ruse/", StringComparison.OrdinalIgnoreCase))
-            {
-                args.Cancel = true;
-            }
-        };
-        _core.NewWindowRequested += (_, args) => args.Handled = true;
+        _core.ProcessFailed += OnCoreProcessFailed;
+        _core.NavigationStarting += OnCoreNavigationStarting;
+        _core.NewWindowRequested += OnCoreNewWindowRequested;
 
         string webRoot = Path.Combine(AppContext.BaseDirectory, "WebUi");
         if (!File.Exists(Path.Combine(webRoot, "index.html")))
@@ -135,7 +133,6 @@ internal sealed partial class WebShellController : IDisposable
         _core.Navigate("https://ui.ruse/index.html");
         _telemetryTimer.Start();
         _appsTimer.Start();
-        _devicesTimer.Start();
 
         PostStartupProgress(0.12, "Starting Ruse");
         await Task.WhenAny(_uiReadySignal.Task, Task.Delay(1000));
@@ -148,6 +145,7 @@ internal sealed partial class WebShellController : IDisposable
         FrameTemplateLibrary.Load();
         PostStartupProgress(0.4, "Scanning audio devices");
         RefreshCatalog();
+        RegisterDeviceNotifications();
         PostStartupProgress(0.62, "Restoring session");
         if (App.LiveDemoMode)
         {
@@ -215,6 +213,20 @@ internal sealed partial class WebShellController : IDisposable
             Dispatcher.CurrentDispatcher.BeginInvoke(StartRouting, DispatcherPriority.ApplicationIdle);
         }
     }
+
+    private void OnCoreProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e) =>
+        ShowError("The WebView2 UI process failed. Restart Ruse to recover the interface.");
+
+    private void OnCoreNavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs args)
+    {
+        if (!args.Uri.StartsWith("https://ui.ruse/", StringComparison.OrdinalIgnoreCase))
+        {
+            args.Cancel = true;
+        }
+    }
+
+    private void OnCoreNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs args) =>
+        args.Handled = true;
 
     private void OnWebMessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
@@ -298,6 +310,7 @@ internal sealed partial class WebShellController : IDisposable
             case "disconnect": DisconnectLink(String(message, "id")); break;
             case "link-gain": SetLinkGain(String(message, "id"), (float)Number(message, "value", 1)); break;
             case "link-enabled": SetLinkEnabled(String(message, "id"), Bool(message, "value")); break;
+            case "link-native": SetLinkNative(String(message, "id"), Bool(message, "value")); break;
             case "disconnect-node": DisconnectNode(String(message, "id")); break;
             case "frames": SetFrames(Payload<FramesPayload>(message)); break;
             case "save-frame-template": SaveFrameTemplate(Payload<FrameRefPayload>(message)); break;
@@ -381,6 +394,7 @@ internal sealed partial class WebShellController : IDisposable
             case "recorder-file": ChooseRecorderFile(String(message, "id"), String(message, "format", "Wav24")); break;
             case "recorder-open-folder": OpenRecorderFolder(String(message, "id")); break;
             case "recorder-format": SetRecorderFormat(String(message, "id"), String(message, "format", "Wav24")); break;
+            case "recorder-rate": SetRecorderSampleRate(String(message, "id"), (int)Number(message, "value", 48000)); break;
             case "recorder-mode": SetRecorderMode(String(message, "id"), String(message, "mode", "Off")); break;
             case "recorder-autosave": SetRecorderAutoSave(String(message, "id"), Bool(message, "value")); break;
             case "recorder-silence": SetRecorderSilence(String(message, "id"), Number(message, "value")); break;
@@ -516,6 +530,10 @@ internal sealed partial class WebShellController : IDisposable
                 Kind = link.Kind,
                 Gain = link.Gain,
                 Enabled = link.Enabled,
+                Native = link.Native,
+                NativeRate = link.Native && _nodes.TryGetValue(link.From, out var nativeFrom)
+                    ? nativeFrom.Source?.SampleRate ?? 0
+                    : 0,
             }).ToList(),
             Frames = _frames.Select(frame => new FrameDto
             {
@@ -530,6 +548,70 @@ internal sealed partial class WebShellController : IDisposable
         };
         Post("graph", dto);
         PublishControlGraphIfDue();
+    }
+
+    /// <summary>
+    /// Sends only the mutable state of one node. Use this for gain, mute, solo,
+    /// bypass and color instead of rebuilding and republishing the whole graph.
+    /// </summary>
+    private void PublishNodeState(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry))
+        {
+            return;
+        }
+
+        var state = new NodeStateDto
+        {
+            Id = entry.Id,
+            Color = entry.Color ?? "",
+            Accent = string.IsNullOrWhiteSpace(entry.Color) ? entry.Accent : entry.Color,
+        };
+
+        if (entry.Source != null)
+        {
+            state.Volume = entry.Source.Gain;
+            state.Muted = entry.Source.Muted;
+            state.Solo = entry.Source.Solo;
+        }
+        else if (entry.Output != null)
+        {
+            state.Volume = entry.Output.Volume;
+            state.Muted = entry.Output.Muted;
+            state.Solo = entry.Output.Solo;
+        }
+        else if (entry.Modifier != null)
+        {
+            state.Enabled = entry.Modifier.Enabled;
+            state.Send = entry.Modifier.Send;
+            state.Parallel = entry.Modifier.Parallel;
+        }
+
+        Post("node-state", state);
+        _controlServer?.PublishNodeState(state);
+    }
+
+    /// <summary>Sends one cable's gain and enabled state without a graph rebuild.</summary>
+    private void PublishLinkState(string id)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null)
+        {
+            return;
+        }
+
+        var state = new LinkStateDto
+        {
+            Id = link.Id,
+            Gain = link.Gain,
+            Enabled = link.Enabled,
+            Native = link.Native,
+            NativeRate = link.Native && _nodes.TryGetValue(link.From, out var nativeFrom)
+                ? nativeFrom.Source?.SampleRate ?? 0
+                : 0,
+        };
+        Post("link-state", state);
+        _controlServer?.PublishLinkState(state);
     }
 
     /// <summary>Flags routes that copy audio already playing on the output.</summary>
@@ -820,6 +902,14 @@ internal sealed partial class WebShellController : IDisposable
             return;
         }
 
+        // The WebView is invisible while minimized or hidden in the tray; keep
+        // the engine alive but stop serializing full telemetry at 10 Hz.
+        bool hidden = !_window.IsVisible || _window.WindowState == WindowState.Minimized;
+        if (!force && hidden && now - _lastTelemetryPublish < 1000)
+        {
+            return;
+        }
+
         _lastTelemetryPublish = now;
         PollTtsSources();
         long telemetryStarted = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -912,6 +1002,13 @@ internal sealed partial class WebShellController : IDisposable
                         meter.SpectrogramPeakHz = SpectrogramProcessor.GetPeakHz(spectrogram.TapId);
                         meter.SpectrogramColumns = SpectrogramProcessor.Columns;
                         meter.SpectrogramWindowSeconds = SpectrogramProcessor.WindowSeconds;
+                    }
+
+                    if (modifier.Enabled && modifier.Processors.OfType<WaveformProcessor>().FirstOrDefault() is { } waveform &&
+                        WaveformProcessor.GetReading(waveform.TapId, waveform.Trigger) is { } reading)
+                    {
+                        meter.Waveform = reading.Samples;
+                        meter.WaveformPeak = reading.Peak;
                     }
 
                     if (modifier.Enabled && modifier.Processors.OfType<DbMeterProcessor>().FirstOrDefault() is { } dbMeter)
@@ -1248,6 +1345,15 @@ internal sealed partial class WebShellController : IDisposable
         }
 
         _disposed = true;
+        if (_core != null)
+        {
+            _core.WebMessageReceived -= OnWebMessageReceived;
+            _core.ProcessFailed -= OnCoreProcessFailed;
+            _core.NavigationStarting -= OnCoreNavigationStarting;
+            _core.NewWindowRequested -= OnCoreNewWindowRequested;
+        }
+
+        UnregisterDeviceNotifications();
         _telemetryTimer.Stop();
         _appsTimer.Stop();
         _devicesTimer.Stop();
@@ -1315,5 +1421,6 @@ internal sealed partial class WebShellController : IDisposable
         public required string Kind { get; init; }
         public float Gain { get; set; } = 1;
         public bool Enabled { get; set; } = true;
+        public bool Native { get; set; }
     }
 }

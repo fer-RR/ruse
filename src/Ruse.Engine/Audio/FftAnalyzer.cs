@@ -6,9 +6,10 @@ namespace Ruse.App.Audio;
 /// </summary>
 internal sealed class FftAnalyzer
 {
-    public const int SampleRate = 48000;
+    public const int DefaultSampleRate = 48000;
+    private readonly int _sampleRate;
     public const int FftSize = 4096;
-    public const int Bands = 128;
+    public const int Bands = 256;
     internal const int HopSize = 1536;
 
     private readonly float[] _ring = new float[FftSize];
@@ -24,8 +25,9 @@ internal sealed class FftAnalyzer
     private int _since;
     private float _peakHz;
 
-    public FftAnalyzer()
+    public FftAnalyzer(int sampleRate = DefaultSampleRate)
     {
+        _sampleRate = sampleRate > 0 ? sampleRate : DefaultSampleRate;
         for (int i = 0; i < FftSize; i++)
         {
             _window[i] = 0.5f - 0.5f * MathF.Cos(2f * MathF.PI * i / (FftSize - 1));
@@ -51,8 +53,8 @@ internal sealed class FftAnalyzer
         {
             double low = 20.0 * Math.Pow(ratio, band / (double)Bands);
             double high = 20.0 * Math.Pow(ratio, (band + 1) / (double)Bands);
-            int start = Math.Clamp((int)Math.Floor(low * FftSize / SampleRate), 1, FftSize / 2 - 1);
-            int end = Math.Clamp((int)Math.Ceiling(high * FftSize / SampleRate), start + 1, FftSize / 2);
+            int start = Math.Clamp((int)Math.Floor(low * FftSize / _sampleRate), 1, FftSize / 2 - 1);
+            int end = Math.Clamp((int)Math.Ceiling(high * FftSize / _sampleRate), start + 1, FftSize / 2);
             _edges[band] = (start, end);
         }
     }
@@ -69,7 +71,8 @@ internal sealed class FftAnalyzer
             int index = frame * 2;
             float mono = (samples[index] + samples[index + 1]) * 0.5f;
             _ring[_write] = mono;
-            _write = (_write + 1) % FftSize;
+            _write++;
+            if (_write == FftSize) _write = 0;
             if (_filled < FftSize) _filled++;
             _since++;
         }
@@ -83,41 +86,47 @@ internal sealed class FftAnalyzer
     private void Analyze()
     {
         int offset = _write;
+        int index = offset;
         for (int i = 0; i < FftSize; i++)
         {
-            int index = (offset + i) % FftSize;
             _real[i] = _ring[index] * _window[i];
             _imag[i] = 0f;
+            index++;
+            if (index == FftSize) index = 0;
         }
 
         Transform();
 
         int peakBin = 1;
-        float peak = 0f;
+        double peakPower = 0.0;
         for (int bin = 1; bin < FftSize / 2; bin++)
         {
-            float magnitude = MathF.Sqrt(_real[bin] * _real[bin] + _imag[bin] * _imag[bin]);
-            if (magnitude > peak)
+            double power = ((double)_real[bin] * _real[bin]) +
+                           ((double)_imag[bin] * _imag[bin]);
+            if (power > peakPower)
             {
-                peak = magnitude;
+                peakPower = power;
                 peakBin = bin;
             }
         }
 
         _peakHz = peakHz(peakBin);
+        double powerScale = 16.0 / ((double)FftSize * FftSize);
         for (int band = 0; band < Bands; band++)
         {
             var (start, end) = _edges[band];
-            double power = 0;
+            // The peak bin keeps a narrow tone visible in a wide log band; an
+            // average would dilute it by the band's bin count at high frequencies.
+            double bandPeak = 0.0;
             for (int bin = start; bin < end; bin++)
             {
-                float magnitude = MathF.Sqrt(_real[bin] * _real[bin] + _imag[bin] * _imag[bin]);
-                double amplitude = 4.0 * magnitude / FftSize;
-                power += amplitude * amplitude;
+                double power = powerScale *
+                    (((double)_real[bin] * _real[bin]) +
+                     ((double)_imag[bin] * _imag[bin]));
+                if (power > bandPeak) bandPeak = power;
             }
 
-            double average = power / Math.Max(1, end - start);
-            _levels[band] = (float)(10.0 * Math.Log10(average + 1e-12));
+            _levels[band] = (float)(10.0 * Math.Log10(bandPeak + 1e-12));
         }
     }
 
@@ -160,5 +169,5 @@ internal sealed class FftAnalyzer
         }
     }
 
-    private static float peakHz(int bin) => bin * SampleRate / (float)FftSize;
+    private float peakHz(int bin) => bin * _sampleRate / (float)FftSize;
 }

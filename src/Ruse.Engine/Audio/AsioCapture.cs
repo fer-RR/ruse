@@ -25,8 +25,8 @@ public sealed class AsioCapture : IDisposable
     /// <summary>Number of frames captured since <see cref="Start"/>.</summary>
     public long CapturedFrames { get; private set; }
 
-    /// <summary>Raised for every captured block, as interleaved stereo float.</summary>
-    public event Action<AsioCapture, byte[]>? DataAvailable;
+    /// <summary>Raised for every captured block, with its valid byte count.</summary>
+    public event Action<AsioCapture, byte[], int>? DataAvailable;
 
     /// <summary>Raised when the driver stops by itself.</summary>
     public event Action<AsioCapture, string>? Stopped;
@@ -108,7 +108,7 @@ public sealed class AsioCapture : IDisposable
         var handler = DataAvailable;
         if (handler != null)
         {
-            handler(this, _bytes);
+            handler(this, _bytes, needed * sizeof(float));
         }
     }
 

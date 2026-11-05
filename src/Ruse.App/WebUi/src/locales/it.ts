@@ -1,4 +1,6 @@
 export const it: Record<string, string> = {
+  "Sample rate": "Frequenza di campionamento",
+  "Native passthrough": "Passthrough nativo",
   "Minimize": "Ridurre al minimo",
   "Maximize or restore": "Massimizzare o ripristinare",
   "Close": "Chiudi",
@@ -682,6 +684,8 @@ export const it: Record<string, string> = {
   "Saw": "Dente di sega",
   "Triangle": "Triangolo",
   "Noise": "Rumore",
+  "Pink noise": "Rumore rosa",
+  "Brown noise": "Rumore brown",
   "Test tone": "Tono di prova",
   "Sine, square, saw, noise": "Sinusoide, onda quadrata, dente di sega e rumore",
   "Generate a test signal for routing and level checks": "Genera un segnale di prova per verificare routing e livelli",

@@ -16,6 +16,7 @@ internal sealed partial class WebShellController
         public required Action Redo { get; set; }
         public string? Key { get; init; }
         public long CreatedAt { get; set; }
+        public bool Structural { get; init; } = true;
     }
 
     private sealed record NodeSnapshot(
@@ -68,7 +69,9 @@ internal sealed partial class WebShellController
         int TtsVoice = 0,
         string? ControlId = null);
 
-    private void PushAction(string label, Action undo, Action redo, string? coalesceKey = null)
+    private void PushAction(
+        string label, Action undo, Action redo,
+        string? coalesceKey = null, bool structural = true)
     {
         long now = Environment.TickCount64;
         if (coalesceKey != null && _undoHistory.Count > 0)
@@ -92,6 +95,7 @@ internal sealed partial class WebShellController
             Redo = redo,
             Key = coalesceKey,
             CreatedAt = now,
+            Structural = structural,
         });
 
         if (_undoHistory.Count > 200)
@@ -110,7 +114,11 @@ internal sealed partial class WebShellController
         _undoHistory.RemoveAt(_undoHistory.Count - 1);
         _redoHistory.Add(entry);
         entry.Undo();
-        PublishGraph();
+        if (entry.Structural)
+        {
+            PublishGraph();
+        }
+
         SetStatus($"Undid {entry.Label.ToLowerInvariant()}.");
         PublishHistory();
     }
@@ -122,7 +130,11 @@ internal sealed partial class WebShellController
         _redoHistory.RemoveAt(_redoHistory.Count - 1);
         _undoHistory.Add(entry);
         entry.Redo();
-        PublishGraph();
+        if (entry.Structural)
+        {
+            PublishGraph();
+        }
+
         SetStatus($"Redid {entry.Label.ToLowerInvariant()}.");
         PublishHistory();
     }
@@ -349,6 +361,7 @@ internal sealed partial class WebShellController
         Kind = link.Kind,
         Gain = link.Gain,
         Enabled = link.Enabled,
+        Native = link.Native,
     };
 
     private void RestoreLink(LinkEntry link)

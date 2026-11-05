@@ -24,7 +24,8 @@ internal sealed partial class WebShellController
     private readonly MidiInputManager _midi = new();
     private readonly List<MidiBindingEntry> _midiBindings = new();
     private MidiLearnTarget? _midiLearnTarget;
-    private bool _midiDirty;
+    private readonly HashSet<(string NodeId, int ProcessorIndex, int ParameterIndex)> _midiParameterChanges = new();
+    private readonly object _midiParameterLock = new();
 
     private void InitializeMidi()
     {
@@ -106,7 +107,6 @@ internal sealed partial class WebShellController
                 item.ParameterIndex == binding.ParameterIndex);
             _midiBindings.Add(binding);
             _midiLearnTarget = null;
-            _midiDirty = true;
             SetStatus($"MIDI bound to {binding.Label}.");
             PublishGraph();
             return;
@@ -136,7 +136,7 @@ internal sealed partial class WebShellController
                     if (message.Value > 0)
                     {
                         parameter.Set(parameter.Get() >= 0.5f ? 0f : 1f);
-                        _midiDirty = true;
+                        QueueMidiParameter(binding);
                     }
 
                     continue;
@@ -154,7 +154,16 @@ internal sealed partial class WebShellController
                 parameter.Set(binding.Min + (binding.Max - binding.Min) * normalized);
             }
 
-            _midiDirty = true;
+            QueueMidiParameter(binding);
+        }
+    }
+
+    private void QueueMidiParameter(MidiBindingEntry binding)
+    {
+        lock (_midiParameterLock)
+        {
+            _midiParameterChanges.Add(
+                (binding.NodeId, binding.ProcessorIndex, binding.ParameterIndex));
         }
     }
 
@@ -236,7 +245,10 @@ internal sealed partial class WebShellController
     {
         _midiBindings.Clear();
         _midiLearnTarget = null;
-        _midiDirty = false;
+        lock (_midiParameterLock)
+        {
+            _midiParameterChanges.Clear();
+        }
     }
 
     private void SaveMidiBindings(Preset preset, Dictionary<string, int> modifierIndex)
@@ -296,12 +308,22 @@ internal sealed partial class WebShellController
 
     private void FlushMidiParameterChanges()
     {
-        if (!_midiDirty)
+        (string NodeId, int ProcessorIndex, int ParameterIndex)[] changes;
+        lock (_midiParameterLock)
         {
-            return;
+            if (_midiParameterChanges.Count == 0)
+            {
+                return;
+            }
+
+            changes = _midiParameterChanges.ToArray();
+            _midiParameterChanges.Clear();
         }
 
-        _midiDirty = false;
-        PublishGraph();
+        for (int i = 0; i < changes.Length; i++)
+        {
+            var change = changes[i];
+            PublishParameterChange(change.NodeId, change.ProcessorIndex, change.ParameterIndex);
+        }
     }
 }

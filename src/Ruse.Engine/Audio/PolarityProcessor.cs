@@ -4,7 +4,7 @@ namespace Ruse.App.Audio;
 /// Inverts the phase of one or both channels. Useful when combining a
 /// microphone with a loopback or a second mic that is wired out of phase.
 /// </summary>
-public sealed class PolarityProcessor : IAudioProcessor, IParameterizedProcessor
+public sealed class PolarityProcessor : IAudioProcessor, IParameterizedProcessor, INativeProcessor
 {
     public const string Id = "polarity";
 

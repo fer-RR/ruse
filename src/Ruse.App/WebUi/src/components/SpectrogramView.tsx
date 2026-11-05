@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useI18n } from '../i18n';
 
-const BANDS = 128;
+const BANDS = 256;
 const WIDTH = 428;
 const HEIGHT = 240;
 const DATA_HEIGHT = HEIGHT - 12;
@@ -41,7 +41,7 @@ const COLOR_LUT = (() => {
   return lut;
 })();
 
-function buildOverlay(nowLabel: string): HTMLCanvasElement {
+function buildOverlay(): HTMLCanvasElement {
   const overlay = document.createElement('canvas');
   overlay.width = WIDTH;
   overlay.height = HEIGHT;
@@ -58,17 +58,18 @@ function buildOverlay(nowLabel: string): HTMLCanvasElement {
     context.stroke();
   }
 
-  context.fillStyle = 'rgba(255,255,255,0.4)';
   context.font = '9px Consolas, monospace';
   context.textBaseline = 'bottom';
   for (const [frequency, label] of FREQUENCY_REFS) {
     const y = DATA_HEIGHT - (Math.log(frequency / 20) / Math.log(1000)) * DATA_HEIGHT;
-    context.fillText(label, 2, Math.max(8, Math.min(DATA_HEIGHT - 1, y - 1)));
+    const labelY = Math.max(9, Math.min(DATA_HEIGHT - 2, y - 1));
+    const width = context.measureText(label).width;
+    context.fillStyle = 'rgba(0,0,0,0.72)';
+    context.fillRect(1, labelY - 9, width + 5, 10);
+    context.fillStyle = 'rgba(255,255,255,0.9)';
+    context.fillText(label, 3, labelY);
   }
 
-  context.fillStyle = 'rgba(255,255,255,0.42)';
-  context.font = '9px Consolas, monospace';
-  context.fillText(nowLabel, WIDTH - 19, HEIGHT - 1);
   return overlay;
 }
 
@@ -177,7 +178,7 @@ export default function SpectrogramView({
     context.drawImage(offscreen, 0, 0, cap, BANDS, 0, 0, WIDTH, DATA_HEIGHT);
 
     if (!overlayRef.current || overlayLanguageRef.current !== language) {
-      overlayRef.current = buildOverlay(t('now'));
+      overlayRef.current = buildOverlay();
       overlayLanguageRef.current = language;
     }
 

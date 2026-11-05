@@ -76,23 +76,32 @@ public static class AudioFileFormats
 
     public static AudioFileFormat Parse(string? name) =>
         Enum.TryParse<AudioFileFormat>(name, ignoreCase: true, out var format) ? format : AudioFileFormat.Wav24;
+
+    /// <summary>Container/encoder rates exposed by the recorder UI.</summary>
+    public static IReadOnlyList<int> SupportedRates(AudioFileFormat format) =>
+        format == AudioFileFormat.Mp3
+            ? [44_100, 48_000]
+            : [44_100, 48_000, 96_000];
+
+    public static bool SupportsSampleRate(AudioFileFormat format, int sampleRate) =>
+        SupportedRates(format).Contains(sampleRate);
 }
 
 /// <summary>
-/// Writes the 48 kHz stereo mix to WAV, MP3 or FLAC. The render thread only
-/// copies floats into a lock-free ring; disk I/O, PCM conversion and encoding
-/// happen on a worker thread.
+/// Writes a stereo mix to WAV, MP3 or FLAC at a chosen sample rate. The render
+/// thread only copies floats into a lock-free ring; disk I/O, PCM conversion
+/// and encoding happen on a worker thread.
 /// </summary>
 public sealed class AudioFileRecorder : IDisposable
 {
-    private const int SampleRate = 48000;
-    private const int Channels = 2;
     private const int RingSeconds = 10;
     private const int WriterBlockFloats = 8192;
 
     private readonly string _path;
     private readonly AudioFileFormat _format;
-    private readonly FloatRingBuffer _samples = new(SampleRate * Channels * RingSeconds);
+    private readonly int _sampleRate;
+    private readonly int _channels;
+    private readonly FloatRingBuffer _samples;
     private readonly object _stopLock = new();
 
     private WaveFileWriter? _wave;
@@ -105,18 +114,25 @@ public sealed class AudioFileRecorder : IDisposable
     private volatile bool _stopped;
     private readonly Random _ditherRandom = new();
 
-    public AudioFileRecorder(string path, AudioFileFormat format)
+    public AudioFileRecorder(
+        string path, AudioFileFormat format,
+        int sampleRate = 48000, int channels = 2)
     {
         _path = path;
         _format = format;
+        _sampleRate = sampleRate > 0 ? sampleRate : 48000;
+        _channels = Math.Clamp(channels, 1, 2);
+        _samples = new FloatRingBuffer(_sampleRate * _channels * RingSeconds);
 
         if (!IsCompressed)
         {
-            _wave = new WaveFileWriter(path, WaveFormatFor(format));
+            _wave = new WaveFileWriter(path, WaveFormatFor(format, _sampleRate, _channels));
         }
         else
         {
-            _provider = new PcmRingProvider(_samples, () => _completed, SampleRate, Channels, _format == AudioFileFormat.Flac ? 24 : 16);
+            _provider = new PcmRingProvider(
+                _samples, () => _completed, _sampleRate, _channels,
+                _format == AudioFileFormat.Flac ? 24 : 16);
         }
 
         _workerThread = new Thread(WriteLoop)
@@ -131,28 +147,31 @@ public sealed class AudioFileRecorder : IDisposable
     public AudioFileFormat Format => _format;
     public long Frames => Interlocked.Read(ref _frames);
     public long DroppedFrames => Interlocked.Read(ref _droppedFrames);
-    public double Duration => Frames / (double)SampleRate;
+    public double Duration => Frames / (double)_sampleRate;
     public string? LastError => _lastError;
     public bool IsCompressed => _format is AudioFileFormat.Mp3 or AudioFileFormat.Flac;
 
     /// <summary>Accepts one interleaved float block from the render thread.</summary>
-    public void Write(float[] samples, int count)
+    public void Write(float[] samples, int count) =>
+        Write(samples.AsSpan(0, count));
+
+    public void Write(ReadOnlySpan<float> samples)
     {
-        if (_stopped || count <= 0 || _lastError != null)
+        if (_stopped || samples.IsEmpty || _lastError != null)
         {
             return;
         }
 
-        int written = _samples.Write(samples.AsSpan(0, count));
+        int written = _samples.Write(samples);
         if (written > 0)
         {
-            Interlocked.Add(ref _frames, written / Channels);
+            Interlocked.Add(ref _frames, written / _channels);
         }
 
-        int dropped = count - written;
+        int dropped = samples.Length - written;
         if (dropped > 0)
         {
-            Interlocked.Add(ref _droppedFrames, dropped / Channels);
+            Interlocked.Add(ref _droppedFrames, dropped / _channels);
         }
     }
 
@@ -268,11 +287,12 @@ public sealed class AudioFileRecorder : IDisposable
 
     public void Dispose() => Stop();
 
-    private static WaveFormat WaveFormatFor(AudioFileFormat format) => format switch
+    private static WaveFormat WaveFormatFor(
+        AudioFileFormat format, int sampleRate, int channels) => format switch
     {
-        AudioFileFormat.Wav16 => new WaveFormat(SampleRate, 16, Channels),
-        AudioFileFormat.Wav24 => new WaveFormat(SampleRate, 24, Channels),
-        AudioFileFormat.Wav32Float => WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels),
+        AudioFileFormat.Wav16 => new WaveFormat(sampleRate, 16, channels),
+        AudioFileFormat.Wav24 => new WaveFormat(sampleRate, 24, channels),
+        AudioFileFormat.Wav32Float => WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels),
         _ => throw new ArgumentOutOfRangeException(nameof(format)),
     };
 

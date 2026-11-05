@@ -20,7 +20,7 @@ public sealed class ExciterProcessor : IAudioProcessor, IParameterizedProcessor
     private float _currentAmount = 0.5f;
     private bool _primed;
 
-    private float[] _scratch = Array.Empty<float>();
+    private float[] _scratch = new float[8192];
 
     public ExciterProcessor()
     {

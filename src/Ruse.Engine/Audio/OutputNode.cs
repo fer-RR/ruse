@@ -51,7 +51,10 @@ public sealed class OutputNode : IDisposable
     /// <summary>True while the guard is reducing gain on this output.</summary>
     public bool ClipGuardActive { get; internal set; }
 
+    internal bool BypassClipGuardForTest { get; set; }
+
     private readonly ClipGuard _clipGuard = new();
+    private const int SampleRate = 48000;
 
     /// <summary>True when this output records to a file rather than a device.</summary>
     public bool IsFileRecorder { get; private set; }
@@ -65,6 +68,34 @@ public sealed class OutputNode : IDisposable
     /// <summary>True when this output is rendered by the shared graph engine.</summary>
     public bool UsesGraphEngine => UseGraphEngine;
 
+    private SourceNode? _nativeSource;
+    private SourceNode.NativeSubscription? _nativeSubscription;
+    private int _nativeSampleRate;
+    private int _nativeChannels;
+    private int _outputSampleRate = 48000;
+    private int _recorderSampleRate = 48000;
+    private FormatConverter? _recorderConverter;
+    private readonly List<float> _recorderConverted = new(16384);
+    private float[] _nativeScratch = Array.Empty<float>();
+    private IAudioProcessor[] _nativeProcessors = Array.Empty<IAudioProcessor>();
+    private bool _nativeFaultReported;
+
+    /// <summary>File sample rate used by this recorder; 48 kHz by default.</summary>
+    public int RecorderSampleRate => _recorderSampleRate;
+
+    public void SetRecorderSampleRate(int sampleRate)
+    {
+        if (IsRecording)
+        {
+            throw new InvalidOperationException("Stop recording before changing the sample rate.");
+        }
+
+        _recorderSampleRate = sampleRate is 44100 or 48000 or 96000 ? sampleRate : 48000;
+    }
+
+    public bool IsNativePassthrough => _nativeSource != null;
+    public SourceNode? NativeSource => _nativeSource;
+
     /// <summary>Set by the renderer when a shared native plugin is on the path.</summary>
     internal bool HasNativePlugin { get; set; }
 
@@ -76,7 +107,8 @@ public sealed class OutputNode : IDisposable
         set => _engineWake = value;
     }
 
-    private readonly FloatRingBuffer _engineBuffer = new(48000 * 2 * 3);
+    private const int EngineRingSeconds = 1;
+    private readonly FloatRingBuffer _engineBuffer = new(48000 * 2 * EngineRingSeconds);
     private readonly object _engineLock = new();
 
     internal int ElasticTargetFrames { get; set; }
@@ -88,7 +120,8 @@ public sealed class OutputNode : IDisposable
     internal double EngineBufferedFrames => _engineBuffer.AvailableToRead / 2.0;
 
     internal double EngineBufferedMs => EngineBufferedFrames * 1000.0 / 48000;
-    public double EngineQueuePercent => _engineBuffer.AvailableToRead / (48000.0 * 2 * 3) * 100.0;
+    public double EngineQueuePercent =>
+        _engineBuffer.AvailableToRead / (48000.0 * 2 * EngineRingSeconds) * 100.0;
 
     internal void SubmitEngineBlock(ReadOnlySpan<float> block)
     {
@@ -118,6 +151,12 @@ public sealed class OutputNode : IDisposable
 
     internal bool ApplyClipGuard(float[] mix, int frames)
     {
+        if (BypassClipGuardForTest)
+        {
+            ClipGuardActive = false;
+            return false;
+        }
+
         _clipGuard.Process(mix, frames);
         ClipGuardActive = _clipGuard.Engaged;
         return ClipGuardActive;
@@ -189,7 +228,11 @@ public sealed class OutputNode : IDisposable
         get
         {
             double queued = _buffer?.BufferedDuration.TotalMilliseconds ?? 0;
-            return _outputLatencyMs + queued + _chainLatencyMs + (UseGraphEngine ? EngineBufferedMs : 0);
+            double guard = _nativeSource == null && ClipGuardEnabled && !BypassClipGuardForTest
+                ? _clipGuard.LatencySamples * 1000.0 / SampleRate
+                : 0;
+            return _outputLatencyMs + queued + _chainLatencyMs + guard +
+                   (UseGraphEngine ? EngineBufferedMs : 0);
         }
     }
 
@@ -282,11 +325,128 @@ public sealed class OutputNode : IDisposable
         _asioDriver = driver;
     }
 
+    /// <summary>
+    /// Checks whether a source can bypass the 48 kHz graph and feed this
+    /// endpoint at its native rate. Channel adaptation inside the driver is
+    /// allowed, but sample-rate conversion is not.
+    /// </summary>
+    public bool CanNativePassthrough(SourceNode source, out string reason)
+    {
+        reason = "";
+        if (IsNetworkOutput)
+        {
+            reason = "Native passthrough is only available for device or file outputs.";
+            return false;
+        }
+
+        if (source.SampleRate <= 0)
+        {
+            reason = "Start the source so its native format is known.";
+            return false;
+        }
+
+        if (source.Channels is < 1 or > 2)
+        {
+            reason = $"Native passthrough supports mono or stereo only ({source.Channels} channels detected).";
+            return false;
+        }
+
+        if (IsFileRecorder)
+        {
+            if (_recorderSampleRate != source.SampleRate)
+            {
+                reason = $"The recorder is set to {_recorderSampleRate} Hz; the source is {source.SampleRate} Hz.";
+                return false;
+            }
+
+            if (!AudioFileFormats.SupportsSampleRate(_recordingFormat, source.SampleRate))
+            {
+                reason = $"{AudioFileFormats.Get(_recordingFormat).DisplayName} cannot record at {source.SampleRate} Hz.";
+                return false;
+            }
+
+            return true;
+        }
+
+        if (_asioDriver != null)
+        {
+            int driverRate = _asioDriver.SampleRate;
+            if (driverRate > 0 && driverRate != source.SampleRate)
+            {
+                reason = $"The ASIO driver is configured for {driverRate} Hz; the source is {source.SampleRate} Hz.";
+                return false;
+            }
+
+            return true;
+        }
+
+        if (_device != null)
+        {
+            try
+            {
+                using var client = _device.CreateAudioClient();
+                int mixRate = client.MixFormat.SampleRate;
+                if (mixRate > 0 && mixRate != source.SampleRate)
+                {
+                    reason = $"The device shared mix is {mixRate} Hz; the source is {source.SampleRate} Hz. Set the device to {source.SampleRate} Hz or use the normal route.";
+                    return false;
+                }
+
+                if (client.MixFormat.Channels > 2)
+                {
+                    reason = $"The device shared mix has {client.MixFormat.Channels} channels; native passthrough supports mono/stereo endpoints only.";
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                reason = "Could not query the device format: " + ex.Message;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Selects or clears the raw source used by native passthrough.</summary>
+    public void SetNativeSource(SourceNode? source) =>
+        SetNativeChain(source, Array.Empty<IAudioProcessor>());
+
+    /// <summary>Selects the source and native-rate processor chain.</summary>
+    public void SetNativeChain(SourceNode? source, IAudioProcessor[] processors)
+    {
+        var chain = processors ?? Array.Empty<IAudioProcessor>();
+        bool sameSource = ReferenceEquals(_nativeSource, source);
+        _nativeProcessors = chain;
+        if (!sameSource)
+        {
+            _nativeSubscription?.Dispose();
+            _nativeSubscription = null;
+            _nativeSource = source;
+            _nativeSampleRate = source?.SampleRate ?? 0;
+            _nativeChannels = source?.Channels ?? 0;
+            _nativeFaultReported = false;
+            if (source != null && source.SampleRate > 0)
+            {
+                _nativeSubscription = source.SubscribeNative();
+            }
+        }
+
+        if (_nativeSampleRate > 0)
+        {
+            for (int i = 0; i < chain.Length; i++)
+            {
+                (chain[i] as INativeProcessor)?.ConfigureNative(_nativeSampleRate, 2);
+            }
+        }
+    }
+
     /// <summary>Creates a device-less output that pushes mixed frames to a sink.</summary>
     public static OutputNode CreateForTest(Action<float[], int> sink)
     {
         var node = new OutputNode();
         node.UseGraphEngine = false;
+        node.BypassClipGuardForTest = true;
         node._testSink = sink;
         return node;
     }
@@ -382,6 +542,55 @@ public sealed class OutputNode : IDisposable
             ResetFailedStart();
         }
 
+        bool native = _nativeSource != null;
+        int pumpRate = native ? _nativeSource!.SampleRate : 48000;
+        bool nativeProcessed = native && _nativeProcessors.Length > 0;
+        int pumpChannels = native
+            ? (nativeProcessed || (_nativeSource!.Channels == 1 && !IsFileRecorder)
+                ? 2
+                : _nativeSource!.Channels)
+            : 2;
+        int recordRate = native ? pumpRate : _recorderSampleRate;
+        int recordChannels = native
+            ? (nativeProcessed ? 2 : _nativeSource!.Channels)
+            : 2;
+        if (native)
+        {
+            if (!CanNativePassthrough(_nativeSource!, out string reason))
+            {
+                _running = false;
+                Faulted?.Invoke(this, reason);
+                return;
+            }
+
+            _nativeSampleRate = pumpRate;
+            _nativeChannels = _nativeSource!.Channels;
+            if (_nativeSubscription == null || _nativeSubscription.Invalidated)
+            {
+                _nativeSubscription?.Dispose();
+                _nativeSubscription = _nativeSource!.SubscribeNative();
+            }
+
+            if (_nativeSubscription == null)
+            {
+                _running = false;
+                Faulted?.Invoke(this, "The source does not have a native mono/stereo stream yet.");
+                return;
+            }
+
+            for (int i = 0; i < _nativeProcessors.Length; i++)
+            {
+                (_nativeProcessors[i] as INativeProcessor)?.
+                    ConfigureNative(pumpRate, pumpChannels);
+            }
+
+            Ruse.App.Diagnostics.AppLog.Info(
+                $"Output '{Title}': native passthrough {pumpRate} Hz, " +
+                $"source {_nativeSource.Channels}ch, endpoint {pumpChannels}ch, " +
+                $"processors={_nativeProcessors.Length}, recorder={IsFileRecorder}.");
+        }
+
+        _outputSampleRate = IsFileRecorder ? recordRate : pumpRate;
         _stopRequested = false;
         _running = true;
         Underruns = 0;
@@ -402,9 +611,6 @@ public sealed class OutputNode : IDisposable
             _outputLatencyMs = 0;
         }
 
-        int sampleRate = 48000;
-        int channels = 2;
-
         try
         {
         if (IsFileRecorder)
@@ -413,7 +619,11 @@ public sealed class OutputNode : IDisposable
             _lastRecordingError = null;
             try
             {
-                _recorder = new AudioFileRecorder(_recordingPath!, _recordingFormat);
+                _recorder = new AudioFileRecorder(
+                    _recordingPath!, _recordingFormat, recordRate, recordChannels);
+                _recorderConverter = native || recordRate == 48000
+                    ? null
+                    : new FormatConverter(2, 48000, recordRate);
                 Title = System.IO.Path.GetFileName(_recordingPath!);
             }
             catch (Exception ex)
@@ -429,7 +639,7 @@ public sealed class OutputNode : IDisposable
             // The mix is interleaved IEEE float, so the provider must advertise
             // float too — a PCM32 format would reinterpret the float bit patterns
             // as integers and play noise instead of audio.
-            var format = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels);
+            var format = WaveFormat.CreateIeeeFloatWaveFormat(pumpRate, pumpChannels);
 
             // Keep only a small cushion so we don't add latency. DiscardOnBufferOverflow
             // makes the render pull fresh audio instead of falling further behind.
@@ -445,10 +655,19 @@ public sealed class OutputNode : IDisposable
                 // A restart needs a fresh handle: the driver is exclusive and
                 // the previous one was closed on stop.
                 _asioEndpoint = new AsioOutputEndpoint(_asioDriver);
-                _asioEndpoint.Start(_buffer);
+                _asioEndpoint.Start(_buffer, native ? pumpRate : 0);
                 _outputLatencyMs = _asioEndpoint.LatencyMs;
                 _lowLatency = true;
                 _asioSampleRate = _asioEndpoint.SampleRate;
+                _outputSampleRate = _asioEndpoint.SampleRate;
+
+                if (native && _asioEndpoint.UsesResampler)
+                {
+                    Faulted?.Invoke(this,
+                        $"ASIO driver '{_asioDriver.Name}' could not open at {pumpRate} Hz; native passthrough needs the driver rate to match the source.");
+                    ResetFailedStart();
+                    return;
+                }
 
                 if (!_asioEndpoint.Streaming)
                 {
@@ -494,12 +713,20 @@ public sealed class OutputNode : IDisposable
 
                 _lowLatency = _wasapiOut.LowLatencyActive;
                 _outputLatencyMs = _wasapiOut.LatencyMilliseconds > 0 ? _wasapiOut.LatencyMilliseconds : 5;
+
+                if (native && _wasapiOut.OutputWaveFormat.SampleRate != pumpRate)
+                {
+                    Faulted?.Invoke(this,
+                        $"The device opened at {_wasapiOut.OutputWaveFormat.SampleRate} Hz instead of {pumpRate} Hz; native passthrough would be resampled.");
+                    ResetFailedStart();
+                    return;
+                }
             }
         }
 
         RefreshRoutes();
 
-        _pumpThread = new Thread(() => PumpLoop(sampleRate, channels))
+        _pumpThread = new Thread(() => PumpLoop(pumpRate, pumpChannels))
         {
             IsBackground = true,
             Name = $"OutputPump-{Title}",
@@ -518,15 +745,19 @@ public sealed class OutputNode : IDisposable
     {
         _stopRequested = true;
         _running = false;
-        try
-        {
-            _wasapiOut?.Dispose();
-        }
-        catch
-        {
-        }
-
+        var wasapi = _wasapiOut;
         _wasapiOut = null;
+        if (wasapi != null)
+        {
+            wasapi.PlaybackStopped -= OnPlaybackStopped;
+            try
+            {
+                wasapi.Dispose();
+            }
+            catch
+            {
+            }
+        }
         try
         {
             _asioEndpoint?.Dispose();
@@ -542,7 +773,10 @@ public sealed class OutputNode : IDisposable
     private void PumpLoop(int sampleRate, int channels)
     {
         using var mmcss = MmcssScope.Enter();
-        int framesPerChunk = AudioEngineConfig.BlockFrames;
+        bool native = _nativeSource != null;
+        int framesPerChunk = native
+            ? Math.Max(1, (int)Math.Round(sampleRate * 0.005))
+            : AudioEngineConfig.BlockFrames;
         var mix = new float[framesPerChunk * channels];
         var temp = new float[framesPerChunk * channels];
         var byteBuffer = new byte[mix.Length * 4];
@@ -783,6 +1017,12 @@ public sealed class OutputNode : IDisposable
     /// <summary>Mixes and emits one pump chunk.</summary>
     internal void RenderOrDrainChunk(float[] mix, float[] temp, byte[] byteBuffer, int channels)
     {
+        if (_nativeSource != null)
+        {
+            RenderNativeChunk(mix, byteBuffer, channels);
+            return;
+        }
+
         if (UseGraphEngine)
         {
             DrainEngineChunk(mix, byteBuffer, channels);
@@ -790,6 +1030,115 @@ public sealed class OutputNode : IDisposable
         }
 
         RenderChunk(mix, temp, byteBuffer, channels);
+    }
+
+    /// <summary>Copies native-rate source audio straight to the endpoint.</summary>
+    private void RenderNativeChunk(float[] mix, byte[] byteBuffer, int channels)
+    {
+        var source = _nativeSource;
+        var subscription = _nativeSubscription;
+        if (source == null || subscription == null ||
+            subscription.Invalidated ||
+            source.SampleRate != _nativeSampleRate ||
+            source.Channels != _nativeChannels)
+        {
+            Array.Clear(mix);
+            if (!_nativeFaultReported)
+            {
+                _nativeFaultReported = true;
+                Faulted?.Invoke(this, "The source format changed; native passthrough stopped.");
+            }
+
+            return;
+        }
+
+        int sourceChannels = _nativeChannels;
+        int outFrames = mix.Length / Math.Max(1, channels);
+        if (sourceChannels == channels)
+        {
+            int read = subscription.Read(mix);
+            if (read < mix.Length)
+            {
+                ShortReadFrames += (mix.Length - read) / Math.Max(1, channels);
+                Array.Clear(mix, read, mix.Length - read);
+            }
+        }
+        else
+        {
+            if (_nativeScratch.Length < outFrames * sourceChannels)
+            {
+                _nativeScratch = new float[outFrames * sourceChannels];
+            }
+
+            int read = subscription.Read(_nativeScratch);
+            int readFrames = read / Math.Max(1, sourceChannels);
+            for (int frame = 0; frame < outFrames; frame++)
+            {
+                int sourceIndex = frame < readFrames ? frame * sourceChannels : -1;
+                float left = sourceIndex >= 0 ? _nativeScratch[sourceIndex] : 0f;
+                float right = sourceIndex >= 0 && sourceChannels > 1
+                    ? _nativeScratch[sourceIndex + 1]
+                    : left;
+                mix[frame * channels] = left;
+                if (channels > 1)
+                {
+                    mix[(frame * channels) + 1] = right;
+                }
+            }
+
+            if (readFrames < outFrames)
+            {
+                ShortReadFrames += outFrames - readFrames;
+            }
+        }
+
+        var processors = _nativeProcessors;
+        for (int i = 0; i < processors.Length; i++)
+        {
+            processors[i].Process(mix.AsSpan(0, mix.Length), channels == 1 ? outFrames : outFrames);
+        }
+
+        if (Muted || MasterMuted || source.Muted)
+        {
+            Array.Clear(mix);
+        }
+        else
+        {
+            float gain = Volume * MasterGain * source.Gain;
+            if (Math.Abs(gain - 1f) > 1e-6f)
+            {
+                for (int i = 0; i < mix.Length; i++)
+                {
+                    mix[i] *= gain;
+                }
+            }
+        }
+
+        ClipGuardActive = false;
+        double sumLeft = 0;
+        double sumRight = 0;
+        float peak = 0;
+        int frames = Math.Max(1, mix.Length / channels);
+        for (int frame = 0; frame < frames; frame++)
+        {
+            int index = frame * channels;
+            float left = mix[index];
+            float right = channels > 1 ? mix[index + 1] : left;
+            sumLeft += left * left;
+            sumRight += right * right;
+            peak = Math.Max(peak, Math.Max(Math.Abs(left), Math.Abs(right)));
+        }
+
+        float meterLeft = Math.Min(1.0f, MathF.Sqrt((float)(sumLeft / frames)) * 3f);
+        float meterRight = Math.Min(1.0f, MathF.Sqrt((float)(sumRight / frames)) * 3f);
+        _meterLevelLeft = float.IsFinite(meterLeft) ? meterLeft : 0f;
+        _meterLevelRight = float.IsFinite(meterRight) ? meterRight : 0f;
+        _meterLevel = Math.Max(_meterLevelLeft, _meterLevelRight);
+        _meterDbLeft = (float)(20.0 * Math.Log10(Math.Max(1e-6, Math.Sqrt(sumLeft / frames))));
+        _meterDbRight = (float)(20.0 * Math.Log10(Math.Max(1e-6, Math.Sqrt(sumRight / frames))));
+        Clipping = peak > 1f;
+
+        WriteSink(mix, byteBuffer, channels);
     }
 
     /// <summary>Emits one block produced by the shared graph renderer.</summary>
@@ -867,7 +1216,16 @@ public sealed class OutputNode : IDisposable
     {
         if (_recorder != null)
         {
-            _recorder.Write(mix, mix.Length);
+            if (_recorderConverter == null)
+            {
+                _recorder.Write(mix, mix.Length);
+            }
+            else
+            {
+                _recorderConverted.Clear();
+                _recorderConverter.Convert(mix.AsSpan(0, mix.Length), _recorderConverted);
+                _recorder.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_recorderConverted));
+            }
         }
         else if (_testSink != null)
         {
@@ -943,9 +1301,10 @@ public sealed class OutputNode : IDisposable
             }
         }
 
+        float outputGain = Volume * MasterGain;
         for (int i = 0; i < mix.Length; i++)
         {
-            mix[i] *= Volume * MasterGain;
+            mix[i] *= outputGain;
         }
 
         if (Muted || MasterMuted)
@@ -1015,17 +1374,26 @@ public sealed class OutputNode : IDisposable
     public long AsioCallbackCount => _asioEndpoint?.CallbackCount ?? 0;
 
     /// <summary>Rate the endpoint renders at: 48 kHz for WASAPI, the driver's rate for ASIO.</summary>
-    public int EndpointSampleRate => _asioSampleRate > 0 ? _asioSampleRate : 48000;
+    public int EndpointSampleRate => _outputSampleRate > 0 ? _outputSampleRate : 48000;
 
     private void OnPlaybackStopped(object? sender, StoppedEventArgs e)
     {
-        if (_stopRequested)
+        // A handle that was just replaced can raise its stop event after the
+        // new player has started; ignore anything that is not the live player.
+        if (_stopRequested || !ReferenceEquals(sender, _wasapiOut))
         {
             return;
         }
 
         _running = false;
         string reason = e.Exception?.Message ?? "render endpoint stopped";
+        Ruse.App.Diagnostics.AppLog.Warning(
+            $"Output '{Title}' stopped: {reason} | state={_wasapiOut?.PlaybackState} " +
+            $"format={_wasapiOut?.OutputWaveFormat?.SampleRate} Hz/" +
+            $"{_wasapiOut?.OutputWaveFormat?.Channels} ch | " +
+            $"native={IsNativePassthrough} source={_nativeSampleRate} Hz/" +
+            $"{_nativeChannels} ch buffer={_buffer?.WaveFormat.SampleRate} Hz/" +
+            $"{_buffer?.WaveFormat.Channels} ch");
         Faulted?.Invoke(this, reason);
     }
 
@@ -1050,20 +1418,28 @@ public sealed class OutputNode : IDisposable
         }
 
         _pumpThread = null;
+        _nativeSubscription?.Dispose();
+        _nativeSubscription = null;
+        _recorderConverter = null;
+        _recorderConverted.Clear();
         ClearEngineAudio();
         _clipGuard.Reset();
         ClipGuardActive = false;
 
-        try
-        {
-            _wasapiOut?.Stop();
-            _wasapiOut?.Dispose();
-        }
-        catch
-        {
-        }
-
+        var wasapi = _wasapiOut;
         _wasapiOut = null;
+        if (wasapi != null)
+        {
+            wasapi.PlaybackStopped -= OnPlaybackStopped;
+            try
+            {
+                wasapi.Stop();
+                wasapi.Dispose();
+            }
+            catch
+            {
+            }
+        }
 
         try
         {
@@ -1179,16 +1555,19 @@ public sealed class OutputNode : IDisposable
             set
             {
                 var processors = value ?? Array.Empty<IAudioProcessor>();
+                int latency = SumLatency(processors);
+                IAudioProcessor[] old;
                 lock (_chainLock)
                 {
-                    var old = _instances;
+                    old = _instances;
                     _instances = processors;
                     _bindings = Array.Empty<ParameterBinding>();
                     _compensation = null;
                     CompensationFrames = 0;
-                    InherentLatencyFrames = SumLatency(processors);
-                    DisposeInstances(old);
+                    InherentLatencyFrames = latency;
                 }
+
+                DisposeInstances(old);
             }
         }
 
@@ -1238,17 +1617,19 @@ public sealed class OutputNode : IDisposable
             }
 
             var bindings = BuildBindings(templateArray, instances);
+            IAudioProcessor[] old;
             lock (_chainLock)
             {
-                var old = _instances;
+                old = _instances;
                 Templates = templateArray;
                 _instances = instances;
                 _bindings = bindings;
                 InherentLatencyFrames = latency;
                 CompensationFrames = compensation;
                 _compensation = delay;
-                DisposeInstances(old);
             }
+
+            DisposeInstances(old);
         }
 
         /// <summary>

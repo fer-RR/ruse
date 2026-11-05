@@ -3,7 +3,7 @@ using System.Collections.Concurrent;
 namespace Ruse.App.Audio;
 
 /// <summary>Pass-through tap that exposes a smoothed log-frequency spectrum.</summary>
-public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor, ITapProcessor
+public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor, ITapProcessor, INativeProcessor
 {
     public const string Id = "spectrum";
     public const string TapParameterName = "__tap";
@@ -13,8 +13,8 @@ public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor
 
     private volatile float _tapId;
     private volatile float _smoothing = 55f;
-    private volatile float _floor = -80f;
-    private volatile float _ceiling;
+    private volatile float _floor = -100f;
+    private volatile float _ceiling = -30f;
 
     public SpectrumProcessor()
     {
@@ -44,7 +44,7 @@ public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor
                 Name = "Floor",
                 Min = -100f,
                 Max = -20f,
-                Default = -80f,
+                Default = -100f,
                 Get = () => _floor,
                 Set = value => _floor = Math.Clamp(value, -100f, -20f),
                 Unit = "dB",
@@ -54,7 +54,7 @@ public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor
                 Name = "Ceiling",
                 Min = -40f,
                 Max = 0f,
-                Default = 0f,
+                Default = -30f,
                 Get = () => _ceiling,
                 Set = value => _ceiling = Math.Clamp(value, -40f, 0f),
                 Unit = "dB",
@@ -79,6 +79,14 @@ public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor
     public void Process(Span<float> samples, int frames) =>
         WriteTap(TapId, samples, frames, Smoothing, Floor, Ceiling);
 
+    public void ConfigureNative(int sampleRate, int channels)
+    {
+        if (TapId > 0)
+        {
+            Taps[TapId] = new SpectrumTap(sampleRate);
+        }
+    }
+
     public static void WriteTap(int id, ReadOnlySpan<float> samples, int frames,
         float smoothing, float floor, float ceiling)
     {
@@ -88,7 +96,13 @@ public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor
         }
     }
 
-    public void Reset() => Taps.TryRemove(TapId, out _);
+    public void Reset()
+    {
+        if (TapId > 0)
+        {
+            Taps[TapId] = new SpectrumTap();
+        }
+    }
 
     public static float[]? GetBands(int id) =>
         Taps.TryGetValue(id, out var tap) ? tap.Snapshot() : null;
@@ -103,7 +117,12 @@ public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor
 internal sealed class SpectrumTap
 {
     private readonly object _lock = new();
-    private readonly FftAnalyzer _fft = new();
+    private readonly FftAnalyzer _fft;
+
+    public SpectrumTap(int sampleRate = FftAnalyzer.DefaultSampleRate)
+    {
+        _fft = new FftAnalyzer(sampleRate);
+    }
     private readonly float[] _bands = Enumerable.Repeat(-100f, FftAnalyzer.Bands).ToArray();
 
     public float PeakHz
@@ -114,14 +133,14 @@ internal sealed class SpectrumTap
     public void Write(ReadOnlySpan<float> samples, int frames,
         float smoothing, float floor, float ceiling)
     {
-        if (!_fft.Add(samples, frames)) return;
         float low = Math.Min(floor, ceiling - 1f);
         float high = Math.Max(ceiling, low + 1f);
         float release = 1f - Math.Clamp(smoothing, 0f, 95f) / 100f;
-        var levels = _fft.Levels;
 
         lock (_lock)
         {
+            if (!_fft.Add(samples, frames)) return;
+            var levels = _fft.Levels;
             for (int i = 0; i < _bands.Length; i++)
             {
                 float value = Math.Clamp(levels[i], low, high);

@@ -3,7 +3,7 @@ using System.Collections.Concurrent;
 namespace Ruse.App.Audio;
 
 /// <summary>Pass-through modifier that reports the RMS and peak level in dBFS.</summary>
-public sealed class DbMeterProcessor : IAudioProcessor, IParameterizedProcessor, ITapProcessor
+public sealed class DbMeterProcessor : IAudioProcessor, IParameterizedProcessor, ITapProcessor, INativeProcessor
 {
     public const string Id = "db-meter";
     public const string TapParameterName = "__tap";
@@ -64,7 +64,13 @@ public sealed class DbMeterProcessor : IAudioProcessor, IParameterizedProcessor,
         if (Taps.TryGetValue(id, out var tap)) tap.Write(samples, frames);
     }
 
-    public void Reset() => Taps.TryRemove(TapId, out _);
+    public void Reset()
+    {
+        if (TapId > 0)
+        {
+            Taps[TapId] = new DbMeterTap();
+        }
+    }
 
     public static float GetDb(int id) => Taps.TryGetValue(id, out var tap) ? tap.Db : -120f;
     public static float GetPeakDb(int id) => Taps.TryGetValue(id, out var tap) ? tap.PeakDb : -120f;

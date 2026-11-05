@@ -33,6 +33,8 @@ internal sealed class ControlServer : IDisposable
     private readonly ConcurrentDictionary<Guid, ControlSocket> _clients = new();
     private WebApplication? _app;
     private string _token = "";
+    private string? _lastGraphJson;
+    private long _graphVersion;
     private int _port;
     private bool _disposed;
 
@@ -157,6 +159,7 @@ internal sealed class ControlServer : IDisposable
             return;
         }
 
+        _graphVersion = version;
         string json = JsonSerializer.Serialize(new
         {
             type = "graph",
@@ -164,7 +167,40 @@ internal sealed class ControlServer : IDisposable
             running,
             nodes,
         }, Json);
-        Broadcast(json);
+        _lastGraphJson = json;
+        Broadcast(json, reliable: true);
+    }
+
+    public void PublishNodeState(NodeStateDto state)
+    {
+        if (_clients.IsEmpty)
+        {
+            return;
+        }
+
+        string json = JsonSerializer.Serialize(new
+        {
+            type = "node-state",
+            graphVersion = _graphVersion,
+            payload = state,
+        }, Json);
+        Broadcast(json, reliable: false);
+    }
+
+    public void PublishLinkState(LinkStateDto state)
+    {
+        if (_clients.IsEmpty)
+        {
+            return;
+        }
+
+        string json = JsonSerializer.Serialize(new
+        {
+            type = "link-state",
+            graphVersion = _graphVersion,
+            payload = state,
+        }, Json);
+        Broadcast(json, reliable: false);
     }
 
     private async Task HandleWebSocketAsync(HttpContext context)
@@ -194,6 +230,22 @@ internal sealed class ControlServer : IDisposable
                 if (text == null)
                 {
                     break;
+                }
+
+                if (IsResyncRequest(text))
+                {
+                    string graph = _lastGraphJson ??
+                        JsonSerializer.Serialize(new
+                        {
+                            type = "error",
+                            message = "The graph is not available yet.",
+                        }, Json);
+                    if (!client.Enqueue(graph, reliable: true))
+                    {
+                        break;
+                    }
+
+                    continue;
                 }
 
                 string reply = await _owner.Dispatcher.InvokeAsync(
@@ -247,26 +299,32 @@ internal sealed class ControlServer : IDisposable
         }
     }
 
-    private void Broadcast(string json)
+    private void Broadcast(string json, bool reliable)
     {
         foreach (var pair in _clients)
         {
-            _ = SendSafeAsync(pair.Key, pair.Value, json);
+            if (!pair.Value.Enqueue(json, reliable))
+            {
+                if (_clients.TryRemove(pair.Key, out var removed))
+                {
+                    removed.Dispose();
+                }
+            }
         }
     }
 
-    private async Task SendSafeAsync(Guid id, ControlSocket client, string json)
+    private static bool IsResyncRequest(string text)
     {
         try
         {
-            await client.SendAsync(json).ConfigureAwait(false);
+            using var document = JsonDocument.Parse(text);
+            return document.RootElement.TryGetProperty("type", out var type) &&
+                   type.ValueKind == JsonValueKind.String &&
+                   string.Equals(type.GetString(), "resync", StringComparison.OrdinalIgnoreCase);
         }
         catch
         {
-            if (_clients.TryRemove(id, out var removed))
-            {
-                removed.Dispose();
-            }
+            return false;
         }
     }
 
@@ -413,25 +471,63 @@ internal sealed class ControlServer : IDisposable
 
     private sealed class ControlSocket : IDisposable
     {
+        private const int OutboxCapacity = 64;
         private readonly WebSocket _socket;
         private readonly SemaphoreSlim _sendLock = new(1, 1);
+        private readonly SemaphoreSlim _outboxSignal = new(0);
+        private readonly object _outboxLock = new();
+        private readonly LinkedList<Outbound> _outbox = new();
+        private readonly Task _pump;
         private bool _disposed;
 
-        public ControlSocket(WebSocket socket) => _socket = socket;
+        public ControlSocket(WebSocket socket)
+        {
+            _socket = socket;
+            _pump = PumpAsync();
+        }
+
+        /// <summary>
+        /// Queues an event. State deltas are droppable; structural graph and
+        /// resync messages are reliable and evict older deltas first.
+        /// </summary>
+        public bool Enqueue(string json, bool reliable)
+        {
+            lock (_outboxLock)
+            {
+                if (_disposed)
+                {
+                    return false;
+                }
+
+                if (_outbox.Count >= OutboxCapacity)
+                {
+                    if (reliable)
+                    {
+                        if (!RemoveOldestStateLocked())
+                        {
+                            return false;
+                        }
+                    }
+                    else if (!RemoveOldestStateLocked())
+                    {
+                        // All queued messages are reliable: drop this delta.
+                        return true;
+                    }
+                }
+
+                _outbox.AddLast(new Outbound(json, reliable));
+            }
+
+            _outboxSignal.Release();
+            return true;
+        }
 
         public async Task SendAsync(string json)
         {
             await _sendLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (_socket.State == WebSocketState.Open)
-                {
-                    await _socket.SendAsync(
-                        Encoding.UTF8.GetBytes(json),
-                        WebSocketMessageType.Text,
-                        endOfMessage: true,
-                        CancellationToken.None).ConfigureAwait(false);
-                }
+                await SendLockedAsync(json).ConfigureAwait(false);
             }
             finally
             {
@@ -439,14 +535,95 @@ internal sealed class ControlServer : IDisposable
             }
         }
 
-        public void Dispose()
+        private bool RemoveOldestStateLocked()
         {
-            if (_disposed)
+            for (var node = _outbox.First; node != null; node = node.Next)
+            {
+                if (!node.Value.Reliable)
+                {
+                    _outbox.Remove(node);
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private async Task PumpAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    await _outboxSignal.WaitAsync().ConfigureAwait(false);
+
+                    Outbound? message = null;
+                    lock (_outboxLock)
+                    {
+                        if (_disposed)
+                        {
+                            return;
+                        }
+
+                        var first = _outbox.First;
+                        if (first != null)
+                        {
+                            _outbox.RemoveFirst();
+                            message = first.Value;
+                        }
+                    }
+
+                    if (message == null)
+                    {
+                        continue;
+                    }
+
+                    await _sendLock.WaitAsync().ConfigureAwait(false);
+                    try
+                    {
+                        await SendLockedAsync(message.Json).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        _sendLock.Release();
+                    }
+                }
+            }
+            catch
+            {
+                // The socket or server was torn down; the client is removed
+                // by the receive loop or by Dispose.
+            }
+        }
+
+        private async Task SendLockedAsync(string json)
+        {
+            if (_disposed || _socket.State != WebSocketState.Open)
             {
                 return;
             }
 
-            _disposed = true;
+            await _socket.SendAsync(
+                Encoding.UTF8.GetBytes(json),
+                WebSocketMessageType.Text,
+                endOfMessage: true,
+                CancellationToken.None).ConfigureAwait(false);
+        }
+
+        public void Dispose()
+        {
+            lock (_outboxLock)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+                _outbox.Clear();
+            }
+
+            _outboxSignal.Release();
             try
             {
                 _socket.Dispose();
@@ -454,8 +631,8 @@ internal sealed class ControlServer : IDisposable
             catch
             {
             }
-
-            _sendLock.Dispose();
         }
+
+        private sealed record Outbound(string Json, bool Reliable);
     }
 }

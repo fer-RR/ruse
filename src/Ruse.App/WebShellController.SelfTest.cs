@@ -19,6 +19,24 @@ internal sealed partial class WebShellController
                                       Meter(float.PositiveInfinity) == 0 &&
                                       Finite(double.NegativeInfinity) == 0);
 
+        string nodeStateJson = JsonSerializer.Serialize(new NodeStateDto
+        {
+            Id = "node",
+            Volume = 0.5f,
+            Muted = true,
+            Send = 0.25f,
+            Parallel = true,
+            Color = "",
+            Accent = "#4F8DFF",
+        }, _json);
+        Check("node-state delta contract",
+            nodeStateJson.Contains("\"volume\":0.5", StringComparison.Ordinal) &&
+            nodeStateJson.Contains("\"muted\":true", StringComparison.Ordinal) &&
+            nodeStateJson.Contains("\"send\":0.25", StringComparison.Ordinal) &&
+            nodeStateJson.Contains("\"parallel\":true", StringComparison.Ordinal) &&
+            !nodeStateJson.Contains("\"solo\"", StringComparison.Ordinal) &&
+            !nodeStateJson.Contains("\"enabled\"", StringComparison.Ordinal));
+
         const int fftFrames = 4096;
         var fftTone = new float[fftFrames * 2];
         for (int frame = 0; frame < fftFrames; frame++)
@@ -32,18 +50,52 @@ internal sealed partial class WebShellController
         spectrum.SetTapId(SpectrumProcessor.NextTapId());
         spectrum.Process(fftTone, fftFrames);
         var bands = SpectrumProcessor.GetBands(spectrum.TapId);
-        Check("spectrum tap", bands is { Length: 128 } &&
+        Check("spectrum tap", bands is { Length: 256 } &&
                               bands.Max() > -60f &&
                               SpectrumProcessor.GetPeakHz(spectrum.TapId) is > 900f and < 1100f);
         SpectrumProcessor.RemoveTap(spectrum.TapId);
+
+        var highTone = new float[fftFrames * 2];
+        for (int frame = 0; frame < fftFrames; frame++)
+        {
+            float sample = (float)(0.5 * Math.Sin(2.0 * Math.PI * 10000.0 * frame / 48000.0));
+            highTone[frame * 2] = sample;
+            highTone[frame * 2 + 1] = sample;
+        }
+
+        var highSpectrum = new SpectrumProcessor();
+        highSpectrum.Parameters.First(parameter => parameter.Name == "Ceiling").Set(0f);
+        highSpectrum.SetTapId(SpectrumProcessor.NextTapId());
+        for (int block = 0; block < 6; block++)
+        {
+            highSpectrum.Process(highTone, fftFrames);
+        }
+
+        var highBands = SpectrumProcessor.GetBands(highSpectrum.TapId);
+        int highBand = (int)Math.Floor(256 * Math.Log(10000.0 / 20.0) / Math.Log(1000.0));
+        Check("spectrum high band", highBands is { Length: 256 } &&
+                                    Enumerable.Range(highBand - 1, 3)
+                                        .Max(index => highBands[index]) > -12f);
+        SpectrumProcessor.RemoveTap(highSpectrum.TapId);
 
         var spectrogram = new SpectrogramProcessor();
         spectrogram.SetTapId(SpectrogramProcessor.NextTapId());
         spectrogram.Process(fftTone, fftFrames);
         var columns = SpectrogramProcessor.GetColumns(spectrogram.TapId);
-        Check("spectrogram tap", columns is { Length: SpectrogramProcessor.Columns * 128 } &&
+        Check("spectrogram tap", columns is { Length: SpectrogramProcessor.Columns * 256 } &&
                                  columns.Any(value => value > 0));
         SpectrogramProcessor.RemoveTap(spectrogram.TapId);
+
+        var waveform = new WaveformProcessor();
+        waveform.SetTapId(WaveformProcessor.NextTapId());
+        waveform.Process(fftTone, fftFrames);
+        var waveformReading = WaveformProcessor.GetReading(waveform.TapId, WaveformProcessor.TriggerRising);
+        Check("waveform tap", waveformReading is { } wave &&
+                              wave.Samples.Length == WaveformProcessor.SampleCount &&
+                              wave.Peak is > 0.45f and < 0.55f &&
+                              Math.Abs(wave.Samples[0]) < 0.07f &&
+                              wave.Samples[1] > wave.Samples[0]);
+        WaveformProcessor.RemoveTap(waveform.TapId);
 
         var dbMeter = new DbMeterProcessor();
         dbMeter.SetTapId(DbMeterProcessor.NextTapId());
@@ -411,6 +463,9 @@ internal sealed partial class WebShellController
             sendJson.Contains("\"enabled\":false", StringComparison.Ordinal));
 
         Check("send gain audio", LatencySelfTest.TestSendGain());
+        Check("native passthrough", LatencySelfTest.TestNativePassthrough());
+        Check("native passthrough mono", LatencySelfTest.TestNativePassthroughMono());
+        Check("native recorder rate", LatencySelfTest.TestRecorderSampleRate());
 
         var vulkan = VulkanProbe.Query();
         Check("vulkan probe",

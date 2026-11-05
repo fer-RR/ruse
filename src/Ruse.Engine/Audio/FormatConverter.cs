@@ -89,13 +89,7 @@ public sealed class FormatConverter
             var target = CollectionsMarshal.AsSpan(destination).Slice(startCount);
             if (_srcChannels == 2)
             {
-                for (int f = 0; f < srcFrames; f++)
-                {
-                    int sourceIndex = f * 2;
-                    int targetIndex = f * 2;
-                    target[targetIndex] = source[sourceIndex];
-                    target[targetIndex + 1] = source[sourceIndex + 1];
-                }
+                source[..(srcFrames * 2)].CopyTo(target);
             }
             else
             {

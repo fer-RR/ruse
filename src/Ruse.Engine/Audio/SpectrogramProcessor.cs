@@ -3,22 +3,22 @@ using System.Collections.Concurrent;
 namespace Ruse.App.Audio;
 
 /// <summary>Pass-through tap that keeps a short scrolling FFT history.</summary>
-public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProcessor, ITapProcessor
+public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProcessor, ITapProcessor, INativeProcessor
 {
     public const string Id = "spectrogram";
     public const string TapParameterName = "__tap";
     public const int Columns = 256;
 
     public static double WindowSeconds =>
-        Columns * (double)FftAnalyzer.HopSize / FftAnalyzer.SampleRate;
+        Columns * (double)FftAnalyzer.HopSize / FftAnalyzer.DefaultSampleRate;
 
     private static readonly ConcurrentDictionary<int, SpectrogramTap> Taps = new();
     private static int _nextTapId = Random.Shared.Next(1, 1_000_000);
 
     private volatile float _tapId;
     private volatile float _contrast = 1f;
-    private volatile float _floor = -80f;
-    private volatile float _ceiling;
+    private volatile float _floor = -100f;
+    private volatile float _ceiling = -30f;
 
     public SpectrogramProcessor()
     {
@@ -48,7 +48,7 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
                 Name = "Floor",
                 Min = -100f,
                 Max = -30f,
-                Default = -80f,
+                Default = -100f,
                 Get = () => _floor,
                 Set = value => _floor = Math.Clamp(value, -100f, -30f),
                 Unit = "dB",
@@ -58,7 +58,7 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
                 Name = "Ceiling",
                 Min = -40f,
                 Max = 0f,
-                Default = 0f,
+                Default = -30f,
                 Get = () => _ceiling,
                 Set = value => _ceiling = Math.Clamp(value, -40f, 0f),
                 Unit = "dB",
@@ -83,6 +83,14 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
     public void Process(Span<float> samples, int frames) =>
         WriteTap(TapId, samples, frames, Contrast, Floor, Ceiling);
 
+    public void ConfigureNative(int sampleRate, int channels)
+    {
+        if (TapId > 0)
+        {
+            Taps[TapId] = new SpectrogramTap(sampleRate);
+        }
+    }
+
     public static void WriteTap(int id, ReadOnlySpan<float> samples, int frames,
         float contrast, float floor, float ceiling)
     {
@@ -92,7 +100,13 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
         }
     }
 
-    public void Reset() => Taps.TryRemove(TapId, out _);
+    public void Reset()
+    {
+        if (TapId > 0)
+        {
+            Taps[TapId] = new SpectrogramTap();
+        }
+    }
 
     public static int[]? GetColumns(int id) =>
         Taps.TryGetValue(id, out var tap) ? tap.Snapshot() : null;
@@ -112,7 +126,12 @@ public readonly record struct SpectrogramUpdate(int[] Data, int Count, long Tota
 internal sealed class SpectrogramTap
 {
     private readonly object _lock = new();
-    private readonly FftAnalyzer _fft = new();
+    private readonly FftAnalyzer _fft;
+
+    public SpectrogramTap(int sampleRate = FftAnalyzer.DefaultSampleRate)
+    {
+        _fft = new FftAnalyzer(sampleRate);
+    }
     private readonly int[] _columns = new int[SpectrogramProcessor.Columns * FftAnalyzer.Bands];
     private int _write;
     private long _totalColumns;
@@ -125,14 +144,14 @@ internal sealed class SpectrogramTap
     public void Write(ReadOnlySpan<float> samples, int frames,
         float contrast, float floor, float ceiling)
     {
-        if (!_fft.Add(samples, frames)) return;
         float low = Math.Min(floor, ceiling - 1f);
         float high = Math.Max(ceiling, low + 1f);
         float curve = 1f / Math.Clamp(contrast, 0.5f, 2.5f);
-        var levels = _fft.Levels;
 
         lock (_lock)
         {
+            if (!_fft.Add(samples, frames)) return;
+            var levels = _fft.Levels;
             int offset = _write * FftAnalyzer.Bands;
             for (int band = 0; band < FftAnalyzer.Bands; band++)
             {

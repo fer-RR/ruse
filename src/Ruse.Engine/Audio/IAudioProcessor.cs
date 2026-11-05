@@ -91,6 +91,12 @@ public static class AudioProcessorCatalog
             () => new SpectrogramProcessor()));
 
         Register(new Descriptor(
+            WaveformProcessor.Id,
+            "Waveform",
+            "Shows the recent time-domain waveform of this route.",
+            () => new WaveformProcessor()));
+
+        Register(new Descriptor(
             TranscriptionProcessor.Id,
             "Transcriber",
             "Transcribes speech from this route offline.",
@@ -125,6 +131,12 @@ public static class AudioProcessorCatalog
             "EQ high shelf",
             "Shapes the high end above the corner frequency.",
             () => new BiquadProcessor(BiquadKind.HighShelf, "eq-high-shelf", "EQ high shelf", 4000f, "Frequency", hasGain: true)));
+
+        Register(new Descriptor(
+            MoogLadderProcessor.Id,
+            "Moog ladder",
+            "Four-pole nonlinear low-pass with resonance and drive.",
+            () => new MoogLadderProcessor()));
 
         Register(new Descriptor(
             GraphicEqualizerProcessor.Id,
@@ -191,6 +203,54 @@ public static class AudioProcessorCatalog
             "Ring mod",
             "Multiplies the signal by a sine carrier for metallic tones.",
             () => new RingModulatorProcessor()));
+
+        Register(new Descriptor(
+            AutowahProcessor.Id,
+            "Auto-wah",
+            "Envelope-following band-pass wah.",
+            () => new AutowahProcessor()));
+
+        Register(new Descriptor(
+            FrequencyShifterProcessor.Id,
+            "Frequency shifter",
+            "Shifts the spectrum in hertz without changing pitch relationships.",
+            () => new FrequencyShifterProcessor()));
+
+        Register(new Descriptor(
+            VocoderProcessor.Id,
+            "Vocoder",
+            "16-band channel vocoder. Patch the modulator into the sidechain; this route is the carrier.",
+            () => new VocoderProcessor()));
+
+        Register(new Descriptor(
+            StringResonatorProcessor.Id,
+            "String resonator",
+            "Tuned feedback delay with damping for string and resonance effects.",
+            () => new StringResonatorProcessor()));
+
+        Register(new Descriptor(
+            FormantFilterProcessor.Id,
+            "Formant filter",
+            "Three-band vowel filter with A-E-I-O-U presets and morph.",
+            () => new FormantFilterProcessor()));
+
+        Register(new Descriptor(
+            ReverseDelayProcessor.Id,
+            "Reverse delay",
+            "Reversed echo built from a captured audio segment.",
+            () => new ReverseDelayProcessor()));
+
+        Register(new Descriptor(
+            WavesetProcessor.Id,
+            "Waveset",
+            "Repeats short waveform segments between zero crossings.",
+            () => new WavesetProcessor()));
+
+        Register(new Descriptor(
+            PhaseDistortionProcessor.Id,
+            "Phase distortion",
+            "Bends the phase inside each cycle for bright or hollow harmonics.",
+            () => new PhaseDistortionProcessor()));
 
         Register(new Descriptor(
             HaasProcessor.Id,

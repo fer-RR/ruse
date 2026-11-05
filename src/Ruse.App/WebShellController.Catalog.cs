@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
@@ -15,8 +16,10 @@ internal sealed partial class WebShellController
 {
     private IReadOnlyList<AsioDriverInfo> _asioDrivers = Array.Empty<AsioDriverInfo>();
     private IReadOnlyList<PluginDescriptor> _vst3Descriptors = Array.Empty<PluginDescriptor>();
+    private readonly Dictionary<string, CatalogItemDto> _appCatalogCache = new(StringComparer.OrdinalIgnoreCase);
     private Task? _vst3ScanTask;
     private string _lastDeviceSignature = "";
+    private string _lastAppsSignature = "";
 
     private void RefreshCatalog()
     {
@@ -75,7 +78,7 @@ internal sealed partial class WebShellController
         return string.Join("|", ids);
     }
 
-    private void RefreshDevicesIfChanged()
+    private void RefreshDevicesIfChanged(bool force = false)
     {
         if (_disposed)
         {
@@ -92,7 +95,7 @@ internal sealed partial class WebShellController
             return;
         }
 
-        if (string.Equals(signature, _lastDeviceSignature, StringComparison.Ordinal))
+        if (!force && string.Equals(signature, _lastDeviceSignature, StringComparison.Ordinal))
         {
             return;
         }
@@ -337,8 +340,11 @@ internal sealed partial class WebShellController
             : "Per-app capture needs Windows 11 or Windows Server 2022. Use System audio or a virtual cable instead.";
         if (!_catalog.PerAppCaptureAvailable)
         {
+            bool wasPopulated = _catalog.Apps.Count > 0;
             _catalog.Apps = new List<CatalogItemDto>();
-            if (publish)
+            _appCatalogCache.Clear();
+            _lastAppsSignature = "";
+            if (publish && wasPopulated)
             {
                 Post("catalog", _catalog);
             }
@@ -348,21 +354,54 @@ internal sealed partial class WebShellController
 
         try
         {
-            _catalog.Apps = AudioSessionEnumerator.GetRenderSessions()
-                .Select(session => new CatalogItemDto
+            var sessions = AudioSessionEnumerator.GetRenderSessions();
+            var apps = new List<CatalogItemDto>(sessions.Count);
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var signature = new StringBuilder(sessions.Count * 48);
+
+            foreach (var session in sessions)
+            {
+                string key = $"{session.ProcessId}:{session.ProcessName}";
+                seen.Add(key);
+                if (!_appCatalogCache.TryGetValue(key, out var app))
                 {
-                    Id = $"{session.ProcessId}:{session.ProcessName}",
-                    Kind = "app",
-                    Name = session.Label,
-                    Subtitle = session.IsActive ? "Active audio session" : "Application",
-                    Details = session.Details,
-                    ProcessId = session.ProcessId,
-                    ProcessName = session.ProcessName,
-                    Active = session.IsActive,
-                    DeviceId = session.DeviceId,
-                    DeviceName = session.DeviceName,
-                    IconDataUrl = GetProcessIcon(session.ProcessId),
-                }).ToList();
+                    app = new CatalogItemDto
+                    {
+                        Id = key,
+                        Kind = "app",
+                    };
+                    _appCatalogCache[key] = app;
+                }
+
+                app.Name = session.Label;
+                app.Subtitle = session.IsActive ? "Active audio session" : "Application";
+                app.Details = session.Details;
+                app.ProcessId = session.ProcessId;
+                app.ProcessName = session.ProcessName;
+                app.Active = session.IsActive;
+                app.DeviceId = session.DeviceId;
+                app.DeviceName = session.DeviceName;
+                app.IconDataUrl ??= GetProcessIcon(session.ProcessId);
+                apps.Add(app);
+
+                signature.Append(key).Append('|')
+                    .Append(app.Name).Append('|')
+                    .Append(app.Subtitle).Append('|')
+                    .Append(app.Details).Append('|')
+                    .Append(app.Active ? '1' : '0').Append('|')
+                    .Append(app.DeviceId).Append('|')
+                    .Append(app.DeviceName).Append(';');
+            }
+
+            foreach (string stale in _appCatalogCache.Keys.Where(key => !seen.Contains(key)).ToList())
+            {
+                _appCatalogCache.Remove(stale);
+            }
+
+            _catalog.Apps = apps;
+            string nextSignature = signature.ToString();
+            bool appsChanged = !string.Equals(nextSignature, _lastAppsSignature, StringComparison.Ordinal);
+            _lastAppsSignature = nextSignature;
 
             bool reattached = _settings.FollowPlayingApps && ReattachPlayingApps();
             bool autoAdded = _settings.FollowPlayingApps && AutoAddPlayingApps();
@@ -371,7 +410,7 @@ internal sealed partial class WebShellController
                 PublishGraph();
             }
 
-            if (publish)
+            if (publish && appsChanged)
             {
                 Post("catalog", _catalog);
             }

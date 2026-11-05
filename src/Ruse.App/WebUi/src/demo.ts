@@ -45,8 +45,9 @@ export const demoGraph: GraphSnapshot = {
       { processorIndex: 0, parameterIndex: 0, name: 'Threshold', min: -60, max: 0, value: -18, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] },
       { processorIndex: 0, parameterIndex: 1, name: 'Ratio', min: 1, max: 20, value: 4, unit: ':1', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] },
     ], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
-    { id: 'spectrum', kind: 'modifier', flavor: 'analysis', title: 'Spectrum', subtitle: 'FFT analyser', accent: '#65D6D0', x: 750, y: 30, volume: 1, muted: false, isSpectrum: true, parameters: [{ processorIndex: 0, parameterIndex: 1, name: 'Smoothing', min: 0, max: 95, value: 55, unit: '%', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 2, name: 'Floor', min: -100, max: -20, value: -80, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 3, name: 'Ceiling', min: -40, max: 0, value: 0, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
-    { id: 'spectrogram', kind: 'modifier', flavor: 'analysis', title: 'Spectrogram', subtitle: 'FFT history', accent: '#65D6D0', x: 750, y: 250, volume: 1, muted: false, isSpectrogram: true, parameters: [{ processorIndex: 0, parameterIndex: 1, name: 'Contrast', min: 0.5, max: 2.5, value: 1, unit: 'x', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 2, name: 'Floor', min: -100, max: -30, value: -80, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 3, name: 'Ceiling', min: -40, max: 0, value: 0, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
+    { id: 'spectrum', kind: 'modifier', flavor: 'analysis', title: 'Spectrum', subtitle: 'FFT analyser', accent: '#65D6D0', x: 750, y: 30, volume: 1, muted: false, isSpectrum: true, parameters: [{ processorIndex: 0, parameterIndex: 1, name: 'Smoothing', min: 0, max: 95, value: 55, unit: '%', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 2, name: 'Floor', min: -100, max: -20, value: -100, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 3, name: 'Ceiling', min: -40, max: 0, value: -30, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
+    { id: 'spectrogram', kind: 'modifier', flavor: 'analysis', title: 'Spectrogram', subtitle: 'FFT history', accent: '#65D6D0', x: 750, y: 250, volume: 1, muted: false, isSpectrogram: true, parameters: [{ processorIndex: 0, parameterIndex: 1, name: 'Contrast', min: 0.5, max: 2.5, value: 1, unit: 'x', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 2, name: 'Floor', min: -100, max: -30, value: -100, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }, { processorIndex: 0, parameterIndex: 3, name: 'Ceiling', min: -40, max: 0, value: -30, unit: 'dB', logarithmic: false, isToggle: false, isInteger: false, isChoice: false, options: [] }], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
+    { id: 'waveform', kind: 'modifier', flavor: 'analysis', title: 'Waveform', subtitle: 'Time domain', accent: '#65D6D0', x: 40, y: 870, volume: 1, muted: false, isWaveform: true, parameters: [{ processorIndex: 0, parameterIndex: 1, name: 'Trigger', min: 0, max: 2, value: 0, unit: '', logarithmic: false, isToggle: false, isInteger: true, isChoice: true, options: ['Rising', 'Falling', 'Off'] }], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'headphones', kind: 'output', flavor: 'output', title: 'Headphones', subtitle: 'Output device', accent: '#43E39A', x: 940, y: 80, volume: 1, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'virtual', kind: 'output', flavor: 'virtual', title: 'Voicemeeter Input', subtitle: 'Virtual output', accent: '#D9A8FF', x: 970, y: 580, volume: 1, muted: false, micHint: 'Voicemeeter Out B1', parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'recorder', kind: 'output', flavor: 'recorder', title: 'Session recorder', subtitle: 'File output', accent: '#FF8B72', x: 970, y: 870, volume: 1, muted: false, parameters: [], isRecorder: true, recordingPath: 'C:\\Recordings\\ruse-session.wav', recordingFormat: 'Wav24' },
@@ -116,34 +117,42 @@ export function createDemoTelemetry(time: number): TelemetrySnapshot {
   for (const node of demoGraph.nodes) {
     const phase = time / 700 + node.id.length;
     const spectrum = node.isSpectrum
-      ? Array.from({ length: 128 }, (_, index) => {
-          const peak = 40 * Math.exp(-Math.pow((index - 72) / 14, 2));
-          const harmonics = 9 * Math.exp(-Math.pow((index - 44) / 10, 2)) +
-                            6 * Math.exp(-Math.pow((index - 96) / 12, 2));
+      ? Array.from({ length: 256 }, (_, index) => {
+          const peak = 40 * Math.exp(-Math.pow((index - 144) / 26, 2));
+          const harmonics = 9 * Math.exp(-Math.pow((index - 88) / 20, 2)) +
+                            6 * Math.exp(-Math.pow((index - 192) / 24, 2));
           return -80 + peak + harmonics + Math.abs(Math.sin(phase + index * 0.31)) * 4;
         })
       : undefined;
     const spectrogram = node.isSpectrogram
-      ? Array.from({ length: 128 * 128 }, (_, index) => {
-          const column = Math.floor(index / 128);
-          const band = index % 128;
-          const peak = 210 * Math.exp(-Math.pow((band - 72) / 14, 2));
+      ? Array.from({ length: 256 * 256 }, (_, index) => {
+          const column = Math.floor(index / 256);
+          const band = index % 256;
+          const peak = 210 * Math.exp(-Math.pow((band - 144) / 26, 2));
           const pulse = 28 * Math.abs(Math.sin(phase * 0.8 + column * 0.2));
           return Math.max(0, Math.min(255, Math.round(peak + pulse - 26)));
         })
       : undefined;
+    const waveform = node.isWaveform
+      ? Array.from({ length: 256 }, (_, index) => {
+          const position = index / 256;
+          return 0.32 * Math.sin(position * Math.PI * 12 + phase) +
+                 0.12 * Math.sin(position * Math.PI * 34);
+        })
+      : undefined;
     meters[node.id] = {
-      level: node.kind === 'modifier' && !node.isSpectrum && !node.isSpectrogram
+      level: node.kind === 'modifier' && !node.isSpectrum && !node.isSpectrogram && !node.isWaveform
         ? 0
         : 0.25 + Math.abs(Math.sin(phase)) * 0.45,
       clipping: false,
       recordingStatus: node.isRecorder ? 'REC' : undefined,
       recordingSeconds: node.isRecorder ? Math.floor(time / 1000) : undefined,
       ...(spectrum ? { spectrum, spectrumPeakHz: 1000 } : {}),
+      ...(waveform ? { waveform, waveformPeak: 0.44 } : {}),
       ...(spectrogram ? {
         spectrogram,
-        spectrogramColumns: 128,
-        spectrogramNewColumns: 128,
+        spectrogramColumns: 256,
+        spectrogramNewColumns: 256,
         spectrogramTotalColumns: Math.floor(time / 100) + 1,
         spectrogramFull: true,
         spectrogramPeakHz: 1000,

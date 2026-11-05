@@ -5,7 +5,7 @@ const WIDTH = 428;
 const HEIGHT = 200;
 const TOP = 5;
 const BOTTOM = HEIGHT - 12;
-const DEFAULT_BANDS = 128;
+const DEFAULT_BANDS = 256;
 const FREQUENCY_REFS = [
   [50, '50'], [100, '100'], [250, '250'], [500, '500'], [1000, '1k'],
   [2000, '2k'], [5000, '5k'], [10000, '10k'], [20000, '20k'],
@@ -60,8 +60,8 @@ export default function SpectrumView({
   bands,
   peakHz,
   color,
-  floor = -80,
-  ceiling = 0,
+  floor = -100,
+  ceiling = -30,
 }: {
   bands?: number[];
   peakHz?: number;
@@ -78,9 +78,10 @@ export default function SpectrumView({
   const staticRef = useRef<HTMLCanvasElement | null>(null);
   const staticKeyRef = useRef('');
   const gradientRef = useRef<{ key: string; gradient: CanvasGradient } | null>(null);
+  const visibleRef = useRef(false);
 
   useEffect(() => {
-    const target = bands?.length ? bands.slice() : new Array(DEFAULT_BANDS).fill(floor);
+    const target = bands?.length ? bands : new Array(DEFAULT_BANDS).fill(floor);
     targetsRef.current = target;
     configRef.current.hasBands = Boolean(bands?.length);
     if (displayRef.current.length !== target.length) {
@@ -88,6 +89,20 @@ export default function SpectrumView({
       peaksRef.current = target.slice();
     }
   }, [bands, floor]);
+
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas || typeof IntersectionObserver === 'undefined') {
+      visibleRef.current = true;
+      return;
+    }
+
+    const observer = new IntersectionObserver(entries => {
+      visibleRef.current = entries[0]?.isIntersecting ?? false;
+    }, { threshold: 0.01 });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     configRef.current.color = color;
@@ -101,6 +116,11 @@ export default function SpectrumView({
     let frame = 0;
     let last = 0;
     const draw = (time: number) => {
+      if (!visibleRef.current || document.hidden) {
+        frame = requestAnimationFrame(draw);
+        return;
+      }
+
       if (time - last >= 33) {
         last = time;
         const canvas = ref.current;

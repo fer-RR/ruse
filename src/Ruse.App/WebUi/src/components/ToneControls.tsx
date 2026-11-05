@@ -3,7 +3,15 @@ import { send } from '../bridge';
 import type { RuseFlowNode } from '../flow';
 import { useI18n } from '../i18n';
 
-const TONE_WAVEFORMS = ['Sine', 'Square', 'Saw', 'Triangle', 'Noise'] as const;
+const TONE_WAVEFORMS = [
+  ['Sine', 'Sine'],
+  ['Square', 'Square'],
+  ['Saw', 'Saw'],
+  ['Triangle', 'Triangle'],
+  ['Noise', 'Noise'],
+  ['PinkNoise', 'Pink noise'],
+  ['BrownNoise', 'Brown noise'],
+] as const;
 const TONE_MIN_HZ = 20;
 const TONE_MAX_HZ = 20000;
 
@@ -33,7 +41,7 @@ export default function ToneControls({ node }: { node: RuseFlowNode['data'] }) {
       <label className="tone-field">
         <span>{t('Waveform')}</span>
         <select value={waveform} onChange={event => { const next = event.target.value; setWaveform(next); update(frequency, next, level); }}>
-          {TONE_WAVEFORMS.map(wave => <option key={wave} value={wave}>{t(wave)}</option>)}
+          {TONE_WAVEFORMS.map(([value, label]) => <option key={value} value={value}>{t(label)}</option>)}
         </select>
       </label>
       <label className="tone-field">

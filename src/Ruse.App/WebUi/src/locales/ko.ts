@@ -1,4 +1,6 @@
 export const ko: Record<string, string> = {
+  "Sample rate": "샘플 레이트",
+  "Native passthrough": "네이티브 패스스루",
   "Minimize": "최소화",
   "Maximize or restore": "최대화 또는 복원",
   "Close": "닫기",
@@ -682,6 +684,8 @@ export const ko: Record<string, string> = {
   "Saw": "톱니파",
   "Triangle": "삼각파",
   "Noise": "노이즈",
+  "Pink noise": "핑크 노이즈",
+  "Brown noise": "브라운 노이즈",
   "Test tone": "테스트 톤",
   "Sine, square, saw, noise": "사인파, 사각파, 톱니파, 노이즈",
   "Generate a test signal for routing and level checks": "라우팅 및 레벨 확인용 테스트 신호 생성",

@@ -319,7 +319,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .section-toggle svg.collapsed { transform: rotate(-90deg); }
 .section-count { min-width: 17px; padding: 0 4px; border-radius: 4px; background: var(--surface-2); color: var(--text-3); font-size: 9px; line-height: 16px; text-align: center; }
 .section-items { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; min-width: 0; }
-.library-item { --item-accent: var(--blue); position: relative; min-width: 0; min-height: 47px; display: flex; align-items: center; gap: 9px; padding: 6px 7px; border: 1px solid transparent; border-radius: 8px; color: var(--text-2); cursor: grab; overflow: hidden; }
+.library-item { --item-accent: var(--blue); position: relative; min-width: 0; min-height: 47px; display: flex; align-items: center; gap: 9px; padding: 6px 7px; border: 1px solid transparent; border-radius: 8px; color: var(--text-2); cursor: grab; overflow: hidden; content-visibility: auto; contain-intrinsic-size: auto 47px; }
 .library-item:hover, .library-item:focus-visible { background: var(--surface-2); border-color: var(--line); color: var(--text); }
 .library-item:active { cursor: grabbing; }
 .app-shell.signal-glow .library-item.flowing { border-color: color-mix(in srgb, var(--item-accent) 42%, var(--line)); background: color-mix(in srgb, var(--item-accent) 7%, var(--surface-2)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--item-accent) 16%, transparent), 0 0 12px color-mix(in srgb, var(--item-accent) 14%, transparent); }
@@ -511,17 +511,18 @@ select { min-height: 28px; padding: 3px 6px; font-size: 10px; }
 .field-label input { height: 38px; padding: 0 10px; font-size: 13px; }
 
 .parameter-list { display: flex; flex-direction: column; gap: 7px; padding: 8px 9px 9px; }
-.ruse-node.spectrum-node, .ruse-node.spectrogram-node { width: 460px; min-width: 460px; max-width: 460px; }
+.ruse-node.spectrum-node, .ruse-node.spectrogram-node, .ruse-node.waveform-node { width: 460px; min-width: 460px; max-width: 460px; }
 .ruse-node.graphic-eq-node { width: 380px; min-width: 380px; max-width: 380px; }
 .graphic-eq-view { padding: 8px 9px 9px; }
 .graphic-eq-view canvas { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--inset); cursor: crosshair; touch-action: none; }
 .graphic-eq-meta { display: flex; justify-content: space-between; margin-top: 4px; color: var(--text-3); font: 9px Consolas, monospace; }
-.spectrum-view, .spectrogram-view { padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--inset); }
+.spectrum-view, .spectrogram-view, .waveform-view { padding: 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--inset); }
 .spectrum-view canvas { display: block; width: 100%; height: 200px; border-radius: 6px; background: #0a1018; }
 .spectrogram-view canvas { display: block; width: 100%; height: 240px; border-radius: 6px; background: #0a1018; }
+.waveform-view canvas { display: block; width: 100%; height: 220px; border-radius: 6px; background: #0a1018; }
 .spectrum-meta { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 5px; padding: 0 1px; color: var(--text-3); font-size: 9px; }
 .spectrum-meta strong { color: var(--text-2); font: 9px Consolas, monospace; font-weight: 500; }
-.spectrum-node .node-subtitle, .spectrogram-node .node-subtitle { color: var(--text-3); }
+.spectrum-node .node-subtitle, .spectrogram-node .node-subtitle, .waveform-node .node-subtitle { color: var(--text-3); }
 .ruse-node.db-meter-vertical { width: 108px; min-width: 108px; max-width: 108px; }
 .db-meter-vertical .node-icon { display: none; }
 .db-meter-vertical .node-header { gap: 4px; padding: 5px 5px 5px 7px; }
@@ -683,6 +684,9 @@ select { min-height: 28px; padding: 3px 6px; font-size: 10px; }
 .recorder-controls { display: grid; gap: 7px; padding: 0 10px 10px; }
 .recorder-format { display: flex; flex-wrap: wrap; gap: 6px; }
 .recorder-format select { flex: 1; min-width: 0; }
+.recorder-rate { display: flex; align-items: center; gap: 6px; color: var(--text-3); font-size: 9px; }
+.recorder-rate span { min-width: 64px; }
+.recorder-rate select { flex: 1; min-width: 0; height: 26px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--inset); color: var(--text-2); font: 9px Consolas, monospace; }
 .small-button { min-height: 28px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--surface-2); color: var(--text-2); font-size: 10px; white-space: nowrap; }
 .small-button:hover { background: var(--surface-3); color: var(--text); }
 .recorder-path { overflow: hidden; color: var(--text-3); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
@@ -983,9 +987,9 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .number-field-arrows button:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .number-field-arrows button:disabled { opacity: 0.35; cursor: default; }
 .number-field-arrows svg { width: 70%; height: 70%; }
-.network-row .number-field { flex: 1; width: auto; min-width: 0; height: 24px; }
-.network-row .number-field input { padding-right: 20px; font-size: 9px; }
-.network-row .number-field-arrows { width: 18px; }
+.network-row .number-field { flex: 1; width: auto; min-width: 0; height: 24px; display: flex; align-items: stretch; }
+.network-row .number-field input { flex: 1; width: auto; min-width: 0; padding-right: 6px; font-size: 9px; }
+.network-row .number-field-arrows { position: static; flex: 0 0 18px; width: 18px; border-left: 1px solid var(--line); }
 .recorder-advanced-value .number-field { width: 62px; height: 24px; }
 .recorder-advanced-value .number-field input { padding-right: 18px; font-size: 9px; }
 .recorder-advanced-value .number-field-arrows { width: 16px; }

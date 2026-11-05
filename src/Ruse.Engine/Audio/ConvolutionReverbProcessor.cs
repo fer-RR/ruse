@@ -108,7 +108,13 @@ public sealed class ConvolutionReverbProcessor : IAudioProcessor, IParameterized
         return effect;
     }
 
-    private static float[] CreateDefaultImpulseResponse()
+    private static readonly Lazy<float[]> DefaultImpulse =
+        new(CreateDefaultImpulseResponseCore);
+
+    private static float[] CreateDefaultImpulseResponse() =>
+        (float[])DefaultImpulse.Value.Clone();
+
+    private static float[] CreateDefaultImpulseResponseCore()
     {
         int frames = SampleRate * 2;
         var impulse = new float[frames];

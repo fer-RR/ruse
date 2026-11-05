@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Ruse.App;
 
@@ -101,12 +102,14 @@ internal sealed class NodeDto
     public bool IsRecorder { get; set; }
     public string RecordingPath { get; set; } = "";
     public string RecordingFormat { get; set; } = "Wav24";
+    public int RecorderSampleRate { get; set; } = 48000;
     public string RecorderMode { get; set; } = "Off";
     public bool RecorderAutoSave { get; set; }
     public double RecorderSilenceStopSeconds { get; set; }
     public double RecorderStartThresholdDb { get; set; } = -40;
     public bool IsSpectrum { get; set; }
     public bool IsSpectrogram { get; set; }
+    public bool IsWaveform { get; set; }
     public bool IsGraphicEq { get; set; }
     public bool IsParametricEq { get; set; }
     public List<string> EqBandTypes { get; set; } = new();
@@ -181,6 +184,45 @@ internal sealed class LinkDto
     public string Kind { get; set; } = "";
     public float Gain { get; set; } = 1;
     public bool Enabled { get; set; } = true;
+    public bool Native { get; set; }
+    public int NativeRate { get; set; }
+}
+
+/// <summary>Lightweight update for one node's live state; never triggers a full graph rebuild.</summary>
+internal sealed class NodeStateDto
+{
+    public string Id { get; set; } = "";
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? Volume { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Muted { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Solo { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Enabled { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? Send { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? Parallel { get; set; }
+
+    public string Color { get; set; } = "";
+    public string Accent { get; set; } = "";
+}
+
+/// <summary>Lightweight update for one cable's gain or enabled state.</summary>
+internal sealed class LinkStateDto
+{
+    public string Id { get; set; } = "";
+    public float Gain { get; set; } = 1;
+    public bool Enabled { get; set; } = true;
+    public bool Native { get; set; }
+    public int NativeRate { get; set; }
 }
 
 internal sealed class FrameDto
@@ -263,6 +305,8 @@ internal sealed class NodeTelemetryDto
     public long? SpectrogramTotalColumns { get; set; }
     public bool? SpectrogramFull { get; set; }
     public double? SpectrogramWindowSeconds { get; set; }
+    public float[]? Waveform { get; set; }
+    public float? WaveformPeak { get; set; }
     public float? Db { get; set; }
     public float? PeakDb { get; set; }
     public float? DbLeft { get; set; }

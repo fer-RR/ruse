@@ -5,7 +5,7 @@ namespace Ruse.App.Audio;
 /// Auto-tune node, grains are copied at their original rate so formants are
 /// preserved; the tradeoff is a more experimental, slightly higher-latency path.
 /// </summary>
-public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameterizedProcessor, ISidechainProcessor
+public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameterizedProcessor, ISidechainProcessor, IDisposable
 {
     public const string Id = "auto-tune-experimental";
 
@@ -27,10 +27,11 @@ public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameteri
     ];
 
     private readonly PsolaPitchShifter _shifter = new();
-    private readonly NotePitchTracker _detector = new(highResolution: false);
+    private readonly PitchAnalysisWorker _pitchWorker;
     private readonly AudioParameter[] _parameters;
     private volatile float _key;
     private volatile float _scale;
+    private volatile float _trackerMode;
     private volatile float _retuneMs = 40f;
     private volatile float _strength = 80f;
     private volatile float _mix = 100f;
@@ -39,6 +40,8 @@ public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameteri
 
     public AutoTuneExperimentalProcessor()
     {
+        _pitchWorker = new PitchAnalysisWorker(
+            highResolution: false, PitchTrackerMode.Autocorrelation);
         _parameters =
         [
             new AudioParameter
@@ -95,6 +98,18 @@ public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameteri
                 Get = () => _mix,
                 Set = value => _mix = Math.Clamp(value, 0f, 100f),
             },
+            new AudioParameter
+            {
+                Name = "Tracker",
+                Min = 0f,
+                Max = 1f,
+                Default = 0f,
+                IsChoice = true,
+                IsInteger = true,
+                Options = ["Autocorrelation", "AMDF"],
+                Get = () => _trackerMode,
+                Set = value => SetTracker((int)MathF.Round(value)),
+            },
         ];
     }
 
@@ -107,8 +122,8 @@ public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameteri
 
     public void Process(Span<float> samples, int frames)
     {
-        _detector.Add(samples, frames);
-        bool voiced = _detector.TryGetPitch(out float hz);
+        _pitchWorker.Submit(samples, frames);
+        bool voiced = _pitchWorker.TryGetPitch(out float hz, out _);
         float target = voiced ? TargetCorrection(hz) : 0f;
         float alpha = RetuneAlpha(frames);
         _correction += (target - _correction) * alpha;
@@ -118,7 +133,16 @@ public sealed class AutoTuneExperimentalProcessor : IAudioProcessor, IParameteri
     public void Reset()
     {
         _shifter.Reset();
-        _detector.Reset();
+        _pitchWorker.Reset();
+        _correction = 0f;
+    }
+
+    public void Dispose() => _pitchWorker.Dispose();
+
+    private void SetTracker(int mode)
+    {
+        _trackerMode = Math.Clamp(mode, 0, 1);
+        _pitchWorker.SetTracker((PitchTrackerMode)_trackerMode);
         _correction = 0f;
     }
 

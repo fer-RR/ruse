@@ -1,4 +1,6 @@
 export const ja: Record<string, string> = {
+  "Sample rate": "サンプルレート",
+  "Native passthrough": "ネイティブパススルー",
   "Minimize": "最小化する",
   "Maximize or restore": "最大化または復元",
   "Close": "閉じる",
@@ -682,6 +684,8 @@ export const ja: Record<string, string> = {
   "Saw": "ノコギリ波",
   "Triangle": "三角波",
   "Noise": "ノイズ",
+  "Pink noise": "ピンクノイズ",
+  "Brown noise": "ブラウンノイズ",
   "Test tone": "テストトーン",
   "Sine, square, saw, noise": "サイン波、矩形波、ノコギリ波、ノイズ",
   "Generate a test signal for routing and level checks": "ルーティングとレベルの確認用テスト信号を生成",

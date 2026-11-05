@@ -46,7 +46,9 @@ internal sealed class AsioOutputEndpoint : IDisposable
     /// Opens the driver and starts playback from <paramref name="mix"/>.
     /// Throws when the driver cannot be opened or initialised.
     /// </summary>
-    public void Start(BufferedWaveProvider mix)
+    public void Start(BufferedWaveProvider mix) => Start(mix, 0);
+
+    public void Start(BufferedWaveProvider mix, int preferredRate)
     {
         // The driver is exclusive, so make sure nothing is left open from a
         // previous attempt before grabbing it again.
@@ -54,9 +56,18 @@ internal sealed class AsioOutputEndpoint : IDisposable
 
         _device = AsioDevice.Open(DriverName);
 
-        // Prefer the mixer's rate so no resampling happens at all.
-        int targetRate = MixerRate;
-        if (!SupportsRate(MixerRate))
+        // Prefer an explicit native rate, then the mixer's rate, so no
+        // resampling happens when the caller can match the driver.
+        int targetRate;
+        if (preferredRate > 0 && SupportsRate(preferredRate))
+        {
+            targetRate = preferredRate;
+        }
+        else if (SupportsRate(MixerRate))
+        {
+            targetRate = MixerRate;
+        }
+        else
         {
             targetRate = _device.CurrentSampleRate > 0 ? _device.CurrentSampleRate : MixerRate;
         }

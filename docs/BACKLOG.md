@@ -9,13 +9,30 @@ Keep this short. Nothing is started unless noted.
   `ring-out`, `rnnoise` and `DirtyFilterPlus` plugins.
 - Sync `work` when the user asks.
 
+## DSP
+
+- Phase 0 guardrails are in place: `--dsp-test` checks primitives and
+  `--effects-test` enforces per-effect CPU budgets.
+- Phase 1 is in: Moog ladder, auto-wah, frequency shifter, bandlimited test
+  tone with pink/brown noise, and an RMS sidechain detector.
+- Phase 2 is in: 16-band sidechain vocoder and string resonator.
+- Phase 3 is in: formant/vowel filter, reverse delay, waveset, phase
+  distortion, phaser vibrato, and a selectable AMDF pitch tracker.
+- Remaining optional item: A/B Zita/ReverbSC against the current FDN reverb.
+  Reimplement the math in C#; do not copy Soundpipe/Csound/FAUST source.
+
+## Performance follow-ups
+
+- ASIO changes still require a manual refresh; WASAPI device changes use Core
+  Audio notifications now.
+
 ## Visualizers
 
-- Optional: raise spectrum bands from 128 to 192/256. The 4096-point FFT
-  supports it; payload is small.
-- Optional: add a time-domain waveform/oscilloscope tap and view. Useful for
-  transients, DC and clipping detail; ~512 floats per update.
-- Spectrogram is now incremental with 256 columns (~8.2 s). Consider 20 Hz
+- Spectrum and spectrogram now use 256 log bands from the 4096-point FFT, with
+  peak-bin levels and a -100..-30 dB display default.
+- Waveform tap shows a triggered 256-sample window (5.3 ms) with peak dBFS and
+  clip markers. Optional: hold, a longer window, or a per-channel view.
+- Spectrogram is incremental with 256 columns (~8.2 s). Consider 20 Hz
   telemetry or RAF column scrolling only if smoother motion is needed.
 - Avoid decorative modes (particles, glitch, `shadowBlur`, `getImageData`
   scrolling) unless the UI cost is justified.
@@ -78,10 +95,9 @@ Keep this short. Nothing is started unless noted.
   remain.
 - Graphic EQ: presets, per-band reset, optional live spectrum behind curve.
 - Frame templates: rename/delete/thumbnail and refresh after external edits.
-- Per-input/output asynchronous SRC with slow clock-drift correction.
-- Configurable engine sample rate or passthrough to avoid double conversion on
-  44.1 kHz endpoints. Current engine is fixed at 48 kHz.
-- True-peak lookahead clip guard; current guard is zero-latency sample-peak.
+- Per-device asynchronous SRC with clock-drift correction. The engine is fixed
+  at 48 kHz; changing it requires threading the rate through every effect.
+- Persist native-chain link flags across sessions and presets.
 - ASIO testing with an insert patch or real loopback interface.
 - Revisit 128-frame blocks only with a larger ring/dedicated low-latency mode.
 
@@ -94,4 +110,3 @@ Keep this short. Nothing is started unless noted.
 - Tray: start-minimized and live icon updates.
 - Re-check WebView render tier in Settings > Info.
 - Release notes and richer thread/device diagnostics.
-- WASAPI hotplug polls every 2 s; ASIO changes still need manual refresh.

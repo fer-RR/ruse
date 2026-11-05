@@ -1,4 +1,6 @@
 export const ptBR: Record<string, string> = {
+  "Sample rate": "Taxa de amostragem",
+  "Native passthrough": "Passagem nativa",
   // Window and toolbar
   'Minimize': 'Minimizar',
   'Maximize or restore': 'Maximizar ou restaurar',
@@ -703,6 +705,8 @@ export const ptBR: Record<string, string> = {
   "Saw": "Dente de serra",
   "Triangle": "Triângulo",
   "Noise": "Ruído",
+  "Pink noise": "Ruído rosa",
+  "Brown noise": "Ruído marrom",
   "Test tone": "Tom de teste",
   "Sine, square, saw, noise": "Senoide, onda quadrada, dente de serra e ruído",
   "Generate a test signal for routing and level checks": "Gerar um sinal de teste para verificar roteamento e níveis",

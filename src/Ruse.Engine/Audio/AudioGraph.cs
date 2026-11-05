@@ -43,9 +43,19 @@ public sealed class AudioGraph : IDisposable
     /// <summary>Number of tap workers (diagnostics/self-test).</summary>
     public int TapWorkerCount => _engine?.TapWorkerCount ?? 0;
 
-    private void InvalidateEngine() => _engine?.Invalidate();
+    private void InvalidateEngine(Action? afterDrain = null)
+    {
+        if (_engine != null)
+        {
+            _engine.Invalidate(afterDrain);
+        }
+        else
+        {
+            afterDrain?.Invoke();
+        }
+    }
 
-    /// <summary>Runs a graph mutation while the renderer is paused.</summary>
+    /// <summary>Serializes a graph mutation with snapshot rebuilds.</summary>
     public void WithEngineLock(Action action)
     {
         if (_engine != null)
@@ -114,25 +124,28 @@ public sealed class AudioGraph : IDisposable
 
     public void RemoveOutput(OutputNode node, bool invalidateEngine = true)
     {
+        bool removed = false;
         WithEngineLock(() =>
         {
-            bool removed = Outputs.Remove(node);
+            removed = Outputs.Remove(node);
             _directLinks.Remove(node);
             foreach (var modifier in Modifiers)
             {
                 modifier.Outputs.Remove(node);
             }
-
-            // Compile without the output before disposing it, so the renderer
-            // can never call into a disposed endpoint. An inert recorder that
-            // never joined the graph does not require a recompile.
-            if (removed && invalidateEngine)
-            {
-                InvalidateEngine();
-            }
-
-            node.Dispose();
         });
+
+        // Compile without the output before disposing it, so the renderer can
+        // never call into a disposed endpoint. Both the compile and the dispose
+        // happen outside the engine lock now.
+        if (removed && invalidateEngine)
+        {
+            InvalidateEngine(node.Dispose);
+        }
+        else
+        {
+            node.Dispose();
+        }
     }
 
     public void AddSource(SourceNode source)
@@ -159,23 +172,25 @@ public sealed class AudioGraph : IDisposable
                 other.Next.Remove(modifier);
                 other.SidechainModifiers.Remove(modifier);
             }
+        });
 
-            // Rebuild every output: the routes that only existed because this
-            // modifier reached them are gone for good. An unconnected modifier
-            // is absent from the compiled graph, so rebuilding would only reset
-            // the running renderer and cause an audible click.
-            if (invalidateEngine)
+        // Rebuild every output: the routes that only existed because this
+        // modifier reached them are gone for good. An unconnected modifier is
+        // absent from the compiled graph, so rebuilding would only reset the
+        // running renderer and cause an audible click.
+        if (invalidateEngine)
+        {
+            foreach (var output in Outputs)
             {
-                foreach (var output in Outputs)
-                {
-                    SyncOutputRoutes(output);
-                }
-
-                InvalidateEngine();
+                SyncOutputRoutes(output);
             }
 
+            InvalidateEngine(modifier.Dispose);
+        }
+        else
+        {
             modifier.Dispose();
-        });
+        }
     }
 
     /// <summary>Starts a source's capture thread if it is not already running.</summary>
@@ -226,21 +241,23 @@ public sealed class AudioGraph : IDisposable
             }
 
             Sources.Remove(source);
+        });
 
-            if (invalidateEngine)
+        if (invalidateEngine)
+        {
+            foreach (var output in Outputs)
             {
-                foreach (var output in Outputs)
-                {
-                    SyncOutputRoutes(output);
-                }
-
-                // The renderer may still hold a subscription until the rebuild
-                // above; dispose the source only after it has been dropped.
-                InvalidateEngine();
+                SyncOutputRoutes(output);
             }
 
+            // The renderer may still hold a subscription until the rebuild
+            // above; dispose the source only after it has been dropped.
+            InvalidateEngine(source.Dispose);
+        }
+        else
+        {
             source.Dispose();
-        });
+        }
     }
 
     public void Connect(SourceNode source, OutputNode output, float gain = 1.0f)
@@ -433,6 +450,90 @@ public sealed class AudioGraph : IDisposable
         }
 
         _engine?.UpdateRouteGain(source, output, gain);
+    }
+
+    /// <summary>
+    /// Switches one output between the normal 48 kHz graph and a raw native
+    /// source stream. Returns null on success or a user-facing reason.
+    /// </summary>
+    public string? SetNativePassthrough(
+        OutputNode output, SourceNode source, bool enabled,
+        IAudioProcessor[]? processors = null)
+    {
+        if (!Outputs.Contains(output) || !Sources.Contains(source))
+        {
+            return "The source or output is no longer in the graph.";
+        }
+
+        bool wasRunning = output.IsRunning;
+        if (enabled && output.IsNativePassthrough &&
+            ReferenceEquals(output.NativeSource, source))
+        {
+            output.SetNativeChain(source, processors ?? Array.Empty<IAudioProcessor>());
+            return null;
+        }
+
+        if (enabled)
+        {
+            if (!output.CanNativePassthrough(source, out string reason))
+            {
+                return reason;
+            }
+
+            if (wasRunning)
+            {
+                output.Stop();
+            }
+
+            output.UseGraphEngine = false;
+            output.SetNativeChain(source, processors ?? Array.Empty<IAudioProcessor>());
+            InvalidateEngine();
+
+            if (wasRunning)
+            {
+                if (!source.IsRunning)
+                {
+                    EnsureRunning(source);
+                }
+
+                try
+                {
+                    output.Start();
+                }
+                catch (Exception ex)
+                {
+                    output.SetNativeSource(null);
+                    output.UseGraphEngine = true;
+                    InvalidateEngine();
+                    return "Could not start native passthrough: " + ex.Message;
+                }
+            }
+
+            return null;
+        }
+
+        if (wasRunning)
+        {
+            output.Stop();
+        }
+
+        output.SetNativeChain(null, Array.Empty<IAudioProcessor>());
+        output.UseGraphEngine = true;
+        SyncOutputRoutes(output);
+        InvalidateEngine();
+        if (wasRunning)
+        {
+            try
+            {
+                output.Start();
+            }
+            catch (Exception ex)
+            {
+                return "Could not restart the normal route: " + ex.Message;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>Chains two modifiers together (modifier â†’ modifier).</summary>

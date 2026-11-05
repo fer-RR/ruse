@@ -11,7 +11,10 @@ internal sealed partial class WebShellController
     private static readonly JsonSerializerOptions ControlJson = new(JsonSerializerDefaults.Web);
     private ControlServer? _controlServer;
     private bool _controlDirty;
+    private readonly HashSet<(string NodeId, int ProcessorIndex, int ParameterIndex)> _controlParameterChanges = new();
+    private readonly object _controlParameterLock = new();
     private long _lastControlGraphBroadcast;
+    private bool _controlGraphPending;
 
     internal Dispatcher Dispatcher => _window.Dispatcher;
 
@@ -80,28 +83,49 @@ internal sealed partial class WebShellController
 
     private void FlushControlParameterChanges()
     {
-        if (!_controlDirty)
+        (string NodeId, int ProcessorIndex, int ParameterIndex)[] changes;
+        lock (_controlParameterLock)
         {
-            return;
+            changes = _controlParameterChanges.Count == 0
+                ? Array.Empty<(string, int, int)>()
+                : _controlParameterChanges.ToArray();
+            _controlParameterChanges.Clear();
         }
 
-        _controlDirty = false;
-        PublishGraph();
+        for (int i = 0; i < changes.Length; i++)
+        {
+            var change = changes[i];
+            PublishParameterChange(change.NodeId, change.ProcessorIndex, change.ParameterIndex);
+        }
+
+        if (_controlDirty)
+        {
+            _controlDirty = false;
+            PublishGraph();
+        }
+
+        if (_controlGraphPending)
+        {
+            PublishControlGraphIfDue();
+        }
     }
 
     internal void PublishControlGraphIfDue()
     {
         if (_controlServer == null || !_controlServer.HasClients)
         {
+            _controlGraphPending = false;
             return;
         }
 
         long now = Environment.TickCount64;
         if (now - _lastControlGraphBroadcast < 250)
         {
+            _controlGraphPending = true;
             return;
         }
 
+        _controlGraphPending = false;
         _lastControlGraphBroadcast = now;
         _controlServer.PublishGraph(_graphVersion, _running, BuildControlNodes());
     }
@@ -285,7 +309,11 @@ internal sealed partial class WebShellController
         }
 
         parameter.Set(target);
-        _controlDirty = true;
+        lock (_controlParameterLock)
+        {
+            _controlParameterChanges.Add((entry.Id, processorIndex, parameterIndex));
+        }
+
         error = "";
         return true;
     }
@@ -385,9 +413,13 @@ internal sealed partial class WebShellController
         if (controlId != null)
         {
             entry.ControlId = controlId;
+            _controlDirty = true;
+        }
+        else
+        {
+            PublishNodeState(entry.Id);
         }
 
-        _controlDirty = true;
         error = "";
         return true;
     }

@@ -619,10 +619,34 @@ internal sealed partial class WebShellController
         };
         if (!valid) return false;
 
+        bool wasNative = link.Native;
+        if (wasNative)
+        {
+            foreach (var processor in modifier.Modifier.Processors)
+            {
+                if (processor is not INativeProcessor)
+                {
+                    string reason = $"'{processor.DisplayName}' cannot run in native passthrough.";
+                    SetStatus(reason, isError: true);
+                    Post("link-reject", new { id = link.Id, reason });
+                    return false;
+                }
+            }
+        }
+
         var oldLink = CloneLink(link);
-        RemoveLinkInternal(link);
+        RemoveLinkInternal(link, releaseNative: !wasNative);
         var left = ConnectEntries(from, modifier);
         var right = ConnectEntries(modifier, to);
+        if (wasNative)
+        {
+            left.Native = true;
+            right.Native = true;
+            if (TryFindNativeOutput(right, out var nativeOutput) && nativeOutput != null)
+            {
+                RefreshNativeChain(nativeOutput);
+            }
+        }
         var nodeSnapshot = CaptureNode(modifier);
         var leftLink = CloneLink(left);
         var rightLink = CloneLink(right);
@@ -720,6 +744,10 @@ internal sealed partial class WebShellController
         {
             spectrogram.SetTapId(SpectrogramProcessor.NextTapId());
         }
+        else if (processor is WaveformProcessor waveform)
+        {
+            waveform.SetTapId(WaveformProcessor.NextTapId());
+        }
         else if (processor is DbMeterProcessor dbMeter)
         {
             dbMeter.SetTapId(DbMeterProcessor.NextTapId());
@@ -747,10 +775,12 @@ internal sealed partial class WebShellController
             x,
             y,
             flavor: processor is TranslatorProcessor ? "translator" :
-                processor is SpectrumProcessor or SpectrogramProcessor or LoudnessProcessor ? "analysis" : "effect",
+                processor is SpectrumProcessor or SpectrogramProcessor or WaveformProcessor or LoudnessProcessor ? "analysis" : "effect",
             subtitle: processor is TranslatorProcessor ? "Speech translation" :
                 processor is SpectrumProcessor ? "FFT spectrum" :
                 processor is SpectrogramProcessor ? "FFT history" :
+                processor is WaveformProcessor ? "Time domain" :
+                processor is VocoderProcessor ? "Key = modulator" :
                 processor is LoudnessProcessor ? "LUFS and true peak" : null,
             transcriberModel: _settings.TranscriberModel,
             translatorTarget: processor is TranslatorProcessor ? _settings.TranslatorTarget : null,
@@ -939,6 +969,11 @@ internal sealed partial class WebShellController
             spectrogram.SetTapId(spectrogram.TapId > 0 ? spectrogram.TapId : SpectrogramProcessor.NextTapId());
         }
 
+        foreach (var waveform in modifier.Processors.OfType<WaveformProcessor>())
+        {
+            waveform.SetTapId(waveform.TapId > 0 ? waveform.TapId : WaveformProcessor.NextTapId());
+        }
+
         foreach (var dbMeter in modifier.Processors.OfType<DbMeterProcessor>())
         {
             dbMeter.SetTapId(dbMeter.TapId > 0 ? dbMeter.TapId : DbMeterProcessor.NextTapId());
@@ -1088,6 +1123,11 @@ internal sealed partial class WebShellController
                 used.Add(spectrogram.TapId);
             }
 
+            foreach (var waveform in entry.Modifier.Processors.OfType<WaveformProcessor>())
+            {
+                used.Add(waveform.TapId);
+            }
+
             foreach (var transcriber in entry.Modifier.Processors.OfType<TranscriptionProcessor>())
             {
                 used.Add(transcriber.TapId);
@@ -1132,6 +1172,16 @@ internal sealed partial class WebShellController
             }
 
             used.Add(spectrogram.TapId);
+        }
+
+        foreach (var waveform in modifier.Processors.OfType<WaveformProcessor>())
+        {
+            if (waveform.TapId <= 0 || used.Contains(waveform.TapId))
+            {
+                waveform.SetTapId(WaveformProcessor.NextTapId());
+            }
+
+            used.Add(waveform.TapId);
         }
 
         foreach (var transcriber in modifier.Processors.OfType<TranscriptionProcessor>())
@@ -1269,6 +1319,7 @@ internal sealed partial class WebShellController
             dto.NetworkError = entry.Output.NetworkError;
             dto.RecordingPath = entry.Output.RecordingPath;
             dto.RecordingFormat = entry.Output.RecordingFormat.ToString();
+            dto.RecorderSampleRate = entry.Output.RecorderSampleRate;
             dto.RecorderMode = entry.Output.RecorderMode.ToString();
             dto.RecorderAutoSave = entry.Output.AutoSave;
             dto.RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds;
@@ -1281,6 +1332,7 @@ internal sealed partial class WebShellController
             dto.Send = entry.Modifier.Send;
             dto.IsSpectrum = entry.Modifier.Processors.OfType<SpectrumProcessor>().Any();
             dto.IsSpectrogram = entry.Modifier.Processors.OfType<SpectrogramProcessor>().Any();
+            dto.IsWaveform = entry.Modifier.Processors.OfType<WaveformProcessor>().Any();
             dto.IsGraphicEq = entry.Modifier.Processors.Count == 1 &&
                 entry.Modifier.Processors[0] is GraphicEqualizerProcessor;
             dto.IsParametricEq = entry.Modifier.Processors.OfType<ParametricEqProcessor>().Any();
@@ -1404,7 +1456,9 @@ internal sealed partial class WebShellController
         PushAction("Change volume",
             undo: () => ApplyNodeGain(id, old, publish: true),
             redo: () => ApplyNodeGain(id, value, publish: true),
-            coalesceKey: $"gain:{id}");
+            coalesceKey: $"gain:{id}",
+            structural: false);
+        PublishNodeState(id);
     }
 
     private void ApplyNodeGain(string id, float value, bool publish)
@@ -1412,7 +1466,7 @@ internal sealed partial class WebShellController
         if (!_nodes.TryGetValue(id, out var entry)) return;
         if (entry.Source != null) entry.Source.Gain = value;
         if (entry.Output != null) entry.Output.Volume = value;
-        if (publish) PublishGraph();
+        if (publish) PublishNodeState(id);
     }
 
     private void SetNodeMute(string id, bool muted)
@@ -1422,7 +1476,8 @@ internal sealed partial class WebShellController
         ApplyNodeMute(id, muted, publish: true);
         PushAction("Mute node",
             undo: () => ApplyNodeMute(id, old, publish: true),
-            redo: () => ApplyNodeMute(id, muted, publish: true));
+            redo: () => ApplyNodeMute(id, muted, publish: true),
+            structural: false);
     }
 
     private void ApplyNodeMute(string id, bool muted, bool publish)
@@ -1462,7 +1517,7 @@ internal sealed partial class WebShellController
             }
         }
 
-        if (publish) PublishGraph();
+        if (publish) PublishNodeState(id);
     }
 
     private void SetNodeSolo(string id, bool solo)
@@ -1470,7 +1525,7 @@ internal sealed partial class WebShellController
         if (!_nodes.TryGetValue(id, out var entry)) return;
         if (entry.Source != null) entry.Source.Solo = solo;
         if (entry.Output != null) entry.Output.Solo = solo;
-        PublishGraph();
+        PublishNodeState(id);
     }
 
     private void SetNodeColor(string id, string color)
@@ -1490,7 +1545,7 @@ internal sealed partial class WebShellController
             entry.Color = normalized;
         }
 
-        PublishGraph();
+        PublishNodeState(id);
     }
 
     private static string? NormalizeNodeColor(string? color) =>
@@ -1528,6 +1583,26 @@ internal sealed partial class WebShellController
             undo: () => ApplyParameter(id, processorIndex, parameterIndex, old, publish: true),
             redo: () => ApplyParameter(id, processorIndex, parameterIndex, value, publish: true),
             coalesceKey: key);
+        PublishParameterChange(id, processorIndex, parameterIndex);
+    }
+
+    private void PublishParameterChange(string id, int processorIndex, int parameterIndex)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null ||
+            processorIndex < 0 || processorIndex >= entry.Modifier.Processors.Count ||
+            entry.Modifier.Processors[processorIndex] is not IParameterizedProcessor parameterized ||
+            parameterIndex < 0 || parameterIndex >= parameterized.Parameters.Count)
+        {
+            return;
+        }
+
+        Post("param", new
+        {
+            id,
+            processor = processorIndex,
+            parameter = parameterIndex,
+            value = parameterized.Parameters[parameterIndex].Get(),
+        });
     }
 
     private void ApplyParameter(string id, int processorIndex, int parameterIndex, float value, bool publish)
@@ -1559,7 +1634,8 @@ internal sealed partial class WebShellController
         ApplyEffectEnabled(id, enabled, publish: true);
         PushAction(enabled ? "Enable effect" : "Bypass effect",
             undo: () => ApplyEffectEnabled(id, old, publish: true),
-            redo: () => ApplyEffectEnabled(id, enabled, publish: true));
+            redo: () => ApplyEffectEnabled(id, enabled, publish: true),
+            structural: false);
         SetStatus($"{entry.Title}: {(enabled ? "enabled" : "bypassed")}.");
     }
 
@@ -1579,7 +1655,7 @@ internal sealed partial class WebShellController
             }
         }
 
-        if (publish) PublishGraph();
+        if (publish) PublishNodeState(id);
     }
 
     private void SetModifierParallel(string id, bool parallel)
@@ -1589,7 +1665,8 @@ internal sealed partial class WebShellController
         ApplyModifierParallel(id, parallel, publish: true);
         PushAction(parallel ? "Enable parallel send" : "Disable parallel send",
             undo: () => ApplyModifierParallel(id, old, publish: true),
-            redo: () => ApplyModifierParallel(id, parallel, publish: true));
+            redo: () => ApplyModifierParallel(id, parallel, publish: true),
+            structural: false);
     }
 
     private void ApplyModifierParallel(string id, bool parallel, bool publish)
@@ -1597,7 +1674,7 @@ internal sealed partial class WebShellController
         if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
         entry.Modifier.Parallel = parallel;
         _graph.RefreshModifiers();
-        if (publish) PublishGraph();
+        if (publish) PublishNodeState(id);
     }
 
     private void SetModifierSend(string id, float value)
@@ -1609,7 +1686,8 @@ internal sealed partial class WebShellController
         PushAction("Change send amount",
             undo: () => ApplyModifierSend(id, old, publish: true),
             redo: () => ApplyModifierSend(id, send, publish: true),
-            coalesceKey: $"send:{id}");
+            coalesceKey: $"send:{id}",
+            structural: false);
     }
 
     private void ApplyModifierSend(string id, float value, bool publish)
@@ -1626,7 +1704,7 @@ internal sealed partial class WebShellController
             _graph.RefreshModifiers();
         }
 
-        if (publish) PublishGraph();
+        if (publish) PublishNodeState(id);
     }
 
     private void ResetLoudness(string id)
@@ -1721,25 +1799,343 @@ internal sealed partial class WebShellController
     {
         var link = _links.FirstOrDefault(item => item.Id == id);
         if (link == null) return;
+        if (link.Native && Math.Abs(value - 1f) > 1e-4f)
+        {
+            SetStatus("Disable native passthrough before changing the cable gain.", isError: true);
+            return;
+        }
         float old = link.Gain;
         bool enabled = link.Enabled;
         ApplyLinkSettings(id, value, enabled, publish: true);
         PushAction("Change send gain",
             undo: () => ApplyLinkSettings(id, old, enabled, publish: true),
             redo: () => ApplyLinkSettings(id, value, enabled, publish: true),
-            coalesceKey: $"send-gain:{id}");
+            coalesceKey: $"send-gain:{id}",
+            structural: false);
     }
 
     private void SetLinkEnabled(string id, bool enabled)
     {
         var link = _links.FirstOrDefault(item => item.Id == id);
         if (link == null) return;
+        if (link.Native && !enabled)
+        {
+            SetStatus("Disable native passthrough before muting the cable.", isError: true);
+            return;
+        }
         float gain = link.Gain;
         bool old = link.Enabled;
         ApplyLinkSettings(id, gain, enabled, publish: true);
         PushAction(enabled ? "Enable send" : "Mute send",
             undo: () => ApplyLinkSettings(id, gain, old, publish: true),
-            redo: () => ApplyLinkSettings(id, gain, enabled, publish: true));
+            redo: () => ApplyLinkSettings(id, gain, enabled, publish: true),
+            structural: false);
+    }
+
+    private void SetLinkNative(string id, bool enabled)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null || link.Native == enabled)
+        {
+            return;
+        }
+
+        if (!enabled && link.Native)
+        {
+            DisableNativeChainForLink(link);
+            return;
+        }
+
+        if (link.Kind != "direct" ||
+            !_nodes.TryGetValue(link.From, out var from) || from.Source == null ||
+            !_nodes.TryGetValue(link.To, out var to) || to.Output == null)
+        {
+            SetStatus("Native passthrough needs a direct source-to-device cable.", isError: true);
+            return;
+        }
+
+        if (enabled && _links.Any(other => other.Id != link.Id && other.To == link.To))
+        {
+            SetStatus("Native passthrough needs to be the only route to that output.", isError: true);
+            return;
+        }
+
+        if (to.Output.IsRecording)
+        {
+            SetStatus("Stop recording before changing native passthrough.", isError: true);
+            return;
+        }
+
+        if (enabled && (!link.Enabled || Math.Abs(link.Gain - 1f) > 1e-4f))
+        {
+            SetStatus("Set the cable to 100% and enabled before enabling native passthrough.", isError: true);
+            return;
+        }
+
+        string? error;
+        if (enabled)
+        {
+            error = _graph.SetNativePassthrough(to.Output, from.Source, true);
+        }
+        else
+        {
+            error = _graph.SetNativePassthrough(to.Output, from.Source, false);
+            if (error == null)
+            {
+                link.Native = false;
+            }
+        }
+
+        if (error != null)
+        {
+            SetStatus(error, isError: true);
+            return;
+        }
+
+        if (enabled)
+        {
+            link.Native = true;
+        }
+
+        PushAction(enabled ? "Enable native passthrough" : "Disable native passthrough",
+            undo: () => ApplyLinkNative(id, !enabled, publish: true),
+            redo: () => ApplyLinkNative(id, enabled, publish: true),
+            structural: false);
+        PublishLinkState(id);
+        PublishTelemetry(force: true);
+        SetStatus(enabled
+            ? $"Native passthrough: {from.Title} → {to.Title}."
+            : $"Normal routing restored for {to.Title}.");
+    }
+
+    private bool TryBuildNativeChain(
+        OutputNode output,
+        out SourceNode? source,
+        out IAudioProcessor[] processors,
+        out List<LinkEntry> links,
+        out string reason)
+    {
+        source = null;
+        processors = Array.Empty<IAudioProcessor>();
+        links = new List<LinkEntry>();
+        reason = "";
+
+        var outputEntry = _nodes.Values.FirstOrDefault(entry => ReferenceEquals(entry.Output, output));
+        if (outputEntry == null)
+        {
+            reason = "The output is no longer in the graph.";
+            return false;
+        }
+
+        if (_links.Count(link => link.To == outputEntry.Id) != 1)
+        {
+            reason = "Native passthrough needs a single route to the output.";
+            return false;
+        }
+
+        var modifiers = new List<ModifierNode>();
+        string currentId = outputEntry.Id;
+        for (int depth = 0; depth < 64; depth++)
+        {
+            var incoming = _links.Where(link => link.To == currentId && link.Native).ToList();
+            if (incoming.Count != 1)
+            {
+                reason = "Every cable in a native chain must be native.";
+                return false;
+            }
+
+            var link = incoming[0];
+            if (_links.Count(candidate => candidate.To == currentId) != 1)
+            {
+                reason = "A native node cannot have another incoming route.";
+                return false;
+            }
+
+            links.Add(link);
+            if (!_nodes.TryGetValue(link.From, out var from))
+            {
+                reason = "A native chain node is missing.";
+                return false;
+            }
+
+            if (from.Source != null)
+            {
+                source = from.Source;
+                break;
+            }
+
+            if (from.Modifier == null)
+            {
+                reason = "A native chain must start at one source.";
+                return false;
+            }
+
+            var modifier = from.Modifier;
+            if (modifier.Parallel ||
+                modifier.SidechainInputs.Count > 0 ||
+                modifier.SidechainModifiers.Count > 0 ||
+                modifier.Next.Count > 1 ||
+                modifier.Outputs.Any(item => !ReferenceEquals(item, output)))
+            {
+                reason = "Parallel, sidechain or shared-route nodes cannot run in native passthrough.";
+                return false;
+            }
+
+            modifiers.Add(modifier);
+            currentId = from.Id;
+        }
+
+        if (source == null)
+        {
+            reason = "Native passthrough needs a source.";
+            return false;
+        }
+
+        var chain = new List<IAudioProcessor>();
+        for (int i = modifiers.Count - 1; i >= 0; i--)
+        {
+            var modifier = modifiers[i];
+            if (!modifier.Enabled)
+            {
+                continue;
+            }
+
+            foreach (var processor in modifier.Processors)
+            {
+                if (processor is not INativeProcessor)
+                {
+                    reason = $"'{processor.DisplayName}' does not support native-rate processing.";
+                    return false;
+                }
+
+                chain.Add(processor);
+            }
+        }
+
+        processors = chain.ToArray();
+        return true;
+    }
+
+    private bool RefreshNativeChain(OutputNode output)
+    {
+        if (!TryBuildNativeChain(output, out var source, out var processors,
+                out _, out string reason))
+        {
+            SetStatus(reason, isError: true);
+            return false;
+        }
+
+        string? error = _graph.SetNativePassthrough(output, source!, true, processors);
+        if (error != null)
+        {
+            SetStatus(error, isError: true);
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryFindNativeOutput(LinkEntry link, out OutputNode? output)
+    {
+        output = null;
+        string currentId = link.To;
+        for (int depth = 0; depth < 64; depth++)
+        {
+            if (!_nodes.TryGetValue(currentId, out var entry))
+            {
+                return false;
+            }
+
+            if (entry.Output != null)
+            {
+                output = entry.Output;
+                return true;
+            }
+
+            var next = _links.FirstOrDefault(candidate =>
+                candidate.From == currentId && candidate.Native);
+            if (next == null)
+            {
+                return false;
+            }
+
+            currentId = next.To;
+        }
+
+        return false;
+    }
+
+    private void DisableNativeChainForLink(LinkEntry link)
+    {
+        if (!TryFindNativeOutput(link, out var output) || output == null)
+        {
+            return;
+        }
+
+        if (TryBuildNativeChain(output, out _, out _, out var links, out _))
+        {
+            foreach (var pathLink in links)
+            {
+                pathLink.Native = false;
+            }
+        }
+
+        if (output.NativeSource != null)
+        {
+            _graph.SetNativePassthrough(output, output.NativeSource, false);
+        }
+
+        PublishGraph();
+        SetStatus("Native passthrough disabled.");
+    }
+
+    private void ApplyLinkNative(string id, bool enabled, bool publish)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null || link.Native == enabled)
+        {
+            return;
+        }
+
+        if (!_nodes.TryGetValue(link.From, out var from) || from.Source == null ||
+            !_nodes.TryGetValue(link.To, out var to) || to.Output == null)
+        {
+            return;
+        }
+
+        string? error = _graph.SetNativePassthrough(to.Output, from.Source, enabled);
+        if (error != null)
+        {
+            SetStatus(error, isError: true);
+            return;
+        }
+
+        link.Native = enabled;
+        if (publish)
+        {
+            PublishLinkState(id);
+            PublishTelemetry(force: true);
+        }
+    }
+
+    private void ActivateNativeRoutes()
+    {
+        foreach (var link in _links.Where(item => item.Native && item.Kind == "direct").ToList())
+        {
+            if (!_nodes.TryGetValue(link.From, out var from) || from.Source == null ||
+                !_nodes.TryGetValue(link.To, out var to) || to.Output == null)
+            {
+                link.Native = false;
+                continue;
+            }
+
+            string? error = _graph.SetNativePassthrough(to.Output, from.Source, true);
+            if (error != null)
+            {
+                link.Native = false;
+                SetStatus($"Native passthrough unavailable for {to.Title}: {error}", isError: true);
+            }
+        }
     }
 
     private void ApplyLinkSettings(string id, float gain, bool enabled, bool publish)
@@ -1770,7 +2166,7 @@ internal sealed partial class WebShellController
             }
         }
 
-        if (publish) PublishGraph();
+        if (publish) PublishLinkState(link.Id);
     }
 
     private static void SetNoteKey(NodeEntry from, NodeEntry to, bool enabled)
@@ -1879,7 +2275,7 @@ internal sealed partial class WebShellController
         PublishGraph();
     }
 
-    private void RemoveLinkInternal(LinkEntry link)
+    private void RemoveLinkInternal(LinkEntry link, bool releaseNative = true)
     {
         var current = _links.FirstOrDefault(item => item.Id == link.Id);
         if (current == null)
@@ -1887,8 +2283,14 @@ internal sealed partial class WebShellController
             return;
         }
 
+        if (releaseNative && current.Native)
+        {
+            DisableNativeChainForLink(current);
+        }
+
         if (_nodes.TryGetValue(current.From, out var from) && _nodes.TryGetValue(current.To, out var to))
         {
+
             switch (current.Kind)
             {
                 case "direct" when from.Source != null && to.Output != null:
@@ -2061,6 +2463,9 @@ internal sealed partial class WebShellController
             case SpectrogramProcessor spectrogram:
                 SpectrogramProcessor.RemoveTap(spectrogram.TapId);
                 break;
+            case WaveformProcessor waveform:
+                WaveformProcessor.RemoveTap(waveform.TapId);
+                break;
             case DbMeterProcessor dbMeter:
                 DbMeterProcessor.RemoveTap(dbMeter.TapId);
                 break;
@@ -2209,6 +2614,7 @@ internal sealed partial class WebShellController
                 ShowError($"Could not start '{entry.Title}': {ex.Message}", ex);
             }
         }
+        ActivateNativeRoutes();
         _graph.StartEngine();
         _running = _graph.Outputs.Any(output => output.IsRunning);
         int outputCount = _graph.Outputs.Count;
@@ -2295,8 +2701,38 @@ internal sealed partial class WebShellController
             ? Path.ChangeExtension(output.RecordingPath, format.Extension)
             : string.Empty;
         output.SetRecordingDestination(path, format.Format);
+        if (!AudioFileFormats.SupportsSampleRate(format.Format, output.RecorderSampleRate))
+        {
+            output.SetRecorderSampleRate(48000);
+        }
+
         entry.Title = string.IsNullOrEmpty(path) ? "File recorder" : output.Title;
         output.Title = entry.Title;
+        PublishGraph();
+    }
+
+    private void SetRecorderSampleRate(string id, int sampleRate)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Output is not { IsFileRecorder: true } output)
+        {
+            return;
+        }
+
+        if (output.IsRecording)
+        {
+            SetStatus("Stop recording before changing the sample rate.", isError: true);
+            return;
+        }
+
+        if (!AudioFileFormats.SupportsSampleRate(output.RecordingFormat, sampleRate))
+        {
+            SetStatus(
+                $"{AudioFileFormats.Get(output.RecordingFormat).DisplayName} does not support {sampleRate} Hz recording.",
+                isError: true);
+            return;
+        }
+
+        output.SetRecorderSampleRate(sampleRate);
         PublishGraph();
     }
 

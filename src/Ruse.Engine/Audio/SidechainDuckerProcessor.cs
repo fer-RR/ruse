@@ -10,6 +10,8 @@ public sealed class SidechainDuckerProcessor : IAudioProcessor, IParameterizedPr
     public const string Id = "sidechain-ducker";
 
     private const int SampleRate = 48000;
+    private const double KeyAttackSeconds = 0.005;
+    private const double KeyReleaseSeconds = 0.020;
 
     private volatile float _thresholdDb = -30f;
     private volatile float _duckDb = -12f;
@@ -86,18 +88,25 @@ public sealed class SidechainDuckerProcessor : IAudioProcessor, IParameterizedPr
 
     public void SetSidechain(ReadOnlySpan<float> samples, int frames)
     {
-        float peak = 0f;
-        int count = Math.Min(samples.Length, frames * 2);
-        for (int i = 0; i < count; i++)
+        if (frames <= 0)
         {
-            float abs = MathF.Abs(samples[i]);
-            if (abs > peak)
-            {
-                peak = abs;
-            }
+            return;
         }
 
-        _keyLevel = float.IsFinite(peak) ? Math.Min(1f, peak) : 0f;
+        int count = Math.Min(samples.Length, frames * 2);
+        double sum = 0.0;
+        for (int i = 0; i < count; i++)
+        {
+            sum += (double)samples[i] * samples[i];
+        }
+
+        float rms = count > 0 && float.IsFinite((float)sum)
+            ? MathF.Min(1f, MathF.Sqrt((float)(sum / count)))
+            : 0f;
+        double seconds = frames / (double)SampleRate;
+        double time = rms > _keyLevel ? KeyAttackSeconds : KeyReleaseSeconds;
+        double coefficient = 1.0 - Math.Exp(-seconds / time);
+        _keyLevel = (float)(_keyLevel + ((rms - _keyLevel) * coefficient));
     }
 
     public void Process(Span<float> samples, int frames)

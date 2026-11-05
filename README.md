@@ -1,42 +1,25 @@
 # Ruse
 
-Ruse is a node-based audio router for Windows. Route applications, system
-audio, microphones, audio files, or test signals through a live effect chain to
-speakers, headphones, ASIO interfaces, virtual buses, or a recorder.
+Ruse is a node-based audio router for Windows. Drag apps, system audio, microphones, ASIO inputs, files or a test tone onto the graph, add effects, and send the result to speakers, headphones, ASIO, virtual cables or a recorder.
 
-Download the latest Windows build from [Releases](https://github.com/fer-RR/ruse/releases).
+Everything runs locally. Ruse does not upload audio.
 
-## Highlights
+## What it does
 
-- **Flexible sources**: per-application capture, system loopback, WASAPI
-  microphones, ASIO inputs, virtual buses, file playback, and a test tone.
-- **Flexible destinations**: WASAPI and ASIO outputs, virtual cables, and WAV,
-  MP3, or FLAC recording.
-- **51 built-in effects** including EQ, dynamics, reverb, delay, modulation,
-  pitch shift, auto-tune, and an experimental formant-preserving TD-PSOLA
-  auto-tune.
-- **Vocal note detection**: a monophonic note detector with a key output for the Auto-tune nodes.
-- **Network audio**: Ruse-to-Ruse UDP PCM input and output nodes for LAN or VPN routing.
-- **Analysis taps**: spectrum, spectrogram, dB meter, loudness/true-peak meter,
-  and diagnostics.
-- **VST3 support**: isolated plugin hosting by default, so a crashing plugin
-  does not take down Ruse.
-- **Mixing and routing**: sidechain inputs, per-send gain, Pre/Post sends,
-  mute/solo, mixer dock, saved chains, and frame templates.
-- **Workflow**: undo/redo, MIDI learn, presets, start with Windows, close to
-  tray, automatic device refresh, and nine UI languages.
-- **Speech tools**: offline transcription with Whisper, local translation with
-  Qwen2.5 or optional OPUS-MT models, and offline text to speech with
-  Supertonic 3 or Kokoro. Text can be typed, loaded from a file, or taken from a
-  transcriber or translator node.
-- **Low-latency engine**: 48 kHz, stereo, 32-bit float, with click-free gain and
-  parameter changes and a built-in diagnostics node.
+- Per-app capture, system loopback, WASAPI and ASIO inputs, virtual buses, file playback and a test tone.
+- WASAPI and ASIO outputs, virtual cables, and WAV/MP3/FLAC recording.
+- 61 effects, including EQ, dynamics, filters, pitch, auto-tune, vocoder, delays, reverb and character effects.
+- Native passthrough for direct source-to-device or source-to-recorder routes. Native-safe gain/shaping effects and analysis taps can run in the chain without converting the sample rate.
+- Spectrum, spectrogram, waveform, dB and loudness meters.
+- VST3 hosting in an isolated process.
+- Sidechains, per-send gain, mixer, saved chains, frame templates, MIDI learn and undo/redo.
+- Offline transcription, translation and text to speech.
+- A local HTTP/WebSocket control API.
 
 ## Requirements
 
 - Windows 10 or 11, x64.
-- Per-application capture requires Windows 11 or Windows Server 2022
-  (build 20348 or newer).
+- Per-app capture needs Windows 11 or Windows Server 2022.
 - The packaged build needs the Microsoft Edge WebView2 Runtime.
 - Building needs the .NET 10 SDK and Node.js 20 or newer.
 
@@ -46,14 +29,7 @@ Download the latest Windows build from [Releases](https://github.com/fer-RR/ruse
 dotnet build src\Ruse.App\Ruse.App.csproj
 ```
 
-The build installs the Web UI packages on first use and compiles the React
-assets into the app output.
-
-The app is written to:
-
-```text
-src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe
-```
+Output: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`
 
 ## Test
 
@@ -61,39 +37,23 @@ src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe
 powershell -ExecutionPolicy Bypass -File scripts\regress-ruse.ps1 -Build
 ```
 
-Useful checks:
-
-```powershell
-Ruse.exe --effects-test
-Ruse.exe --web-test
-Ruse.exe --selftest
-```
-
-`--selftest` writes `latency-selftest.txt`. Add `-ProcessId <pid>` to the
-regression script for live graph/device tests, or `-Vst3Plugin <path>` for the
-isolated VST3 test.
+Individual checks: `Ruse.exe --effects-test`, `--dsp-test`, `--web-test`, `--selftest`.
 
 ## Package
-
-Build a self-contained Windows package for machines without .NET:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\package-ruse.ps1
 ```
 
-The script writes `Ruse-<version>-win-x64.zip` and its `.sha256` file. Models,
-VST3 plugins, and ASIO drivers are not bundled.
+This writes `Ruse-<version>-win-x64.zip` and its SHA256 file. Models, VST3 plugins and ASIO drivers are not bundled.
 
-## Documentation
+## Docs
 
-- [Handoff and project state](docs/STATE.md)
+- [State and handoff](docs/STATE.md)
 - [Backlog](docs/BACKLOG.md)
-- [Control API (WebSocket)](docs/CONTROL-API.md)
+- [Control API](docs/CONTROL-API.md)
 - [Third-party notices](THIRD-PARTY-NOTICES.md)
 
 ## License
 
-Ruse is MIT licensed. See [LICENSE](LICENSE) and
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). NAudio, Whisper.net,
-LLamaSharp, OwnAudioVst, and the VST 3 SDK are MIT licensed. Bundled Qwen2.5
-models are Apache-2.0.
+MIT. See [LICENSE](LICENSE) and [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

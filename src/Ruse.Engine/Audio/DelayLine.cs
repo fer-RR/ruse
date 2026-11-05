@@ -27,7 +27,7 @@ public sealed class DelayLine
             return;
         }
 
-        int stride = Math.Max(1, Frames * Math.Max(1, channels));
+        int stride = _stride;
         for (int i = 0; i < data.Length; i++)
         {
             float delayed = _buffer[_write];

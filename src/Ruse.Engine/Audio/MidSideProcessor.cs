@@ -4,7 +4,7 @@ namespace Ruse.App.Audio;
 /// Mid/side utility for stereo balancing and width control. Mid is the centre
 /// information, Side is the difference between the channels.
 /// </summary>
-public sealed class MidSideProcessor : IAudioProcessor, IParameterizedProcessor
+public sealed class MidSideProcessor : IAudioProcessor, IParameterizedProcessor, INativeProcessor
 {
     public const string Id = "mid-side";
 

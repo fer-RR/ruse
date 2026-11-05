@@ -25,6 +25,7 @@ import TranscriptionView from './TranscriptionView';
 import TranslationView from './TranslationView';
 import SpectrumView from './SpectrumView';
 import SpectrogramView from './SpectrogramView';
+import WaveformView from './WaveformView';
 import GraphicEqualizerView from './GraphicEqualizerView';
 
 const RECORD_FORMATS = [
@@ -34,6 +35,7 @@ const RECORD_FORMATS = [
   ['Mp3', 'MP3 \u00B7 192 kbps'],
   ['Flac', 'FLAC \u00B7 lossless'],
 ] as const;
+const RECORD_RATES = [44100, 48000, 96000] as const;
 
 function FlavorIcon({ flavor }: { flavor: string }) {
   const props = { size: 14, strokeWidth: 1.8, 'aria-hidden': true } as const;
@@ -459,6 +461,10 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
   const fileName = node.recordingPath ? node.recordingPath.split(/[\\/]/).pop() : t('No file selected');
   const silenceSeconds = node.recorderSilenceStopSeconds ?? 0;
   const startThresholdDb = node.recorderStartThresholdDb ?? -40;
+  const recordRates: number[] = node.recordingFormat === 'Mp3' ? [44100, 48000] : [...RECORD_RATES];
+  const recordRate = recordRates.includes(node.recorderSampleRate ?? 48000)
+    ? node.recorderSampleRate ?? 48000
+    : 48000;
   const [advanced, setAdvanced] = useState(false);
   const updateNodeInternals = useUpdateNodeInternals();
 
@@ -500,6 +506,17 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
           {node.recordingPath ? t('Change') : t('Choose file')}
         </button>
       </div>
+      <label className="recorder-rate">
+        <span>{t('Sample rate')}</span>
+        <select
+          aria-label={t('Sample rate')}
+          value={recordRate}
+          disabled={recording}
+          onChange={event => send('recorder-rate', { id: node.id, value: Number(event.target.value) })}
+        >
+          {recordRates.map(rate => <option key={rate} value={rate}>{(rate / 1000).toFixed(rate % 1000 === 0 ? 0 : 1)} kHz</option>)}
+        </select>
+      </label>
       {node.recordingPath ? (
         <button
           type="button"
@@ -658,8 +675,9 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const isLoudness = data.isLoudness === true;
   const isSpectrum = data.isSpectrum === true;
   const isSpectrogram = data.isSpectrogram === true;
+  const isWaveform = data.isWaveform === true;
   const isParametricEq = data.isParametricEq === true;
-  const canParallel = isModifier && !isDbMeter && !isLoudness && !isSpectrum && !isSpectrogram &&
+  const canParallel = isModifier && !isDbMeter && !isLoudness && !isSpectrum && !isSpectrogram && !isWaveform &&
     !data.isTranscriber && !data.isTranslator && !data.isVst3 && !data.isGraphicEq;
   const dbVertical = isDbMeter && (telemetry?.dbMeterVertical ?? true);
   const enabled = data.enabled !== false;
@@ -668,8 +686,8 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const selectedModel = installedModels.some(model => model.id === data.transcriberModel)
     ? data.transcriberModel
     : installedModels[0]?.id ?? '';
-  const spectrumFloor = data.parameters.find(parameter => parameter.name === 'Floor')?.value ?? -80;
-  const spectrumCeiling = data.parameters.find(parameter => parameter.name === 'Ceiling')?.value ?? 0;
+  const spectrumFloor = data.parameters.find(parameter => parameter.name === 'Floor')?.value ?? -100;
+  const spectrumCeiling = data.parameters.find(parameter => parameter.name === 'Ceiling')?.value ?? -30;
   const formatRateValue = data.sampleRate && data.sampleRate > 0 ? data.sampleRate : 48000;
   const formatBits = data.bitsPerSample ?? 32;
   const flowing = enabled && active;
@@ -694,6 +712,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isRecorder ? 'recorder-node' : '',
     isSpectrum ? 'spectrum-node' : '',
     isSpectrogram ? 'spectrogram-node' : '',
+    isWaveform ? 'waveform-node' : '',
     data.isGraphicEq ? 'graphic-eq-node' : '',
     isParametricEq ? 'parametric-eq-node' : '',
     data.isConvolutionReverb ? 'convolution-node' : '',
@@ -783,6 +802,11 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             capacity={telemetry?.spectrogramColumns}
             windowSeconds={telemetry?.spectrogramWindowSeconds}
             peakHz={telemetry?.spectrogramPeakHz}
+          />}
+          {isWaveform && <WaveformView
+            samples={telemetry?.waveform}
+            peak={telemetry?.waveformPeak}
+            color={data.accent}
           />}
           {data.isGraphicEq && <GraphicEqualizerView
             nodeId={data.id}

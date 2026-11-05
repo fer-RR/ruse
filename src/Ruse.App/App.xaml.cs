@@ -460,6 +460,22 @@ public partial class App : Application
             return;
         }
 
+        if (e.Args.Contains("--dsp-test", StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var r = DspSelfTest.Run();
+                WriteResult("dsp-test.txt", $"Ruse DSP test: {r.Summary}");
+            }
+            catch (Exception ex)
+            {
+                WriteResult("dsp-test.txt", $"Ruse DSP test FAILED: {ex.Message}");
+            }
+
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Contains("--tts-test", StringComparer.OrdinalIgnoreCase))
         {
             string model = GetStringArg(e.Args, "--tts-test", TtsModels.DefaultId);

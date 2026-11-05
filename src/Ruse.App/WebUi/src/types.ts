@@ -86,6 +86,7 @@ export interface NodeModel {
   enabled?: boolean;
   isSpectrum?: boolean;
   isSpectrogram?: boolean;
+  isWaveform?: boolean;
   isGraphicEq?: boolean;
   isParametricEq?: boolean;
   eqBandTypes?: string[];
@@ -149,6 +150,7 @@ export interface NodeModel {
   isRecorder: boolean;
   recordingPath: string;
   recordingFormat: string;
+  recorderSampleRate?: number;
   recorderMode?: string;
   recorderAutoSave?: boolean;
   recorderSilenceStopSeconds?: number;
@@ -160,6 +162,26 @@ export interface NodeModel {
   warningSeverity?: 'warning' | 'info' | string;
 }
 
+export interface NodeStateUpdate {
+  id: string;
+  volume?: number;
+  muted?: boolean;
+  solo?: boolean;
+  enabled?: boolean;
+  send?: number;
+  parallel?: boolean;
+  color?: string;
+  accent?: string;
+}
+
+export interface LinkStateUpdate {
+  id: string;
+  gain: number;
+  enabled: boolean;
+  native: boolean;
+  nativeRate: number;
+}
+
 export interface LinkModel {
   id: string;
   from: string;
@@ -167,6 +189,8 @@ export interface LinkModel {
   kind: LinkKind;
   gain: number;
   enabled?: boolean;
+  native?: boolean;
+  nativeRate?: number;
 }
 
 export interface GraphWarning {
@@ -227,6 +251,8 @@ export interface NodeTelemetry {
   spectrogramTotalColumns?: number;
   spectrogramFull?: boolean;
   spectrogramWindowSeconds?: number;
+  waveform?: number[];
+  waveformPeak?: number;
   db?: number;
   peakDb?: number;
   dbLeft?: number;
