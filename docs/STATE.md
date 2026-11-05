@@ -2,10 +2,10 @@
 
 ## Snapshot
 
-- Version **0.6.7**, branch `main`
+- Version **0.7.1**, branch `main`
 - Repo: `C:\Users\ih_me\Projects\Ruse`
 - Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`
-- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.6.7-win-x64.zip`
+- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.7.1-win-x64.zip`
 - Runtime data: `%APPDATA%\Ruse` (settings, session, chains, templates, `control.json`, `ruse.log`, models)
 
 ## Architecture
