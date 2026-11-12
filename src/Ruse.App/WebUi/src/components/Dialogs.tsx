@@ -93,7 +93,7 @@ export function PromptDialog({ title, label, value, submitLabel, onSubmit, onClo
 
 export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }: {
   title: string;
-  body: string;
+  body?: string;
   confirmLabel: string;
   onConfirm: () => void;
   onClose: () => void;
@@ -101,7 +101,7 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }:
   const { t } = useI18n();
   return (
     <Modal title={title} onClose={onClose} className="small-modal">
-      <p className="modal-copy">{body}</p>
+      {body && <p className="modal-copy">{body}</p>}
       <div className="modal-actions"><button className="tool-button" onClick={onClose}>{t('Cancel')}</button><button className="danger-button" onClick={onConfirm}>{confirmLabel}</button></div>
     </Modal>
   );

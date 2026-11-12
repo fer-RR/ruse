@@ -21,7 +21,7 @@ Everything runs locally. Ruse does not upload audio.
 
 - Windows 10 or 11, x64.
 - Per-app capture needs Windows 11 or Windows Server 2022.
-- The packaged build needs the Microsoft Edge WebView2 Runtime.
+- The packaged build needs the Microsoft Edge WebView2 Runtime. Windows 11 includes it; most Windows 10 devices have it, and Ruse offers a download link if it is missing.
 - Building needs the .NET 10 SDK and Node.js 20 or newer.
 
 ## Build

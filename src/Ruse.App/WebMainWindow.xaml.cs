@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Interop;
+using Microsoft.Web.WebView2.Core;
 using Ruse.App.Diagnostics;
 
 namespace Ruse.App;
@@ -218,6 +219,37 @@ public partial class WebMainWindow : Window
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
+        string? runtimeVersion = null;
+        try
+        {
+            runtimeVersion = CoreWebView2Environment.GetAvailableBrowserVersionString();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("The WebView2 runtime was not found.", ex);
+        }
+
+        if (string.IsNullOrWhiteSpace(runtimeVersion))
+        {
+            if (_closed)
+            {
+                return;
+            }
+
+            var missingDialog = new StartupErrorDialog(
+                "Ruse needs the Microsoft Edge WebView2 Runtime, but it is not installed on this PC.",
+                "Download and install the runtime, then start Ruse again. Windows 11 normally includes it; some Windows 10, LTSC and Server installs do not.",
+                "Download WebView2",
+                "https://go.microsoft.com/fwlink/p/?LinkId=2124703")
+            {
+                Owner = this,
+            };
+            missingDialog.ShowDialog();
+            Close();
+            Application.Current.Shutdown();
+            return;
+        }
+
         try
         {
             await _controller.InitializeAsync(WebView);

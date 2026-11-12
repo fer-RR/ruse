@@ -7,6 +7,7 @@ import type {
   TimelineTrackModel,
 } from '../timeline';
 import { useI18n } from '../i18n';
+import { ConfirmDialog } from './Dialogs';
 
 const BASE_PIXELS_PER_SECOND = 80;
 const MAX_CANVAS_WIDTH = 16000;
@@ -52,6 +53,10 @@ interface AutomationDrag {
   originalPoints: { sample: number; value: number; curve: number }[];
   points: { sample: number; value: number; curve: number }[];
 }
+
+type PendingRemoval =
+  | { kind: 'clip'; trackId: string; clipId: string }
+  | { kind: 'automation'; trackId: string; laneId: string };
 
 export interface TimelineClipUpdate {
   startSample?: number;
@@ -196,6 +201,7 @@ export default function TimelinePanel({
   const [tempoDraft, setTempoDraft] = useState('120');
   const [drag, setDrag] = useState<DragState | null>(null);
   const [automationDrag, setAutomationDrag] = useState<AutomationDrag | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
 
   const tracks = state.project.tracks;
   const sampleRate = state.sampleRate;
@@ -1042,19 +1048,31 @@ export default function TimelinePanel({
                   const points = lane.points.filter(point => point.sample !== closest!.sample);
                   if (points.length > 0) onSetAutomationPoints(hit.row.track.id, lane.id, points);
                   else onRemoveAutomation(hit.row.track.id, lane.id);
-                } else if (window.confirm(t('Remove this automation lane?'))) {
-                  onRemoveAutomation(hit.row.track.id, lane.id);
+                } else {
+                  setPendingRemoval({ kind: 'automation', trackId: hit.row.track.id, laneId: lane.id });
                 }
                 return;
               }
               const clip = clipHit(hit.row, hit.x, hit.y, hit.sample);
-              if (clip && window.confirm(t('Remove this clip?'))) {
-                onRemoveClip(hit.row.track.id, clip.clip.id);
+              if (clip) {
+                setPendingRemoval({ kind: 'clip', trackId: hit.row.track.id, clipId: clip.clip.id });
               }
             }}
           />
         )}
       </div>
+      {pendingRemoval && (
+        <ConfirmDialog
+          title={pendingRemoval.kind === 'clip' ? t('Remove this clip?') : t('Remove this automation lane?')}
+          confirmLabel={t('Remove')}
+          onConfirm={() => {
+            if (pendingRemoval.kind === 'clip') onRemoveClip(pendingRemoval.trackId, pendingRemoval.clipId);
+            else onRemoveAutomation(pendingRemoval.trackId, pendingRemoval.laneId);
+            setPendingRemoval(null);
+          }}
+          onClose={() => setPendingRemoval(null)}
+        />
+      )}
     </section>
   );
 }
