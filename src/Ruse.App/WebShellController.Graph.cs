@@ -306,10 +306,10 @@ internal sealed partial class WebShellController
             processor.LoadImpulseResponse(dialog.FileName);
             SetStatus($"Impulse response loaded: {processor.ImpulseResponseName}.");
         }
-        catch (Exception ex)
-        {
-            ShowError("Could not load the impulse response: " + ex.Message, ex);
-        }
+            catch (Exception ex)
+            {
+                ShowError($"Could not load the impulse response: {ex.Message}", ex);
+            }
 
         PublishGraph();
         PublishTelemetry(force: true);
@@ -1322,7 +1322,7 @@ internal sealed partial class WebShellController
         }
 
         entry.Subtitle = entry.Kind == "source" ? "Capture stopped" : "Disconnected";
-        ShowError(reason);
+        ShowError(reason, null, "Retry routing", "retry-routing");
         PublishGraph();
         if (_running && !_graph.Outputs.Any(output => output.IsRunning))
         {
@@ -2676,7 +2676,8 @@ internal sealed partial class WebShellController
             }
             catch (Exception ex)
             {
-                ShowError($"Could not start '{entry.Title}': {ex.Message}", ex);
+                ShowError($"Could not start '{entry.Title}': {ex.Message}", ex,
+                    "Retry routing", "retry-routing");
             }
         }
 
@@ -2704,7 +2705,8 @@ internal sealed partial class WebShellController
             }
             catch (Exception ex)
             {
-                ShowError($"Could not start '{entry.Title}': {ex.Message}", ex);
+                ShowError($"Could not start '{entry.Title}': {ex.Message}", ex,
+                    "Retry routing", "retry-routing");
             }
         }
         ActivateNativeRoutes();

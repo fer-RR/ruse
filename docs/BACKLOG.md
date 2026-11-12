@@ -83,11 +83,18 @@ Keep this short. Nothing is started unless noted.
 ## VST3
 
 - Shared-memory audio for the isolated host; current pipes and watchdog work.
-- Capture editor-only state before a watchdog kill.
-- Poll editor parameter changes back into node sliders.
+  Block copies are small at 120-240 frames, so this is an optimization, not a
+  correctness fix.
+- Capture editor-only state before a watchdog kill. The isolated proxy now
+  caches a state snapshot every ~2 s while the editor is open; a true last-
+  instant capture before a hung host is killed still needs a safe nonblocking
+  channel.
+- Editor parameter changes are polled into node sliders while the editor is
+  open; editor-only state is cached about every 2 s during the same poll.
 - Optional 32-bit bridge. VST2 stays unsupported. CLAP is a future option.
 - VST3 sidechain buses and VST3 MIDI. MIDI currently maps effect parameters
-  only; node gain/mute/solo, transport and MIDI clock remain.
+  only; node gain/mute/solo, transport and MIDI clock remain. The host protocol
+  carries audio blocks only, so VST3 MIDI needs an event transport first.
 
 ## Audio and nodes
 
@@ -96,19 +103,22 @@ Keep this short. Nothing is started unless noted.
 - Graphic EQ: presets, per-band reset, optional live spectrum behind curve.
 - Frame templates: rename/delete/thumbnail and refresh after external edits.
 - Per-device asynchronous SRC with clock-drift correction. The engine is fixed
-  at 48 kHz; changing it requires threading the rate through every effect.
+  at 48 kHz; ASIO and rate-converted WASAPI endpoints resample at the output.
+  Converter drift is tested offline; real-device clock soak remains.
 - Persist native-chain link flags across sessions and presets.
 - ASIO testing with an insert patch or real loopback interface.
 - A 2.5 ms low-latency mode with a larger safety ring is available behind an
   experimental toggle; long soak tests, real-device validation and 128-frame
   device testing remain.
-- Realtime residuals: bounded joins in `OutputNode`, `GraphEngine` and
-  `NetworkPcmCapture` can abandon a blocked thread; a job object or watchdog is
-  the next step if a real driver/device reproduces it. ASIO capture now
-  preallocates for `FramesPerBuffer` and truncates if a driver exceeds it.
+- Realtime residuals: `GraphEngine` no longer disposes its wake event if the
+  render thread misses the join, and `OutputNode.Dispose` keeps resources when
+  its pump is still alive. `NetworkPcmCapture` can still abandon a blocked
+  thread; a job object or watchdog is the next step if a real driver/device
+  reproduces it. ASIO capture now preallocates for `FramesPerBuffer` and
+  truncates if a driver exceeds it.
 - `SourceNode` decode scratch can still grow for capture packets above 16384
   samples; verify large 96 kHz/multichannel devices.
-- `AudioFileRecorder.Stop` joins the writer for 30 s; on a failing disk it can
+- `AudioFileRecorder.Stop` joins the writer for 2 s; on a failing disk it can
   time out. Keep the writer alive and surface the error rather than disposing
   from another thread.
 

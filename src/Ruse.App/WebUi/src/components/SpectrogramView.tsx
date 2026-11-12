@@ -2,9 +2,11 @@ import { useEffect, useRef } from 'react';
 import { useI18n } from '../i18n';
 
 const BANDS = 256;
-const WIDTH = 428;
-const HEIGHT = 240;
-const DATA_HEIGHT = HEIGHT - 12;
+const WIDTH = 556;
+const HEIGHT = 270;
+const DATA_HEIGHT = BANDS;
+const LEGEND_WIDTH = 44;
+const DATA_WIDTH = WIDTH - LEGEND_WIDTH;
 const FREQUENCY_REFS = [
   [20000, '20k'], [10000, '10k'], [5000, '5k'], [2000, '2k'],
   [1000, '1k'], [500, '500'], [250, '250'], [100, '100'],
@@ -15,8 +17,9 @@ function formatHz(value: number | undefined): string {
   return value >= 1000 ? `${(value / 1000).toFixed(1)} kHz` : `${Math.round(value)} Hz`;
 }
 
-function color(value: number): [number, number, number] {
-  const t = Math.max(0, Math.min(1, value / 255));
+type Rgb = [number, number, number];
+
+function classicColor(t: number): Rgb {
   if (t < 0.34) {
     const k = t / 0.34;
     return [10 + k * 35, 22 + k * 150, 36 + k * 160];
@@ -31,15 +34,40 @@ function color(value: number): [number, number, number] {
   return [230 + k * 25, 202 - k * 95, 76 - k * 40];
 }
 
-const COLOR_LUT = (() => {
+const VIRIDIS: Rgb[] = [
+  [68, 1, 84], [72, 40, 120], [62, 74, 137], [49, 104, 142],
+  [38, 130, 142], [31, 158, 137], [53, 183, 121], [109, 205, 89],
+  [180, 222, 44], [253, 231, 37],
+];
+
+function viridisColor(t: number): Rgb {
+  const scaled = Math.max(0, Math.min(1, t)) * (VIRIDIS.length - 1);
+  const index = Math.min(VIRIDIS.length - 2, Math.floor(scaled));
+  const blend = scaled - index;
+  const from = VIRIDIS[index];
+  const to = VIRIDIS[index + 1];
+  return [
+    from[0] + (to[0] - from[0]) * blend,
+    from[1] + (to[1] - from[1]) * blend,
+    from[2] + (to[2] - from[2]) * blend,
+  ];
+}
+
+function buildLut(mapper: (t: number) => Rgb): Uint32Array {
   const lut = new Uint32Array(256);
   for (let value = 0; value < 256; value++) {
-    const [r, g, b] = color(value);
+    const [r, g, b] = mapper(value / 255);
     lut[value] = (255 << 24) | (b << 16) | (g << 8) | r;
   }
 
   return lut;
-})();
+}
+
+const PALETTE_LUTS = [buildLut(classicColor), buildLut(viridisColor)];
+
+function frequencyY(frequency: number): number {
+  return DATA_HEIGHT - (Math.log(frequency / 20) / Math.log(1000)) * DATA_HEIGHT;
+}
 
 function buildOverlay(): HTMLCanvasElement {
   const overlay = document.createElement('canvas');
@@ -51,17 +79,17 @@ function buildOverlay(): HTMLCanvasElement {
   context.strokeStyle = 'rgba(255,255,255,0.08)';
   context.lineWidth = 1;
   for (const [frequency] of FREQUENCY_REFS) {
-    const y = DATA_HEIGHT - (Math.log(frequency / 20) / Math.log(1000)) * DATA_HEIGHT;
+    const y = frequencyY(frequency);
     context.beginPath();
     context.moveTo(0, y);
-    context.lineTo(WIDTH, y);
+    context.lineTo(DATA_WIDTH, y);
     context.stroke();
   }
 
   context.font = '9px Consolas, monospace';
   context.textBaseline = 'bottom';
   for (const [frequency, label] of FREQUENCY_REFS) {
-    const y = DATA_HEIGHT - (Math.log(frequency / 20) / Math.log(1000)) * DATA_HEIGHT;
+    const y = frequencyY(frequency);
     const labelY = Math.max(9, Math.min(DATA_HEIGHT - 2, y - 1));
     const width = context.measureText(label).width;
     context.fillStyle = 'rgba(0,0,0,0.72)';
@@ -73,6 +101,59 @@ function buildOverlay(): HTMLCanvasElement {
   return overlay;
 }
 
+function buildAxis(
+  floor: number,
+  ceiling: number,
+  contrast: number,
+  palette: number,
+  seconds: number,
+): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = WIDTH;
+  canvas.height = HEIGHT;
+  const context = canvas.getContext('2d');
+  if (!context) return canvas;
+
+  context.font = '9px Consolas, monospace';
+  context.textBaseline = 'top';
+  context.fillStyle = 'rgba(255,255,255,0.62)';
+  context.fillText(`-${seconds.toFixed(1)}s`, 3, DATA_HEIGHT + 3);
+  const middle = `-${(seconds / 2).toFixed(1)}s`;
+  context.fillText(middle, DATA_WIDTH / 2 - context.measureText(middle).width / 2, DATA_HEIGHT + 3);
+  const now = '0s';
+  context.fillText(now, DATA_WIDTH - context.measureText(now).width - 3, DATA_HEIGHT + 3);
+
+  const barX = DATA_WIDTH + 7;
+  const barWidth = 9;
+  const barTop = 7;
+  const barBottom = DATA_HEIGHT - 7;
+  const barHeight = Math.max(1, barBottom - barTop);
+  const curve = 1 / Math.max(0.5, Math.min(2.5, contrast));
+  const lut = PALETTE_LUTS[Math.max(0, Math.min(PALETTE_LUTS.length - 1, Math.round(palette)))];
+  for (let y = 0; y < barHeight; y++) {
+    const normalized = 1 - y / barHeight;
+    const value = Math.round(Math.pow(normalized, curve) * 255);
+    const packed = lut[Math.max(0, Math.min(255, value))];
+    context.fillStyle = `rgb(${packed & 0xff},${(packed >> 8) & 0xff},${(packed >> 16) & 0xff})`;
+    context.fillRect(barX, barTop + y, barWidth, 1);
+  }
+
+  context.strokeStyle = 'rgba(255,255,255,0.18)';
+  context.strokeRect(barX + 0.5, barTop + 0.5, barWidth - 1, barHeight - 1);
+
+  context.font = '8px Consolas, monospace';
+  context.fillStyle = 'rgba(255,255,255,0.86)';
+  context.fillText(`${Math.round(ceiling)}`, barX + barWidth + 3, barTop - 1);
+  const mid = Math.round((ceiling + floor) / 2);
+  context.fillStyle = 'rgba(255,255,255,0.62)';
+  context.fillText(`${mid}`, barX + barWidth + 3, barTop + barHeight / 2 - 4);
+  context.fillText(`${Math.round(floor)}`, barX + barWidth + 3, barBottom - 8);
+  context.fillStyle = 'rgba(255,255,255,0.5)';
+  context.fillText('dB', barX + barWidth + 3, barTop + 11);
+
+  return canvas;
+}
+
 export default function SpectrogramView({
   values,
   newColumns,
@@ -81,6 +162,10 @@ export default function SpectrogramView({
   capacity = 256,
   windowSeconds,
   peakHz,
+  floor = -100,
+  ceiling = -30,
+  contrast = 1,
+  palette = 0,
 }: {
   values?: number[];
   newColumns?: number;
@@ -89,12 +174,18 @@ export default function SpectrogramView({
   capacity?: number;
   windowSeconds?: number;
   peakHz?: number;
+  floor?: number;
+  ceiling?: number;
+  contrast?: number;
+  palette?: number;
 }) {
   const { t, language } = useI18n();
   const ref = useRef<HTMLCanvasElement>(null);
   const offscreenRef = useRef<HTMLCanvasElement | null>(null);
   const overlayRef = useRef<HTMLCanvasElement | null>(null);
   const overlayLanguageRef = useRef<string>('');
+  const axisRef = useRef<HTMLCanvasElement | null>(null);
+  const axisKeyRef = useRef('');
   const historyRef = useRef<Uint8Array | null>(null);
   const capacityRef = useRef(0);
   const lastTotalRef = useRef(-1);
@@ -104,6 +195,7 @@ export default function SpectrogramView({
     const context = canvas?.getContext('2d');
     if (!canvas || !context) return;
 
+    const lut = PALETTE_LUTS[Math.max(0, Math.min(PALETTE_LUTS.length - 1, Math.round(palette)))];
     const cap = Math.max(1, Math.floor(capacity));
     let offscreen = offscreenRef.current;
     if (!offscreen || capacityRef.current !== cap) {
@@ -132,7 +224,7 @@ export default function SpectrogramView({
         const rowOffset = row * columns;
         for (let column = 0; column < columns; column++) {
           const value = history[(startColumn + column) * BANDS + band];
-          pixels[rowOffset + column] = COLOR_LUT[value];
+          pixels[rowOffset + column] = lut[value];
         }
       }
 
@@ -174,8 +266,9 @@ export default function SpectrogramView({
     }
 
     context.clearRect(0, 0, WIDTH, HEIGHT);
-    context.imageSmoothingEnabled = false;
-    context.drawImage(offscreen, 0, 0, cap, BANDS, 0, 0, WIDTH, DATA_HEIGHT);
+    context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(offscreen, 0, 0, cap, BANDS, 0, 0, DATA_WIDTH, DATA_HEIGHT);
 
     if (!overlayRef.current || overlayLanguageRef.current !== language) {
       overlayRef.current = buildOverlay();
@@ -185,7 +278,20 @@ export default function SpectrogramView({
     if (overlayRef.current) {
       context.drawImage(overlayRef.current, 0, 0);
     }
-  }, [values, newColumns, totalColumns, full, capacity, language, t]);
+
+    const seconds = windowSeconds && Number.isFinite(windowSeconds)
+      ? windowSeconds
+      : Math.max(1, capacity) / 31.25;
+    const axisKey = `${floor}|${ceiling}|${contrast}|${palette}|${seconds.toFixed(2)}`;
+    if (!axisRef.current || axisKeyRef.current !== axisKey) {
+      axisRef.current = buildAxis(floor, ceiling, contrast, palette, seconds);
+      axisKeyRef.current = axisKey;
+    }
+
+    if (axisRef.current) {
+      context.drawImage(axisRef.current, 0, 0);
+    }
+  }, [values, newColumns, totalColumns, full, capacity, language, t, floor, ceiling, contrast, palette]);
 
   const seconds = windowSeconds && Number.isFinite(windowSeconds)
     ? windowSeconds

@@ -25,7 +25,7 @@ function OpusTier({ model, download, pendingDelete, setPendingDelete }: {
     : '';
 
   return (
-    <article className={`model-tier tier-opus ${model.installed ? 'installed' : ''} ${isDownloading ? 'downloading' : ''}`}>
+    <article className={`model-tier tier-opus ${model.installed ? 'installed' : ''} ${isDownloading ? 'downloading' : ''}`} aria-busy={isDownloading || undefined}>
       <div className="model-tier-head">
         <strong>{model.name}</strong>
         <span className="model-tier-size">{formatSize(model.sizeMb)}</span>
@@ -35,7 +35,7 @@ function OpusTier({ model, download, pendingDelete, setPendingDelete }: {
       {model.installed && model.installedSize && <small className="model-tier-disk">{model.installedSize} {t('on disk')}</small>}
       {isDownloading && (
         <>
-          <div className="model-progress" title={download?.message}>
+          <div className="model-progress" title={download?.message} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}>
             <span style={{ width: `${percent}%` }} />
           </div>
           <div className="model-tier-status">

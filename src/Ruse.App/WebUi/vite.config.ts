@@ -7,5 +7,18 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes('node_modules')) {
+            if (id.includes('/locales/')) return 'locales';
+            return;
+          }
+          if (id.includes('@xyflow')) return 'flow';
+          if (id.includes('@dnd-kit')) return 'dnd';
+          if (id.includes('lucide-react')) return 'icons';
+        },
+      },
+    },
   },
 });

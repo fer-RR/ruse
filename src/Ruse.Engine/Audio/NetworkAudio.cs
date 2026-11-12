@@ -428,7 +428,7 @@ public sealed class NetworkPcmCapture : IDisposable
         }
     }
 
-    public void Stop()
+    public bool Stop()
     {
         _stop = true;
         try
@@ -439,15 +439,47 @@ public sealed class NetworkPcmCapture : IDisposable
         {
         }
 
-        _client = null;
-        _receiver?.Join(500);
-        _pump?.Join(500);
-        _receiver = null;
-        _pump = null;
+        bool receiverJoined = _receiver == null || _receiver == Thread.CurrentThread ||
+            _receiver.Join(500);
+        bool pumpJoined = _pump == null || _pump == Thread.CurrentThread ||
+            _pump.Join(500);
+
+        if (receiverJoined)
+        {
+            _receiver = null;
+        }
+
+        if (pumpJoined)
+        {
+            _pump = null;
+        }
+
+        if (receiverJoined && pumpJoined)
+        {
+            _client = null;
+        }
+
         _primed = false;
+
+        if (!receiverJoined || !pumpJoined)
+        {
+            Ruse.App.Diagnostics.AppLog.Warning(
+                $"Network input '{_port}' threads did not stop in time; keeping them.");
+            return false;
+        }
+
+        return true;
     }
 
-    public void Dispose() => Stop();
+    public void Dispose()
+    {
+        if (!Stop())
+        {
+            Ruse.App.Diagnostics.AppLog.Warning(
+                $"Network input '{_port}' was disposed while its threads were still alive; resources are kept.");
+            return;
+        }
+    }
 }
 
 /// <summary>

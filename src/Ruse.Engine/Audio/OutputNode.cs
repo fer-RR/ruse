@@ -748,6 +748,9 @@ public sealed class OutputNode : IDisposable
 
                 _lowLatency = _wasapiOut.LowLatencyActive;
                 _outputLatencyMs = _wasapiOut.LatencyMilliseconds > 0 ? _wasapiOut.LatencyMilliseconds : 5;
+                _outputSampleRate = _wasapiOut.OutputWaveFormat.SampleRate > 0
+                    ? _wasapiOut.OutputWaveFormat.SampleRate
+                    : pumpRate;
 
                 if (native && _wasapiOut.OutputWaveFormat.SampleRate != pumpRate)
                 {
@@ -1505,11 +1508,11 @@ public sealed class OutputNode : IDisposable
         Faulted?.Invoke(this, reason);
     }
 
-    public void Stop()
+    public bool Stop()
     {
         if (!_running && _wasapiOut == null && _recorder == null && _asioEndpoint == null && _pumpThread == null)
         {
-            return;
+            return true;
         }
 
         _stopRequested = true;
@@ -1523,7 +1526,7 @@ public sealed class OutputNode : IDisposable
             {
                 _pumpThread = pump;
                 Ruse.App.Diagnostics.AppLog.Warning($"Output '{Title}' pump did not stop in time; keeping its resources.");
-                return;
+                return false;
             }
         }
 
@@ -1604,11 +1607,20 @@ public sealed class OutputNode : IDisposable
         _meterLevelRight = 0;
         _meterDbLeft = -60f;
         _meterDbRight = -60f;
+        return true;
     }
 
     public void Dispose()
     {
-        Stop();
+        if (!Stop())
+        {
+            // The pump still owns the device/buffer/routes. Tearing them down
+            // here would race the audio thread, so keep them for this process.
+            Ruse.App.Diagnostics.AppLog.Warning(
+                $"Output '{Title}' was disposed while its pump was still alive; resources are kept.");
+            return;
+        }
+
         _device?.Dispose();
 
         // Release every route's copy of the source audio.

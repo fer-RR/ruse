@@ -18,10 +18,12 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     private readonly string _identifier;
     private readonly string? _initialState;
     private readonly IReadOnlyDictionary<string, float>? _pendingParameters;
+    private string? _lastState;
     private readonly object _audioLock = new();
     private readonly object _audioQueueLock = new();
     private readonly object _controlLock = new();
     private readonly object _stateLock = new();
+    private readonly object _editorPollLock = new();
     private readonly AutoResetEvent _audioWake = new(false);
     private readonly float[] _audioPending = new float[MaxFrames * Channels];
     private readonly float[] _audioWorking = new float[MaxFrames * Channels];
@@ -49,6 +51,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     private int _restartPending;
     private long _restartAttempts;
     private IReadOnlyDictionary<string, float>? _restartParameters;
+    private volatile CancellationTokenSource? _editorPoll;
     private bool _disposed;
 
     public IsolatedVst3Processor(
@@ -59,6 +62,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     {
         _identifier = identifier;
         _initialState = stateBase64;
+        _lastState = stateBase64;
         _pendingParameters = pendingParameters;
         if (start)
         {
@@ -439,7 +443,20 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     public string? CaptureStateBase64()
     {
         var response = SendControl(new Vst3HostRequest { Command = "state" });
-        return response is { Ok: true } ? response.State : null;
+        if (response is { Ok: true, State.Length: > 0 })
+        {
+            lock (_stateLock)
+            {
+                _lastState = response.State;
+            }
+
+            return response.State;
+        }
+
+        lock (_stateLock)
+        {
+            return _lastState;
+        }
     }
 
     public bool OpenEditor(string title)
@@ -451,12 +468,18 @@ public sealed class IsolatedVst3Processor : IVst3Processor
             _info.IsEditorOpen = opened;
         }
 
+        if (opened)
+        {
+            StartEditorPolling();
+        }
+
         RaiseChanged();
         return opened;
     }
 
     public void CloseEditor()
     {
+        StopEditorPolling();
         SendControl(new Vst3HostRequest { Command = "close-editor" });
         if (_info != null)
         {
@@ -466,8 +489,174 @@ public sealed class IsolatedVst3Processor : IVst3Processor
         RaiseChanged();
     }
 
+    /// <summary>
+    /// The child host cannot notify us when a parameter is changed in its native
+    /// editor window. Poll the existing info command while the editor is open
+    /// and merge values into the stable parameter objects the UI already holds.
+    /// </summary>
+    private void StartEditorPolling()
+    {
+        CancellationTokenSource cancellation;
+        lock (_editorPollLock)
+        {
+            try { _editorPoll?.Cancel(); } catch { }
+            cancellation = new CancellationTokenSource();
+            _editorPoll = cancellation;
+        }
+
+        _ = Task.Run(() => PollEditorParametersAsync(cancellation));
+    }
+
+    private void StopEditorPolling()
+    {
+        CancellationTokenSource? cancellation;
+        lock (_editorPollLock)
+        {
+            cancellation = _editorPoll;
+            _editorPoll = null;
+        }
+
+        try
+        {
+            cancellation?.Cancel();
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task PollEditorParametersAsync(CancellationTokenSource cancellation)
+    {
+        int ticks = 0;
+        try
+        {
+            while (!_disposed && !cancellation.IsCancellationRequested)
+            {
+                await Task.Delay(250, cancellation.Token);
+                if (!IsEditorOpen)
+                {
+                    break;
+                }
+
+                try
+                {
+                    // Keep a recent editor-only state snapshot so a watchdog kill
+                    // does not discard settings that only exist inside the plugin.
+                    if (++ticks % 8 == 0)
+                    {
+                        var state = SendControl(new Vst3HostRequest { Command = "state" });
+                        if (state is { Ok: true, State.Length: > 0 })
+                        {
+                            lock (_stateLock)
+                            {
+                                _lastState = state.State;
+                            }
+                        }
+                    }
+
+                    var response = SendControl(new Vst3HostRequest { Command = "info" });
+                    if (response?.Info == null)
+                    {
+                        await Task.Delay(250, cancellation.Token);
+                        continue;
+                    }
+
+                    if (MergeEditorInfo(response.Info))
+                    {
+                        RaiseChanged();
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    AppLog.Warning($"Isolated VST3 editor polling for '{_identifier}' hit an error: {ex.Message}");
+                    await Task.Delay(500, cancellation.Token);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning($"Isolated VST3 editor polling for '{_identifier}' stopped: {ex.Message}");
+        }
+        finally
+        {
+            lock (_editorPollLock)
+            {
+                if (ReferenceEquals(_editorPoll, cancellation))
+                {
+                    _editorPoll = null;
+                }
+            }
+
+            cancellation.Dispose();
+            if (!_disposed)
+            {
+                RaiseChanged();
+            }
+        }
+    }
+
+    private bool MergeEditorInfo(Vst3HostInfo incoming)
+    {
+        var current = _info;
+        if (current == null)
+        {
+            _info = incoming;
+            return true;
+        }
+
+        bool changed = false;
+        if (current.Status != incoming.Status)
+        {
+            current.Status = incoming.Status;
+            changed = true;
+        }
+
+        if (current.IsEditorOpen != incoming.IsEditorOpen)
+        {
+            current.IsEditorOpen = incoming.IsEditorOpen;
+            changed = true;
+        }
+
+        if (current.IsReady != incoming.IsReady)
+        {
+            current.IsReady = incoming.IsReady;
+            changed = true;
+        }
+
+        if (current.LatencySamples != incoming.LatencySamples)
+        {
+            current.LatencySamples = incoming.LatencySamples;
+            changed = true;
+        }
+
+        var values = new Dictionary<string, float>(StringComparer.Ordinal);
+        foreach (var parameter in incoming.Parameters)
+        {
+            values[parameter.Name] = parameter.Value;
+        }
+
+        foreach (var parameter in current.Parameters)
+        {
+            if (!values.TryGetValue(parameter.Name, out float value) ||
+                !float.IsFinite(value) ||
+                Math.Abs(parameter.Value - value) <= 1e-5f)
+            {
+                continue;
+            }
+
+            parameter.Value = value;
+            changed = true;
+        }
+
+        return changed;
+    }
+
     private void Fail(string message, Exception? exception = null)
     {
+        StopEditorPolling();
         _ready = false;
         _error = message;
         ClearAudioBuffers();
@@ -664,6 +853,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
         }
 
         _disposed = true;
+        StopEditorPolling();
         _audioStop = true;
         _audioWake.Set();
         _watchdog?.Join(100);

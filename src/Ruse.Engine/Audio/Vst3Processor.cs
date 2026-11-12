@@ -18,9 +18,11 @@ public sealed class Vst3Processor : IVst3Processor
     private readonly IReadOnlyDictionary<string, float>? _pendingParameters;
     private readonly object _audioLock = new();
     private readonly object _stateLock = new();
+    private readonly object _pollLock = new();
 
     private ThreadedVst3Wrapper? _wrapper;
     private VstEditorController? _editor;
+    private CancellationTokenSource? _pollCancellation;
     private AudioParameter[] _parameters = Array.Empty<AudioParameter>();
     private float[] _values = Array.Empty<float>();
     private float[][] _inputPlanes = Array.Empty<float[]>();
@@ -323,14 +325,164 @@ public sealed class Vst3Processor : IVst3Processor
 
         _editor ??= new VstEditorController(_wrapper);
         _editor.OpenEditor(string.IsNullOrWhiteSpace(title) ? _pluginName : title);
-        return _editor.IsOpen;
+        bool open = _editor.IsOpen;
+        if (open)
+        {
+            StartParameterPolling();
+        }
+
+        return open;
     }
 
     public void CloseEditor()
     {
+        StopParameterPolling();
         _editor?.CloseEditor();
         _editor?.Dispose();
         _editor = null;
+        RaiseChanged();
+    }
+
+    /// <summary>
+    /// Mirrors values changed inside the plugin's own editor back into the
+    /// cached parameter list. The VST3 host does not notify the wrapper when a
+    /// parameter moves, so poll while the editor is open and let Changed()
+    /// republish the graph.
+    /// </summary>
+    private void StartParameterPolling()
+    {
+        var wrapper = _wrapper;
+        if (wrapper == null)
+        {
+            return;
+        }
+
+        CancellationTokenSource cancellation;
+        lock (_pollLock)
+        {
+            try { _pollCancellation?.Cancel(); } catch { }
+            cancellation = new CancellationTokenSource();
+            _pollCancellation = cancellation;
+        }
+
+        _ = Task.Run(() => PollParametersAsync(wrapper, cancellation));
+    }
+
+    private void StopParameterPolling()
+    {
+        CancellationTokenSource? cancellation;
+        lock (_pollLock)
+        {
+            cancellation = _pollCancellation;
+            _pollCancellation = null;
+        }
+
+        try
+        {
+            cancellation?.Cancel();
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task PollParametersAsync(
+        ThreadedVst3Wrapper wrapper,
+        CancellationTokenSource cancellation)
+    {
+        bool raisedForClose = false;
+        int tick = 0;
+        try
+        {
+            while (!_disposed && !cancellation.IsCancellationRequested)
+            {
+                await Task.Delay(200, cancellation.Token);
+                bool open;
+                try
+                {
+                    open = _editor?.IsOpen == true && IsEditorOpen;
+                }
+                catch
+                {
+                    open = false;
+                }
+
+                if (!open)
+                {
+                    raisedForClose = true;
+                    break;
+                }
+
+                try
+                {
+                    var pluginParameters = await wrapper.GetAllParametersAsync();
+                    bool changed = false;
+                    int count = Math.Min(_values.Length, pluginParameters.Count);
+                    for (int i = 0; i < count; i++)
+                    {
+                        float value = (float)pluginParameters[i].CurrentValue;
+                        if (!float.IsFinite(value) ||
+                            Math.Abs(value - _values[i]) <= 1e-5f)
+                        {
+                            continue;
+                        }
+
+                        _values[i] = value;
+                        changed = true;
+                    }
+
+                    if (changed)
+                    {
+                        RaiseChanged();
+                    }
+
+                    // Cache editor-only state roughly every 2 s so a watchdog
+                    // kill does not discard settings that only live in the plugin.
+                    if (++tick % 10 == 0)
+                    {
+                        try
+                        {
+                            var stateTask = wrapper.GetStateAsync();
+                            if (stateTask.Wait(2000) && stateTask.Result is { Length: > 0 } data)
+                            {
+                                _lastStateBase64 = Convert.ToBase64String(data);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    AppLog.Warning($"VST3 parameter polling for '{_identifier}' hit an error: {ex.Message}");
+                    await Task.Delay(500, cancellation.Token);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning($"VST3 parameter polling for '{_identifier}' stopped: {ex.Message}");
+        }
+        finally
+        {
+            lock (_pollLock)
+            {
+                if (ReferenceEquals(_pollCancellation, cancellation))
+                {
+                    _pollCancellation = null;
+                }
+            }
+
+            cancellation.Dispose();
+            if (raisedForClose && !_disposed)
+            {
+                RaiseChanged();
+            }
+        }
     }
 
     private void SetState(string status, string? error)

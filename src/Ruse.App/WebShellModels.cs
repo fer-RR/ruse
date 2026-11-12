@@ -575,6 +575,8 @@ internal sealed class StatusDto
 {
     public string Text { get; set; } = "";
     public bool IsError { get; set; }
+    public string? ActionLabel { get; set; }
+    public string? Action { get; set; }
 }
 
 internal sealed class HistoryDto

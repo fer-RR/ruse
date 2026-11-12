@@ -7,6 +7,7 @@ import {
   Play, Power, Puzzle, Radio, Settings, SlidersHorizontal, Square, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
+import { formatGainDb, nextVolumeValue } from '../gain';
 import type { RuseFlowNode } from '../flow';
 import { useI18n } from '../i18n';
 import { withShortcut } from '../shortcuts';
@@ -66,22 +67,34 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
   const { t } = useI18n();
   const [local, setLocal] = useState(value);
   useEffect(() => setLocal(value), [value]);
+  const commit = (next: number) => {
+    setLocal(next);
+    send('gain', { id, value: next });
+  };
 
   return (
     <div className="node-volume nodrag">
-      <input
-        aria-label={t('Node volume')}
-        type="range"
-        min={0}
-        max={1.5}
-        step={0.01}
-        value={local}
-        onChange={event => {
-          const next = Number(event.target.value);
-          setLocal(next);
-          send('gain', { id, value: next });
-        }}
-      />
+      <span className="volume-slider">
+        <input
+          aria-label={t('Node volume')}
+          aria-valuetext={formatGainDb(local)}
+          type="range"
+          min={0}
+          max={1.5}
+          step={0.01}
+          value={local}
+          onChange={event => commit(Number(event.target.value))}
+          onDoubleClick={() => commit(1)}
+          onKeyDown={event => {
+            const next = nextVolumeValue(event, local);
+            if (next !== null) {
+              event.preventDefault();
+              commit(next);
+            }
+          }}
+        />
+        <small className="volume-db">{formatGainDb(local)}</small>
+      </span>
       <span>{Math.round(local * 100)}%</span>
       <button
         className={`icon-button compact ${muted ? 'danger-text' : ''}`}
@@ -721,6 +734,8 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     : installedModels[0]?.id ?? '';
   const spectrumFloor = data.parameters.find(parameter => parameter.name === 'Floor')?.value ?? -100;
   const spectrumCeiling = data.parameters.find(parameter => parameter.name === 'Ceiling')?.value ?? -30;
+  const spectrogramContrast = data.parameters.find(parameter => parameter.name === 'Contrast')?.value ?? 1;
+  const spectrogramPalette = Math.round(data.parameters.find(parameter => parameter.name === 'Palette')?.value ?? 0);
   const formatRateValue = data.sampleRate && data.sampleRate > 0 ? data.sampleRate : 48000;
   const formatBits = data.bitsPerSample ?? 32;
   const flowing = enabled && active;
@@ -756,7 +771,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   ].filter(Boolean).join(' ');
 
   return (
-    <div className={classes} style={{ '--accent': data.accent } as CSSProperties}>
+    <div className={classes} style={{ '--accent': data.accent } as CSSProperties} role="group" aria-label={`${data.title}. ${t(data.subtitle)}`}>
       {data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
       {data.supportsSidechain && <Handle id="sidechain" type="target" position={Position.Left} className="ruse-handle sidechain-handle" style={{ top: '72%' }} />}
       <header className="node-header">
@@ -836,6 +851,10 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             capacity={telemetry?.spectrogramColumns}
             windowSeconds={telemetry?.spectrogramWindowSeconds}
             peakHz={telemetry?.spectrogramPeakHz}
+            floor={spectrumFloor}
+            ceiling={spectrumCeiling}
+            contrast={spectrogramContrast}
+            palette={spectrogramPalette}
           />}
           {isWaveform && <WaveformView
             samples={telemetry?.waveform}

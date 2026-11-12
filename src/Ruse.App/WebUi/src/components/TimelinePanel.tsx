@@ -7,6 +7,8 @@ import type {
   TimelineTrackModel,
 } from '../timeline';
 import { useI18n } from '../i18n';
+import { formatGainDb, nextVolumeValue } from '../gain';
+import { withShortcut } from '../shortcuts';
 import { ConfirmDialog } from './Dialogs';
 
 const BASE_PIXELS_PER_SECOND = 80;
@@ -40,6 +42,7 @@ interface DragState {
   kind: DragKind;
   trackId: string;
   clipId: string;
+  targetTrackId: string;
   pointerStartX: number;
   original: ClipPreview;
   preview: ClipPreview;
@@ -56,7 +59,8 @@ interface AutomationDrag {
 
 type PendingRemoval =
   | { kind: 'clip'; trackId: string; clipId: string }
-  | { kind: 'automation'; trackId: string; laneId: string };
+  | { kind: 'automation'; trackId: string; laneId: string }
+  | { kind: 'track'; trackId: string };
 
 export interface TimelineClipUpdate {
   startSample?: number;
@@ -103,31 +107,47 @@ function TrackGainSlider({ track, onChange }: { track: TimelineTrackModel; onCha
   };
 
   return (
-    <input
-      type="range"
-      min={0}
-      max={1.5}
-      step={0.01}
-      value={value}
-      aria-label={`${track.name} volume`}
-      onPointerDown={() => {
-        if (dragTimer.current !== null) window.clearTimeout(dragTimer.current);
-        setDragging(true);
-      }}
-      onPointerUp={() => {
-        if (dragTimer.current !== null) window.clearTimeout(dragTimer.current);
-        dragTimer.current = window.setTimeout(() => {
-          dragTimer.current = null;
-          setDragging(false);
-        }, 180);
-      }}
-      onPointerCancel={() => setDragging(false)}
-      onChange={event => {
-        const next = Number(event.target.value);
-        setValue(next);
-        queue(next);
-      }}
-    />
+    <span className="timeline-track-gain">
+      <input
+        type="range"
+        min={0}
+        max={1.5}
+        step={0.01}
+        value={value}
+        aria-label={`${track.name} volume`}
+        aria-valuetext={formatGainDb(value)}
+        onPointerDown={() => {
+          if (dragTimer.current !== null) window.clearTimeout(dragTimer.current);
+          setDragging(true);
+        }}
+        onPointerUp={() => {
+          if (dragTimer.current !== null) window.clearTimeout(dragTimer.current);
+          dragTimer.current = window.setTimeout(() => {
+            dragTimer.current = null;
+            setDragging(false);
+          }, 180);
+        }}
+        onPointerCancel={() => setDragging(false)}
+        onChange={event => {
+          const next = Number(event.target.value);
+          setValue(next);
+          queue(next);
+        }}
+        onDoubleClick={() => {
+          setValue(1);
+          queue(1);
+        }}
+        onKeyDown={event => {
+          const next = nextVolumeValue(event, value);
+          if (next !== null) {
+            event.preventDefault();
+            setValue(next);
+            queue(next);
+          }
+        }}
+      />
+      <small className="volume-db">{formatGainDb(value)}</small>
+    </span>
   );
 }
 
@@ -143,6 +163,7 @@ export default function TimelinePanel({
   onSeek,
   onAddClipPath,
   onMoveClip,
+  onMoveClipToTrack,
   onUpdateClip,
   onStretchClip,
   onRemoveClip,
@@ -171,6 +192,7 @@ export default function TimelinePanel({
   onSeek: (sample: number) => void;
   onAddClipPath: (trackId: string, path: string, startSample: number) => void;
   onMoveClip: (trackId: string, clipId: string, startSample: number) => void;
+  onMoveClipToTrack: (fromTrackId: string, toTrackId: string, clipId: string, startSample: number) => void;
   onUpdateClip: (trackId: string, clipId: string, update: TimelineClipUpdate) => void;
   onStretchClip: (trackId: string, clipId: string, lengthSamples: number) => void;
   onRemoveClip: (trackId: string, clipId: string) => void;
@@ -205,6 +227,53 @@ export default function TimelinePanel({
 
   const tracks = state.project.tracks;
   const sampleRate = state.sampleRate;
+  const selectedClipModel = useMemo(() => {
+    if (!selectedClip) return null;
+    const track = tracks.find(item => item.id === selectedClip.trackId);
+    const clip = track?.clips.find(item => item.id === selectedClip.clipId);
+    return track && clip ? { track, clip } : null;
+  }, [selectedClip, tracks]);
+  const [clipGain, setClipGain] = useState(1);
+  const clipGainTimer = useRef<number | null>(null);
+  const clipGainPending = useRef<number | null>(null);
+  const clipGainDirtyUntil = useRef(0);
+  useEffect(() => {
+    if (selectedClipModel && Date.now() >= clipGainDirtyUntil.current) {
+      setClipGain(selectedClipModel.clip.gain);
+    }
+  }, [selectedClipModel?.clip.id, selectedClipModel?.clip.gain]);
+  useEffect(() => () => {
+    if (clipGainTimer.current !== null) window.clearTimeout(clipGainTimer.current);
+  }, []);
+  useEffect(() => {
+    if (clipGainTimer.current !== null) {
+      window.clearTimeout(clipGainTimer.current);
+      clipGainTimer.current = null;
+    }
+    clipGainPending.current = null;
+    clipGainDirtyUntil.current = 0;
+  }, [selectedClip?.clipId]);
+  const queueClipGain = (value: number, immediate = false) => {
+    if (!selectedClipModel) return;
+    clipGainDirtyUntil.current = Date.now() + 400;
+    setClipGain(value);
+    clipGainPending.current = value;
+    const trackId = selectedClipModel.track.id;
+    const clipId = selectedClipModel.clip.id;
+    const send = () => {
+      const pending = clipGainPending.current;
+      clipGainTimer.current = null;
+      if (pending !== null) {
+        onUpdateClip(trackId, clipId, { gain: pending });
+      }
+    };
+    if (immediate) {
+      if (clipGainTimer.current !== null) window.clearTimeout(clipGainTimer.current);
+      send();
+    } else if (clipGainTimer.current === null) {
+      clipGainTimer.current = window.setTimeout(send, 50);
+    }
+  };
   const rows = useMemo(() => {
     const result: TimelineRow[] = [];
     let rowY = RULER_HEIGHT;
@@ -362,7 +431,9 @@ export default function TimelinePanel({
   };
 
   const previewFor = (trackId: string, clip: TimelineClipModel) =>
-    drag && drag.trackId === trackId && drag.clipId === clip.id ? drag.preview : clip;
+    drag && drag.trackId === trackId && drag.clipId === clip.id && drag.targetTrackId === trackId
+      ? drag.preview
+      : clip;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -504,6 +575,30 @@ export default function TimelinePanel({
           const label = clip.name || t('Audio clip');
           ctx.fillText(label, x + 4, row.y + 34);
         }
+
+        if (drag?.kind === 'move' && drag.targetTrackId === row.track.id &&
+            drag.targetTrackId !== drag.trackId) {
+          const sourceName = tracks
+            .find(track => track.id === drag.trackId)
+            ?.clips.find(clip => clip.id === drag.clipId)?.name;
+          const x = (drag.preview.startSample / sampleRate) * pixelsPerSecond;
+          const w = Math.max(2, (drag.preview.lengthSamples / sampleRate) * pixelsPerSecond);
+          ctx.save();
+          ctx.globalAlpha = 0.45;
+          ctx.fillStyle = '#2d7193';
+          ctx.fillRect(x, row.y + 20, w, row.height - 28);
+          ctx.globalAlpha = 0.95;
+          ctx.setLineDash([4, 3]);
+          ctx.strokeStyle = '#ffd166';
+          ctx.strokeRect(x + 0.5, row.y + 20.5, Math.max(1, w - 1), row.height - 29);
+          ctx.setLineDash([]);
+          if (sourceName) {
+            ctx.fillStyle = '#ffe6a3';
+            ctx.font = '9px Consolas, monospace';
+            ctx.fillText(sourceName, x + 4, row.y + 34);
+          }
+          ctx.restore();
+        }
       } else if (row.lane) {
         const lane = row.lane;
         const target = targetFor(lane);
@@ -617,12 +712,17 @@ export default function TimelinePanel({
     return { clip, view, kind: 'move' as DragKind };
   };
 
-  const updateDrag = (clientX: number) => {
+  const updateDrag = (clientX: number, clientY: number) => {
     if (!drag) return;
     const deltaSamples = ((clientX - drag.pointerStartX) / pixelsPerSecond) * sampleRate;
     const original = drag.original;
     let preview = { ...original };
+    let targetTrackId = drag.targetTrackId;
     if (drag.kind === 'move') {
+      const target = locate(clientX, clientY)?.row;
+      if (target?.kind === 'track') {
+        targetTrackId = target.track.id;
+      }
       preview.startSample = Math.max(0, snapSample(original.startSample + deltaSamples));
     } else if (drag.kind === 'resize-left') {
       const nextStart = Math.max(0, Math.min(
@@ -658,7 +758,7 @@ export default function TimelinePanel({
         Math.round(original.fadeOutSamples - deltaSamples)));
     }
 
-    setDrag(current => current ? { ...current, preview } : current);
+    setDrag(current => current ? { ...current, preview, targetTrackId } : current);
   };
 
   const finishAutomationDrag = () => {
@@ -678,14 +778,22 @@ export default function TimelinePanel({
 
   const finishDrag = () => {
     if (!drag) return;
-    const changed = drag.preview.startSample !== drag.original.startSample ||
+    const targetTrackId = drag.targetTrackId;
+    const changedTracks = drag.kind === 'move' && targetTrackId !== drag.trackId;
+    const changed = changedTracks ||
+      drag.preview.startSample !== drag.original.startSample ||
       drag.preview.lengthSamples !== drag.original.lengthSamples ||
       drag.preview.sourceOffsetSamples !== drag.original.sourceOffsetSamples ||
       drag.preview.fadeInSamples !== drag.original.fadeInSamples ||
       drag.preview.fadeOutSamples !== drag.original.fadeOutSamples;
     if (changed) {
       if (drag.kind === 'move') {
-        onMoveClip(drag.trackId, drag.clipId, drag.preview.startSample);
+        if (changedTracks) {
+          onMoveClipToTrack(drag.trackId, targetTrackId, drag.clipId, drag.preview.startSample);
+          setSelectedClip({ trackId: targetTrackId, clipId: drag.clipId });
+        } else {
+          onMoveClip(drag.trackId, drag.clipId, drag.preview.startSample);
+        }
       } else if (drag.kind === 'stretch-right') {
         onStretchClip(drag.trackId, drag.clipId, drag.preview.lengthSamples);
       } else {
@@ -728,10 +836,36 @@ export default function TimelinePanel({
             />
             <span>BPM</span>
           </label>
+          {selectedClipModel && (
+            <label className="timeline-clip-gain">
+              <span>{t('Clip gain')}</span>
+              <span className="volume-slider">
+                <input
+                  type="range"
+                  min={0}
+                  max={1.5}
+                  step={0.01}
+                  value={clipGain}
+                  aria-label={t('Clip gain')}
+                  aria-valuetext={formatGainDb(clipGain)}
+                  onChange={event => queueClipGain(Number(event.target.value))}
+                  onDoubleClick={() => queueClipGain(1, true)}
+                  onKeyDown={event => {
+                    const next = nextVolumeValue(event, clipGain);
+                    if (next !== null) {
+                      event.preventDefault();
+                      queueClipGain(next, true);
+                    }
+                  }}
+                />
+                <small className="volume-db">{formatGainDb(clipGain)}</small>
+              </span>
+            </label>
+          )}
           <button className="tool-button" onClick={onUndo} disabled={!state.canUndo}>{t('Undo')}</button>
           <button className="tool-button" onClick={onRedo} disabled={!state.canRedo}>{t('Redo')}</button>
-          <button className="tool-button" onClick={onPlay} disabled={state.playing}>{t('Play')}</button>
-          <button className="tool-button" onClick={onStop} disabled={!state.playing}>{t('Stop')}</button>
+          <button className="tool-button" onClick={onPlay} disabled={state.playing} title={withShortcut(t('Play'), 'timelinePlay')}>{t('Play')}</button>
+          <button className="tool-button" onClick={onStop} disabled={!state.playing} title={withShortcut(t('Stop'), 'timelinePlay')}>{t('Stop')}</button>
           <button className={`tool-button ${state.recording ? 'danger' : ''}`} aria-pressed={state.recording === true} onClick={onToggleRecord}>
             {state.recording ? t('Stop record') : t('Record')}
           </button>
@@ -770,7 +904,7 @@ export default function TimelinePanel({
                     className="icon-button compact danger-text"
                     title={t('Remove track')}
                     aria-label={t('Remove track')}
-                    onClick={() => onRemoveTrack(track.id)}
+                    onClick={() => setPendingRemoval({ kind: 'track', trackId: track.id })}
                   >×</button>
                 </span>
               </div>
@@ -875,6 +1009,7 @@ export default function TimelinePanel({
             tabIndex={0}
             role="application"
             aria-label={t('Timeline')}
+            aria-keyshortcuts="Delete Backspace ArrowLeft ArrowRight Home End"
             title={t('Shift+drag a clip edge to time-stretch')}
             onKeyDown={event => {
               const selectedTrack = selectedClip
@@ -977,6 +1112,7 @@ export default function TimelinePanel({
                 kind: clip.kind === 'resize-right' && event.shiftKey ? 'stretch-right' : clip.kind,
                 trackId: hit.row.track.id,
                 clipId: clip.clip.id,
+                targetTrackId: hit.row.track.id,
                 pointerStartX: event.clientX,
                 original,
                 preview: { ...original },
@@ -996,7 +1132,7 @@ export default function TimelinePanel({
               }
 
               if (automationDrag) updateAutomationDrag(event.clientX, event.clientY);
-              else if (drag) updateDrag(event.clientX);
+              else if (drag) updateDrag(event.clientX, event.clientY);
             }}
             onPointerUp={() => { setSeeking(false); endPan(); finishAutomationDrag(); finishDrag(); }}
             onPointerCancel={() => { setSeeking(false); endPan(); cancelAutomationDrag(); cancelDrag(); }}
@@ -1063,10 +1199,15 @@ export default function TimelinePanel({
       </div>
       {pendingRemoval && (
         <ConfirmDialog
-          title={pendingRemoval.kind === 'clip' ? t('Remove this clip?') : t('Remove this automation lane?')}
+          title={pendingRemoval.kind === 'clip'
+            ? t('Remove this clip?')
+            : pendingRemoval.kind === 'track'
+              ? t('Remove track')
+              : t('Remove this automation lane?')}
           confirmLabel={t('Remove')}
           onConfirm={() => {
             if (pendingRemoval.kind === 'clip') onRemoveClip(pendingRemoval.trackId, pendingRemoval.clipId);
+            else if (pendingRemoval.kind === 'track') onRemoveTrack(pendingRemoval.trackId);
             else onRemoveAutomation(pendingRemoval.trackId, pendingRemoval.laneId);
             setPendingRemoval(null);
           }}

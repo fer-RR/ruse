@@ -340,6 +340,7 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-track-update": UpdateTimelineTrack(String(message, "trackId"), (float)Number(message, "gain", 1), Bool(message, "muted", false), Bool(message, "solo", false)); break;
             case "timeline-remove-clip": RemoveTimelineClip(String(message, "trackId"), String(message, "clipId")); break;
             case "timeline-move-clip": MoveTimelineClip(String(message, "trackId"), String(message, "clipId"), (long)Number(message, "startSample")); break;
+            case "timeline-move-clip-track": MoveTimelineClipToTrack(String(message, "fromTrackId"), String(message, "toTrackId"), String(message, "clipId"), (long)Number(message, "startSample")); break;
             case "timeline-update-clip": UpdateTimelineClip(message); break;
             case "timeline-stretch-clip": StretchTimelineClip(message); break;
             case "timeline-automation-add": AddTimelineAutomationLane(message); break;
@@ -447,6 +448,9 @@ internal sealed partial class WebShellController : IDisposable
             case "rename": RenameNode(String(message, "id"), String(message, "title")); break;
             case "transport":
                 if (Bool(message, "running")) StartRouting(); else StopRouting();
+                break;
+            case "retry-routing":
+                StartRouting();
                 break;
             case "master-gain":
                 OutputNode.MasterGain = (float)Number(message, "value", 1);
@@ -1301,7 +1305,8 @@ internal sealed partial class WebShellController : IDisposable
         Post("status", new StatusDto { Text = text, IsError = isError });
     }
 
-    private void ShowError(string text, Exception? ex = null)
+    private void ShowError(string text, Exception? ex = null,
+        string? actionLabel = null, string? action = null)
     {
         if (ex != null)
         {
@@ -1309,16 +1314,55 @@ internal sealed partial class WebShellController : IDisposable
         }
 
         SetStatus(text, isError: true);
-        Post("alert", new StatusDto { Text = text, IsError = true });
+        Post("alert", new StatusDto
+        {
+            Text = text,
+            IsError = true,
+            ActionLabel = actionLabel,
+            Action = action,
+        });
     }
+
+    private void ShowToast(string text, bool isError = false) =>
+        Post("toast", new StatusDto { Text = text, IsError = isError });
 
     /// <summary>Matches the 6 px native resize margin to the web workspace theme.</summary>
     private void ApplyWindowTheme()
     {
-        Color color = _settings.Theme == "light"
-            ? Color.FromRgb(0xEE, 0xF1, 0xF6)
-            : Color.FromRgb(0x17, 0x1E, 0x29);
+        string theme = _settings.Theme;
+        if (theme == "system")
+        {
+            theme = WindowsUsesLightTheme() ? "light" : "dark";
+        }
+
+        Color color = theme switch
+        {
+            "light" => Color.FromRgb(0xEE, 0xF1, 0xF6),
+            "midnight" => Color.FromRgb(0x08, 0x0B, 0x11),
+            "ocean" => Color.FromRgb(0x07, 0x17, 0x1B),
+            "ember" => Color.FromRgb(0x18, 0x11, 0x0E),
+            "blueprint" => Color.FromRgb(0x0B, 0x4C, 0x97),
+            "deepdive" => Color.FromRgb(0x14, 0x0A, 0x24),
+            "studio74" => Color.FromRgb(0x1E, 0x1D, 0x1B),
+            "midnightstudy" => Color.FromRgb(0x16, 0x19, 0x25),
+            _ => Color.FromRgb(0x17, 0x1E, 0x29),
+        };
         _window.Background = new SolidColorBrush(color);
+    }
+
+    private static bool WindowsUsesLightTheme()
+    {
+        try
+        {
+            object? value = Microsoft.Win32.Registry.GetValue(
+                @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+                "AppsUseLightTheme", 0);
+            return value is int flag && flag != 0;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>Persists the answer to the first-close tray prompt.</summary>

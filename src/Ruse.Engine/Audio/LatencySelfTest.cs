@@ -15,11 +15,10 @@ public static class LatencySelfTest
         int SamplesDelivered,
         string Summary);
 
-    public static Result Run(int iterations = 200)
+    public static Result Run(int iterations = 200, int chunkFrames = 240)
     {
         const int sampleRate = 48000;
         const int channels = 2;
-        const int chunkFrames = 240; // must match OutputNode's pump chunk
 
         var source = new SourceNode("selftest", SourceKind.Application);
 
@@ -57,7 +56,7 @@ public static class LatencySelfTest
 
         // Render synchronously (no pump thread) so the result is deterministic:
         // 5 chunks of leading silence put the impulse at a known frame index.
-        const int leadFrames = chunkFrames * 5;
+        int leadFrames = chunkFrames * 5;
         var mix = new float[chunkFrames * channels];
         var temp = new float[chunkFrames * channels];
         var byteBuffer = new byte[mix.Length * 4];
@@ -105,6 +104,149 @@ public static class LatencySelfTest
         }
 
         return new Result(latencyMs, chunkMs, framesReceived, summary);
+    }
+
+    public sealed record LowLatencyTestResult(bool Passed, string Summary);
+
+    /// <summary>
+    /// Exercises the experimental 2.5 ms profile offline: a 120-frame block
+    /// (2.5 ms), a 240-frame engine cushion and the elastic ring must still
+    /// deliver sample-accurate, click-free routing before a real device test.
+    /// </summary>
+    public static LowLatencyTestResult TestLowLatencyProfile()
+    {
+        int oldBlock = AudioEngineConfig.BlockFrames;
+        int oldCushion = AudioEngineConfig.EngineCushionFrames;
+        int oldPeriods = AudioEngineConfig.OutputBufferPeriods;
+        int oldManualMs = AudioEngineConfig.OutputBufferManualMs;
+        bool oldElastic = AudioEngineConfig.ElasticRing;
+        bool oldAggressive = OutputNode.AggressiveCushion;
+        var failures = new List<string>();
+
+        try
+        {
+            int block = AudioEngineConfig.FramesForMs(2.5);
+            int cushion = AudioEngineConfig.CushionFramesForMs(5.0);
+            AudioEngineConfig.Configure(block, cushion, 1, 0);
+            AudioEngineConfig.ElasticRing = true;
+            OutputNode.AggressiveCushion = true;
+
+            if (AudioEngineConfig.BlockFrames != 120)
+            {
+                failures.Add($"block is {AudioEngineConfig.BlockFrames} frames, want 120 (2.5 ms)");
+            }
+
+            if (AudioEngineConfig.EngineCushionFrames != 240)
+            {
+                failures.Add($"cushion is {AudioEngineConfig.EngineCushionFrames} frames, want 240 (5 ms)");
+            }
+
+            if (AudioEngineConfig.OutputBufferPeriods != 1)
+            {
+                failures.Add($"output buffer periods is {AudioEngineConfig.OutputBufferPeriods}, want 1");
+            }
+
+            if (!AudioEngineConfig.ElasticRing)
+            {
+                failures.Add("elastic ring is off");
+            }
+
+            var pulse = Run(iterations: 400, chunkFrames: 120);
+            if (pulse.SourceToSinkMs < 0)
+            {
+                failures.Add("impulse never reached the sink at a 120-frame block");
+            }
+            else if (Math.Abs(pulse.SourceToSinkMs) > 1e-6)
+            {
+                failures.Add($"software path added {pulse.SourceToSinkMs:0.###} ms at a 120-frame block");
+            }
+
+            if (Math.Abs(pulse.PumpChunkMs - 2.5) > 1e-6)
+            {
+                failures.Add($"pump chunk is {pulse.PumpChunkMs:0.###} ms, want 2.5");
+            }
+
+            // The shared graph renderer must also produce a full 120-frame
+            // block (not silently pad to the old 240-frame default).
+            {
+                var graph = new AudioGraph { AutoRun = false };
+                var source = new SourceNode("low-latency-selftest", SourceKind.Application);
+                var output = graph.AddOutputForTest(static (_, _) => { });
+                output.UseGraphEngine = true;
+                graph.AddSource(source);
+                graph.Connect(source, output);
+
+                var engineBlock = new float[120 * 2];
+                Array.Fill(engineBlock, 0.5f);
+                for (int i = 0; i < 4; i++)
+                {
+                    source.WriteTestSamples(engineBlock);
+                    graph.RenderEngineOnceForTest();
+                }
+
+                output.ClearEngineAudio();
+                source.WriteTestSamples(engineBlock);
+                graph.RenderEngineOnceForTest();
+                float level = output.DrainEngineLevelForTest(120);
+                graph.Dispose();
+
+                if (level < 0.4f)
+                {
+                    failures.Add($"graph engine did not deliver a full 120-frame block (level {level:0.###})");
+                }
+            }
+
+            // A 96 kHz source must still land on the 48 kHz grid when it is
+            // resampled in 2.5 ms chunks.
+            var converter = new FormatConverter(2, 96000);
+            var converted = new List<float>();
+            for (int b = 0; b < 40; b++)
+            {
+                var chunk = new float[240 * 2];
+                for (int f = 0; f < 240; f++)
+                {
+                    int global = b * 240 + f;
+                    float sample = MathF.Sin(2f * MathF.PI * 1000f * global / 96000f);
+                    chunk[f * 2] = sample;
+                    chunk[f * 2 + 1] = sample;
+                }
+
+                converter.Convert(chunk, converted);
+            }
+
+            int convertedFrames = converted.Count / 2;
+            int expectedFrames = 40 * 120;
+            if (Math.Abs(convertedFrames - expectedFrames) > 16)
+            {
+                failures.Add($"2.5 ms SRC produced {convertedFrames} frames, want ~{expectedFrames}");
+            }
+
+            for (int i = 0; i < converted.Count; i++)
+            {
+                if (!float.IsFinite(converted[i]) || MathF.Abs(converted[i]) > 1.01f)
+                {
+                    failures.Add("2.5 ms SRC produced a non-finite or clipped sample");
+                    break;
+                }
+            }
+
+            if (failures.Count == 0)
+            {
+                return new LowLatencyTestResult(true,
+                    $"Low-latency profile: 120-frame block (2.5 ms), 240-frame cushion, " +
+                    $"1 output period, elastic ring, sample-accurate impulse, " +
+                    $"96k->48k SRC across {convertedFrames} frames.");
+            }
+        }
+        finally
+        {
+            AudioEngineConfig.Configure(oldBlock, oldCushion, oldPeriods, oldManualMs);
+            AudioEngineConfig.ElasticRing = oldElastic;
+            OutputNode.AggressiveCushion = oldAggressive;
+        }
+
+        return new LowLatencyTestResult(false,
+            "Low-latency profile FAILED: " + string.Join("; ", failures));
     }
 
     public sealed record ConverterTestResult(bool Passed, string Summary);
@@ -308,9 +450,70 @@ public static class LatencySelfTest
             }
         }
 
+        // --- clock drift correction: +1 ms/s must produce fewer output frames,
+        //     -1 ms/s more, and the difference must track the requested ppm ---
+        {
+            static int ConvertAtDrift(double ppm)
+            {
+                var conv = new FormatConverter(2, 48000);
+                conv.SetDriftPpm(ppm);
+                var output = new List<float>();
+                const int blockFrames = 1000;
+                for (int b = 0; b < 48; b++)
+                {
+                    var block = new float[blockFrames * 2];
+                    for (int f = 0; f < blockFrames; f++)
+                    {
+                        int global = b * blockFrames + f;
+                        float sample = MathF.Sin(2f * MathF.PI * 1000f * global / 48000f);
+                        block[f * 2] = sample;
+                        block[f * 2 + 1] = sample;
+                    }
+
+                    conv.Convert(block, output);
+                }
+
+                for (int i = 0; i < output.Count; i++)
+                {
+                    if (!float.IsFinite(output[i]))
+                    {
+                        return -1;
+                    }
+                }
+
+                return output.Count / 2;
+            }
+
+            int fastSource = ConvertAtDrift(1000);  // source clock fast
+            int slowSource = ConvertAtDrift(-1000); // source clock slow
+            const int expectedFast = 47952; // 48000 / 1.001
+            const int expectedSlow = 48048; // 48000 / 0.999
+            if (fastSource < 0 || slowSource < 0)
+            {
+                failures.Add("drift: converter produced a non-finite sample");
+            }
+            else
+            {
+                if (Math.Abs(fastSource - expectedFast) > 64)
+                {
+                    failures.Add($"drift +1000 ppm produced {fastSource} frames, want ~{expectedFast}");
+                }
+
+                if (Math.Abs(slowSource - expectedSlow) > 64)
+                {
+                    failures.Add($"drift -1000 ppm produced {slowSource} frames, want ~{expectedSlow}");
+                }
+
+                if (slowSource - fastSource < 80)
+                {
+                    failures.Add($"drift correction direction/amount wrong (+{fastSource}, -{slowSource})");
+                }
+            }
+        }
+
         bool passed = failures.Count == 0;
         string summary = passed
-            ? "FormatConverter: all checks passed (monoâ†’stereo, 44.1/96â†’48 kHz, 5.1â†’stereo, block continuity)."
+            ? "FormatConverter: all checks passed (monoâ†’stereo, 44.1/96â†’48 kHz, 5.1â†’stereo, block continuity, Â±1000 ppm drift)."
             : "FormatConverter FAILED: " + string.Join("; ", failures);
         return new ConverterTestResult(passed, summary);
     }

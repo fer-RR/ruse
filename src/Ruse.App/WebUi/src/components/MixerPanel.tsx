@@ -1,7 +1,8 @@
-import { Profiler, memo, useEffect, useMemo, useRef, useState } from 'react';
+﻿import { Profiler, memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { ArrowUpDown, SlidersHorizontal, Volume2, VolumeX, X } from 'lucide-react';
 import { send } from '../bridge';
+import { formatGainDb, nextVolumeValue } from '../gain';
 import { useI18n } from '../i18n';
 import { useGlobalTelemetry, useNodeTelemetry, useUiTelemetry } from '../telemetry';
 import type { LinkModel, NodeModel } from '../types';
@@ -19,7 +20,7 @@ function dbPercent(db: number): number {
 }
 
 function formatDb(db: number): string {
-  return db <= MIN_DB + 0.05 ? '-∞' : db.toFixed(1);
+  return db <= MIN_DB + 0.05 ? '-\u221E' : db.toFixed(1);
 }
 
 function MeterBars({ left, right, vertical, clipping, clean = false }: {
@@ -185,18 +186,30 @@ function SendRowImpl({ source, output, inserts, links }: {
         ) : (
           <span className="mixer-send-mode">{t('Pre')}</span>
         )}
-        <input
-          className="mixer-send-gain"
-          type="range"
-          min={0}
-          max={1.5}
-          step={0.01}
-          value={gain}
-          aria-label={t('{name} volume', { name: output.title })}
-          onChange={event => setGain(Number(event.target.value))}
-          onPointerUp={commitGain}
-          onKeyUp={commitGain}
-        />
+        <span className="volume-slider">
+          <input
+            className="mixer-send-gain"
+            type="range"
+            min={0}
+            max={1.5}
+            step={0.01}
+            value={gain}
+            aria-label={t('{name} volume', { name: output.title })}
+            aria-valuetext={formatGainDb(gain)}
+            onChange={event => setGain(Number(event.target.value))}
+            onDoubleClick={() => setGain(1)}
+            onKeyDown={event => {
+              const next = nextVolumeValue(event, gain);
+              if (next !== null) {
+                event.preventDefault();
+                setGain(next);
+              }
+            }}
+            onPointerUp={commitGain}
+            onKeyUp={commitGain}
+          />
+          <small className="volume-db">{formatGainDb(gain)}</small>
+        </span>
         <span>{Math.round(gain * 100)}%</span>
       </div>
     </div>
@@ -276,13 +289,30 @@ function MixerStrip({ node, outputs, links, inserts, vertical, onFocusNode }: {
           step={0.01}
           value={volume}
           aria-label={t('{name} volume', { name: node.title })}
+          aria-valuetext={formatGainDb(volume)}
           onChange={event => {
             const next = Number(event.target.value);
             setVolume(next);
             send('gain', { id: node.id, value: next });
           }}
+          onDoubleClick={() => {
+            setVolume(1);
+            send('gain', { id: node.id, value: 1 });
+          }}
+          onKeyDown={event => {
+            const next = nextVolumeValue(event, volume);
+            if (next !== null) {
+              event.preventDefault();
+              setVolume(next);
+              send('gain', { id: node.id, value: next });
+            }
+          }}
         />
       </div>
+      <div className="fader-scale" aria-hidden="true">
+        <span>{'\u2212\u221E'}</span><span>{'\u22126'}</span><span>0</span><span>+3.5</span>
+      </div>
+      <small className="volume-db">{formatGainDb(volume)}</small>
       <div className="mixer-strip-foot">
         <span>{Math.round(volume * 100)}%</span>
         {recording && <span className="mixer-recording">{recording}</span>}
@@ -371,13 +401,30 @@ function MasterStrip({ outputs, vertical }: { outputs: NodeModel[]; vertical: bo
           step={0.01}
           value={volume}
           aria-label={t('Master')}
+          aria-valuetext={formatGainDb(volume)}
           onChange={event => {
             const next = Number(event.target.value);
             setVolume(next);
             send('master-gain', { value: next });
           }}
+          onDoubleClick={() => {
+            setVolume(1);
+            send('master-gain', { value: 1 });
+          }}
+          onKeyDown={event => {
+            const next = nextVolumeValue(event, volume);
+            if (next !== null) {
+              event.preventDefault();
+              setVolume(next);
+              send('master-gain', { value: next });
+            }
+          }}
         />
       </div>
+      <div className="fader-scale" aria-hidden="true">
+        <span>{'\u2212\u221E'}</span><span>{'\u22126'}</span><span>0</span><span>+3.5</span>
+      </div>
+      <small className="volume-db">{formatGainDb(volume)}</small>
       <div className="mixer-strip-foot"><span>{Math.round(volume * 100)}%</span><span>{t('Master')}</span></div>
     </div>
   );
@@ -435,7 +482,7 @@ function MixerPanel({ sources, outputs, modifiers, links, onClose, onResizeStart
         <div className="mixer-resizer" role="separator" aria-label={t('Resize mixer')} onPointerDown={onResizeStart} />
         <div className="mixer-head">
           <span className="mixer-title"><SlidersHorizontal size={14} /><span className="eyebrow">{t('Mixer')}</span></span>
-          <span className="mixer-perf" ref={perfRef} title={t('Performance')}>—</span>
+          <span className="mixer-perf" ref={perfRef} title={t('Performance')}>{'\u2014'}</span>
           <button
             className="icon-button compact"
             title={vertical ? t('Make horizontal') : t('Make vertical')}

@@ -201,12 +201,15 @@ internal sealed partial class WebShellController
 
         if (ok)
         {
-            SetStatus($"Stretched clip to {lengthSamples / (double)AudioEngineConfig.SampleRate:0.00}s.");
+            string stretched = $"Stretched clip to {lengthSamples / (double)AudioEngineConfig.SampleRate:0.00}s.";
+            SetStatus(stretched);
+            ShowToast(stretched);
             PublishTimeline(false);
         }
         else
         {
             SetStatus(error, isError: true);
+            ShowToast(error, isError: true);
         }
     }
 
@@ -311,6 +314,20 @@ internal sealed partial class WebShellController
         }
 
         if (_timeline.MoveClip(trackId, clipId, startSample))
+        {
+            PublishTimeline(false);
+        }
+    }
+
+    private void MoveTimelineClipToTrack(string fromTrackId, string toTrackId,
+        string clipId, long startSample)
+    {
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        if (_timeline.MoveClipToTrack(fromTrackId, toTrackId, clipId, startSample))
         {
             PublishTimeline(false);
         }
@@ -606,9 +623,12 @@ internal sealed partial class WebShellController
         SetStatus("Bouncing timeline...");
         bool ok;
         string error;
+        using var plan = BuildTimelineBouncePlan();
+        TimelineService timeline = _timeline;
+        timeline.TrackProcessor = plan.ProcessTrack;
+        timeline.MasterProcessor = plan.ProcessMaster;
         try
         {
-            TimelineService timeline = _timeline;
             (ok, error) = await Task.Run(() =>
             {
                 bool success = timeline.BounceToWave(path, out string message);
@@ -620,6 +640,11 @@ internal sealed partial class WebShellController
             ok = false;
             error = ex.Message;
         }
+        finally
+        {
+            timeline.TrackProcessor = null;
+            timeline.MasterProcessor = null;
+        }
 
         _timelineBounceActive = false;
         if (_disposed)
@@ -629,11 +654,15 @@ internal sealed partial class WebShellController
 
         if (ok)
         {
-            SetStatus($"Timeline bounced to {path}.");
+            string message = $"Timeline bounced to {path}." +
+                (plan.SkippedVst3 ? " VST3 effects were skipped in the offline bounce." : "");
+            SetStatus(message);
+            ShowToast(message);
         }
         else
         {
             SetStatus(error, isError: true);
+            ShowToast(error, isError: true);
         }
     }
 
@@ -663,9 +692,12 @@ internal sealed partial class WebShellController
         SetStatus("Freezing timeline...");
         bool ok;
         string error;
+        using var plan = BuildTimelineBouncePlan();
+        TimelineService timeline = _timeline;
+        timeline.TrackProcessor = plan.ProcessTrack;
+        timeline.MasterProcessor = plan.ProcessMaster;
         try
         {
-            TimelineService timeline = _timeline;
             (ok, error) = await Task.Run(() =>
             {
                 bool success = timeline.BounceToWave(path, out string message);
@@ -676,6 +708,11 @@ internal sealed partial class WebShellController
         {
             ok = false;
             error = ex.Message;
+        }
+        finally
+        {
+            timeline.TrackProcessor = null;
+            timeline.MasterProcessor = null;
         }
 
         if (!ok)
@@ -714,7 +751,10 @@ internal sealed partial class WebShellController
         PublishTimeline(true);
         PublishGraph();
         _timelineBounceActive = false;
-        SetStatus($"Timeline frozen to {Path.GetFileName(path)}. Original tracks are preserved but muted by solo.");
+        string frozen = $"Timeline frozen to {Path.GetFileName(path)}. Original tracks are preserved but muted by solo." +
+            (plan.SkippedVst3 ? " VST3 effects were skipped in the offline freeze." : "");
+        SetStatus(frozen);
+        ShowToast(frozen);
     }
 
     private void TimelineSetTempo(double tempo)

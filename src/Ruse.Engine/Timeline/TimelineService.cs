@@ -31,6 +31,15 @@ public sealed class TimelineService : IDisposable
     public bool CanRedo { get { lock (_gate) return _redo.Count > 0; } }
     public Action<string, int, int, float>? ApplyAutomation { get; set; }
 
+    /// <summary>
+    /// Optional offline processors used by BounceToWave. The renderer receives
+    /// one track at a time, then the summed master block. Instances must be
+    /// stateful for the whole bounce so reverb and delay tails are continuous.
+    /// </summary>
+    public Action<TimelineTrack, float[], int>? TrackProcessor { get; set; }
+    public Action<float[], int>? MasterProcessor { get; set; }
+    public double BounceTailSeconds { get; set; } = 2.0;
+
     public void LoadProject(TimelineProject? project)
     {
         project ??= new TimelineProject();
@@ -632,6 +641,37 @@ public sealed class TimelineService : IDisposable
         }
     }
 
+    /// <summary>Moves a clip to another timeline track without changing its audio.</summary>
+    public bool MoveClipToTrack(string fromTrackId, string toTrackId, string clipId, long startSample)
+    {
+        lock (_gate)
+        {
+            if (string.Equals(fromTrackId, toTrackId, StringComparison.Ordinal))
+            {
+                return MoveClip(fromTrackId, clipId, startSample);
+            }
+
+            if (!_tracks.TryGetValue(fromTrackId, out var from) ||
+                !_tracks.TryGetValue(toTrackId, out var to))
+            {
+                return false;
+            }
+
+            var clip = from.Track.Clips.FirstOrDefault(item =>
+                string.Equals(item.Id, clipId, StringComparison.Ordinal));
+            if (clip == null)
+            {
+                return false;
+            }
+
+            Remember();
+            from.Track.Clips.Remove(clip);
+            clip.StartSample = Math.Max(0, startSample);
+            to.Track.Clips.Add(clip);
+            return true;
+        }
+    }
+
     public long TotalLengthSamples()
     {
         lock (_gate)
@@ -673,17 +713,40 @@ public sealed class TimelineService : IDisposable
             return false;
         }
 
+        if (TrackProcessor != null || MasterProcessor != null)
+        {
+            length += (long)Math.Round(Math.Max(0.0, BounceTailSeconds) * SampleRate);
+        }
+
         try
         {
-            const int blockFrames = 4096;
+            const int blockFrames = 2048;
             var block = new float[blockFrames * 2];
+            var trackBlock = new float[blockFrames * 2];
+            bool anySolo = snapshot.Tracks.Any(track => track.Solo);
             using var writer = new WaveFileWriter(path, new WaveFormat(SampleRate, 24, 2));
             long position = 0;
             while (position < length)
             {
                 int frames = (int)Math.Min(blockFrames, length - position);
                 Array.Clear(block, 0, frames * 2);
-                MixTracks(snapshot, position, frames, block);
+                foreach (var track in snapshot.Tracks)
+                {
+                    if (track.Muted || (anySolo && !track.Solo))
+                    {
+                        continue;
+                    }
+
+                    Array.Clear(trackBlock, 0, frames * 2);
+                    MixTrack(track, position, frames, trackBlock);
+                    TrackProcessor?.Invoke(track, trackBlock, frames);
+                    for (int i = 0; i < frames * 2; i++)
+                    {
+                        block[i] += trackBlock[i];
+                    }
+                }
+
+                MasterProcessor?.Invoke(block, frames);
                 writer.WriteSamples(block, 0, frames * 2);
                 position += frames;
             }
@@ -708,20 +771,11 @@ public sealed class TimelineService : IDisposable
         return true;
     }
 
-    private static void MixTracks(TimelineProject project, long position, int frames, float[] block)
+    private static void MixTrack(TimelineTrack track, long position, int frames, float[] block)
     {
-        bool anySolo = project.Tracks.Any(track => track.Solo);
-        foreach (var track in project.Tracks)
+        foreach (var clip in track.Clips)
         {
-            if (track.Muted || (anySolo && !track.Solo))
-            {
-                continue;
-            }
-
-            foreach (var clip in track.Clips)
-            {
-                MixClipInto(clip, track.Gain, position, frames, block, 0);
-            }
+            MixClipInto(clip, track.Gain, position, frames, block, 0);
         }
     }
 

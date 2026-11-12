@@ -597,7 +597,10 @@ internal sealed partial class WebShellController
         _settings.UiLanguage = settings.UiLanguage is "pt-BR" or "es" or "fr" or "de" or "it" or "ja" or "ko" or "zh-CN"
             ? settings.UiLanguage
             : "en";
-        _settings.Theme = settings.Theme is "light" ? "light" : "dark";
+        _settings.Theme = settings.Theme is "light" or "system" or "midnight" or "ocean" or "ember"
+            or "blueprint" or "deepdive" or "studio74" or "midnightstudy"
+            ? settings.Theme
+            : "dark";
         ApplyWindowTheme();
         _settings.StartRoutingOnLaunch = settings.StartRoutingOnLaunch;
         _settings.HighlightMutedNodes = settings.HighlightMutedNodes;

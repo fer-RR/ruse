@@ -424,7 +424,7 @@ export interface SettingsModel {
   followPlayingApps: boolean;
   followOutputId: string;
   uiLanguage: string;
-  theme: 'dark' | 'light';
+  theme: 'dark' | 'light' | 'system' | 'midnight' | 'ocean' | 'ember' | 'blueprint' | 'deepdive' | 'studio74' | 'midnightstudy';
   startRoutingOnLaunch: boolean;
   highlightMutedNodes: boolean;
   signalGlow: boolean;
@@ -497,6 +497,8 @@ export interface SettingsModel {
 export interface StatusMessage {
   text: string;
   isError: boolean;
+  actionLabel?: string;
+  action?: string;
 }
 
 export interface HistorySnapshot {

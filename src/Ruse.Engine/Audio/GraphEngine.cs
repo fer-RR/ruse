@@ -106,14 +106,14 @@ internal sealed class GraphEngine : IDisposable
         }
     }
 
-    internal void Stop()
+    internal bool Stop()
     {
         Thread? thread;
         lock (_sync)
         {
             if (!_running && _thread == null)
             {
-                return;
+                return true;
             }
 
             _running = false;
@@ -134,7 +134,7 @@ internal sealed class GraphEngine : IDisposable
             _watchdog = null;
         }
 
-        thread?.Join(1000);
+        return thread == null || thread.Join(1000);
     }
 
     /// <summary>Rebuilds the processing snapshot after a graph change.</summary>
@@ -367,8 +367,17 @@ internal sealed class GraphEngine : IDisposable
         }
 
         _disposed = true;
-        Stop();
-        _wake.Dispose();
+        if (Stop())
+        {
+            _wake.Dispose();
+        }
+        else
+        {
+            // The render thread may still be inside WaitOne. Disposing the
+            // event now would turn a slow stop into an ObjectDisposedException
+            // on the audio thread, so keep it alive for this process.
+            AppLog.Warning("Graph renderer did not stop in time; leaving its wake event undisposed.");
+        }
     }
 
     [System.Runtime.InteropServices.DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]

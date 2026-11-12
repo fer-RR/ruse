@@ -19,6 +19,7 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
     private volatile float _contrast = 1f;
     private volatile float _floor = -100f;
     private volatile float _ceiling = -30f;
+    private volatile int _palette;
 
     public SpectrogramProcessor()
     {
@@ -63,6 +64,18 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
                 Set = value => _ceiling = Math.Clamp(value, -40f, 0f),
                 Unit = "dB",
             },
+            new AudioParameter
+            {
+                Name = "Palette",
+                Min = 0,
+                Max = 1,
+                Default = 0,
+                IsInteger = true,
+                IsChoice = true,
+                Options = new[] { "Classic", "Viridis" },
+                Get = () => _palette,
+                Set = value => _palette = Math.Clamp((int)MathF.Round(value), 0, 1),
+            },
         };
     }
 
@@ -73,6 +86,7 @@ public sealed class SpectrogramProcessor : IAudioProcessor, IParameterizedProces
     public float Contrast => _contrast;
     public float Floor => _floor;
     public float Ceiling => _ceiling;
+    public int Palette => _palette;
 
     public void SetTapId(int id)
     {

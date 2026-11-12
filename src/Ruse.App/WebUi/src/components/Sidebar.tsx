@@ -99,7 +99,9 @@ const LibraryItem = memo(function LibraryItem({ item, name, onAdd, onEdit, onRen
     <div
       className={`library-item item-${item.kind} ${item.kind === 'input' && item.virtual ? 'item-virtual-bus' : ''} ${active ? 'flowing' : ''}`}
       role="button"
-      tabIndex={0}
+      tabIndex={onCanvas ? -1 : 0}
+      aria-disabled={onCanvas || undefined}
+      aria-label={`${name}. ${t(item.subtitle)}`}
       title={onCanvas
         ? t('Already on the canvas')
         : `${t(item.details)}. ${t('Drag onto the canvas or double-click to add.')}`}
@@ -557,17 +559,39 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
                       }}
                     >
                       {section.id === 'samples' && (
-                        <div className="sample-actions">
-                          <button type="button" className="sample-action" onClick={() => send('samples-open-folder')} title={t('Open samples folder')}>
+                        <div className="library-section-actions">
+                          <button type="button" className="library-action" onClick={() => send('samples-open-folder')} title={t('Open samples folder')}>
                             <FolderOpen size={13} /> {t('Open folder')}
                           </button>
-                          <button type="button" className="sample-action" onClick={() => send('samples-import')} title={t('Add sample files')}>
+                          <button type="button" className="library-action" onClick={() => send('samples-import')} title={t('Add sample files')}>
                             <Upload size={13} /> {t('Add samples')}
                           </button>
-                          <button type="button" className="sample-action" onClick={() => send('samples-refresh')} title={t('Refresh samples')}>
+                          <button type="button" className="library-action" onClick={() => send('samples-refresh')} title={t('Refresh samples')}>
                             <RefreshCw size={13} /> {t('Refresh')}
                           </button>
                           <span className="sample-hint">{t('Drop audio files here or open the folder.')}</span>
+                        </div>
+                      )}
+                      {section.label === 'Saved chains' && (
+                        <div className="library-section-actions">
+                          <button type="button" className="library-action" onClick={onNewChain}>
+                            <Plus size={13} /> {t('New chain')}
+                          </button>
+                        </div>
+                      )}
+                      {section.label === 'VST3 plugins' && (
+                        <div className="library-section-actions">
+                          <button type="button" className="library-action" onClick={onRescanPlugins}>
+                            <RefreshCw size={13} /> {t('Rescan VST3 plugins')}
+                          </button>
+                        </div>
+                      )}
+                      {(section.id === 'asioOutputs' || section.id === 'asioInputs') &&
+                        section.items.length === 0 && !catalog.asioLoaded && (
+                        <div className="library-section-actions">
+                          <button type="button" className="library-action" onClick={onAsioRefresh}>
+                            <RefreshCw size={13} /> {t('Load ASIO drivers')}
+                          </button>
                         </div>
                       )}
                       {section.items.map(item => <LibraryItem
@@ -580,13 +604,8 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
                         onDelete={item.kind === 'chain' || item.kind === 'template' ? onDelete : undefined}
                         onCanvas={isOnCanvas(item)}
                       />)}
-                      {section.label === 'Saved chains' && <button className="new-chain-button" onClick={onNewChain}><Plus size={13} /> {t('New chain')}</button>}
-                      {section.label === 'VST3 plugins' && <button className="new-chain-button" onClick={onRescanPlugins}><Plus size={13} /> {t('Rescan VST3 plugins')}</button>}
-                      {(section.id === 'asioOutputs' || section.id === 'asioInputs') && section.items.length === 0 && (
-                        !catalog.asioLoaded
-                          ? <button className="new-chain-button" onClick={onAsioRefresh}><Plus size={13} /> {t('Load ASIO drivers')}</button>
-                          : <p className="library-empty">{t('No ASIO drivers found.')}</p>
-                      )}
+                      {(section.id === 'asioOutputs' || section.id === 'asioInputs') && section.items.length === 0 &&
+                        catalog.asioLoaded && <p className="library-empty">{t('No ASIO drivers found.')}</p>}
                     </SortableSection>
                   );
                 })}

@@ -32,7 +32,7 @@ function TranslationTier({
     : '';
 
   return (
-    <article className={`model-tier tier-${model.tier.toLowerCase()} ${model.installed ? 'installed' : ''} ${selected ? 'selected' : ''} ${isDownloading ? 'downloading' : ''}`}>
+    <article className={`model-tier tier-${model.tier.toLowerCase()} ${model.installed ? 'installed' : ''} ${selected ? 'selected' : ''} ${isDownloading ? 'downloading' : ''}`} aria-busy={isDownloading || undefined}>
       <div className="model-tier-head">
         <strong>{t(model.tier)}</strong>
         <span className="model-tier-size">{formatModelSize(model.sizeMb)}</span>
@@ -44,7 +44,7 @@ function TranslationTier({
       {model.installed && model.installedSize && <small className="model-tier-disk">{model.installedSize} {t('on disk')}</small>}
       {isDownloading && (
         <>
-          <div className="model-progress" title={activeDownload?.message}>
+          <div className="model-progress" title={activeDownload?.message} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(percent)}>
             <span style={{ width: `${percent}%` }} />
           </div>
           <div className="model-tier-status">

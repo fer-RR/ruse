@@ -375,6 +375,26 @@ public partial class App : Application
                 "\"ControlApiEnabled\":true,\"ControlApiPort\":47100}");
         }
 
+        if (e.Args.Contains("--make-song", StringComparer.OrdinalIgnoreCase))
+        {
+            string output = GetStringArg(e.Args, "--song-out",
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "Ruse Song"));
+            string songLine;
+            try
+            {
+                var song = SongBuilder.Create(output);
+                songLine = $"Ruse song: {song.Summary} | {song.AudioPath} | {song.PresetPath}";
+            }
+            catch (Exception ex)
+            {
+                songLine = "Ruse song FAILED: " + ex;
+            }
+
+            WriteResult("make-song.txt", songLine);
+            Shutdown();
+            return;
+        }
+
         if (e.Args.Contains("--demo", StringComparer.OrdinalIgnoreCase))
         {
             DemoMode = true;
@@ -402,6 +422,14 @@ public partial class App : Application
         if (e.Args.Contains("--selftest", StringComparer.OrdinalIgnoreCase))
         {
             RunSelfTest(e.Args);
+            Shutdown();
+            return;
+        }
+
+        if (e.Args.Contains("--low-latency-test", StringComparer.OrdinalIgnoreCase))
+        {
+            var r = LatencySelfTest.TestLowLatencyProfile();
+            WriteResult("low-latency-test.txt", $"Ruse low-latency test: {r.Summary}");
             Shutdown();
             return;
         }

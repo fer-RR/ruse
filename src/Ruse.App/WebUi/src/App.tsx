@@ -96,7 +96,21 @@ export default function App() {
   const [graph, setGraph] = useState<GraphSnapshot>(isHosted ? { version: 0, nodes: [], links: [], running: false } : demoGraph);
   const [settings, setSettings] = useState<SettingsModel>(initialSettings);
   const language = normalizeLanguage(settings.uiLanguage);
-  const theme = settings.theme === 'light' ? 'light' : 'dark';
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() =>
+    typeof window === 'undefined' || !window.matchMedia
+      ? true
+      : window.matchMedia('(prefers-color-scheme: dark)').matches);
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const query = window.matchMedia('(prefers-color-scheme: dark)');
+    const update = () => setSystemPrefersDark(query.matches);
+    update();
+    query.addEventListener?.('change', update);
+    return () => query.removeEventListener?.('change', update);
+  }, []);
+  const theme = settings.theme === 'system'
+    ? (systemPrefersDark ? 'dark' : 'light')
+    : settings.theme;
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
@@ -106,6 +120,12 @@ export default function App() {
   const [status, setStatus] = useState<StatusMessage>({ text: isHosted ? 'Starting native audio engine.' : 'Interface preview - native engine not attached.', isError: false });
   const [startup, setStartup] = useState({ visible: isHosted, progress: 0.08 });
   const [alert, setAlert] = useState<StatusMessage | null>(null);
+  const [toast, setToast] = useState<StatusMessage | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
   const [dismissedWarning, setDismissedWarning] = useState('');
   const [history, setHistory] = useState<HistorySnapshot>({ canUndo: false, canRedo: false, undoLabel: '', redoLabel: '' });
   const [nodes, setNodes, onNodesChange] = useNodesState<RuseFlowNode>([]);
@@ -464,6 +484,7 @@ export default function App() {
       case 'chain-edit': setChainEditor(payload as ChainEditorRequest); break;
       case 'status': setStatus(payload as StatusMessage); break;
       case 'alert': setAlert(payload as StatusMessage); break;
+      case 'toast': setToast(payload as StatusMessage); break;
       case 'splash':
       case 'welcome': setWelcomeOpen(true); break;
       case 'startup-progress': {
@@ -981,6 +1002,13 @@ export default function App() {
       } else if (modifier && event.key.toLowerCase() === 'm') {
         event.preventDefault();
         setMixerOpen(value => !value);
+      } else if (modifier && event.key.toLowerCase() === 't') {
+        event.preventDefault();
+        setTimelineOpen(true);
+        send('timeline-open');
+      } else if (modifier && !event.shiftKey && event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        send('transport', { running: !running });
       } else if (modifier && event.key.toLowerCase() === 's') {
         event.preventDefault();
         send('save-preset');
@@ -1007,7 +1035,11 @@ export default function App() {
                  !(target instanceof HTMLSelectElement) &&
                  !(target instanceof HTMLTextAreaElement)) {
         event.preventDefault();
-        send('transport', { running: !running });
+        if (!timelineOpen) {
+          setTimelineOpen(true);
+          send('timeline-open');
+        }
+        send(timeline.playing ? 'timeline-stop' : 'timeline-play');
       } else if (event.key.toLowerCase() === 'b') {
         const selected = nodesRef.current.find(node =>
           node.selected && node.data.kind === 'modifier' && !node.data.diagnostics);
@@ -1032,7 +1064,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [flow, toggleDiagnostics, modalOpen, running, ui.micMuted]);
+  }, [flow, toggleDiagnostics, modalOpen, running, ui.micMuted, timeline.playing, timelineOpen]);
 
   const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1168,7 +1200,8 @@ export default function App() {
         timelineOpen={timelineOpen}
         onTimeline={() => { setTimelineOpen(true); send('timeline-open'); }}
       />
-      {alert && <div className={`alert-bar ${alert.isError ? 'error' : ''}` }><span>{alert.text}</span><div className="alert-actions"><button onClick={() => send('open-log') }>{t('Open log')}</button><button onClick={() => setAlert(null) }>{t('Dismiss')}</button></div></div>}
+      {alert && <div className={`alert-bar ${alert.isError ? 'error' : ''}`} role="alert" aria-live="assertive"><span>{alert.text}</span><div className="alert-actions">{alert.action && alert.actionLabel && <button onClick={() => { send(alert.action!); setAlert(null); }}>{t(alert.actionLabel)}</button>}<button onClick={() => send('open-log') }>{t('Open log')}</button><button onClick={() => setAlert(null) }>{t('Dismiss')}</button></div></div>}
+      {toast && <div className={`toast ${toast.isError ? 'error' : ''}`} role="status" aria-live="polite"><span>{toast.text}</span><button aria-label={t('Dismiss')} onClick={() => setToast(null)}>×</button></div>}
       {!catalog.perAppCaptureAvailable && (
         <div className="routing-warning-bar info" role="status">
           <Info size={15} />
@@ -1218,6 +1251,7 @@ export default function App() {
         <main
           className="graph-area"
           ref={graphElement}
+          aria-label={t('Graph')}
           onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }}
           onDrop={event => {
             event.preventDefault();
@@ -1315,10 +1349,21 @@ export default function App() {
             connectionLineComponent={RuseConnectionLine}
             connectionLineStyle={{ stroke: '#65D6D0', strokeWidth: 2, strokeDasharray: '5 4' }}
             connectionDragThreshold={0}
+            onlyRenderVisibleElements
             proOptions={{ hideAttribution: true }}
             defaultEdgeOptions={{ type: 'ruseEdge' }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color={theme === 'light' ? '#C5CFDD' : '#34465A'} />
+            <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color={
+              theme === 'light' ? '#C5CFDD'
+                : theme === 'midnight' ? '#22304A'
+                : theme === 'ocean' ? '#1B4A52'
+                : theme === 'ember' ? '#4A352C'
+                : theme === 'blueprint' ? '#5A8FC7'
+                : theme === 'deepdive' ? '#4C2C7A'
+                : theme === 'studio74' ? '#4A5D4E'
+                : theme === 'midnightstudy' ? '#2E3450'
+                : '#34465A'
+            } />
             <ViewportPortal>
               <div className={`ruse-frame-layer ${altPressed ? 'alt' : ''}` }>
                 {frameDraft && <div className="ruse-frame draft" style={{ left: frameDraft.x, top: frameDraft.y, width: frameDraft.width, height: frameDraft.height }} />}
@@ -1403,6 +1448,7 @@ export default function App() {
               onSeek={sample => send('timeline-seek', { sample })}
               onAddClipPath={(trackId, path, startSample) => send('timeline-add-clip-path', { trackId, path, startSample })}
               onMoveClip={(trackId, clipId, startSample) => send('timeline-move-clip', { trackId, clipId, startSample })}
+              onMoveClipToTrack={(fromTrackId, toTrackId, clipId, startSample) => send('timeline-move-clip-track', { fromTrackId, toTrackId, clipId, startSample })}
               onUpdateClip={(trackId, clipId, update) => send('timeline-update-clip', { trackId, clipId, ...update })}
               onStretchClip={(trackId, clipId, lengthSamples) => send('timeline-stretch-clip', { trackId, clipId, lengthSamples })}
               onRemoveClip={(trackId, clipId) => send('timeline-remove-clip', { trackId, clipId })}
@@ -1531,7 +1577,7 @@ export default function App() {
         onClose={() => setChainEditor(null)}
       />}
       {canvasMenu && <div className="context-layer" onPointerDown={event => { if (event.target === event.currentTarget) setCanvasMenu(null); } }>
-        <div className="context-menu" role="menu" onKeyDown={onContextMenuKeyDown} style={{ left: menuLeft, top: menuTop } }>
+        <div className="context-menu" role="menu" aria-label={t('Canvas')} onKeyDown={onContextMenuKeyDown} style={{ left: menuLeft, top: menuTop } }>
           {canvasMenu.kind === 'node' && menuNode && <>
             <button role="menuitem" tabIndex={-1} onClick={() => { setRenamePrompt({ id: menuNode.id, title: menuNode.data.title }); setCanvasMenu(null); } }><Pencil size={14} /> {t('Rename')}</button>
             <button role="menuitem" tabIndex={-1} onClick={() => { send('duplicate', { id: menuNode.id }); setCanvasMenu(null); } }><Copy size={14} /> {t('Duplicate')} <kbd>{SHORTCUTS.duplicate}</kbd></button>

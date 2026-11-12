@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Activity, AudioLines, Cable, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, LayoutGrid, Plus, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
+import { Activity, AudioLines, Cable, Check, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, LayoutGrid, Plus, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { TRANSLATION_TARGETS } from '../languages';
@@ -14,6 +14,19 @@ import TtsModelCatalog from './TtsModelCatalog';
 import { formatBytes, useUpdates } from '../updates';
 import { useAudioOptimizer } from '../audioOptimizer';
 
+const THEME_OPTIONS = [
+  { id: 'system', label: 'Windows' },
+  { id: 'dark', label: 'Dark' },
+  { id: 'light', label: 'Light' },
+  { id: 'midnight', label: 'Midnight' },
+  { id: 'ocean', label: 'Ocean' },
+  { id: 'ember', label: 'Ember' },
+  { id: 'blueprint', label: 'Blueprint' },
+  { id: 'deepdive', label: 'Deep Dive' },
+  { id: 'studio74', label: "Studio '74" },
+  { id: 'midnightstudy', label: 'Midnight Study' },
+] as const;
+
 export function Modal({ title, onClose, children, className = '', movable = false }: {
   title: string;
   onClose: () => void;
@@ -23,11 +36,17 @@ export function Modal({ title, onClose, children, className = '', movable = fals
 }) {
   const { t } = useI18n();
   const ref = useRef<HTMLDialogElement>(null);
+  const titleId = useId();
+  const previousFocus = useRef<HTMLElement | null>(null);
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   useEffect(() => {
+    previousFocus.current = document.activeElement as HTMLElement | null;
     const dialog = ref.current;
     dialog?.showModal();
-    return () => dialog?.close();
+    return () => {
+      dialog?.close();
+      previousFocus.current?.focus?.();
+    };
   }, []);
 
   const startMove = (event: ReactPointerEvent<HTMLElement>) => {
@@ -60,11 +79,13 @@ export function Modal({ title, onClose, children, className = '', movable = fals
       ref={ref}
       className={`modal ${movable ? 'movable' : ''} ${className}`}
       style={movable ? { transform: `translate(${offset.x}px, ${offset.y}px)` } : undefined}
+      aria-labelledby={titleId}
+      aria-modal="true"
       onCancel={event => { event.preventDefault(); onClose(); }}
       onClick={event => { if (event.target === ref.current) onClose(); }}
     >
       <div className="modal-frame">
-        <header className="modal-header" onPointerDown={movable ? startMove : undefined}><h2>{title}</h2><button className="icon-button" aria-label={t('Close dialog')} onClick={onClose}><X size={16} /></button></header>
+        <header className="modal-header" onPointerDown={movable ? startMove : undefined}><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" aria-label={t('Close dialog')} onClick={onClose}><X size={16} /></button></header>
         {children}
       </div>
     </dialog>
@@ -207,6 +228,7 @@ const SHORTCUT_LIST: ReadonlyArray<readonly [string, string]> = [
   [SHORTCUTS.save, 'Save preset'],
   [SHORTCUTS.load, 'Load preset'],
   [SHORTCUTS.mixer, 'Show or hide the mixer'],
+  [SHORTCUTS.timeline, 'Show the timeline'],
   [SHORTCUTS.diagnostics, 'Show live diagnostics'],
   [SHORTCUTS.librarySections, 'Jump to Sources, Outputs, Inputs, Virtuals or Effects'],
   [`${SHORTCUTS.remove} / ${SHORTCUTS.removeAlt}`, 'Remove selected nodes or cables'],
@@ -217,6 +239,7 @@ const SHORTCUT_LIST: ReadonlyArray<readonly [string, string]> = [
   [SHORTCUTS.resetZoom, 'Reset zoom'],
   [`${SHORTCUTS.zoomIn} / ${SHORTCUTS.zoomOut}`, 'Zoom in or out'],
   [SHORTCUTS.transport, 'Start or stop routing'],
+  [SHORTCUTS.timelinePlay, 'Start or stop the timeline'],
   [SHORTCUTS.muteMics, 'Mute every microphone input'],
   [SHORTCUTS.settings, 'Open Settings'],
   [SHORTCUTS.refresh, 'Refresh applications and devices'],
@@ -725,14 +748,34 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
 
         {tab === 'workspace' && (
           <>
-            <SettingsSection title="Interface" summary={settings.theme === 'light' ? t('Light') : t('Dark')}>
-              <label className="setting-row">
+            <SettingsSection title="Interface" summary={
+              settings.theme === 'dark' ? t('Dark')
+                : settings.theme === 'light' ? t('Light')
+                : THEME_OPTIONS.find(option => option.id === settings.theme)?.label ?? 'Dark'
+            }>
+              <div className="setting-row theme-picker">
                 <span><strong>{t('Theme')}</strong><small>{t('Choose the workspace colour scheme.')}</small></span>
-                <select value={settings.theme === 'light' ? 'light' : 'dark'} onChange={event => onChange({ ...settings, theme: event.target.value === 'light' ? 'light' : 'dark' })}>
-                  <option value="dark">{t('Dark')}</option>
-                  <option value="light">{t('Light')}</option>
-                </select>
-              </label>
+                <div className="theme-grid" role="radiogroup" aria-label={t('Theme')}>
+                  {THEME_OPTIONS.map(option => {
+                    const selected = (settings.theme || 'dark') === option.id;
+                    const label = option.id === 'dark' ? t('Dark') : option.id === 'light' ? t('Light') : option.label;
+                    return (
+                      <button
+                        key={option.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        className={`theme-choice ${selected ? 'active' : ''}`}
+                        onClick={() => onChange({ ...settings, theme: option.id })}
+                      >
+                        <span className={`theme-chip theme-chip-${option.id}`} aria-hidden="true" />
+                        <span>{label}</span>
+                        {selected && <Check size={11} aria-hidden="true" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
               <label className="setting-row">
                 <span><strong>{t('Language')}</strong><small>{t('Interface language. Audio status and device names stay in English.')}</small></span>
                 <select value={normalizeLanguage(settings.uiLanguage)} onChange={event => onChange({ ...settings, uiLanguage: event.target.value })}>

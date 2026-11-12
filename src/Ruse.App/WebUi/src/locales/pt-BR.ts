@@ -40,6 +40,7 @@ export const ptBR: Record<string, string> = {
   'Unmute all outputs': 'Reativar todas as saídas',
   'Mute all outputs': 'Silenciar todas as saídas',
   'CLIP': 'CLIP',
+  'Clip gain': 'Ganho do clipe',
   'Dismiss': 'Dispensar',
 
   // Sidebar
@@ -414,6 +415,7 @@ export const ptBR: Record<string, string> = {
   'Copied': 'Copiado',
   'Export': 'Exportar',
   'Retry': 'Tentar novamente',
+  'Retry routing': 'Tentar roteamento novamente',
   'Transcription input level {level}%': 'Nível de entrada da transcrição {level}%',
 
   // Help
