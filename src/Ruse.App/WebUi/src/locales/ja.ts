@@ -782,6 +782,9 @@ export const ja: Record<string, string> = {
   "Load ASIO drivers": "ASIO ドライバーを読み込む",
   "No ASIO drivers found.": "ASIO ドライバーが見つかりません。",
   "Timeline": "タイムライン",
+  "Build with the timeline": "タイムラインで制作",
+  "Effect chain": "エフェクトチェーン",
+  "Open the Timeline, add a track, drop samples or recordings, then press Space to play. Drag an effect onto a cable to build an effect chain.": "タイムラインを開き、トラックを追加し、サンプルや録音を置いてスペースキーで再生します。エフェクトをケーブルにドラッグするとエフェクトチェーンを作成できます。",
   "Play": "再生",
   "Add track": "トラックを追加",
   "Import clip": "クリップをインポート",
@@ -844,4 +847,7 @@ export const ja: Record<string, string> = {
   "Add a track, then drop samples or recordings onto the timeline.": "トラックを追加し、サンプルや録音をタイムラインにドロップします。",
   "Remove this clip?": "このクリップを削除しますか？",
   "Remove this automation lane?": "このオートメーションレーンを削除しますか？",
+  "Insert a VST3 effect from the library, then open its editor to shape the sound. Ruse can isolate each plugin in a child process.": "ライブラリから VST3 エフェクトを挿入し、エディターを開いて音を調整します。Ruse は各プラグインを子プロセスで分離できます。",
+  "Native passthrough sends a source straight to the device without the graph. Use it when the source already matches the output.": "ネイティブパススルーは、グラフを通さずにソースをデバイスへ直接送ります。ソースがすでに出力形式と一致する場合に使用します。",
+  "About native passthrough": "ネイティブパススルーについて",
 };

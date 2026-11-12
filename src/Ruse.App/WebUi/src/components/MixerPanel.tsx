@@ -1,4 +1,4 @@
-﻿import { Profiler, memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Profiler, memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import { ArrowUpDown, SlidersHorizontal, Volume2, VolumeX, X } from 'lucide-react';
 import { send } from '../bridge';
@@ -441,12 +441,13 @@ function mixGroups(nodes: NodeModel[]) {
   return [...groups.entries()];
 }
 
-function MixerPanel({ sources, outputs, modifiers, links, onClose, onResizeStart, onFocusNode }: {
+function MixerPanel({ sources, outputs, modifiers, links, onClose, onExplain, onResizeStart, onFocusNode }: {
   sources: NodeModel[];
   outputs: NodeModel[];
   modifiers: NodeModel[];
   links: LinkModel[];
   onClose: () => void;
+  onExplain: () => void;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
   onFocusNode: (id: string) => void;
 }) {
@@ -483,6 +484,13 @@ function MixerPanel({ sources, outputs, modifiers, links, onClose, onResizeStart
         <div className="mixer-head">
           <span className="mixer-title"><SlidersHorizontal size={14} /><span className="eyebrow">{t('Mixer')}</span></span>
           <span className="mixer-perf" ref={perfRef} title={t('Performance')}>{'\u2014'}</span>
+          <button
+            className="icon-button compact"
+            title={`${t('Help')}: ${t('Mixer')}`}
+            aria-label={`${t('Help')}: ${t('Mixer')}`}
+            onClick={onExplain}
+          >?
+          </button>
           <button
             className="icon-button compact"
             title={vertical ? t('Make horizontal') : t('Make vertical')}

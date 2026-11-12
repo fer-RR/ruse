@@ -2,10 +2,10 @@
 
 ## Snapshot
 
-- Version **0.8.8**, branch `main`
+- Version **0.9.0**, branch `main`
 - Repo: `C:\Users\ih_me\Projects\Ruse`
 - Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`
-- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.8.8-win-x64.zip`
+- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.9.0-win-x64.zip`
 - Runtime data: `%APPDATA%\Ruse` (settings, session, chains, templates, `control.json`, `ruse.log`, models)
 
 ## Architecture
@@ -26,6 +26,7 @@
 - **UI/API:** live `param`, `node-state` and `link-state` deltas; structural graph events are reliable and resyncable; library/mixer memoized. The control API is off by default and can be enabled in Settings > Behavior.
 - **UI craft:** spacing/control tokens, reduced-motion and coarse-pointer support, live-region status/alert announcements, dialog focus restore, labeled toolbar groups/node groups, and React Flow node virtualization (`onlyRenderVisibleElements`). Library section actions share one button style and placement. Themes: Dark, Light, Windows (follows the system light/dark setting), Midnight, Ocean, Ember, Blueprint, Deep Dive, Studio '74 and Midnight Study, chosen from a swatch grid in Settings > Workspace. Mixer faders have dB scales, unity reset and fine keyboard steps; the timeline exposes selected-clip gain and clips can be dragged across tracks; background tasks use toasts; failed device starts offer Retry. The WebUi bundle is split into app, locales, Flow, icons and DnD chunks.
 - **Timeline render:** Bounce mix and Freeze clone the track and shared master effect chains and render through them offline (2 s tail); VST3 effects are skipped in offline renders.
+- **Onboarding:** the welcome tour includes a timeline/effect-chain animation. Animated explainers cover the mixer, sidechain ducker, VST3 hosting and native passthrough, reachable from `?` buttons and first-use prompts.
 - **Updates:** Settings > Info checks the latest GitHub release manually or automatically every 1/7/30 days, verifies the downloaded ZIP with its published SHA-256, stages it, and swaps it with a backup/rollback helper. Settings can also create a desktop shortcut. The first build with this feature must be installed manually.
 
 ## Build and test

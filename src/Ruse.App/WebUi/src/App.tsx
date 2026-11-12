@@ -25,6 +25,7 @@ import { ConfirmDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, S
 import type { SettingsTab } from './components/Dialogs';
 import ChainEditorDialog from './components/ChainEditorDialog';
 import WelcomeWizard from './components/WelcomeWizard';
+import type { ExplainerId } from './components/Explainers';
 import MixerPanel from './components/MixerPanel';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
@@ -34,6 +35,7 @@ import type {
 import type { TimelineAutomationTarget, TimelineState } from './timeline';
 
 const TimelinePanel = lazy(() => import('./components/TimelinePanel'));
+const ExplainerDialog = lazy(() => import('./components/Explainers'));
 const nodeTypes = { ruseNode: RuseNode };
 const edgeTypes = { ruseEdge: RuseEdge };
 const FRAME_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const;
@@ -138,6 +140,8 @@ export default function App() {
     () => localStorage.getItem('ruse.sidebarCollapsed') === '1',
   );
   const [mixerOpen, setMixerOpen] = useState(() => localStorage.getItem('ruse.mixerOpen') === '1');
+  const [explainer, setExplainer] = useState<ExplainerId | null>(null);
+  const explainerUsage = useRef({ mixer: false, sidechain: false, vst3: false, native: false });
   const [timelineOpen, setTimelineOpen] = useState(false);
   const [timeline, setTimeline] = useState<TimelineState>({
     project: { version: 1, sampleRate: 48000, tempo: 120, loopStartSample: -1, loopEndSample: -1, tracks: [] },
@@ -204,6 +208,32 @@ export default function App() {
     applyDiagnostics(!settingsRef.current.showDiagnostics);
   }, [applyDiagnostics]);
   const closeMixer = useCallback(() => setMixerOpen(false), []);
+  const openExplainer = useCallback((id: ExplainerId) => {
+    localStorage.setItem(`ruse.explainer.${id}`, '1');
+    setExplainer(id);
+  }, []);
+  useEffect(() => {
+    const onOpenExplainer = (event: Event) => {
+      const id = (event as CustomEvent).detail;
+      if (id === 'mixer' || id === 'sidechain' || id === 'vst3' || id === 'native') openExplainer(id);
+    };
+    window.addEventListener('ruse-open-explainer', onOpenExplainer);
+    return () => window.removeEventListener('ruse-open-explainer', onOpenExplainer);
+  }, [openExplainer]);
+  useEffect(() => {
+    if (explainer || startup.visible || welcomeOpen) return;
+    const current = {
+      mixer: mixerOpen,
+      sidechain: nodes.some(node => node.data.supportsSidechain),
+      vst3: nodes.some(node => node.data.isVst3),
+      native: graph.links.some(link => link.native === true),
+    };
+    const next = (Object.keys(current) as ExplainerId[]).find(id =>
+      current[id] && !explainerUsage.current[id] &&
+      localStorage.getItem(`ruse.explainer.${id}`) !== '1');
+    explainerUsage.current = current;
+    if (next) openExplainer(next);
+  }, [explainer, graph.links, mixerOpen, nodes, openExplainer, startup.visible, welcomeOpen]);
   useEffect(() => { sidebarCollapsedRef.current = sidebarCollapsed; }, [sidebarCollapsed]);
   useEffect(() => { localStorage.setItem('ruse.sidebarWidth', String(sidebarWidth)); }, [sidebarWidth]);
   useEffect(() => { localStorage.setItem('ruse.sidebarCollapsed', sidebarCollapsed ? '1' : '0'); }, [sidebarCollapsed]);
@@ -919,7 +949,7 @@ export default function App() {
   };
 
   const fitGraph = () => flow.fitView({ padding: 0.18, duration: 180 });
-  const modalOpen = showSettings || showAudioHelp || welcomeOpen ||
+  const modalOpen = showSettings || showAudioHelp || welcomeOpen || explainer != null ||
     showClear || trayPrompt || renamePrompt != null || chainEditor != null ||
     renameLibrary != null || libraryRemoval != null || canvasMenu != null;
 
@@ -1431,6 +1461,7 @@ export default function App() {
           modifiers={mixerModifiers}
           links={graph.links}
           onClose={closeMixer}
+          onExplain={() => openExplainer('mixer')}
           onResizeStart={startMixerResize}
           onFocusNode={focusMixerNode}
         />}
@@ -1588,7 +1619,10 @@ export default function App() {
             <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('remove', { id: menuNode.id }); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Remove node')} <kbd>{SHORTCUTS.remove}</kbd></button>
           </>}
           {canvasMenu.kind === 'edge' && menuLink && <>
-            {menuLink.kind === 'direct' && <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.native === true} onClick={() => { send('link-native', { id: menuLink.id, value: menuLink.native !== true }); setCanvasMenu(null); } }><Zap size={14} /> {t('Native passthrough')}{menuLink.native === true ? ' ✓' : ''}</button>}
+            {menuLink.kind === 'direct' && <>
+              <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.native === true} onClick={() => { send('link-native', { id: menuLink.id, value: menuLink.native !== true }); setCanvasMenu(null); } }><Zap size={14} /> {t('Native passthrough')}{menuLink.native === true ? ' ✓' : ''}</button>
+              <button role="menuitem" tabIndex={-1} onClick={() => { openExplainer('native'); setCanvasMenu(null); } }><Info size={14} /> {t('About native passthrough')}</button>
+            </>}
             <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('disconnect', { id: menuLink.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect cable')}</button>
           </>}
           {canvasMenu.kind === 'pane' && <>
@@ -1603,6 +1637,7 @@ export default function App() {
           </>}
         </div>
       </div>}
+      {explainer && <Suspense fallback={null}><ExplainerDialog id={explainer} onClose={() => setExplainer(null)} /></Suspense>}
       {welcomeOpen && <WelcomeWizard
         settings={settings}
         onChange={next => { setSettings(next); send('settings', { ...next }); }}

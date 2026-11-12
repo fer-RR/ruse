@@ -424,6 +424,7 @@ function Vst3Controls({ node }: { node: RuseFlowNode['data'] }) {
         >
           {node.vst3EditorOpen ? t('Close editor') : t('Open editor')}
         </button>
+        <button className="icon-button compact" title={`${t('Help')}: ${t('VST3 plugins')}`} aria-label={`${t('Help')}: ${t('VST3 plugins')}`} onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-explainer', { detail: 'vst3' }))}>?</button>
       </div>
       {node.vst3Error && <div className="node-error">{node.vst3Error}</div>}
     </div>
@@ -800,6 +801,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             {formatRate(formatRateValue)} · {formatBits}-bit
           </span>
         ) : null}
+        {data.supportsSidechain && <button className="node-help nodrag" title={`${t('Help')}: ${t('Sidechain ducker')}`} aria-label={`${t('Help')}: ${t('Sidechain ducker')}`} onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-explainer', { detail: 'sidechain' }))}>?</button>}
         {isModifier && <button className={`node-power nodrag ${enabled ? '' : 'off'}`} title={withShortcut(enabled ? t('Bypass effect') : t('Enable effect'), 'bypass')} aria-label={enabled ? t('Bypass effect') : t('Enable effect')} onClick={() => send('effect-enabled', { id: data.id, value: !enabled })}>
           <Power size={13} />
         </button>}

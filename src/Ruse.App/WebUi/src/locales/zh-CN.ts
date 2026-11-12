@@ -782,6 +782,9 @@ export const zhCN: Record<string, string> = {
   "Load ASIO drivers": "加载 ASIO 驱动",
   "No ASIO drivers found.": "未找到 ASIO 驱动。",
   "Timeline": "时间线",
+  "Build with the timeline": "用时间线创作",
+  "Effect chain": "效果链",
+  "Open the Timeline, add a track, drop samples or recordings, then press Space to play. Drag an effect onto a cable to build an effect chain.": "打开时间线，添加轨道，放入采样或录音，然后按空格键播放。将效果拖到线缆上即可创建效果链。",
   "Play": "播放",
   "Add track": "添加轨道",
   "Import clip": "导入片段",
@@ -844,4 +847,7 @@ export const zhCN: Record<string, string> = {
   "Add a track, then drop samples or recordings onto the timeline.": "添加轨道，然后将采样或录音拖放到时间线上。",
   "Remove this clip?": "移除此片段？",
   "Remove this automation lane?": "移除此自动化轨道？",
+  "Insert a VST3 effect from the library, then open its editor to shape the sound. Ruse can isolate each plugin in a child process.": "从库中插入 VST3 效果，然后打开其编辑器来塑造声音。Ruse 可以将每个插件隔离在子进程中。",
+  "Native passthrough sends a source straight to the device without the graph. Use it when the source already matches the output.": "原生直通将源直接发送到设备，而不经过图形。当源已与输出匹配时使用。",
+  "About native passthrough": "关于原生直通",
 };

@@ -782,6 +782,9 @@ export const de: Record<string, string> = {
   "Load ASIO drivers": "ASIO-Treiber laden",
   "No ASIO drivers found.": "Keine ASIO-Treiber gefunden.",
   "Timeline": "Zeitleiste",
+  "Build with the timeline": "Mit der Timeline arbeiten",
+  "Effect chain": "Effektkette",
+  "Open the Timeline, add a track, drop samples or recordings, then press Space to play. Drag an effect onto a cable to build an effect chain.": "Öffnen Sie die Zeitleiste, fügen Sie eine Spur hinzu, legen Sie Samples oder Aufnahmen ab und drücken Sie dann die Leertaste. Ziehen Sie einen Effekt auf ein Kabel, um eine Effektkette aufzubauen.",
   "Play": "Wiedergabe",
   "Add track": "Spur hinzufügen",
   "Import clip": "Clip importieren",
@@ -844,4 +847,7 @@ export const de: Record<string, string> = {
   "Add a track, then drop samples or recordings onto the timeline.": "Füge eine Spur hinzu und ziehe dann Samples oder Aufnahmen in die Zeitleiste.",
   "Remove this clip?": "Diesen Clip entfernen?",
   "Remove this automation lane?": "Diese Automationsspur entfernen?",
+  "Insert a VST3 effect from the library, then open its editor to shape the sound. Ruse can isolate each plugin in a child process.": "Fügen Sie einen VST3-Effekt aus der Bibliothek ein und öffnen Sie dann seinen Editor, um den Klang zu formen. Ruse kann jedes Plugin in einem untergeordneten Prozess isolieren.",
+  "Native passthrough sends a source straight to the device without the graph. Use it when the source already matches the output.": "Native-Durchleitung sendet eine Quelle direkt an das Gerät, ohne den Graphen. Verwenden Sie sie, wenn die Quelle bereits zum Ausgang passt.",
+  "About native passthrough": "Über Native-Durchleitung",
 };

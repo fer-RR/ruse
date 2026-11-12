@@ -1737,6 +1737,118 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
   87%, 100% { opacity: 0; transform: translateX(9px) scale(1.12); }
 }
 
+.welcome-timeline-node rect { fill: var(--surface-1); stroke: var(--line-strong); stroke-width: 1; }
+.welcome-timeline-node-title { fill: var(--text); font: 600 9px Consolas, monospace; }
+.welcome-timeline-glyph { fill: none; stroke: var(--text-2); stroke-width: 1.3; stroke-linecap: round; stroke-linejoin: round; }
+.welcome-timeline-glyph-bubble { fill: rgba(240, 220, 90, 0.16); }
+.welcome-timeline-port { fill: #f0dc5a; stroke: rgba(255, 255, 255, 0.7); stroke-width: 1.2; }
+.welcome-timeline-port-in { fill: #43e39a; }
+.welcome-timeline-cable { fill: none; stroke: rgba(163, 230, 53, 0.72); stroke-width: 2.4; }
+.welcome-timeline-cable-flow { fill: none; stroke: #e4fbff; stroke-width: 2.2; stroke-linecap: round; stroke-dasharray: 0.04 0.12; opacity: 0; }
+.welcome-timeline-flow-mic { animation: welcome-timeline-flow-move 0.7s linear infinite, welcome-timeline-flow-mic-hp 11s linear infinite; }
+.welcome-timeline-flow-comp { animation: welcome-timeline-flow-move 0.7s linear infinite, welcome-timeline-flow-comp 11s linear infinite; }
+.welcome-timeline-port-glow { opacity: 0; animation: welcome-timeline-glow 11s linear infinite; }
+.welcome-timeline-node-hp { opacity: 0; animation: welcome-timeline-node-hp 11s linear infinite; }
+.welcome-timeline-node-comp { opacity: 0; animation: welcome-timeline-node-comp 11s linear infinite; }
+.welcome-timeline-cable-direct { opacity: 1; animation: welcome-timeline-cable-direct 11s linear infinite; }
+.welcome-timeline-cable-mic-hp { opacity: 0; animation: welcome-timeline-cable-hp 11s linear infinite; }
+.welcome-timeline-cable-hp-direct { opacity: 0; animation: welcome-timeline-cable-hp-direct 11s linear infinite; }
+.welcome-timeline-cable-hp-comp { opacity: 0; animation: welcome-timeline-cable-comp 11s linear infinite; }
+.welcome-timeline-cable-comp-speakers { opacity: 0; animation: welcome-timeline-cable-comp 11s linear infinite; }
+.welcome-timeline-fx-source { fill: var(--surface-2); stroke: var(--line); }
+.welcome-timeline-fx-text { fill: var(--text-2); font: 8px Consolas, monospace; }
+.welcome-timeline-fx-ghost { opacity: 0; offset-rotate: 0deg; }
+.welcome-timeline-fx-ghost rect { fill: rgba(240, 220, 90, 0.92); stroke: rgba(255, 255, 255, 0.6); }
+.welcome-timeline-fx-ghost text { fill: #3b2f00; font: 700 9px Consolas, monospace; text-anchor: middle; }
+.welcome-timeline-fx-ghost-hp { offset-path: path("M92 83 C 180 30, 260 30, 338 78"); animation: welcome-timeline-ghost-hp 11s linear infinite; }
+.welcome-timeline-fx-ghost-comp { offset-path: path("M92 113 C 220 155, 360 30, 456 78"); animation: welcome-timeline-ghost-comp 11s linear infinite; }
+.welcome-timeline-clip-ghost { offset-path: path("M270 150 C 270 175, 270 195, 270 226"); offset-rotate: 0deg; opacity: 0; animation: welcome-timeline-clip-ghost 11s linear infinite; }
+.welcome-timeline-clip-ghost rect { fill: rgba(191, 232, 255, 0.75); stroke: rgba(255, 255, 255, 0.6); }
+.welcome-timeline-clip { opacity: 0; animation: welcome-timeline-clip 11s linear infinite; }
+.welcome-timeline-clip-existing { opacity: 1; animation: none; }
+.welcome-timeline-wave { fill: none; stroke: #0b2a3a; stroke-width: 1; opacity: 0.6; }
+.welcome-timeline-lane { fill: rgba(255, 255, 255, 0.035); stroke: var(--line); }
+.welcome-timeline-track-label { fill: var(--text-3); font: 600 9px Consolas, monospace; }
+.welcome-timeline-key { fill: var(--surface-2); stroke: var(--line-strong); animation: welcome-timeline-key 11s linear infinite; }
+.welcome-timeline-key-text { fill: var(--text-2); font: 700 8px Consolas, monospace; text-anchor: middle; }
+.welcome-timeline-add rect { fill: rgba(67, 227, 154, 0.12); stroke: rgba(67, 227, 154, 0.45); }
+.welcome-timeline-add text { fill: #9ff5c9; font: 600 8px Consolas, monospace; text-anchor: middle; }
+.welcome-timeline-playhead { opacity: 0; transform-box: view-box; transform-origin: 0 0; animation: welcome-timeline-playhead 11s linear infinite; }
+.welcome-timeline-playhead line { stroke: #ffd166; stroke-width: 1.5; }
+.welcome-timeline-playhead path { fill: #ffd166; }
+.welcome-timeline-hint { fill: var(--text-3); font: 8px Consolas, monospace; text-anchor: end; }
+@keyframes welcome-timeline-ghost-hp {
+  0%, 36% { opacity: 0; offset-distance: 0%; }
+  38% { opacity: 1; offset-distance: 0%; }
+  51% { opacity: 1; offset-distance: 100%; }
+  54%, 100% { opacity: 0; offset-distance: 100%; }
+}
+@keyframes welcome-timeline-ghost-comp {
+  0%, 62% { opacity: 0; offset-distance: 0%; }
+  64% { opacity: 1; offset-distance: 0%; }
+  76% { opacity: 1; offset-distance: 100%; }
+  79%, 100% { opacity: 0; offset-distance: 100%; }
+}
+@keyframes welcome-timeline-node-hp {
+  0%, 54% { opacity: 0; }
+  57%, 100% { opacity: 1; }
+}
+@keyframes welcome-timeline-node-comp {
+  0%, 78% { opacity: 0; }
+  81%, 100% { opacity: 1; }
+}
+@keyframes welcome-timeline-cable-direct {
+  0%, 52% { opacity: 1; }
+  55%, 100% { opacity: 0; }
+}
+@keyframes welcome-timeline-cable-hp {
+  0%, 53% { opacity: 0; }
+  56%, 100% { opacity: 1; }
+}
+@keyframes welcome-timeline-cable-hp-direct {
+  0%, 53% { opacity: 0; }
+  56%, 77% { opacity: 1; }
+  80%, 100% { opacity: 0; }
+}
+@keyframes welcome-timeline-cable-comp {
+  0%, 78% { opacity: 0; }
+  81%, 100% { opacity: 1; }
+}
+@keyframes welcome-timeline-flow-move { to { stroke-dashoffset: -0.1; } }
+@keyframes welcome-timeline-flow-mic-hp {
+  0%, 55% { opacity: 0; }
+  58%, 100% { opacity: 0.9; }
+}
+@keyframes welcome-timeline-flow-comp {
+  0%, 79% { opacity: 0; }
+  82%, 100% { opacity: 0.9; }
+}
+@keyframes welcome-timeline-glow {
+  0%, 54% { opacity: 0; }
+  57%, 62% { opacity: 1; }
+  68%, 100% { opacity: 0; }
+}
+@keyframes welcome-timeline-clip-ghost {
+  0%, 5% { opacity: 0; offset-distance: 0%; }
+  7% { opacity: 0.85; offset-distance: 0%; }
+  18% { opacity: 0.85; offset-distance: 100%; }
+  21%, 100% { opacity: 0; offset-distance: 100%; }
+}
+@keyframes welcome-timeline-clip {
+  0%, 19% { opacity: 0; }
+  22%, 100% { opacity: 1; }
+}
+@keyframes welcome-timeline-playhead {
+  0%, 20% { opacity: 0; transform: translateX(0); }
+  22% { opacity: 1; transform: translateX(0); }
+  95%, 100% { opacity: 1; transform: translateX(490px); }
+}
+@keyframes welcome-timeline-key {
+  0%, 22% { opacity: 0.55; }
+  26%, 32% { opacity: 1; }
+  38%, 100% { opacity: 0.55; }
+}
+
 .welcome-ex-a { animation: welcome-ex-a-vis 18s linear infinite; }
 .welcome-ex-b { animation: welcome-ex-b-vis 18s linear infinite; }
 .welcome-ex-d { animation: welcome-ex-d-vis 18s linear infinite; }
@@ -2133,3 +2245,95 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .timeline-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-3); font-size: 11px; }
 .timeline-empty-hint { color: var(--text-3); font-size: 9px; opacity: 0.8; }
 .timeline-loading { position: absolute; left: calc(var(--sidebar-width, 304px) + 8px); right: 0; bottom: 0; z-index: 20; height: 340px; display: grid; place-items: center; border-top: 1px solid var(--line-strong); background: var(--surface-1); color: var(--text-3); font-size: 10px; }
+
+.node-help { width: 21px; height: 21px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-3); font: 700 11px/1 Consolas, monospace; opacity: 0.7; }
+.node-help:hover { background: var(--surface-3); color: var(--text); opacity: 1; }
+:root[data-theme="studio74"] .node-header .node-help { color: #2b241a; }
+
+.explainer-modal .modal-frame { overflow: hidden; }
+.explainer-lead { margin: 0 18px 10px; color: var(--text-2); font-size: 12px; line-height: 1.55; text-wrap: pretty; }
+.explainer-modal .welcome-drag { margin: 0 18px; }
+.explainer-modal .modal-actions { margin: 12px 18px 18px; }
+.explainer-svg { display: block; width: 100%; height: auto; }
+.explainer-mixer-hint { fill: var(--text-3); font: 650 8px Consolas, monospace; letter-spacing: 0.8px; }
+.explainer-mixer-master { fill: rgba(67, 227, 154, 0.08); stroke: rgba(67, 227, 154, 0.42); }
+.explainer-mixer-meter-track { fill: var(--inset); stroke: var(--line); }
+.explainer-mixer-meter { fill: var(--signal); transform-box: fill-box; transform-origin: center bottom; }
+.explainer-mixer-meter-a { animation: explainer-meter-a 3.2s ease-in-out infinite; }
+.explainer-mixer-meter-b { animation: explainer-meter-b 3.2s ease-in-out infinite; }
+.explainer-mixer-meter-c { animation: explainer-meter-c 3.2s ease-in-out infinite; }
+.explainer-mixer-meter-d { animation: explainer-meter-d 3.2s ease-in-out infinite; }
+.explainer-mixer-fader-track { fill: var(--line-strong); }
+.explainer-mixer-fader { fill: var(--text); stroke: var(--line-strong); }
+.explainer-mixer-fader-a { animation: explainer-fader-a 4.2s ease-in-out infinite; }
+.explainer-mixer-fader-b { animation: explainer-fader-b 4.2s ease-in-out infinite; }
+.explainer-mixer-fader-c { animation: explainer-fader-c 4.2s ease-in-out infinite; }
+.explainer-mixer-fader-d { animation: explainer-fader-d 4.2s ease-in-out infinite; }
+.explainer-mixer-level { fill: var(--text-3); font: 600 8px Consolas, monospace; }
+.explainer-mixer-button { fill: var(--surface-3); stroke: var(--line); }
+.explainer-mixer-button-text { fill: var(--text-3); font: 700 7px Consolas, monospace; }
+.explainer-mixer-send { fill: rgba(229, 173, 81, 0.18); stroke: rgba(229, 173, 81, 0.5); }
+.explainer-mixer-master-glow { fill: rgba(67, 227, 154, 0.12); animation: explainer-master-glow 3.2s ease-in-out infinite; }
+.explainer-mixer-caption { fill: var(--text-3); font: 600 9px Consolas, monospace; letter-spacing: 0.5px; }
+.explainer-sc-subtitle { fill: var(--text-3); font: 500 8px Consolas, monospace; }
+.explainer-sc-key-cable { fill: none; stroke: rgba(255, 139, 114, 0.65); stroke-width: 2.2; }
+.explainer-sc-key-flow { fill: none; stroke: #ffe4dc; stroke-width: 2.4; stroke-linecap: round; stroke-dasharray: 0.04 0.12; animation: explainer-key-flow 0.8s linear infinite, explainer-key-vis 4.8s linear infinite; }
+.explainer-sc-key-port { fill: #ff8b72; stroke: rgba(255, 255, 255, 0.75); stroke-width: 1.4; }
+.explainer-sc-key-label { fill: #ff8b72; font: 700 8px Consolas, monospace; letter-spacing: 1px; }
+.explainer-sc-key-glow { fill: rgba(255, 139, 114, 0.16); animation: explainer-key-glow 4.8s ease-in-out infinite; }
+.explainer-sc-ducker { animation: explainer-ducker 4.8s ease-in-out infinite; }
+.explainer-sc-reduction-track { fill: var(--inset); stroke: var(--line); }
+.explainer-sc-reduction { fill: #ff8b72; transform-box: fill-box; transform-origin: left center; animation: explainer-reduction 4.8s ease-in-out infinite; }
+.explainer-sc-reduction-label { fill: var(--text-3); font: 600 8px Consolas, monospace; }
+.explainer-vst3-library-row { fill: var(--surface-2); stroke: var(--line); }
+.explainer-vst3-small { fill: var(--text-2); font: 600 8px Consolas, monospace; }
+.explainer-vst3-ghost { opacity: 0; transform-box: fill-box; transform-origin: center; animation: explainer-vst3-ghost 1.6s ease-in-out 0.15s both; }
+.explainer-vst3-ghost rect { fill: rgba(240, 220, 90, 0.16); stroke: rgba(240, 220, 90, 0.62); }
+.explainer-vst3-ghost text { fill: #ffe9a3; font: 600 8px Consolas, monospace; }
+.explainer-vst3-editor-cable { fill: none; stroke: #f0dc5a; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 0.03 0.1; opacity: 0.9; animation: explainer-key-flow 0.8s linear infinite; }
+.explainer-vst3-editor { opacity: 1; transform-box: fill-box; transform-origin: center; animation: explainer-vst3-editor 0.6s ease-out 0.2s both; }
+.explainer-vst3-editor > rect:first-child { fill: var(--surface-0); stroke: var(--line-strong); }
+.explainer-vst3-editor-bar { fill: var(--surface-2); stroke: var(--line); }
+.explainer-vst3-editor-title { fill: var(--text-2); font: 650 8px Consolas, monospace; }
+.explainer-vst3-dot { fill: var(--signal); }
+.explainer-vst3-param { fill: var(--text-2); font: 600 8px Consolas, monospace; }
+.explainer-vst3-slider { fill: var(--line-strong); }
+.explainer-vst3-knob { fill: var(--text); stroke: var(--line-strong); }
+.explainer-vst3-knob-a { animation: explainer-vst3-knob-a 5.4s ease-in-out infinite; }
+.explainer-vst3-knob-b { animation: explainer-vst3-knob-b 5.4s ease-in-out infinite; }
+.explainer-vst3-knob-c { animation: explainer-vst3-knob-c 5.4s ease-in-out infinite; }
+.explainer-vst3-sync { fill: rgba(67, 227, 154, 0.14); stroke: rgba(67, 227, 154, 0.45); }
+.explainer-vst3-sync-text { fill: var(--signal); font: 700 7px Consolas, monospace; }
+.explainer-native-chain { animation: explainer-native-chain 1.5s ease-in-out 0.2s both; }
+.explainer-native-chain-cable { fill: none; stroke: rgba(163, 230, 53, 0.55); stroke-width: 2.2; animation: explainer-native-chain-cable 1.5s ease-in-out 0.2s both; }
+.explainer-native-direct { fill: none; stroke: #43e39a; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: explainer-native-draw 1.2s ease-out 0.45s both; }
+.explainer-native-flow { fill: none; stroke: #d9fbff; stroke-width: 4; stroke-linecap: round; stroke-dasharray: 0.03 0.1; opacity: 0.9; animation: explainer-key-flow 0.8s linear infinite; }
+.explainer-native-badge { fill: rgba(67, 227, 154, 0.16); stroke: rgba(67, 227, 154, 0.5); }
+.explainer-native-badge-text { fill: var(--signal); font: 700 8px Consolas, monospace; }
+.explainer-native-toggle { fill: var(--surface-2); stroke: var(--line); }
+.explainer-native-toggle-dot { fill: var(--signal); animation: explainer-native-toggle 1s ease-in-out 0.6s both; }
+.explainer-native-toggle-text { fill: var(--text-2); font: 600 8px Consolas, monospace; }
+@keyframes explainer-meter-a { 0%, 100% { transform: scaleY(0.3); } 28% { transform: scaleY(0.86); } 52% { transform: scaleY(0.5); } 76% { transform: scaleY(0.94); } }
+@keyframes explainer-meter-b { 0%, 100% { transform: scaleY(0.5); } 24% { transform: scaleY(0.72); } 48% { transform: scaleY(0.36); } 72% { transform: scaleY(0.88); } }
+@keyframes explainer-meter-c { 0%, 100% { transform: scaleY(0.66); } 22% { transform: scaleY(0.44); } 46% { transform: scaleY(0.82); } 70% { transform: scaleY(0.56); } }
+@keyframes explainer-meter-d { 0%, 100% { transform: scaleY(0.42); } 30% { transform: scaleY(0.78); } 54% { transform: scaleY(0.58); } 78% { transform: scaleY(0.9); } }
+@keyframes explainer-fader-a { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(16px); } }
+@keyframes explainer-fader-b { 0%, 100% { transform: translateY(4px); } 50% { transform: translateY(-10px); } }
+@keyframes explainer-fader-c { 0%, 100% { transform: translateY(-2px); } 50% { transform: translateY(12px); } }
+@keyframes explainer-fader-d { 0%, 100% { transform: translateY(3px); } 50% { transform: translateY(10px); } }
+@keyframes explainer-master-glow { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.8; } }
+@keyframes explainer-key-flow { to { stroke-dashoffset: -1; } }
+@keyframes explainer-key-vis { 0%, 8% { opacity: 0; } 18%, 72% { opacity: 0.9; } 84%, 100% { opacity: 0; } }
+@keyframes explainer-key-glow { 0%, 8% { opacity: 0; } 20%, 70% { opacity: 0.8; } 84%, 100% { opacity: 0; } }
+@keyframes explainer-ducker { 0%, 100% { transform: translateX(0); } 24%, 56% { transform: translateX(3px); } }
+@keyframes explainer-reduction { 0%, 10% { transform: scaleX(1); } 24%, 56% { transform: scaleX(0.28); } 76%, 100% { transform: scaleX(1); } }
+@keyframes explainer-vst3-ghost { 0% { opacity: 0; transform: translate(0, 0); } 20% { opacity: 1; } 70% { opacity: 1; transform: translate(178px, 2px); } 100% { opacity: 0; transform: translate(178px, 2px); } }
+@keyframes explainer-vst3-cable { 0%, 42% { opacity: 0; } 52%, 82% { opacity: 0.9; } 92%, 100% { opacity: 0; } }
+@keyframes explainer-vst3-editor { 0% { opacity: 0; transform: scale(0.9); } 100% { opacity: 1; transform: scale(1); } }
+@keyframes explainer-vst3-knob-a { 0%, 54% { transform: translateX(0); } 68%, 100% { transform: translateX(24px); } }
+@keyframes explainer-vst3-knob-b { 0%, 54% { transform: translateX(0); } 68%, 100% { transform: translateX(-18px); } }
+@keyframes explainer-vst3-knob-c { 0%, 54% { transform: translateX(0); } 68%, 100% { transform: translateX(12px); } }
+@keyframes explainer-native-chain { 0% { opacity: 1; } 100% { opacity: 0.35; } }
+@keyframes explainer-native-chain-cable { 0% { opacity: 0.9; } 100% { opacity: 0.2; } }
+@keyframes explainer-native-draw { 0% { stroke-dashoffset: 1; opacity: 0; } 15% { opacity: 1; } 100% { stroke-dashoffset: 0; opacity: 1; } }
+@keyframes explainer-native-toggle { 0% { transform: translateX(0); } 100% { transform: translateX(18px); } }
