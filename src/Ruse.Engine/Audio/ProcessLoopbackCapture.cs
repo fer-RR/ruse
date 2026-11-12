@@ -47,6 +47,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
 
     // Reused packet buffer + event args so the capture thread doesn't allocate
     // a fresh byte[]/packet-args object for every packet (steady state: zero alloc).
+    private const int MaxPacketBytes = 1_048_576;
     private byte[] _packetBuffer = new byte[16384];
     private readonly AudioPacketEventArgs _packetArgs = new();
 
@@ -145,7 +146,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
 
     private IAudioClient ActivateClient()
     {
-        var handler = new ActivationHandler();
+        using var handler = new ActivationHandler();
 
         var activationParams = new AudioClientActivationParams
         {
@@ -216,7 +217,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
     {
         int hr;
 
-        var bufferReady = new AutoResetEvent(false);
+        using var bufferReady = new AutoResetEvent(false);
         hr = audioClient.SetEventHandle(bufferReady.SafeWaitHandle.DangerousGetHandle());
         if (hr < 0)
         {
@@ -231,6 +232,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
         }
 
         var captureClient = (IAudioCaptureClient)captureObj;
+        _packetBuffer = new byte[Math.Max(16384, format.AverageBytesPerSecond / 5)];
 
         hr = audioClient.Start();
         if (hr < 0)
@@ -259,6 +261,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
         finally
         {
             audioClient.Stop();
+            Marshal.ReleaseComObject(captureClient);
         }
     }
 
@@ -276,25 +279,29 @@ public sealed class ProcessLoopbackCapture : IDisposable
             int count = (int)framesAvailable * format.BlockAlign;
             if (count > 0)
             {
-                if (_packetBuffer.Length < count)
+                int chunkSize = Math.Min(MaxPacketBytes, count);
+                if (_packetBuffer.Length < chunkSize)
                 {
-                    int grown = Math.Max(count, _packetBuffer.Length * 2);
-                    _packetBuffer = new byte[grown];
-                    _packetArgs.Set(_packetBuffer, 0);
+                    _packetBuffer = new byte[Math.Max(chunkSize,
+                        Math.Min(MaxPacketBytes, _packetBuffer.Length * 2))];
                 }
 
                 var buffer = _packetBuffer;
-                if ((flags & AudclntBufferflagsSilent) != 0)
+                for (int offset = 0; offset < count; offset += chunkSize)
                 {
-                    Array.Clear(buffer, 0, count);
-                }
-                else
-                {
-                    Marshal.Copy(data, buffer, 0, count);
-                }
+                    int length = Math.Min(chunkSize, count - offset);
+                    if ((flags & AudclntBufferflagsSilent) != 0)
+                    {
+                        Array.Clear(buffer, 0, length);
+                    }
+                    else
+                    {
+                        Marshal.Copy(IntPtr.Add(data, offset), buffer, 0, length);
+                    }
 
-                _packetArgs.Set(buffer, count);
-                DataAvailable?.Invoke(this, _packetArgs);
+                    _packetArgs.Set(buffer, length);
+                    DataAvailable?.Invoke(this, _packetArgs);
+                }
             }
 
             captureClient.ReleaseBuffer(framesAvailable);
@@ -308,11 +315,13 @@ public sealed class ProcessLoopbackCapture : IDisposable
         _stopEvent.Dispose();
     }
 
-    private sealed class ActivationHandler : IActivateAudioInterfaceCompletionHandler
+    private sealed class ActivationHandler : IActivateAudioInterfaceCompletionHandler, IDisposable
     {
         private readonly ManualResetEvent _completed = new(false);
         private IAudioClient? _audioClient;
         private int _hr = unchecked((int)0x80004005);
+
+        public void Dispose() => _completed.Dispose();
 
         public void WaitForCompletion()
         {

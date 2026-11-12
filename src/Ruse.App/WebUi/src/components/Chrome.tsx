@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import {
-  CircleHelp, FolderOpen, LayoutGrid, MicOff, Minus, RefreshCw, SlidersHorizontal,
+  Clock3, FolderOpen, LayoutGrid, MicOff, Minus, RefreshCw, SlidersHorizontal,
   Redo2, Save, Settings, Square, Trash2, Undo2, Volume2, VolumeX, X, Activity,
 } from 'lucide-react';
 import { send } from '../bridge';
@@ -82,7 +82,7 @@ function ToolButton({ icon, children, title, onClick, danger = false, active = f
   return <button className={`tool-button ${danger ? 'danger' : ''} ${active ? 'active' : ''} ${accent && active ? 'accent' : ''}`} title={title} onClick={onClick}>{icon}<span>{children}</span></button>;
 }
 
-export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, undoLabel, redoLabel, onTransport, onRefresh, onSave, onLoad, onClear, onUndo, onRedo, onTidy, onMicMute, onDeviceHelp, onSettings, mixerOpen, onMixer, diagnosticsOpen, onDiagnostics }: {
+export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, undoLabel, redoLabel, onTransport, onRefresh, onSave, onLoad, onClear, onUndo, onRedo, onTidy, onMicMute, onSettings, mixerOpen, onMixer, diagnosticsOpen, onDiagnostics, timelineOpen, onTimeline }: {
   running: boolean;
   audioPlaying: boolean;
   micMuted: boolean;
@@ -99,12 +99,13 @@ export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, und
   onRedo: () => void;
   onTidy: () => void;
   onMicMute: () => void;
-  onDeviceHelp: () => void;
   onSettings: () => void;
   mixerOpen: boolean;
   onMixer: () => void;
   diagnosticsOpen: boolean;
   onDiagnostics: () => void;
+  timelineOpen: boolean;
+  onTimeline: () => void;
 }) {
   const { t } = useI18n();
   return (
@@ -118,6 +119,7 @@ export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, und
         <button className="toolbar-icon" disabled={!canRedo} title={withShortcut(canRedo ? t('Redo {label}', { label: t(redoLabel) }) : t('Nothing to redo'), 'redo')} aria-label={t('Redo')} onClick={onRedo}><Redo2 size={15} /></button>
         <button className="toolbar-icon" title={withShortcut(t('Tidy up the graph'), 'tidy')} aria-label={t('Tidy up the graph')} onClick={onTidy}><LayoutGrid size={15} /></button>
         <ToolButton icon={<SlidersHorizontal size={14} />} title={withShortcut(mixerOpen ? t('Hide mixer') : t('Show mixer'), 'mixer')} onClick={onMixer} active={mixerOpen} accent>{t('Mixer')}</ToolButton>
+        <ToolButton icon={<Clock3 size={14} />} title={t('Timeline')} onClick={onTimeline} active={timelineOpen} accent>{t('Timeline')}</ToolButton>
       </div>
       <span className="toolbar-separator" />
       <div className="toolbar-group" aria-label={t('Workspace actions')}>
@@ -131,7 +133,6 @@ export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, und
         <ToolButton icon={<MicOff size={14} />} title={withShortcut(micMuted ? t('Unmute every microphone input') : t('Mute every microphone input'), 'muteMics')} onClick={onMicMute} active={micMuted}>{micMuted ? t('Mics muted') : t('Mute mics')}</ToolButton>
         <ToolButton icon={<Activity size={14} />} title={withShortcut(diagnosticsOpen ? t('Hide diagnostics') : t('Show live diagnostics'), 'diagnostics')} onClick={onDiagnostics} active={diagnosticsOpen} accent>{t('Diagnostics')}</ToolButton>
         <ToolButton icon={<Settings size={14} />} title={withShortcut(t('Settings'), 'settings')} onClick={onSettings}>{t('Settings')}</ToolButton>
-        <button className="toolbar-icon" title={t('Device guide')} aria-label={t('Device guide')} onClick={onDeviceHelp}><CircleHelp size={15} /></button>
       </div>
     </div>
   );

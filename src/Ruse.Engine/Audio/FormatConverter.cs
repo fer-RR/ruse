@@ -23,17 +23,21 @@ public sealed class FormatConverter
 
     private const int Taps = 63;
     private const int Phases = 512;
+    private const int MaxInputFrames = 8192;
     private const int Center = Taps / 2;
     private const float Surround = 0.70710678f;
     private const float Lfe = 0.5f;
 
     private readonly int _srcChannels;
-    private readonly double _ratio;      // srcRate / targetRate
-    private readonly bool _needsResample;
-    private readonly float[] _coefficients;
+    private readonly int _sourceRate;
+    private readonly double _nominalRatio;
+    private readonly double _resampleCutoff;
+    private double _ratio;      // srcRate / targetRate, corrected for clock drift
+    private bool _needsResample;
+    private float[] _coefficients = Array.Empty<float>();
 
     // Streaming resampler history. Only used when rates differ.
-    private float[] _history;
+    private float[] _history = Array.Empty<float>();
     private int _historyFrames;
     private double _position;
 
@@ -43,23 +47,58 @@ public sealed class FormatConverter
     public FormatConverter(int sourceChannels, int sourceSampleRate, int targetSampleRate = TargetSampleRate)
     {
         _srcChannels = Math.Max(1, sourceChannels);
+        _sourceRate = Math.Max(1, sourceSampleRate);
         TargetRate = targetSampleRate > 0 ? targetSampleRate : TargetSampleRate;
-        _ratio = (double)sourceSampleRate / TargetRate;
-        _needsResample = sourceSampleRate != TargetRate;
+        _nominalRatio = (double)_sourceRate / TargetRate;
+        _ratio = _nominalRatio;
+        _needsResample = _sourceRate != TargetRate;
+        _resampleCutoff = Math.Min(1.0, (double)TargetRate / _sourceRate) * 0.97;
 
         if (_needsResample)
         {
-            double cutoff = Math.Min(1.0, (double)TargetRate / Math.Max(1, sourceSampleRate)) * 0.97;
-            _coefficients = BuildCoefficients(cutoff);
-            _history = new float[16384 * TargetChannels];
-            _historyFrames = Center;
-            _position = Center;
+            InitializeResampler();
         }
-        else
+    }
+
+    /// <summary>
+    /// Corrects the conversion ratio by a measured clock error in parts per
+    /// million. Values below 5 ppm are ignored; the correction is capped so a
+    /// noisy estimator cannot audibly bend pitch.
+    /// </summary>
+    public void SetDriftPpm(double ppm)
+    {
+        if (!double.IsFinite(ppm))
         {
-            _coefficients = Array.Empty<float>();
-            _history = Array.Empty<float>();
+            return;
         }
+
+        ppm = Math.Clamp(ppm, -1000.0, 1000.0);
+        if (Math.Abs(ppm) < 5.0 && !_needsResample)
+        {
+            _ratio = _nominalRatio;
+            return;
+        }
+
+        if (!_needsResample)
+        {
+            _needsResample = true;
+            InitializeResampler();
+        }
+
+        _ratio = _nominalRatio * (1.0 + (ppm / 1_000_000.0));
+    }
+
+    private void InitializeResampler()
+    {
+        if (_coefficients.Length != 0)
+        {
+            return;
+        }
+
+        _coefficients = BuildCoefficients(_resampleCutoff);
+        _history = new float[16384 * TargetChannels];
+        _historyFrames = Center;
+        _position = Center;
     }
 
     /// <summary>
@@ -105,35 +144,42 @@ public sealed class FormatConverter
         }
 
         destination.EnsureCapacity(startCount + (int)(srcFrames / _ratio * TargetChannels) + 8);
-        AppendHistory(source, srcFrames);
-        while (_position + Center < _historyFrames)
+        int inputFrame = 0;
+        while (inputFrame < srcFrames)
         {
-            int baseFrame = (int)Math.Floor(_position) - Center;
-            double fraction = _position - Math.Floor(_position);
-            int phase = (int)(fraction * Phases + 0.5);
-            if (phase >= Phases)
+            int chunkFrames = Math.Min(MaxInputFrames, srcFrames - inputFrame);
+            AppendHistory(source.Slice(inputFrame * _srcChannels, chunkFrames * _srcChannels), chunkFrames);
+            while (_position + Center < _historyFrames)
             {
-                phase = 0;
-                baseFrame++;
+                int baseFrame = (int)Math.Floor(_position) - Center;
+                double fraction = _position - Math.Floor(_position);
+                int phase = (int)(fraction * Phases + 0.5);
+                if (phase >= Phases)
+                {
+                    phase = 0;
+                    baseFrame++;
+                }
+
+                int coefficient = phase * Taps;
+                float left = 0f, right = 0f;
+                int sampleIndex = baseFrame * TargetChannels;
+                for (int k = 0; k < Taps; k++)
+                {
+                    float h = _coefficients[coefficient + k];
+                    left += _history[sampleIndex] * h;
+                    right += _history[sampleIndex + 1] * h;
+                    sampleIndex += TargetChannels;
+                }
+
+                destination.Add(left);
+                destination.Add(right);
+                _position += _ratio;
             }
 
-            int coefficient = phase * Taps;
-            float left = 0f, right = 0f;
-            int sampleIndex = baseFrame * TargetChannels;
-            for (int k = 0; k < Taps; k++)
-            {
-                float h = _coefficients[coefficient + k];
-                left += _history[sampleIndex] * h;
-                right += _history[sampleIndex + 1] * h;
-                sampleIndex += TargetChannels;
-            }
-
-            destination.Add(left);
-            destination.Add(right);
-            _position += _ratio;
+            DropConsumedHistory();
+            inputFrame += chunkFrames;
         }
 
-        DropConsumedHistory();
         return (destination.Count - startCount) / TargetChannels;
     }
 

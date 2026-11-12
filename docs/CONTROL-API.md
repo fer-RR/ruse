@@ -1,7 +1,7 @@
 # Control API (WebSocket)
 
-Ruse exposes a loopback-only control API for local apps. Read the URL and
-token from `%APPDATA%\Ruse\control.json`:
+When enabled, Ruse exposes a loopback-only control API for local apps. The API
+is off by default. Read the URL and token from `%APPDATA%\Ruse\control.json`:
 
 ```json
 {
@@ -14,9 +14,10 @@ token from `%APPDATA%\Ruse\control.json`:
 
 The token changes each launch. The port is `ControlApiPort` (default 47100);
 if it is busy Ruse picks a free port and the discovery file reflects it.
-To disable the API, turn off **Settings > Behavior > Control API**.
-The same setting is stored as `"ControlApiEnabled"` in
-`%APPDATA%\Ruse\settings.json`.
+To enable the API, turn on **Settings > Behavior > Control API**.
+The setting is stored as `"ControlApiEnabled"` in
+`%APPDATA%\Ruse\settings.json`; existing saved settings keep their current
+value.
 
 ## Connect
 

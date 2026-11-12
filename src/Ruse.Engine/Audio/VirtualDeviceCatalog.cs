@@ -69,24 +69,26 @@ public static class VirtualDeviceCatalog
         var renders = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
             .Where(d => d.FriendlyName.Contains("Voicemeeter", StringComparison.OrdinalIgnoreCase)
                      || d.FriendlyName.Contains("CABLE Input", StringComparison.OrdinalIgnoreCase)
-                     || d.FriendlyName.Contains("Virtual Audio Cable", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+                     || d.FriendlyName.Contains("Virtual Audio Cable", StringComparison.OrdinalIgnoreCase));
 
         foreach (var render in renders)
         {
-            var pattern = KnownPatterns.FirstOrDefault(p =>
-                render.FriendlyName.Contains(p.Match, StringComparison.OrdinalIgnoreCase));
-
-            string capture = pattern.Capture ?? render.FriendlyName;
-            string provider = pattern.Provider ?? "Virtual device";
-
-            results.Add(new VirtualOutputInfo
+            using (render)
             {
-                RenderDeviceId = render.ID,
-                RenderFriendlyName = render.FriendlyName,
-                CaptureFriendlyName = capture,
-                Provider = provider,
-            });
+                var pattern = KnownPatterns.FirstOrDefault(p =>
+                    render.FriendlyName.Contains(p.Match, StringComparison.OrdinalIgnoreCase));
+
+                string capture = pattern.Capture ?? render.FriendlyName;
+                string provider = pattern.Provider ?? "Virtual device";
+
+                results.Add(new VirtualOutputInfo
+                {
+                    RenderDeviceId = render.ID,
+                    RenderFriendlyName = render.FriendlyName,
+                    CaptureFriendlyName = capture,
+                    Provider = provider,
+                });
+            }
         }
 
         return results

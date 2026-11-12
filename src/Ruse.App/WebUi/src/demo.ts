@@ -27,9 +27,11 @@ export const demoCatalog: CatalogSnapshot = {
   ],
   vst3Plugins: [],
   frameTemplates: [],
+  samples: [],
   defaultOutputId: 'demo-headphones',
   defaultOutputName: 'Headphones',
   perAppCaptureAvailable: true,
+  asioLoaded: false,
 };
 
 export const demoGraph: GraphSnapshot = {
@@ -81,10 +83,12 @@ export const demoSettings: SettingsModel = {
   showWelcomeScreen: true,
   minimizeToTray: true,
   showDiagnostics: false,
-  controlApiEnabled: true,
+  controlApiEnabled: false,
   controlApiPort: 47100,
   controlApiUrl: '',
   controlApiToken: '',
+  updateAutoCheck: false,
+  updateCheckIntervalDays: 1,
   aggressiveOutputCushion: false,
   useGpu: false,
   isolateVst3: true,

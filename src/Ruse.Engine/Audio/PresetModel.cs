@@ -14,6 +14,7 @@ public sealed class Preset
     public List<PresetSource> Sources { get; set; } = new();
     public List<PresetOutput> Outputs { get; set; } = new();
     public List<PresetRoute> Routes { get; set; } = new();
+    public TimelineProject? Timeline { get; set; }
 
     /// <summary>Effect-chain nodes placed on the canvas.</summary>
     public List<PresetModifier> Modifiers { get; set; } = new();
@@ -49,6 +50,7 @@ public sealed class Preset
 
 public sealed class PresetSource
 {
+    public string Id { get; set; } = "";
     public string Title { get; set; } = "";
     public string ControlId { get; set; } = "";
     public string Kind { get; set; } = "Application";
@@ -64,6 +66,17 @@ public sealed class PresetSource
     public float ToneFrequency { get; set; } = 1000f;
     public string ToneWaveform { get; set; } = "Sine";
     public float ToneLevelDb { get; set; } = -18f;
+    public float SynthFrequency { get; set; } = 110f;
+    public string SynthWaveform { get; set; } = "Saw";
+    public float SynthLevelDb { get; set; } = -18f;
+    public float SynthHarmonics { get; set; } = 0.3f;
+    public float SynthDetuneCents { get; set; } = 6f;
+    public float SynthNoise { get; set; } = 0.05f;
+    public float SynthCutoffHz { get; set; } = 2200f;
+    public float SynthResonance { get; set; } = 0.2f;
+    public float SynthMovement { get; set; } = 0.15f;
+    public float SynthLfoRateHz { get; set; } = 0.7f;
+    public float SynthStereoWidth { get; set; } = 0.4f;
     public string? TtsText { get; set; }
     public string? TtsSourceNodeId { get; set; }
     public string? TtsModel { get; set; }
@@ -93,6 +106,7 @@ public sealed class PresetOutput
     public string? FileFormat { get; set; }
     public string RecordingMode { get; set; } = "Off";
     public bool AutoSave { get; set; }
+    public bool SaveToSamples { get; set; }
     public double RecorderSilenceStopSeconds { get; set; }
     public double RecorderStartThresholdDb { get; set; } = -40;
     public string? Color { get; set; }

@@ -45,6 +45,14 @@ internal sealed partial class WebShellController
                 SetStatus("Added a test tone.");
                 break;
             }
+            case "synth":
+            {
+                var synth = new SourceNode("Sound generator", SourceKind.Synth);
+                synth.SetSynth(SynthSettings.Default);
+                entry = RegisterSource(synth, x, y);
+                SetStatus("Added a sound generator. Shape it with the synth controls.");
+                break;
+            }
             case "tts":
             {
                 var speech = new SourceNode("Text to speech", SourceKind.Tts);
@@ -78,6 +86,9 @@ internal sealed partial class WebShellController
                 break;
             case "file-player":
                 AddFilePlayer(x, y);
+                return;
+            case "sample":
+                AddFilePlayer(x, y, String(message, "filePath"));
                 return;
             case "recorder":
                 entry = RegisterOutput(OutputNode.CreateForFile(string.Empty, AudioFileFormat.Wav24), x, y);
@@ -185,6 +196,58 @@ internal sealed partial class WebShellController
         PublishTelemetry(force: true);
     }
     
+    private void SetSynth(BridgeMessage message)
+    {
+        string id = String(message, "id");
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.Synth } source)
+        {
+            return;
+        }
+
+        var waveform = Enum.TryParse<ToneWaveform>(
+            String(message, "waveform", source.Synth.Waveform.ToString()), ignoreCase: true, out var parsed)
+            ? parsed
+            : source.Synth.Waveform;
+        var settings = new SynthSettings(
+            (float)Number(message, "frequency", source.Synth.Frequency),
+            waveform,
+            (float)Number(message, "level", source.Synth.LevelDb),
+            (float)Number(message, "harmonics", source.Synth.Harmonics),
+            (float)Number(message, "detune", source.Synth.DetuneCents),
+            (float)Number(message, "noise", source.Synth.Noise),
+            (float)Number(message, "cutoff", source.Synth.CutoffHz),
+            (float)Number(message, "resonance", source.Synth.Resonance),
+            (float)Number(message, "movement", source.Synth.Movement),
+            (float)Number(message, "lfoRate", source.Synth.LfoRateHz),
+            (float)Number(message, "width", source.Synth.StereoWidth));
+        var previous = source.Synth;
+        source.SetSynth(settings);
+        PushAction("Change sound generator",
+            undo: () => ApplySynth(id, previous, true),
+            redo: () => ApplySynth(id, settings, true),
+            coalesceKey: $"synth:{id}");
+        if (Bool(message, "commit", true))
+        {
+            PublishGraph();
+            PublishTelemetry(force: true);
+        }
+    }
+
+    private void ApplySynth(string id, SynthSettings settings, bool publish)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.Synth } source)
+        {
+            return;
+        }
+
+        source.SetSynth(settings);
+        if (publish)
+        {
+            PublishGraph();
+            PublishTelemetry(force: true);
+        }
+    }
+
     private void SetTone(string id, float frequency, string waveform, float levelDb)
     {
         if (!_nodes.TryGetValue(id, out var entry) ||
@@ -682,7 +745,7 @@ internal sealed partial class WebShellController
         }
 
         using var enumerator = new MMDeviceEnumerator();
-        var device = enumerator.GetDevice(id);
+        using var device = enumerator.GetDevice(id);
         var entry = RegisterSource(new SourceNode(device.FriendlyName, SourceKind.Device, deviceId: id), x, y);
         SetStatus($"Added input: {device.FriendlyName}");
         return entry;
@@ -852,9 +915,17 @@ internal sealed partial class WebShellController
 
     private AsioDriverInfo FindAsioDriver(string id)
     {
-        return _asioDrivers.FirstOrDefault(driver => string.Equals(driver.Id, id, StringComparison.OrdinalIgnoreCase)) ??
-               AsioCatalog.Discover().FirstOrDefault(driver => string.Equals(driver.Id, id, StringComparison.OrdinalIgnoreCase)) ??
-               throw new InvalidOperationException($"ASIO driver '{AsioCatalog.NameFromId(id)}' is not available.");
+        AsioDriverInfo? driver = _asioDrivers.FirstOrDefault(item =>
+            string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (driver == null)
+        {
+            EnsureAsioDrivers();
+            driver = _asioDrivers.FirstOrDefault(item =>
+                string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return driver ?? throw new InvalidOperationException(
+            $"ASIO driver '{AsioCatalog.NameFromId(id)}' is not available.");
     }
 
     private NodeEntry? FindOutputByDevice(string id)
@@ -877,8 +948,10 @@ internal sealed partial class WebShellController
                 SourceKind.Asio => "asio",
                 SourceKind.File => "file",
                 SourceKind.Tone => "tone",
+                SourceKind.Synth => "synth",
                 SourceKind.Tts => "tts",
                 SourceKind.Network => "network",
+                SourceKind.Timeline => "timeline",
                 _ => "system",
             },
             Title = source.Title,
@@ -886,11 +959,13 @@ internal sealed partial class WebShellController
             {
                 SourceKind.Application => SourceNode.SupportsApplicationCapture ? "Application" : "Capture unavailable",
                 SourceKind.Device => "Input device",
-                SourceKind.Asio => "ASIO input",
+                SourceKind.Asio => "ASIO input (experimental)",
                 SourceKind.File => "Audio file",
                 SourceKind.Tone => "Test tone",
+                SourceKind.Synth => "Procedural synth",
                 SourceKind.Tts => "Text to speech",
                 SourceKind.Network => "Network input",
+                SourceKind.Timeline => "Timeline track",
                 _ => "System audio",
             },
             Accent = source.Kind switch
@@ -900,8 +975,10 @@ internal sealed partial class WebShellController
                 SourceKind.Asio => "#F0DC5A",
                 SourceKind.File => "#F08CB8",
                 SourceKind.Tone => "#F0DC5A",
+                SourceKind.Synth => "#A78BFA",
                 SourceKind.Tts => "#C7A6FF",
                 SourceKind.Network => "#4FD1C5",
+                SourceKind.Timeline => "#5BC0EB",
                 _ => IsVirtualCapture(source.Title) ? "#7D5BD6" : "#F0DC5A",
             },
             X = x,
@@ -931,7 +1008,7 @@ internal sealed partial class WebShellController
             Kind = "output",
             Flavor = flavor,
             Title = output.Title,
-            Subtitle = output.IsFileRecorder ? "File output" : output.IsNetworkOutput ? "Network output" : micHint != null ? "Virtual output" : AsioCatalog.IsAsioId(output.DeviceId) ? "ASIO output" : "Output device",
+            Subtitle = output.IsFileRecorder ? "File output" : output.IsNetworkOutput ? "Network output" : micHint != null ? "Virtual output" : AsioCatalog.IsAsioId(output.DeviceId) ? "ASIO output (experimental)" : "Output device",
             Accent = output.IsFileRecorder ? "#FF8B72" : output.IsNetworkOutput ? "#4FD1C5" : micHint != null ? "#D9A8FF" : "#43E39A",
             X = x,
             Y = y,
@@ -1287,6 +1364,18 @@ internal sealed partial class WebShellController
             dto.ToneFrequency = entry.Source.ToneFrequency;
             dto.ToneWaveform = entry.Source.ToneWave.ToString();
             dto.ToneLevelDb = entry.Source.ToneLevelDb;
+            dto.IsSynthGenerator = entry.Source.Kind == SourceKind.Synth;
+            dto.SynthFrequency = entry.Source.Synth.Frequency;
+            dto.SynthWaveform = entry.Source.Synth.Waveform.ToString();
+            dto.SynthLevelDb = entry.Source.Synth.LevelDb;
+            dto.SynthHarmonics = entry.Source.Synth.Harmonics;
+            dto.SynthDetuneCents = entry.Source.Synth.DetuneCents;
+            dto.SynthNoise = entry.Source.Synth.Noise;
+            dto.SynthCutoffHz = entry.Source.Synth.CutoffHz;
+            dto.SynthResonance = entry.Source.Synth.Resonance;
+            dto.SynthMovement = entry.Source.Synth.Movement;
+            dto.SynthLfoRateHz = entry.Source.Synth.LfoRateHz;
+            dto.SynthStereoWidth = entry.Source.Synth.StereoWidth;
             dto.IsTts = entry.Source.Kind == SourceKind.Tts;
             dto.IsNetworkInput = entry.Source.Kind == SourceKind.Network;
             dto.NetworkLocalIp = entry.Source.Kind == SourceKind.Network ? NetworkPcm.GetLocalAddress() : null;
@@ -1322,6 +1411,7 @@ internal sealed partial class WebShellController
             dto.RecorderSampleRate = entry.Output.RecorderSampleRate;
             dto.RecorderMode = entry.Output.RecorderMode.ToString();
             dto.RecorderAutoSave = entry.Output.AutoSave;
+            dto.RecorderSaveToSamples = entry.Output.SaveToSamples;
             dto.RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds;
             dto.RecorderStartThresholdDb = entry.Output.RecorderStartThresholdDb;
         }
@@ -2492,6 +2582,9 @@ internal sealed partial class WebShellController
 
     private void ClearGraph()
     {
+        AbortTimelineRecording();
+        _timeline?.Dispose();
+        _timeline = null;
         _graph.AutoRun = false;
         foreach (var entry in _nodes.Values)
         {
@@ -2674,6 +2767,7 @@ internal sealed partial class WebShellController
             FileName = output.HasRecordingPath ? output.RecordingPath : $"ruse-recording.{format.Extension}",
             DefaultExt = format.Extension,
             AddExtension = true,
+            InitialDirectory = output.SaveToSamples ? SampleDirectory() : RecordingDirectory(),
         };
         if (dialog.ShowDialog(_window) != true) return;
 

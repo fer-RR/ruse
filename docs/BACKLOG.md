@@ -99,7 +99,18 @@ Keep this short. Nothing is started unless noted.
   at 48 kHz; changing it requires threading the rate through every effect.
 - Persist native-chain link flags across sessions and presets.
 - ASIO testing with an insert patch or real loopback interface.
-- Revisit 128-frame blocks only with a larger ring/dedicated low-latency mode.
+- A 2.5 ms low-latency mode with a larger safety ring is available behind an
+  experimental toggle; long soak tests, real-device validation and 128-frame
+  device testing remain.
+- Realtime residuals: bounded joins in `OutputNode`, `GraphEngine` and
+  `NetworkPcmCapture` can abandon a blocked thread; a job object or watchdog is
+  the next step if a real driver/device reproduces it. ASIO capture now
+  preallocates for `FramesPerBuffer` and truncates if a driver exceeds it.
+- `SourceNode` decode scratch can still grow for capture packets above 16384
+  samples; verify large 96 kHz/multichannel devices.
+- `AudioFileRecorder.Stop` joins the writer for 30 s; on a failing disk it can
+  time out. Keep the writer alive and surface the error rather than disposing
+  from another thread.
 
 ## App, onboarding and platform
 

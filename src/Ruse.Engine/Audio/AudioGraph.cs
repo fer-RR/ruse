@@ -11,6 +11,7 @@ public sealed class AudioGraph : IDisposable
     public List<SourceNode> Sources { get; } = new();
     public List<OutputNode> Outputs { get; } = new();
     public List<ModifierNode> Modifiers { get; } = new();
+    public TimelineService? Timeline { get; set; }
 
     // Direct source â†’ output links. Routes that only exist because a modifier
     // chain reaches the output are derived from the modifier graph instead, so

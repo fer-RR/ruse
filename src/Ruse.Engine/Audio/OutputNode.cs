@@ -11,6 +11,7 @@ public sealed class OutputNode : IDisposable
     private BufferedWaveProvider? _buffer;
     private Thread? _pumpThread;
     private volatile bool _running;
+    private AudioWatchdogToken? _watchdog;
     private float _meterLevel;
     private float _meterLevelLeft;
     private float _meterLevelRight;
@@ -101,13 +102,20 @@ public sealed class OutputNode : IDisposable
 
     /// <summary>Wakes the graph renderer when this pump needs another block.</summary>
     private volatile Action? _engineWake;
+    private volatile Action<float[], int>? _mixObserver;
+    /// <summary>Optional observer for the post-processing mix. Arguments are the interleaved samples and channel count.</summary>
+    public Action<float[], int>? MixObserver
+    {
+        get => _mixObserver;
+        set => _mixObserver = value;
+    }
     internal Action? EngineWake
     {
         get => _engineWake;
         set => _engineWake = value;
     }
 
-    private const int EngineRingSeconds = 1;
+    private const int EngineRingSeconds = 2;
     private readonly FloatRingBuffer _engineBuffer = new(48000 * 2 * EngineRingSeconds);
     private readonly object _engineLock = new();
 
@@ -193,6 +201,7 @@ public sealed class OutputNode : IDisposable
 
     /// <summary>False for recorders restored from a preset.</summary>
     public bool AutoStart { get; set; } = true;
+    public bool SaveToSamples { get; set; }
 
     public string RecordingPath => _recordingPath ?? string.Empty;
     public bool HasRecordingPath => !string.IsNullOrWhiteSpace(_recordingPath);
@@ -219,6 +228,14 @@ public sealed class OutputNode : IDisposable
 
     /// <summary>Raised when the render endpoint fails or is removed (device unplugged).</summary>
     public event Action<OutputNode, string>? Faulted;
+
+    internal void NotifyStalled(string reason)
+    {
+        if (_running)
+        {
+            Faulted?.Invoke(this, reason);
+        }
+    }
 
     private volatile bool _stopRequested;
 
@@ -336,6 +353,12 @@ public sealed class OutputNode : IDisposable
         if (IsNetworkOutput)
         {
             reason = "Native passthrough is only available for device or file outputs.";
+            return false;
+        }
+
+        if (source.Kind == SourceKind.Timeline)
+        {
+            reason = "Timeline tracks play through the graph at 48 kHz; native passthrough is not available.";
             return false;
         }
 
@@ -588,6 +611,15 @@ public sealed class OutputNode : IDisposable
                 $"Output '{Title}': native passthrough {pumpRate} Hz, " +
                 $"source {_nativeSource.Channels}ch, endpoint {pumpChannels}ch, " +
                 $"processors={_nativeProcessors.Length}, recorder={IsFileRecorder}.");
+
+            int nativeBlockFrames = Math.Max(1, (int)Math.Round(pumpRate * 0.005));
+            int nativeScratch = nativeBlockFrames * Math.Max(1, _nativeChannels);
+            if (_nativeScratch.Length < nativeScratch)
+            {
+                _nativeScratch = new float[nativeScratch];
+            }
+
+            _nativeFaultReported = false;
         }
 
         _outputSampleRate = IsFileRecorder ? recordRate : pumpRate;
@@ -595,6 +627,9 @@ public sealed class OutputNode : IDisposable
         _running = true;
         Underruns = 0;
         _renderedOnce = false;
+        _outputClock.Restart();
+        _outputClockFrames = 0;
+        _outputClockLastTicks = 0;
         _startedAt = Environment.TickCount64;
         _lastUnderrunTick = 0;
         _underrunBurst = 0;
@@ -726,6 +761,8 @@ public sealed class OutputNode : IDisposable
 
         RefreshRoutes();
 
+        _watchdog = AudioThreadWatchdog.Register($"OutputPump-{Title}", TimeSpan.FromSeconds(5),
+            () => NotifyStalled("The output pump stopped responding."));
         _pumpThread = new Thread(() => PumpLoop(pumpRate, pumpChannels))
         {
             IsBackground = true,
@@ -768,6 +805,11 @@ public sealed class OutputNode : IDisposable
 
         _asioEndpoint = null;
         _buffer = null;
+        var recorder = _recorder;
+        _recorder = null;
+        _recorderConverter = null;
+        _recorderConverted.Clear();
+        recorder?.Dispose();
     }
 
     private void PumpLoop(int sampleRate, int channels)
@@ -790,6 +832,7 @@ public sealed class OutputNode : IDisposable
             long produced = 0;
             while (_running)
             {
+                _watchdog?.Beat();
                 long due = (long)(clock.Elapsed.TotalSeconds * sampleRate);
                 if (produced < due)
                 {
@@ -815,6 +858,7 @@ public sealed class OutputNode : IDisposable
                 long produced = 0;
                 while (_running)
                 {
+                    _watchdog?.Beat();
                     long due = (long)(clock.Elapsed.TotalSeconds * sampleRate);
                     if (produced < due)
                     {
@@ -832,6 +876,7 @@ public sealed class OutputNode : IDisposable
 
             while (_running)
             {
+                _watchdog?.Beat();
                 RenderOrDrainChunk(mix, temp, byteBuffer, channels);
                 Thread.Sleep(3);
             }
@@ -849,6 +894,7 @@ public sealed class OutputNode : IDisposable
         {
             while (_running)
             {
+                _watchdog?.Beat();
                 var buffer = _buffer;
                 if (buffer != null && buffer.BufferedDuration.TotalMilliseconds < RenderTargetBufferMs)
                 {
@@ -999,6 +1045,9 @@ public sealed class OutputNode : IDisposable
     public long Underruns { get; private set; }
 
     private bool _renderedOnce;
+    private readonly System.Diagnostics.Stopwatch _outputClock = new();
+    private long _outputClockFrames;
+    private long _outputClockLastTicks;
     private long _startedAt;
     private long _lastUnderrunTick;
     private int _underrunBurst;
@@ -1007,6 +1056,8 @@ public sealed class OutputNode : IDisposable
 
     /// <summary>Bytes allocated by the render thread while mixing (diagnostics).</summary>
     public long RenderAllocatedBytes { get; private set; }
+
+    public static bool MeasureAllocations { get; set; }
 
     [System.Runtime.InteropServices.DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
     private static extern uint TimeBeginPeriod(uint uPeriod);
@@ -1067,7 +1118,14 @@ public sealed class OutputNode : IDisposable
         {
             if (_nativeScratch.Length < outFrames * sourceChannels)
             {
-                _nativeScratch = new float[outFrames * sourceChannels];
+                Array.Clear(mix);
+                if (!_nativeFaultReported)
+                {
+                    _nativeFaultReported = true;
+                    Faulted?.Invoke(this, "Native passthrough buffer was too small; restart the route.");
+                }
+
+                return;
             }
 
             int read = subscription.Read(_nativeScratch);
@@ -1214,6 +1272,18 @@ public sealed class OutputNode : IDisposable
 
     private void WriteSink(float[] mix, byte[] byteBuffer, int channels)
     {
+        var observer = MixObserver;
+        if (observer != null)
+        {
+            try
+            {
+                observer(mix, channels);
+            }
+            catch
+            {
+            }
+        }
+
         if (_recorder != null)
         {
             if (_recorderConverter == null)
@@ -1236,12 +1306,50 @@ public sealed class OutputNode : IDisposable
             Buffer.BlockCopy(mix, 0, byteBuffer, 0, byteBuffer.Length);
             _buffer!.AddSamples(byteBuffer, 0, byteBuffer.Length);
             BytesWritten += byteBuffer.Length;
+            ReportOutputClock(byteBuffer.Length, channels);
         }
+    }
+
+    private void ReportOutputClock(int bytes, int channels)
+    {
+        if (_nativeSource != null || IsFileRecorder || _testSink != null || _outputSampleRate <= 0)
+        {
+            return;
+        }
+
+        int frames = bytes / Math.Max(1, channels * sizeof(float));
+        _outputClockFrames += frames;
+        long now = _outputClock.ElapsedTicks;
+        long interval = System.Diagnostics.Stopwatch.Frequency * 5;
+        if (now - _outputClockLastTicks < interval)
+        {
+            return;
+        }
+
+        double seconds = _outputClock.Elapsed.TotalSeconds;
+        if (seconds <= 0)
+        {
+            return;
+        }
+
+        double rate = _outputClockFrames / seconds;
+        int bufferRate = _buffer?.WaveFormat.SampleRate ?? 48000;
+        double ppm = (rate / Math.Max(1, bufferRate) - 1.0) * 1_000_000.0;
+        AudioClock.ReportOutputPpm(ppm);
+        _outputClock.Restart();
+        _outputClockFrames = 0;
+        _outputClockLastTicks = 0;
     }
 
     /// <summary>Mixes and emits one pump chunk.</summary>
     internal void RenderChunk(float[] mix, float[] temp, byte[] byteBuffer, int channels)
     {
+        if (!MeasureAllocations)
+        {
+            RenderChunkCore(mix, temp, byteBuffer, channels);
+            return;
+        }
+
         long allocBefore = GC.GetAllocatedBytesForCurrentThread();
         try
         {
@@ -1406,6 +1514,8 @@ public sealed class OutputNode : IDisposable
 
         _stopRequested = true;
         _running = false;
+        _watchdog?.Dispose();
+        _watchdog = null;
         var pump = _pumpThread;
         if (pump != null && pump != Thread.CurrentThread)
         {
@@ -1453,9 +1563,10 @@ public sealed class OutputNode : IDisposable
 
         if (_recorder != null)
         {
+            bool finished = false;
             try
             {
-                _recorder.Stop();
+                finished = _recorder.Stop(TimeSpan.FromSeconds(2));
             }
             catch (Exception ex)
             {
@@ -1467,7 +1578,16 @@ public sealed class OutputNode : IDisposable
             _lastRecordedSeconds = _recorder.Duration;
             _lastRecordingError = _recorder.LastError ?? _lastRecordingError;
 
-            _recorder.Dispose();
+            if (finished)
+            {
+                _recorder.Dispose();
+            }
+            else
+            {
+                Ruse.App.Diagnostics.AppLog.Warning(
+                    $"Recorder '{_recorder.Path}' is still finalizing; leaving it running in the background.");
+            }
+
             _recorder = null;
         }
 
@@ -1502,10 +1622,11 @@ public sealed class OutputNode : IDisposable
 
     public sealed class Route : IDisposable
     {
-        private readonly object _chainLock = new();
-        private IAudioProcessor[] _instances = Array.Empty<IAudioProcessor>();
-        private ParameterBinding[] _bindings = Array.Empty<ParameterBinding>();
-        private DelayLine? _compensation;
+        private RouteChain _chain = new(
+            Array.Empty<IAudioProcessor>(),
+            Array.Empty<ParameterBinding>(),
+            compensation: null,
+            ownsInstances: true);
 
         public required SourceNode Source { get; init; }
         public float Gain { get; set; } = 1.0f;
@@ -1523,15 +1644,17 @@ public sealed class OutputNode : IDisposable
 
         public void Dispose()
         {
-            lock (_chainLock)
-            {
-                DisposeInstances(_instances);
-                _instances = Array.Empty<IAudioProcessor>();
-                _bindings = Array.Empty<ParameterBinding>();
-                _compensation = null;
-                _subscription?.Dispose();
-                _subscription = null;
-            }
+            SourceNode.Subscription? subscription = _subscription;
+            _subscription = null;
+
+            RouteChain empty = new(
+                Array.Empty<IAudioProcessor>(),
+                Array.Empty<ParameterBinding>(),
+                compensation: null,
+                ownsInstances: true);
+            RouteChain old = Interlocked.Exchange(ref _chain, empty);
+            old.Retire(disposeInstances: true);
+            subscription?.Dispose();
         }
 
         /// <summary>
@@ -1548,26 +1671,19 @@ public sealed class OutputNode : IDisposable
         /// </summary>
         public IAudioProcessor[] Processors
         {
-            get
-            {
-                lock (_chainLock) return _instances;
-            }
+            get => Volatile.Read(ref _chain).Instances;
             set
             {
                 var processors = value ?? Array.Empty<IAudioProcessor>();
-                int latency = SumLatency(processors);
-                IAudioProcessor[] old;
-                lock (_chainLock)
-                {
-                    old = _instances;
-                    _instances = processors;
-                    _bindings = Array.Empty<ParameterBinding>();
-                    _compensation = null;
-                    CompensationFrames = 0;
-                    InherentLatencyFrames = latency;
-                }
-
-                DisposeInstances(old);
+                RouteChain replacement = new(
+                    processors,
+                    Array.Empty<ParameterBinding>(),
+                    compensation: null,
+                    ownsInstances: true);
+                RouteChain old = Interlocked.Exchange(ref _chain, replacement);
+                InherentLatencyFrames = SumLatency(processors);
+                CompensationFrames = 0;
+                old.Retire(disposeInstances: true);
             }
         }
 
@@ -1587,7 +1703,6 @@ public sealed class OutputNode : IDisposable
             var templateArray = templates ?? Array.Empty<IAudioProcessor>();
             int latency = SumLatency(templateArray);
             int compensation = Math.Max(0, compensationFrames);
-            var delay = compensation > 0 ? new DelayLine(compensation, 2) : null;
 
             bool sameChain = Templates.Length == templateArray.Length;
             for (int i = 0; sameChain && i < templateArray.Length; i++)
@@ -1597,14 +1712,13 @@ public sealed class OutputNode : IDisposable
 
             if (sameChain)
             {
-                lock (_chainLock)
+                InherentLatencyFrames = latency;
+                CompensationFrames = compensation;
+                RouteChain current = Volatile.Read(ref _chain);
+                if (current.CompensationFrames == compensation)
                 {
-                    InherentLatencyFrames = latency;
-                    CompensationFrames = compensation;
-                    _compensation = delay;
+                    return;
                 }
-
-                return;
             }
 
             var instances = new IAudioProcessor[templateArray.Length];
@@ -1617,19 +1731,16 @@ public sealed class OutputNode : IDisposable
             }
 
             var bindings = BuildBindings(templateArray, instances);
-            IAudioProcessor[] old;
-            lock (_chainLock)
-            {
-                old = _instances;
-                Templates = templateArray;
-                _instances = instances;
-                _bindings = bindings;
-                InherentLatencyFrames = latency;
-                CompensationFrames = compensation;
-                _compensation = delay;
-            }
-
-            DisposeInstances(old);
+            RouteChain replacement = new(
+                instances,
+                bindings,
+                compensation > 0 ? new DelayLine(compensation, 2) : null,
+                ownsInstances: true);
+            Templates = templateArray;
+            InherentLatencyFrames = latency;
+            CompensationFrames = compensation;
+            RouteChain old = Interlocked.Exchange(ref _chain, replacement);
+            old.Retire(disposeInstances: true);
         }
 
         /// <summary>
@@ -1638,11 +1749,27 @@ public sealed class OutputNode : IDisposable
         /// </summary>
         public void Process(Span<float> block, int frames, int channels)
         {
-            lock (_chainLock)
+            RouteChain? chain = null;
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                SyncParameters();
+                RouteChain candidate = Volatile.Read(ref _chain);
+                if (candidate.TryAcquire())
+                {
+                    chain = candidate;
+                    break;
+                }
+            }
 
-                var instances = _instances;
+            if (chain == null)
+            {
+                return;
+            }
+
+            try
+            {
+                SyncParameters(chain.Bindings);
+
+                var instances = chain.Instances;
                 for (int i = 0; i < instances.Length; i++)
                 {
                     // A null entry should never survive SetChain, but never take the
@@ -1650,17 +1777,21 @@ public sealed class OutputNode : IDisposable
                     instances[i]?.Process(block, frames);
                 }
 
-                _compensation?.Process(block, channels);
+                chain.Compensation?.Process(block, channels);
+            }
+            finally
+            {
+                chain.Release();
             }
         }
 
         // Parameters are edited on the template, so mirror values that changed
         // across the block boundary — allocation-free and only on real edits.
-        private void SyncParameters()
+        private static void SyncParameters(ParameterBinding[] bindings)
         {
-            for (int i = 0; i < _bindings.Length; i++)
+            for (int i = 0; i < bindings.Length; i++)
             {
-                var binding = _bindings[i];
+                var binding = bindings[i];
                 float value = binding.Source.Get();
                 if (value != binding.Last)
                 {
@@ -1745,6 +1876,66 @@ public sealed class OutputNode : IDisposable
             }
 
             return bindings.ToArray();
+        }
+
+        private sealed class RouteChain
+        {
+            private int _leases = 1;
+            private int _retired;
+            private int _disposed;
+            private bool _ownsInstances;
+
+            public RouteChain(
+                IAudioProcessor[] instances,
+                ParameterBinding[] bindings,
+                DelayLine? compensation,
+                bool ownsInstances)
+            {
+                Instances = instances;
+                Bindings = bindings;
+                Compensation = compensation;
+                CompensationFrames = compensation?.Frames ?? 0;
+                _ownsInstances = ownsInstances;
+            }
+
+            public IAudioProcessor[] Instances { get; }
+            public ParameterBinding[] Bindings { get; }
+            public DelayLine? Compensation { get; }
+            public int CompensationFrames { get; }
+
+            public bool TryAcquire()
+            {
+                Interlocked.Increment(ref _leases);
+                if (Volatile.Read(ref _retired) == 0)
+                {
+                    return true;
+                }
+
+                Release();
+                return false;
+            }
+
+            public void Release()
+            {
+                if (Interlocked.Decrement(ref _leases) == 0 &&
+                    Volatile.Read(ref _retired) != 0 &&
+                    _ownsInstances &&
+                    Interlocked.Exchange(ref _disposed, 1) == 0)
+                {
+                    DisposeInstances(Instances);
+                }
+            }
+
+            public void Retire(bool disposeInstances)
+            {
+                _ownsInstances = disposeInstances;
+                if (Interlocked.Exchange(ref _retired, 1) != 0)
+                {
+                    return;
+                }
+
+                Release();
+            }
         }
 
         private sealed class ParameterBinding

@@ -20,6 +20,7 @@ internal sealed class GraphEngine : IDisposable
     private CompiledGraph? _compiled;
     private long _lastTapTick;
     private bool _disposed;
+    private AudioWatchdogToken? _watchdog;
 
     internal int TapWorkerCount
     {
@@ -49,6 +50,7 @@ internal sealed class GraphEngine : IDisposable
 
             _running = true;
             CompileLocked();
+            _watchdog = AudioThreadWatchdog.Register("GraphEngine", TimeSpan.FromSeconds(5), OnWatchdogStall);
             _thread = new Thread(Loop)
             {
                 IsBackground = true,
@@ -57,6 +59,21 @@ internal sealed class GraphEngine : IDisposable
             };
             _thread.Start();
             _wake.Set();
+        }
+    }
+
+    private void OnWatchdogStall()
+    {
+        AppLog.Error("The graph renderer stopped making progress.");
+        OutputNode[] outputs;
+        lock (_sync)
+        {
+            outputs = _graph.Outputs.ToArray();
+        }
+
+        foreach (OutputNode output in outputs)
+        {
+            output.NotifyStalled("The graph renderer stopped responding.");
         }
     }
 
@@ -113,6 +130,8 @@ internal sealed class GraphEngine : IDisposable
             }
 
             _wake.Set();
+            _watchdog?.Dispose();
+            _watchdog = null;
         }
 
         thread?.Join(1000);
@@ -274,6 +293,7 @@ internal sealed class GraphEngine : IDisposable
         {
             while (_running)
             {
+                _watchdog?.Beat();
                 bool rendered = false;
                 int waitMs = 20;
                 CompiledGraph? compiled;
@@ -361,6 +381,7 @@ internal sealed class GraphEngine : IDisposable
     {
         private const int SampleRate = 48000;
         private const int Channels = 2;
+        private readonly AudioGraph _audioGraph;
         private readonly int _blockFrames;
 
         public List<SourceState> Sources { get; } = new();
@@ -548,6 +569,7 @@ internal sealed class GraphEngine : IDisposable
 
         public CompiledGraph(AudioGraph graph, Action wake, int blockFrames)
         {
+            _audioGraph = graph;
             _blockFrames = Math.Max(1, blockFrames);
             var engineOutputs = graph.Outputs.Where(output => output.UseGraphEngine).ToList();
 
@@ -867,6 +889,7 @@ internal sealed class GraphEngine : IDisposable
 
         public void Render()
         {
+            _audioGraph.Timeline?.RenderBlock(_blockFrames);
             bool anySoloSource = false;
             for (int i = 0; i < Sources.Count; i++)
             {
@@ -1494,9 +1517,10 @@ internal sealed class GraphEngine : IDisposable
         private readonly int[] _dbTaps;
         private readonly int[] _loudnessTaps;
         private readonly int[] _noteTaps;
-        private readonly FloatRingBuffer _ring = new(SampleRate * Channels);
+        private readonly FloatRingBuffer _ring = new(SampleRate * Channels * 2);
         private readonly Thread _thread;
         private volatile bool _running = true;
+        private readonly AudioWatchdogToken _watchdog;
 
         public TapWorker(ModifierNode modifier)
         {
@@ -1537,6 +1561,8 @@ internal sealed class GraphEngine : IDisposable
                 .Where(id => id > 0)
                 .ToArray();
 
+            _watchdog = AudioThreadWatchdog.Register($"TapWorker-{modifier.Title}", TimeSpan.FromSeconds(5),
+                () => AppLog.Error($"Tap worker for '{modifier.Title}' stopped making progress."));
             _thread = new Thread(Loop)
             {
                 IsBackground = true,
@@ -1556,6 +1582,7 @@ internal sealed class GraphEngine : IDisposable
             bool faulted = false;
             while (_running)
             {
+                _watchdog.Beat();
                 int read = _ring.Read(block);
                 if (read <= 0)
                 {
@@ -1619,6 +1646,7 @@ internal sealed class GraphEngine : IDisposable
         public void Dispose()
         {
             _running = false;
+            _watchdog.Dispose();
             if (!_thread.Join(2000))
             {
                 AppLog.Warning($"Tap worker for '{_modifier.Title}' did not stop in time.");

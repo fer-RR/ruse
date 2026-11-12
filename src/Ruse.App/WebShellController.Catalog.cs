@@ -15,6 +15,7 @@ namespace Ruse.App;
 internal sealed partial class WebShellController
 {
     private IReadOnlyList<AsioDriverInfo> _asioDrivers = Array.Empty<AsioDriverInfo>();
+    private bool _asioLoaded;
     private IReadOnlyList<PluginDescriptor> _vst3Descriptors = Array.Empty<PluginDescriptor>();
     private readonly Dictionary<string, CatalogItemDto> _appCatalogCache = new(StringComparer.OrdinalIgnoreCase);
     private Task? _vst3ScanTask;
@@ -29,6 +30,7 @@ internal sealed partial class WebShellController
             RememberDeviceSignature();
             RefreshApps(publish: false, force: true);
             RefreshEffectsAndChains();
+            RefreshSamples();
             Post("catalog", _catalog);
             SetStatus("Applications and devices refreshed.");
         }
@@ -57,12 +59,18 @@ internal sealed partial class WebShellController
         var ids = new List<string>();
         foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
         {
-            ids.Add("o:" + device.ID);
+            using (device)
+            {
+                ids.Add("o:" + device.ID);
+            }
         }
 
         foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
         {
-            ids.Add("i:" + device.ID);
+            using (device)
+            {
+                ids.Add("i:" + device.ID);
+            }
         }
 
         try
@@ -178,29 +186,70 @@ internal sealed partial class WebShellController
         QueueVst3Scan();
     }
 
+    private void EnsureAsioDrivers()
+    {
+        if (_asioLoaded)
+        {
+            return;
+        }
+
+        try
+        {
+            _asioDrivers = AsioCatalog.Discover();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning("ASIO enumeration failed: " + ex.Message);
+            _asioDrivers = Array.Empty<AsioDriverInfo>();
+        }
+
+        _asioLoaded = true;
+    }
+
+    private void RefreshAsioDevices()
+    {
+        _asioLoaded = false;
+        EnsureAsioDrivers();
+        RefreshDevices();
+        Post("catalog", _catalog);
+        SetStatus(_asioDrivers.Count == 0
+            ? "No ASIO drivers found."
+            : $"Found {_asioDrivers.Count} ASIO driver(s).");
+    }
+
     private void RefreshDevices()
     {
         using var enumerator = new MMDeviceEnumerator();
-        _catalog.Outputs = enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
-            .OrderBy(device => device.FriendlyName)
-            .Select(device => new CatalogItemDto
+        var outputs = new List<CatalogItemDto>();
+        foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+                     .OrderBy(device => device.FriendlyName))
+        {
+            using (device)
             {
-                Id = device.ID,
-                Kind = "output",
-                Name = device.FriendlyName,
-                Subtitle = "Speaker / headphones - playback",
-                Details = "Send routed audio to this device.",
-                Direction = "playback",
-                Provider = ProviderFromName(device.FriendlyName),
-            }).ToList();
+                outputs.Add(new CatalogItemDto
+                {
+                    Id = device.ID,
+                    Kind = "output",
+                    Name = device.FriendlyName,
+                    Subtitle = "Speaker / headphones - playback",
+                    Details = "Send routed audio to this device.",
+                    Direction = "playback",
+                    Provider = ProviderFromName(device.FriendlyName),
+                });
+            }
+        }
 
-        _catalog.Inputs = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active)
-            .OrderBy(device => device.FriendlyName)
-            .Select(device =>
+        _catalog.Outputs = outputs;
+
+        var inputs = new List<CatalogItemDto>();
+        foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active)
+                     .OrderBy(device => device.FriendlyName))
+        {
+            using (device)
             {
                 string provider = ProviderFromName(device.FriendlyName) ?? "";
                 bool virtualCapture = IsVirtualCapture(device.FriendlyName);
-                return new CatalogItemDto
+                inputs.Add(new CatalogItemDto
                 {
                     Id = device.ID,
                     Kind = "input",
@@ -213,8 +262,11 @@ internal sealed partial class WebShellController
                     Virtual = virtualCapture,
                     Provider = provider,
                     Badge = virtualCapture ? "VIRTUAL" : null,
-                };
-            }).ToList();
+                });
+            }
+        }
+
+        _catalog.Inputs = inputs;
 
         try
         {
@@ -236,23 +288,23 @@ internal sealed partial class WebShellController
                 .ToList();
         }
 
-        try
+        _catalog.AsioLoaded = _asioLoaded;
+        if (_asioLoaded)
         {
-            _asioDrivers = AsioCatalog.Discover();
             foreach (var driver in _asioDrivers)
             {
-                string details = $"ASIO · {driver.InputChannelCount} in / {driver.OutputChannelCount} out, " +
-                                 $"{driver.SampleRate} Hz, {driver.BufferSize} frame buffer";
+                string details = $"Experimental ASIO �� {driver.InputChannelCount} in / {driver.OutputChannelCount} out, " +
+                                 $"{driver.SampleRate} Hz, {driver.BufferSize} frame buffer. Latency and audio quality may be unstable.";
                 _catalog.Outputs.Add(new CatalogItemDto
                 {
                     Id = driver.Id,
                     Kind = "output",
                     Name = driver.Name,
-                    Subtitle = "ASIO output",
+                    Subtitle = "ASIO output (experimental)",
                     Details = details,
                     Direction = "playback",
                     Provider = "ASIO",
-                    Badge = "ASIO",
+                    Badge = "ASIO EXP",
                 });
 
                 if (driver.InputChannelCount > 0)
@@ -262,18 +314,14 @@ internal sealed partial class WebShellController
                         Id = driver.Id,
                         Kind = "input",
                         Name = driver.Name,
-                        Subtitle = "ASIO input - first two channels",
+                        Subtitle = "ASIO input (experimental) - first two channels",
                         Details = details,
                         Direction = "capture",
                         Provider = "ASIO",
-                        Badge = "ASIO",
+                        Badge = "ASIO EXP",
                     });
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warning("ASIO enumeration failed: " + ex.Message);
         }
 
         _catalog.Virtuals = VirtualDeviceCatalog.Discover()

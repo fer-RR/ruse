@@ -256,34 +256,36 @@ public sealed class AudioFileRecorder : IDisposable
         _completed = true;
     }
 
-    public void Stop()
+    public bool Stop(TimeSpan timeout)
     {
         lock (_stopLock)
         {
-            if (_stopped)
+            if (!_stopped)
             {
-                return;
+                _stopped = true;
+                _completed = true;
             }
-
-            _stopped = true;
         }
 
-        _completed = true;
         Thread? worker = _workerThread;
-        _workerThread = null;
-        if (worker != null && worker != Thread.CurrentThread &&
-            !worker.Join(TimeSpan.FromSeconds(30)))
+        if (worker != null && worker != Thread.CurrentThread && !worker.Join(timeout))
         {
-            Fail("The audio writer did not finish in time.");
+            Fail("The audio writer did not finish in time; it will finish in the background.");
+            return false;
         }
 
+        _workerThread = null;
         _provider = null;
 
         if (_lastError == null && DroppedFrames > 0)
         {
             _lastError = $"Recording dropped {DroppedFrames} frames because the writer fell behind.";
         }
+
+        return true;
     }
+
+    public void Stop() => Stop(TimeSpan.FromSeconds(2));
 
     public void Dispose() => Stop();
 

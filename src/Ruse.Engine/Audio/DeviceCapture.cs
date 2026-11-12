@@ -10,6 +10,7 @@ public sealed class DeviceCapture : IDisposable
 {
     private readonly WasapiRecorder _capture;
     private readonly string _deviceFriendlyName;
+    private readonly MMDevice? _ownedDevice;
 
     public event EventHandler<AudioPacketEventArgs>? DataAvailable;
     public event EventHandler<StoppedEventArgs>? RecordingStopped;
@@ -27,19 +28,26 @@ public sealed class DeviceCapture : IDisposable
         using var enumerator = new MMDeviceEnumerator();
         var device = enumerator.GetDevice(deviceId);
         _deviceFriendlyName = device.FriendlyName;
+        _ownedDevice = device;
         _capture = BuildRecorder(device);
+        _packetBuffer = new byte[Math.Max(16384, _capture.WaveFormat.AverageBytesPerSecond / 5)];
         _capture.DataAvailable += OnRecorderData;
-        _capture.RecordingStopped += (s, e) => RecordingStopped?.Invoke(this, e);
+        _capture.RecordingStopped += OnCaptureStopped;
     }
 
     public DeviceCapture(MMDevice device)
     {
         DeviceId = device.ID;
         _deviceFriendlyName = device.FriendlyName;
+        _ownedDevice = null;
         _capture = BuildRecorder(device);
+        _packetBuffer = new byte[Math.Max(16384, _capture.WaveFormat.AverageBytesPerSecond / 5)];
         _capture.DataAvailable += OnRecorderData;
-        _capture.RecordingStopped += (s, e) => RecordingStopped?.Invoke(this, e);
+        _capture.RecordingStopped += OnCaptureStopped;
     }
+
+    private void OnCaptureStopped(object? sender, StoppedEventArgs e) =>
+        RecordingStopped?.Invoke(this, e);
 
     // The new recorder hands us a span, but the rest of the pipeline (and the
     // process-loopback capture) speaks packet events, so bridge the two here
@@ -104,6 +112,9 @@ public sealed class DeviceCapture : IDisposable
     public void Dispose()
     {
         Stop();
+        _capture.DataAvailable -= OnRecorderData;
+        _capture.RecordingStopped -= OnCaptureStopped;
         _capture.Dispose();
+        _ownedDevice?.Dispose();
     }
 }

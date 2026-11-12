@@ -74,6 +74,8 @@ internal static class CableSelfTest
         IVst3Processor? rnnoise = null;
         var wetModifier = new ModifierNode("CABLE rnnoise + effects");
         var effectsModifier = new ModifierNode("CABLE effects only");
+        SourceNode.MeasureAllocations = true;
+        OutputNode.MeasureAllocations = true;
         try
         {
             rnnoise = Vst3ProcessorFactory.Create(rnnoisePath);
@@ -228,6 +230,8 @@ internal static class CableSelfTest
         }
         finally
         {
+            SourceNode.MeasureAllocations = false;
+            OutputNode.MeasureAllocations = false;
             TryDelete(marked);
         }
     }

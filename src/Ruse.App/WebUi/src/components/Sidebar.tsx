@@ -1,8 +1,8 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
-import type { ReactNode, RefObject } from 'react';
+import type { DragEvent, ReactNode, RefObject } from 'react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, FileAudio, GripVertical, Headphones, MessageSquare,
-  Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, Search, SlidersHorizontal, Speaker, Trash2, X,
+  AppWindow, AudioLines, Check, ChevronDown, FileAudio, FolderOpen, GripVertical, Headphones, MessageSquare,
+  Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, RefreshCw, Search, SlidersHorizontal, Speaker, Trash2, Upload, X,
 } from 'lucide-react';
 import {
   DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors,
@@ -14,6 +14,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { useI18n } from '../i18n';
 import { catalogKey } from '../library';
+import { send } from '../bridge';
 import { useTitleActive } from '../telemetry';
 import type { CatalogItem, CatalogSnapshot } from '../types';
 
@@ -25,6 +26,11 @@ const systemItem: CatalogItem = {
 const toneItem: CatalogItem = {
   id: 'tone', kind: 'tone', name: 'Test tone', subtitle: 'Sine, square, saw, noise',
   details: 'Generate a test signal for routing and level checks',
+};
+
+const synthItem: CatalogItem = {
+  id: 'synth', kind: 'synth', name: 'Sound generator', subtitle: 'Procedural synth',
+  details: 'Shape a synthesized tone with pitch, timbre, harmonics, filter and movement controls',
 };
 
 const ttsItem: CatalogItem = {
@@ -57,6 +63,7 @@ const ItemIcon = memo(function ItemIcon({ item }: { item: CatalogItem }) {
     case 'app': return <AppWindow {...props} />;
     case 'system': return <AudioLines {...props} />;
     case 'tone': return <AudioLines {...props} />;
+    case 'synth': return <SlidersHorizontal {...props} />;
     case 'tts': return <MessageSquare {...props} />;
     case 'network-in': return <Network {...props} />;
     case 'network-out': return <Network {...props} />;
@@ -72,6 +79,7 @@ const ItemIcon = memo(function ItemIcon({ item }: { item: CatalogItem }) {
     case 'chain': return <Layers3 {...props} />;
     case 'vst3': return <Puzzle {...props} />;
     case 'file-player': return <FileAudio {...props} />;
+    case 'sample': return <FileAudio {...props} />;
     case 'recorder': return <FileAudio {...props} />;
   }
 });
@@ -152,10 +160,10 @@ interface Section {
   items: CatalogItem[];
 }
 
-const LIBRARY_ORDER_KEY = 'ruse.librarySectionOrder';
+const LIBRARY_ORDER_KEY = 'ruse.librarySectionOrder.v3';
 const DEFAULT_SECTION_ORDER = [
-  'applications', 'network', 'physicalOutputs', 'physicalInputs', 'recording',
-  'virtualBuses', 'virtualInputs', 'asioOutputs', 'asioInputs', 'effects',
+  'applications', 'generators', 'samples', 'network', 'physicalOutputs', 'physicalInputs',
+  'recording', 'virtualBuses', 'virtualInputs', 'asioOutputs', 'asioInputs', 'effects',
   'plugins', 'chains', 'templates',
 ] as const;
 
@@ -167,9 +175,21 @@ function loadSectionOrder(): string[] {
       const known = new Set<string>(DEFAULT_SECTION_ORDER);
       const order = [...new Set(parsed.filter((value): value is string =>
         typeof value === 'string' && known.has(value)))];
-      for (const id of DEFAULT_SECTION_ORDER) {
-        if (!order.includes(id)) order.push(id);
+      for (let index = 0; index < DEFAULT_SECTION_ORDER.length; index++) {
+        const id = DEFAULT_SECTION_ORDER[index];
+        if (order.includes(id)) continue;
+        let insertAt = order.length;
+        for (let previous = index - 1; previous >= 0; previous--) {
+          const previousAt = order.indexOf(DEFAULT_SECTION_ORDER[previous]);
+          if (previousAt >= 0) {
+            insertAt = previousAt + 1;
+            break;
+          }
+        }
+
+        order.splice(insertAt, 0, id);
       }
+
       return order;
     }
   } catch {
@@ -233,7 +253,7 @@ const VIEWS: ReadonlyArray<{ id: View; label: string }> = [
   { id: 'processing', label: 'Processing' },
 ];
 
-function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onDelete, onNewChain, onEditChain, onRescanPlugins }: {
+function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onDelete, onNewChain, onEditChain, onRescanPlugins, onAsioRefresh }: {
   catalog: CatalogSnapshot;
   searchRef: RefObject<HTMLInputElement | null>;
   aliases: Record<string, string>;
@@ -244,6 +264,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   onNewChain: () => void;
   onEditChain: (item: CatalogItem) => void;
   onRescanPlugins: () => void;
+  onAsioRefresh: () => void;
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
@@ -251,6 +272,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [searching, setSearching] = useState(false);
   const [sectionOrder, setSectionOrder] = useState<string[]>(loadSectionOrder);
+  const [sampleDropActive, setSampleDropActive] = useState(false);
   const sectionRank = useMemo(
     () => new Map(sectionOrder.map((id, index) => [id, index])),
     [sectionOrder],
@@ -293,24 +315,28 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
       applications: { id: 'applications', label: 'Applications', items: [systemItem, ...catalog.apps] },
       network: { id: 'network', label: 'Network', items: [networkInputItem, networkOutputItem] },
       physicalOutputs: { id: 'physicalOutputs', label: 'Speakers & headphones', items: physicalOutputs },
-      physicalInputs: { id: 'physicalInputs', label: 'Microphones & inputs', items: [ttsItem, toneItem, ...physicalInputs] },
+      generators: { id: 'generators', label: 'Generators', items: [toneItem, synthItem] },
+      physicalInputs: { id: 'physicalInputs', label: 'Microphones & inputs', items: [ttsItem, ...physicalInputs] },
       recording: { id: 'recording', label: 'Record & Play', items: [recorderItem, filePlayerItem] },
+      samples: { id: 'samples', label: 'Samples', items: catalog.samples ?? [] },
       virtualBuses: { id: 'virtualBuses', label: 'Virtual buses', items: virtualInputs },
       virtualInputs: { id: 'virtualInputs', label: 'Virtual inputs', items: catalog.virtuals },
-      asioOutputs: { id: 'asioOutputs', label: 'ASIO outputs', items: asioOutputs },
-      asioInputs: { id: 'asioInputs', label: 'ASIO inputs', items: asioInputs },
+      asioOutputs: { id: 'asioOutputs', label: `${t('ASIO outputs')} (${t('Experimental')})`, items: asioOutputs },
+      asioInputs: { id: 'asioInputs', label: `${t('ASIO inputs')} (${t('Experimental')})`, items: asioInputs },
       effects: { id: 'effects', label: 'Effects', items: catalog.effects },
       plugins: { id: 'plugins', label: 'VST3 plugins', items: catalog.vst3Plugins },
       chains: { id: 'chains', label: 'Saved chains', items: catalog.chains },
       templates: { id: 'templates', label: 'Frame templates', items: catalog.frameTemplates },
     };
-  }, [catalog]);
+  }, [catalog, t]);
 
   const groups = useMemo<Group[]>(() => [
     {
       title: 'Sources',
       sections: ordered([
         catalogSections.applications,
+        catalogSections.generators,
+        catalogSections.samples,
         catalogSections.network,
         catalogSections.physicalInputs,
         catalogSections.virtualBuses,
@@ -334,6 +360,8 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
 
   const allSections = useMemo(() => ordered([
     catalogSections.applications,
+    catalogSections.generators,
+    catalogSections.samples,
     catalogSections.network,
     catalogSections.physicalOutputs,
     catalogSections.physicalInputs,
@@ -346,7 +374,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
     catalogSections.plugins,
     catalogSections.chains,
     catalogSections.templates,
-  ]).filter(section => section.items.length > 0 || section.label === 'Saved chains'), [catalogSections, ordered]);
+  ]).filter(section => section.items.length > 0 || section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins' || section.id === 'asioOutputs' || section.id === 'asioInputs'), [catalogSections, ordered]);
 
   useEffect(() => {
     const focusSection = (event: Event) => {
@@ -357,7 +385,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
       if (!target) return;
       setQuery('');
       setView('all');
-      setExpanded(current => ({ ...current, [`${target.group}-${target.label}`]: true }));
+      setExpanded(current => ({ ...current, [target.id]: true }));
       requestAnimationFrame(() => requestAnimationFrame(() => {
         document.querySelector(`[data-section-label="${target.label}"]`)
           ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -371,7 +399,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   const displayName = (item: CatalogItem) => aliases[catalogKey(item)]?.trim() || t(item.name);
   const deferredQuery = useDeferredValue(query);
   const normalized = deferredQuery.trim().toLowerCase();
-  const filtered = groups.map(group => ({
+  const filtered = useMemo(() => groups.map(group => ({
     ...group,
     sections: group.sections.map(section => ({
       ...section,
@@ -379,10 +407,10 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
         ? section.items.filter(item =>
             `${displayName(item)} ${t(item.name)} ${t(item.subtitle)} ${t(item.details)}`.toLowerCase().includes(normalized))
         : section.items,
-    })).filter(section => section.items.length > 0 || (!normalized && section.label === 'Saved chains')),
-  }));
+    })).filter(section => section.items.length > 0 || (!normalized && (section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins' || section.id === 'asioOutputs' || section.id === 'asioInputs'))),
+  })), [aliases, groups, normalized, t]);
 
-  const visible = normalized
+  const visible = useMemo(() => normalized
     ? filtered.filter(group => group.sections.length > 0)
     : view === 'all'
       ? [{ title: '', sections: allSections }]
@@ -390,7 +418,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
           group.sections.length > 0 &&
           ((view === 'sources' && group.title === 'Sources') ||
             (view === 'destinations' && group.title === 'Destinations') ||
-            (view === 'processing' && group.title === 'Processing')));
+            (view === 'processing' && group.title === 'Processing'))), [allSections, filtered, normalized, view]);
 
   const visibleSectionIds = useMemo(
     () => visible.flatMap(group => group.sections.map(section => section.id)),
@@ -415,8 +443,44 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   const isOnCanvas = (item: CatalogItem) =>
     (item.kind === 'output' || item.kind === 'virtual') && usedDeviceIds.has(item.id);
 
+  const onLibraryDrop = (event: DragEvent<HTMLElement>) => {
+    setSampleDropActive(false);
+    const files = Array.from(event.dataTransfer.files ?? []);
+    if (files.length > 0) {
+      event.preventDefault();
+      window.chrome?.webview?.postMessageWithAdditionalObjects?.(
+        { type: 'sample-drop', payload: {} },
+        files,
+      );
+      return;
+    }
+
+    const path = event.dataTransfer.getData('application/ruse-recording');
+    if (path) {
+      event.preventDefault();
+      send('sample-import-path', { path });
+    }
+  };
+
   return (
-    <aside className="sidebar" aria-label={t('Routing library')}>
+    <aside
+      className={`sidebar ${sampleDropActive ? 'sample-drop-active' : ''}`}
+      aria-label={t('Routing library')}
+      onDragOver={event => {
+        const types = Array.from(event.dataTransfer.types);
+        if (types.includes('Files') || types.includes('application/ruse-recording')) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'copy';
+          setSampleDropActive(true);
+        }
+      }}
+      onDragLeave={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setSampleDropActive(false);
+        }
+      }}
+      onDrop={onLibraryDrop}
+    >
       <div className="sidebar-heading">
         <span className="eyebrow">{t('Library')}</span>
       </div>
@@ -474,16 +538,38 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
               <section className="library-group" key={group.title || 'all'}>
                 {group.title && <div className="group-title">{t(group.title)}</div>}
                 {group.sections.map(section => {
-                  const key = `${group.title}-${section.label}`;
-                  const isCollapsed = !expanded[key] && !normalized;
+                  const key = section.id;
+                  const isCollapsed = section.id === 'samples'
+                    ? !normalized && expanded[key] === false
+                    : !expanded[key] && !normalized;
                   return (
                     <SortableSection
                       key={section.id}
                       section={section}
                       collapsed={isCollapsed}
                       reorderEnabled={!normalized}
-                      onToggle={() => setExpanded(current => ({ ...current, [key]: !current[key] }))}
+                      onToggle={() => {
+                        const willExpand = isCollapsed;
+                        setExpanded(current => ({ ...current, [key]: willExpand }));
+                        if (willExpand && !catalog.asioLoaded && (section.id === "asioOutputs" || section.id === "asioInputs")) {
+                          onAsioRefresh();
+                        }
+                      }}
                     >
+                      {section.id === 'samples' && (
+                        <div className="sample-actions">
+                          <button type="button" className="sample-action" onClick={() => send('samples-open-folder')} title={t('Open samples folder')}>
+                            <FolderOpen size={13} /> {t('Open folder')}
+                          </button>
+                          <button type="button" className="sample-action" onClick={() => send('samples-import')} title={t('Add sample files')}>
+                            <Upload size={13} /> {t('Add samples')}
+                          </button>
+                          <button type="button" className="sample-action" onClick={() => send('samples-refresh')} title={t('Refresh samples')}>
+                            <RefreshCw size={13} /> {t('Refresh')}
+                          </button>
+                          <span className="sample-hint">{t('Drop audio files here or open the folder.')}</span>
+                        </div>
+                      )}
                       {section.items.map(item => <LibraryItem
                         key={`${item.kind}-${item.id}`}
                         item={item}
@@ -496,6 +582,11 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
                       />)}
                       {section.label === 'Saved chains' && <button className="new-chain-button" onClick={onNewChain}><Plus size={13} /> {t('New chain')}</button>}
                       {section.label === 'VST3 plugins' && <button className="new-chain-button" onClick={onRescanPlugins}><Plus size={13} /> {t('Rescan VST3 plugins')}</button>}
+                      {(section.id === 'asioOutputs' || section.id === 'asioInputs') && section.items.length === 0 && (
+                        !catalog.asioLoaded
+                          ? <button className="new-chain-button" onClick={onAsioRefresh}><Plus size={13} /> {t('Load ASIO drivers')}</button>
+                          : <p className="library-empty">{t('No ASIO drivers found.')}</p>
+                      )}
                     </SortableSection>
                   );
                 })}

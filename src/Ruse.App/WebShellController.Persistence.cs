@@ -23,9 +23,15 @@ internal sealed partial class WebShellController
 
             if (entry.Source != null)
             {
+                if (included != null && entry.Source.Kind == SourceKind.Timeline)
+                {
+                    continue;
+                }
+
                 sourceIndex[entry.Id] = preset.Sources.Count;
                 preset.Sources.Add(new PresetSource
                 {
+                    Id = entry.Id,
                     Title = entry.Title,
                     ControlId = entry.ControlId,
                     Kind = entry.Source.Kind.ToString(),
@@ -41,6 +47,17 @@ internal sealed partial class WebShellController
                     ToneFrequency = entry.Source.ToneFrequency,
                     ToneWaveform = entry.Source.ToneWave.ToString(),
                     ToneLevelDb = entry.Source.ToneLevelDb,
+                    SynthFrequency = entry.Source.Synth.Frequency,
+                    SynthWaveform = entry.Source.Synth.Waveform.ToString(),
+                    SynthLevelDb = entry.Source.Synth.LevelDb,
+                    SynthHarmonics = entry.Source.Synth.Harmonics,
+                    SynthDetuneCents = entry.Source.Synth.DetuneCents,
+                    SynthNoise = entry.Source.Synth.Noise,
+                    SynthCutoffHz = entry.Source.Synth.CutoffHz,
+                    SynthResonance = entry.Source.Synth.Resonance,
+                    SynthMovement = entry.Source.Synth.Movement,
+                    SynthLfoRateHz = entry.Source.Synth.LfoRateHz,
+                    SynthStereoWidth = entry.Source.Synth.StereoWidth,
                     TtsText = entry.TtsText,
                     TtsSourceNodeId = entry.TtsSourceNodeId,
                     TtsModel = entry.TtsModel,
@@ -73,6 +90,7 @@ internal sealed partial class WebShellController
                     FileFormat = entry.Output.IsFileRecorder ? entry.Output.RecordingFormat.ToString() : null,
                     RecordingMode = entry.Output.RecorderMode.ToString(),
                     AutoSave = entry.Output.AutoSave,
+                    SaveToSamples = entry.Output.SaveToSamples,
                     RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds,
                     RecorderStartThresholdDb = entry.Output.RecorderStartThresholdDb,
                     Color = entry.Color,
@@ -194,6 +212,11 @@ internal sealed partial class WebShellController
             });
         }
 
+        if (included == null)
+        {
+            preset.Timeline = _timeline?.SnapshotProject(includePeaks: false);
+        }
+
         return preset;
     }
 
@@ -234,6 +257,17 @@ internal sealed partial class WebShellController
                         : ToneWaveform.Sine;
                     source.SetTone(saved.ToneFrequency, wave, saved.ToneLevelDb);
                 }
+                else if (kind == SourceKind.Synth)
+                {
+                    var wave = Enum.TryParse<ToneWaveform>(saved.SynthWaveform, ignoreCase: true, out var synthWave)
+                        ? synthWave
+                        : ToneWaveform.Saw;
+                    source.SetSynth(new SynthSettings(
+                        saved.SynthFrequency, wave, saved.SynthLevelDb, saved.SynthHarmonics,
+                        saved.SynthDetuneCents, saved.SynthNoise, saved.SynthCutoffHz,
+                        saved.SynthResonance, saved.SynthMovement, saved.SynthLfoRateHz,
+                        saved.SynthStereoWidth));
+                }
                 else if (kind == SourceKind.Network)
                 {
                     source.SetNetworkPort(saved.NetworkPort);
@@ -245,6 +279,7 @@ internal sealed partial class WebShellController
                 source.Solo = saved.Solo;
                 source.SelectedOutputId = saved.OutputId;
                 var sourceEntry = RegisterSource(source, saved.X + offsetX, saved.Y + offsetY,
+                    id: string.IsNullOrWhiteSpace(saved.Id) ? null : saved.Id,
                     controlId: saved.ControlId);
                 if (kind == SourceKind.Tts)
                 {
@@ -313,6 +348,7 @@ internal sealed partial class WebShellController
                     ? mode
                     : RecorderMode.Off;
                 output.AutoSave = saved.AutoSave;
+                output.SaveToSamples = saved.SaveToSamples;
                 output.RecorderSilenceStopSeconds = double.IsFinite(saved.RecorderSilenceStopSeconds)
                     ? Math.Clamp(saved.RecorderSilenceStopSeconds, 0, 3600)
                     : 0;
@@ -427,6 +463,23 @@ internal sealed partial class WebShellController
         if (!insert)
         {
             RestoreMidiBindings(preset, modifiers);
+        }
+
+        if (!insert && preset.Timeline != null)
+        {
+            EnsureTimeline();
+            _timeline!.LoadProject(preset.Timeline);
+            foreach (var track in _timeline.Project.Tracks)
+            {
+                var sourceId = track.SourceNodeId;
+                if (sourceId != null && _nodes.TryGetValue(sourceId, out var entry) &&
+                    entry.Source is { Kind: SourceKind.Timeline } sourceNode)
+                {
+                    _timeline.AttachSource(track.Id, sourceNode);
+                }
+            }
+
+            PublishTimeline();
         }
 
         if (disarmedRecorders > 0)
@@ -568,8 +621,16 @@ internal sealed partial class WebShellController
             _settings.ControlApiPort != Math.Clamp(settings.ControlApiPort, 0, 65535);
         _settings.ControlApiEnabled = settings.ControlApiEnabled;
         _settings.ControlApiPort = Math.Clamp(settings.ControlApiPort, 0, 65535);
+        bool updateSettingsChanged =
+            _settings.UpdateAutoCheck != settings.UpdateAutoCheck ||
+            _settings.UpdateCheckIntervalDays != settings.UpdateCheckIntervalDays;
+        _settings.UpdateAutoCheck = settings.UpdateAutoCheck;
+        _settings.UpdateCheckIntervalDays = settings.UpdateCheckIntervalDays is 1 or 7 or 30
+            ? settings.UpdateCheckIntervalDays
+            : 1;
         bool audioEngineChanged =
             _settings.AudioAutoMode != settings.AudioAutoMode ||
+            _settings.LowLatencyMode != settings.LowLatencyMode ||
             Math.Abs(_settings.AudioBlockSizeMs - settings.AudioBlockSizeMs) > 0.001 ||
             !string.Equals(_settings.OutputBufferMode, settings.OutputBufferMode, StringComparison.OrdinalIgnoreCase) ||
             _settings.OutputBufferManualMs != settings.OutputBufferManualMs ||
@@ -577,6 +638,7 @@ internal sealed partial class WebShellController
             _settings.EngineCushionManualMs != settings.EngineCushionManualMs ||
             _settings.ElasticRing != settings.ElasticRing;
         _settings.AudioAutoMode = settings.AudioAutoMode;
+        _settings.LowLatencyMode = settings.LowLatencyMode;
         _settings.AudioBlockSizeMs = Math.Clamp(settings.AudioBlockSizeMs, 2.5, 10.0);
         _settings.OutputBufferMode = settings.OutputBufferMode ?? "balanced";
         _settings.OutputBufferManualMs = Math.Clamp(settings.OutputBufferManualMs, 2, 40);
@@ -681,6 +743,11 @@ internal sealed partial class WebShellController
         if (controlApiChanged)
         {
             _ = RestartControlServerAsync();
+        }
+
+        if (updateSettingsChanged)
+        {
+            _ = _updates.MaybeAutoCheckAsync();
         }
 
         if (audioEngineChanged && _running)

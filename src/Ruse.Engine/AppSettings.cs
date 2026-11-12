@@ -88,10 +88,19 @@ public sealed class AppSettings
     public bool ShowDiagnostics { get; set; }
 
     /// <summary>Allow other local apps to control Ruse through the loopback API.</summary>
-    public bool ControlApiEnabled { get; set; } = true;
+    public bool ControlApiEnabled { get; set; }
 
     /// <summary>Preferred loopback port; 0 or a busy port falls back to a free one.</summary>
     public int ControlApiPort { get; set; } = 47100;
+
+    /// <summary>Check GitHub for a new release on startup and periodically.</summary>
+    public bool UpdateAutoCheck { get; set; }
+
+    /// <summary>Days between automatic update checks (1, 7 or 30).</summary>
+    public int UpdateCheckIntervalDays { get; set; } = 1;
+
+    /// <summary>UTC time of the last update check.</summary>
+    public DateTime? LastUpdateCheckUtc { get; set; }
 
     /// <summary>Ask WASAPI for an IAudioClient3 low-latency shared stream.</summary>
     public bool LowLatencyWasapi { get; set; } = true;
@@ -101,6 +110,9 @@ public sealed class AppSettings
 
     /// <summary>Use automatic audio timing choices (5 ms blocks, balanced buffer).</summary>
     public bool AudioAutoMode { get; set; } = true;
+
+    /// <summary>Experimental 2.5 ms block mode with a larger safety ring.</summary>
+    public bool LowLatencyMode { get; set; }
 
     /// <summary>Manual engine block size in ms (2.5/5/7.5/10).</summary>
     public double AudioBlockSizeMs { get; set; } = 5.0;

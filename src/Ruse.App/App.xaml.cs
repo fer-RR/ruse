@@ -109,6 +109,16 @@ public partial class App : Application
             return;
         }
 
+        int applyUpdateIndex = Array.FindIndex(
+            e.Args, value => value.Equals("--apply-update", StringComparison.OrdinalIgnoreCase));
+        if (applyUpdateIndex >= 0)
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            int updateExitCode = UpdateApplier.Run(e.Args);
+            Shutdown(updateExitCode);
+            return;
+        }
+
         // Diagnostic and probe modes are intentionally allowed to run alongside
         // the app; only a normal launch claims the single-instance slot.
         if (e.Args.Length == 0 && !TryClaimInstance())

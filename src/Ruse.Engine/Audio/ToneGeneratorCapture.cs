@@ -18,14 +18,19 @@ public sealed class ToneGeneratorCapture : IDisposable
 
     private Thread? _thread;
     private volatile bool _stop;
+    private volatile bool _stopRequested;
+    private bool _releasing;
 
     private volatile float _frequency = 1000f;
     private volatile float _levelDb = -18f;
     private volatile ToneWaveform _waveform = ToneWaveform.Sine;
     private float _currentFrequency = 1000f;
     private float _currentGain = 0.12589254f;
+    private float _envelope;
+    private float _envelopeTarget = 1f;
     private bool _primed;
     private ToneWaveform? _lastWaveform;
+    private ToneWaveform? _pendingWaveform;
 
     public ToneGeneratorCapture(float frequency, ToneWaveform waveform, float levelDb)
     {
@@ -49,6 +54,13 @@ public sealed class ToneGeneratorCapture : IDisposable
         }
 
         _stop = false;
+        _stopRequested = false;
+        _releasing = false;
+        _envelope = 0f;
+        _envelopeTarget = 1f;
+        _pendingWaveform = null;
+        _lastWaveform = _waveform;
+        _primed = false;
         _thread = new Thread(Pump)
         {
             IsBackground = true,
@@ -64,6 +76,17 @@ public sealed class ToneGeneratorCapture : IDisposable
 
         while (!_stop)
         {
+            if (_stopRequested)
+            {
+                _releasing = true;
+            }
+
+            if (_releasing && _envelope <= 0.001f)
+            {
+                _stop = true;
+                break;
+            }
+
             long due = (long)(clock.Elapsed.TotalSeconds * SampleRate);
             if (produced >= due)
             {
@@ -90,18 +113,34 @@ public sealed class ToneGeneratorCapture : IDisposable
             _primed = true;
         }
 
-        ToneWaveform waveform = _waveform;
-        if (_lastWaveform != waveform)
+        ToneWaveform targetWaveform = _waveform;
+        if (_releasing)
         {
-            _oscillator.Reset();
-            _lastWaveform = waveform;
+            _envelopeTarget = 0f;
         }
+        else if (_lastWaveform != targetWaveform && _pendingWaveform != targetWaveform)
+        {
+            _pendingWaveform = targetWaveform;
+            _envelopeTarget = 0f;
+        }
+
+        if (!_releasing && _pendingWaveform is { } pending &&
+            _lastWaveform != pending && _envelope <= 0.01f)
+        {
+            _lastWaveform = pending;
+            _pendingWaveform = null;
+            _envelopeTarget = 1f;
+            _oscillator.Reset();
+        }
+
+        ToneWaveform waveform = _lastWaveform ?? targetWaveform;
 
         for (int frame = 0; frame < frames; frame++)
         {
             _currentFrequency = ParameterSmoothing.Approach(_currentFrequency, targetFrequency, ParameterSmoothing.FastAlpha);
             _currentGain = ParameterSmoothing.Approach(_currentGain, targetGain, ParameterSmoothing.FastAlpha);
-            float value = _oscillator.Next(waveform, _currentFrequency) * _currentGain;
+            _envelope = ParameterSmoothing.Approach(_envelope, _envelopeTarget, ParameterSmoothing.FastAlpha);
+            float value = _oscillator.Next(waveform, _currentFrequency) * _currentGain * _envelope;
             _samples[frame * Channels] = value;
             _samples[(frame * Channels) + 1] = value;
         }
@@ -111,13 +150,15 @@ public sealed class ToneGeneratorCapture : IDisposable
 
     public void Stop()
     {
-        _stop = true;
+        _stopRequested = true;
         Thread? thread = _thread;
         _thread = null;
         if (thread != null && thread.IsAlive && thread != Thread.CurrentThread)
         {
             thread.Join(500);
         }
+
+        _stop = true;
     }
 
     public void Dispose() => Stop();

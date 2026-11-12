@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { send } from '../bridge';
 import type { RuseFlowNode } from '../flow';
 import { useI18n } from '../i18n';
@@ -29,15 +29,76 @@ export default function ToneControls({ node }: { node: RuseFlowNode['data'] }) {
   const [frequency, setFrequency] = useState(node.toneFrequency ?? 1000);
   const [waveform, setWaveform] = useState(node.toneWaveform ?? 'Sine');
   const [level, setLevel] = useState(node.toneLevelDb ?? -18);
-  useEffect(() => setFrequency(node.toneFrequency ?? 1000), [node.toneFrequency]);
-  useEffect(() => setWaveform(node.toneWaveform ?? 'Sine'), [node.toneWaveform]);
-  useEffect(() => setLevel(node.toneLevelDb ?? -18), [node.toneLevelDb]);
+  const [interacting, setInteracting] = useState(false);
+  const interactionTimer = useRef<number | null>(null);
+  const pending = useRef<{ frequency: number; waveform: string; level: number } | null>(null);
+  const flushTimer = useRef<number | null>(null);
 
-  const update = (nextFrequency = frequency, nextWaveform = waveform, nextLevel = level) =>
-    send('tone', { id: node.id, frequency: nextFrequency, waveform: nextWaveform, level: nextLevel });
+  useEffect(() => () => {
+    if (flushTimer.current !== null) {
+      window.clearTimeout(flushTimer.current);
+      flushTimer.current = null;
+      if (pending.current) {
+        send('tone', { id: node.id, ...pending.current });
+        pending.current = null;
+      }
+    }
+
+    if (interactionTimer.current !== null) {
+      window.clearTimeout(interactionTimer.current);
+      interactionTimer.current = null;
+    }
+  }, [node.id]);
+
+  useEffect(() => {
+    if (!interacting) return;
+    const release = () => endInteraction();
+    window.addEventListener('pointerup', release);
+    window.addEventListener('pointercancel', release);
+    return () => {
+      window.removeEventListener('pointerup', release);
+      window.removeEventListener('pointercancel', release);
+    };
+  }, [interacting]);
+
+  useEffect(() => {
+    if (!interacting) setFrequency(node.toneFrequency ?? 1000);
+  }, [node.toneFrequency, interacting]);
+  useEffect(() => {
+    if (!interacting) setWaveform(node.toneWaveform ?? 'Sine');
+  }, [node.toneWaveform, interacting]);
+  useEffect(() => {
+    if (!interacting) setLevel(node.toneLevelDb ?? -18);
+  }, [node.toneLevelDb, interacting]);
+
+  const beginInteraction = () => {
+    if (interactionTimer.current !== null) window.clearTimeout(interactionTimer.current);
+    setInteracting(true);
+  };
+
+  const endInteraction = () => {
+    if (interactionTimer.current !== null) window.clearTimeout(interactionTimer.current);
+    interactionTimer.current = window.setTimeout(() => {
+      interactionTimer.current = null;
+      setInteracting(false);
+    }, 180);
+  };
+
+  const update = (nextFrequency = frequency, nextWaveform = waveform, nextLevel = level) => {
+    pending.current = { frequency: nextFrequency, waveform: nextWaveform, level: nextLevel };
+    if (flushTimer.current === null) {
+      flushTimer.current = window.setTimeout(() => {
+        flushTimer.current = null;
+        if (pending.current) {
+        send('tone', { id: node.id, ...pending.current });
+        pending.current = null;
+      }
+      }, 50);
+    }
+  };
 
   return (
-    <div className="tone-controls nodrag">
+    <div className="tone-controls nodrag" onPointerDown={beginInteraction} onPointerUp={endInteraction} onPointerCancel={endInteraction}>
       <label className="tone-field">
         <span>{t('Waveform')}</span>
         <select value={waveform} onChange={event => { const next = event.target.value; setWaveform(next); update(frequency, next, level); }}>

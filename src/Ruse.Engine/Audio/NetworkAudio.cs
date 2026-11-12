@@ -141,6 +141,7 @@ public sealed class NetworkPcmCapture : IDisposable
     private readonly float[] _samples = new float[NetworkPcm.BlockFrames * NetworkPcm.Channels];
     private readonly float[] _decode = new float[NetworkPcm.BlockFrames * NetworkPcm.Channels];
     private readonly byte[] _bytes = new byte[NetworkPcm.BlockFrames * NetworkPcm.Channels * sizeof(float)];
+    private readonly float[] _silence = new float[NetworkPcm.SampleRate / 2 * NetworkPcm.Channels];
     private readonly AudioPacketEventArgs _packetArgs = new();
     private readonly object _errorLock = new();
 
@@ -315,8 +316,11 @@ public sealed class NetworkPcmCapture : IDisposable
 
     private void WriteSilence(int frames)
     {
-        var silence = new float[frames * NetworkPcm.Channels];
-        _ring.Write(silence);
+        int samples = Math.Clamp(frames, 0, NetworkPcm.SampleRate / 2) * NetworkPcm.Channels;
+        if (samples > 0)
+        {
+            _ring.Write(_silence.AsSpan(0, samples));
+        }
     }
 
     private void PumpLoop()

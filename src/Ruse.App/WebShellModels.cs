@@ -23,6 +23,7 @@ internal sealed class CatalogItemDto
     public string? Badge { get; set; }
     public string? MicHint { get; set; }
     public string? IconDataUrl { get; set; }
+    public string? FilePath { get; set; }
     public List<ParameterDto> Parameters { get; set; } = new();
     public List<ChainElementDto> Elements { get; set; } = new();
 }
@@ -51,9 +52,12 @@ internal sealed class CatalogDto
     public List<CatalogItemDto> Chains { get; set; } = new();
     public List<CatalogItemDto> Vst3Plugins { get; set; } = new();
     public List<CatalogItemDto> FrameTemplates { get; set; } = new();
+    public List<CatalogItemDto> Samples { get; set; } = new();
+    public string SampleDirectory { get; set; } = "";
     public string DefaultOutputId { get; set; } = "";
     public string DefaultOutputName { get; set; } = "";
     public bool PerAppCaptureAvailable { get; set; } = true;
+    public bool AsioLoaded { get; set; }
     public string PerAppCaptureMessage { get; set; } = "";
 }
 
@@ -105,6 +109,7 @@ internal sealed class NodeDto
     public int RecorderSampleRate { get; set; } = 48000;
     public string RecorderMode { get; set; } = "Off";
     public bool RecorderAutoSave { get; set; }
+    public bool RecorderSaveToSamples { get; set; }
     public double RecorderSilenceStopSeconds { get; set; }
     public double RecorderStartThresholdDb { get; set; } = -40;
     public bool IsSpectrum { get; set; }
@@ -127,6 +132,18 @@ internal sealed class NodeDto
     public bool FileLoop { get; set; }
     public float FileSpeed { get; set; } = 1f;
     public bool IsToneGenerator { get; set; }
+    public bool IsSynthGenerator { get; set; }
+    public float SynthFrequency { get; set; } = 110f;
+    public string SynthWaveform { get; set; } = "Saw";
+    public float SynthLevelDb { get; set; } = -18f;
+    public float SynthHarmonics { get; set; } = 0.3f;
+    public float SynthDetuneCents { get; set; } = 6f;
+    public float SynthNoise { get; set; } = 0.05f;
+    public float SynthCutoffHz { get; set; } = 2200f;
+    public float SynthResonance { get; set; } = 0.2f;
+    public float SynthMovement { get; set; } = 0.15f;
+    public float SynthLfoRateHz { get; set; } = 0.7f;
+    public float SynthStereoWidth { get; set; } = 0.4f;
     public bool IsNoteDetector { get; set; }
     public bool IsNetworkInput { get; set; }
     public bool IsNetworkOutput { get; set; }
@@ -410,14 +427,17 @@ internal sealed class SettingsDto
     public bool ShowWelcomeScreen { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
     public bool ShowDiagnostics { get; set; }
-    public bool ControlApiEnabled { get; set; } = true;
+    public bool ControlApiEnabled { get; set; }
     public int ControlApiPort { get; set; } = 47100;
     public string ControlApiUrl { get; set; } = "";
     public string ControlApiToken { get; set; } = "";
+    public bool UpdateAutoCheck { get; set; }
+    public int UpdateCheckIntervalDays { get; set; } = 1;
     public bool AggressiveOutputCushion { get; set; }
     public bool ClipGuard { get; set; } = true;
     public bool LowLatencyWasapi { get; set; } = true;
     public bool AudioAutoMode { get; set; } = true;
+    public bool LowLatencyMode { get; set; }
     public double AudioBlockSizeMs { get; set; } = 5.0;
     public string OutputBufferMode { get; set; } = "balanced";
     public int OutputBufferManualMs { get; set; } = 10;

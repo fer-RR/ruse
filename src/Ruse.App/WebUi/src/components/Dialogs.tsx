@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Activity, AudioLines, Cable, ChevronRight, Copy, Eye, EyeOff, FileText, FolderOpen, Headphones, LayoutGrid, Mic, MonitorSpeaker, SlidersHorizontal, Volume2, X } from 'lucide-react';
+import { Activity, AudioLines, Cable, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, LayoutGrid, Plus, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { TRANSLATION_TARGETS } from '../languages';
@@ -11,6 +11,8 @@ import NumberField from './NumberField';
 import TranslationModelCatalog from './TranslationModelCatalog';
 import OpusModelCatalog from './OpusModelCatalog';
 import TtsModelCatalog from './TtsModelCatalog';
+import { formatBytes, useUpdates } from '../updates';
+import { useAudioOptimizer } from '../audioOptimizer';
 
 export function Modal({ title, onClose, children, className = '', movable = false }: {
   title: string;
@@ -182,47 +184,6 @@ export function DuplicateAudioDialog({ warning, onClose }: {
   );
 }
 
-export function DeviceHelpDialog({ onClose }: { onClose: () => void }) {
-  const { t } = useI18n();
-  return (
-    <Modal title={t('Understanding audio devices')} onClose={onClose} className="device-help-modal">
-      <div className="device-help">
-        <p className="modal-copy">{t('Windows gives every virtual mixer two sides. The subtitle on each library item tells you which side you are looking at.')}</p>
-        <div className="device-help-grid">
-          <div>
-            <span className="device-help-icon"><Mic size={17} /></span>
-            <div>
-              <strong>{t('Capture (sources)')}</strong>
-              <p>{t('Ruse listens to these: microphones, apps and virtual buses.')}</p>
-              <small>{t('Voicemeeter Out A1/B1... and CABLE Output live here.')}</small>
-            </div>
-          </div>
-          <div>
-            <span className="device-help-icon"><MonitorSpeaker size={17} /></span>
-            <div>
-              <strong>{t('Playback (destinations)')}</strong>
-              <p>{t('Ruse sends the routed mix to these: speakers, headphones, virtual inputs and recorders.')}</p>
-              <small>{t('Voicemeeter In 1/2/3... and CABLE Input live here.')}</small>
-            </div>
-          </div>
-          <div>
-            <span className="device-help-icon"><Cable size={17} /></span>
-            <div>
-              <strong>{t('Virtual cable rule')}</strong>
-              <p>{t('Send to the Input side; capture from the Output side.')}</p>
-              <small>{t('Out means "from the mixer to Ruse". In means "from Ruse into the mixer".')}</small>
-            </div>
-          </div>
-        </div>
-        <p className="settings-note">{t('A physical device usually has one side. A virtual mixer such as Voicemeeter exposes many buses, so the capture/playback subtitle is the reliable clue.')}</p>
-        <div className="modal-actions">
-          <button className="primary-button" onClick={onClose}>{t('Got it')}</button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
 function ToggleSetting({ label, description, checked, onChange }: {
   label: string;
   description: string;
@@ -344,18 +305,24 @@ function SettingsSection({ title, summary, children }: {
   );
 }
 
-export function SettingsDialog({ settings, onChange, onClose, initialTab = 'behavior', outputs, vstPlugins = [] }: {
+export function SettingsDialog({ settings, onChange, onClose, initialTab = 'behavior', outputs, virtualInputs = [], virtualOutputs = [], vstPlugins = [] }: {
   settings: SettingsModel;
   onChange: (settings: SettingsModel) => void;
   onClose: () => void;
   initialTab?: SettingsTab;
   outputs: CatalogItem[];
+  virtualInputs?: CatalogItem[];
+  virtualOutputs?: CatalogItem[];
   vstPlugins?: CatalogItem[];
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [gpuAtOpen] = useState(settings.useGpu);
   const [showToken, setShowToken] = useState(false);
+  const updates = useUpdates();
+  const optimizer = useAudioOptimizer();
+  const optimizerBusy = optimizer.state.status === 'running';
+  const updateBusy = updates.state.status === 'checking' || updates.state.status === 'downloading' || updates.state.status === 'applying';
   useEffect(() => setTab(initialTab), [initialTab]);
   const installed = settings.transcriberModels.filter(model => model.installed);
   const selectedModel = installed.some(model => model.id === settings.transcriberModel)
@@ -587,8 +554,39 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
             </SettingsSection>
 
             <SettingsSection title="Audio engine" summary={settings.audioAutoMode !== false ? t('Auto audio settings') : t('Manual')}>
+
               <ToggleSetting label={t('Low-latency WASAPI')} description={t('Try Windows low-latency shared mode before falling back to normal shared mode. Takes effect the next time routing starts.')} checked={settings.lowLatencyWasapi !== false} onChange={value => onChange({ ...settings, lowLatencyWasapi: value })} />
               <ToggleSetting label={t('Auto audio settings')} description={t('Choose block size and buffer profiles automatically for the current machine.')} checked={settings.audioAutoMode !== false} onChange={value => onChange({ ...settings, audioAutoMode: value })} />
+              <ToggleSetting
+                label={`${t('Low-latency mode')} (${t('Experimental')})`}
+                description={t('Use 2.5 ms blocks and a larger safety ring. May cause dropouts on some PCs. Turns auto audio settings off.')}
+                checked={settings.lowLatencyMode === true}
+                onChange={value => onChange({ ...settings, lowLatencyMode: value, audioAutoMode: value ? false : settings.audioAutoMode })}
+              />
+              <div className="setting-row settings-row-tight">
+                <span>
+                  <strong>{t('Find best audio settings')}</strong>
+                  <small>{t('Tests audio settings for this PC. Takes about 20-30 seconds. Routing pauses and a quiet test tone plays.')}</small>
+                </span>
+                <button className="tool-button" onClick={optimizer.run} disabled={optimizerBusy}>
+                  <Gauge size={14} /> {optimizerBusy ? t('Testing audio...') : t('Find best audio settings')}
+                </button>
+              </div>
+              {optimizerBusy && (
+                <>
+                  <p className="settings-note" aria-live="polite">{optimizer.state.message || t('Testing audio...')}</p>
+                  <div className="update-progress"><span style={{ width: `${Math.round((optimizer.state.progress ?? 0) * 100)}%` }} /></div>
+                </>
+              )}
+              {optimizer.state.status === 'done' && optimizer.state.result && (
+                <p className="settings-note settings-note-stack">
+                  {optimizer.state.message} {optimizer.state.result.maxLatencyMs.toFixed(1)} ms
+                  {!optimizer.state.result.clean && ` - ${optimizer.state.result.underruns} underrun(s)`}
+                </p>
+              )}
+              {optimizer.state.status === 'error' && (
+                <p className="settings-note update-error">{optimizer.state.error ?? optimizer.state.message}</p>
+              )}
               <label className="setting-row">
                 <span><strong>{t('Block size')}</strong><small>{t('Smaller blocks lower latency but increase CPU and underrun risk.')}</small></span>
                 <select disabled={settings.audioAutoMode !== false} value={settings.audioBlockSizeMs ?? 5} onChange={event => onChange({ ...settings, audioBlockSizeMs: Number(event.target.value) })}>
@@ -629,6 +627,54 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 />
               )}
               <p className="settings-note">{t('Audio engine changes restart routing when applied.')}</p>
+            </SettingsSection>
+
+            <SettingsSection
+              title="Virtual buses"
+              summary={virtualInputs.length + virtualOutputs.length > 0 ? `${virtualInputs.length} in / ${virtualOutputs.length} out` : t('Recommended')}
+            >
+              <p className="settings-note">{t('Virtual buses carry audio between apps without a physical cable. Send Ruse to a virtual output and capture its matching input in another app, or capture a virtual input to bring another app\'s audio into Ruse.')}</p>
+              <div className="virtual-bus-grid">
+                <div className="virtual-bus-column">
+                  <div className="virtual-bus-heading"><Cable size={13} /> {t('Virtual inputs')}</div>
+                  {virtualInputs.length > 0 ? (
+                    <ul className="virtual-bus-list">
+                      {virtualInputs.map(item => (
+                        <li key={item.id}>
+                          <strong title={item.name}>{item.name}</strong>
+                          <small>{item.provider || item.subtitle}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p className="virtual-bus-empty">{t('None detected')}</p>}
+                </div>
+                <div className="virtual-bus-column">
+                  <div className="virtual-bus-heading"><Cable size={13} /> {t('Virtual outputs')}</div>
+                  {virtualOutputs.length > 0 ? (
+                    <ul className="virtual-bus-list">
+                      {virtualOutputs.map(item => (
+                        <li key={item.id}>
+                          <strong title={item.name}>{item.name}</strong>
+                          <small>{item.provider || item.subtitle}</small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : <p className="virtual-bus-empty">{t('None detected')}</p>}
+                </div>
+              </div>
+              {(virtualInputs.length === 0 || virtualOutputs.length === 0) && (
+                <div className="virtual-bus-recommend">
+                  <strong>{t('Install a virtual bus')}</strong>
+                  <p>{t('Install a virtual audio device to use these routes. VB-CABLE is free donationware from VB-Audio; VoiceMeeter adds multiple buses. Third-party drivers are not bundled with Ruse.')}</p>
+                  <div className="virtual-bus-links">
+                    <span><strong>VB-CABLE</strong><code>vb-audio.com/Cable</code></span>
+                    <span><strong>VoiceMeeter</strong><code>vb-audio.com/Voicemeeter</code></span>
+                  </div>
+                </div>
+              )}
+              <div className="settings-actions">
+                <button className="tool-button" onClick={() => send('refresh')}><RefreshCw size={14} /> {t('Refresh devices')}</button>
+              </div>
             </SettingsSection>
 
             <SettingsSection
@@ -729,10 +775,80 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 <div className="wide"><dt>{t('Models folder')}</dt><dd title={settings.modelsFolder}>{settings.modelsFolder || '-'}</dd></div>
               </dl>
             </SettingsSection>
+            <SettingsSection title="Updates" summary={updates.state.latestVersion ? `v${updates.state.latestVersion}` : undefined}>
+              <div className="update-summary">
+                <span><strong>{t('Current version')}</strong><small>{settings.appVersion || updates.state.currentVersion || t('unknown')}</small></span>
+                <button className="tool-button" onClick={updates.check} disabled={updateBusy}>
+                  <RefreshCw size={14} /> {t('Check for updates')}
+                </button>
+              </div>
+              <ToggleSetting
+                label={t('Check for updates automatically')}
+                description={t('Check GitHub for a new release on startup and periodically while Ruse is running.')}
+                checked={settings.updateAutoCheck}
+                onChange={value => onChange({ ...settings, updateAutoCheck: value })}
+              />
+              <label className="setting-row">
+                <span><strong>{t('Check frequency')}</strong><small>{t('How often to check when automatic updates are enabled.')}</small></span>
+                <select
+                  disabled={!settings.updateAutoCheck}
+                  value={settings.updateCheckIntervalDays ?? 1}
+                  onChange={event => onChange({ ...settings, updateCheckIntervalDays: Number(event.target.value) })}
+                >
+                  <option value={1}>{t('Every day')}</option>
+                  <option value={7}>{t('Every 7 days')}</option>
+                  <option value={30}>{t('Every 30 days')}</option>
+                </select>
+              </label>
+              {updates.state.status === 'checking' && (
+                <>
+                  <p className="settings-note">{t('Checking for updates…')}</p>
+                  <div className="update-progress indeterminate"><span /></div>
+                </>
+              )}
+              {updates.state.status === 'current' && (
+                <p className="settings-note">{t('Ruse is up to date.')}</p>
+              )}
+              {updates.state.status === 'available' && (
+                <>
+                  <p className="settings-note">{t('Version {version} is available.', { version: updates.state.latestVersion ?? '' })}</p>
+                  {updates.state.notes && (
+                    <>
+                      <p className="settings-note settings-note-stack">{t('Release notes')}</p>
+                      <div className="update-notes">{updates.state.notes}</div>
+                    </>
+                  )}
+                  <div className="settings-actions">
+                    <button className="primary-button" onClick={updates.download}><Download size={14} /> {t('Download update')}</button>
+                  </div>
+                </>
+              )}
+              {updates.state.status === 'downloading' && (
+                <>
+                  <p className="settings-note">{t('Downloading update… {percent}%', { percent: Math.round((updates.state.progress ?? 0) * 100) })}</p>
+                  <div className="update-progress"><span style={{ width: `${Math.round((updates.state.progress ?? 0) * 100)}%` }} /></div>
+                  <p className="settings-note settings-note-stack">{formatBytes(updates.state.downloadedBytes)} / {formatBytes(updates.state.totalBytes)}</p>
+                </>
+              )}
+              {(updates.state.status === 'ready' || updates.state.status === 'applying') && (
+                <>
+                  <p className="settings-note">{t('The update is verified and ready. Ruse will restart to finish.')}</p>
+                  {updates.state.status === 'applying' && <div className="update-progress indeterminate"><span /></div>}
+                  {updates.state.status === 'ready' && (
+                    <div className="settings-actions">
+                      <button className="primary-button" onClick={updates.apply}><RefreshCw size={14} /> {t('Restart and update')}</button>
+                    </div>
+                  )}
+                </>
+              )}
+              {updates.state.error && <p className="settings-note update-error">{t('Update failed: {message}', { message: updates.state.error })}</p>}
+              <p className="settings-note">{t('Updates are downloaded from the official GitHub release page and verified with SHA-256 before installing.')}</p>
+            </SettingsSection>
             <SettingsSection title="Actions">
               <div className="settings-actions">
                 <button className="tool-button" onClick={() => send('open-log')}><FileText size={14} /> {t('Open log')}</button>
                 <button className="tool-button" onClick={() => send('open-log-folder')}><FolderOpen size={14} /> {t('Open data folder')}</button>
+                <button className="tool-button" onClick={() => send('create-desktop-shortcut')}><Plus size={14} /> {t('Add desktop shortcut')}</button>
                 <button className="tool-button" onClick={() => send('copy-diagnostics')}><Copy size={14} /> {t('Copy diagnostics')}</button>
               </div>
             </SettingsSection>

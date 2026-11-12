@@ -7,16 +7,19 @@ internal sealed partial class WebShellController
     private void ConfigureAudioEngine()
     {
         bool auto = _settings.AudioAutoMode;
-        double blockMs = auto ? 5.0 : Math.Clamp(_settings.AudioBlockSizeMs, 2.5, 10.0);
+        bool lowLatency = !auto && _settings.LowLatencyMode;
+        double blockMs = auto ? 5.0 : lowLatency ? 2.5 : Math.Clamp(_settings.AudioBlockSizeMs, 2.5, 10.0);
         int block = AudioEngineConfig.FramesForMs(blockMs);
 
-        bool cushionAuto = auto || !string.Equals(
-            _settings.EngineCushionMode, "manual", StringComparison.OrdinalIgnoreCase);
-        int cushion = cushionAuto
+        bool cushionAuto = auto || (!lowLatency && !string.Equals(
+            _settings.EngineCushionMode, "manual", StringComparison.OrdinalIgnoreCase));
+        int cushion = lowLatency
             ? block * 2
-            : Math.Max(block, AudioEngineConfig.CushionFramesForMs(_settings.EngineCushionManualMs));
+            : cushionAuto
+                ? block * 2
+                : Math.Max(block, AudioEngineConfig.CushionFramesForMs(_settings.EngineCushionManualMs));
 
-        string mode = auto ? "balanced" : _settings.OutputBufferMode?.Trim().ToLowerInvariant() ?? "balanced";
+        string mode = auto ? "balanced" : lowLatency ? "low" : _settings.OutputBufferMode?.Trim().ToLowerInvariant() ?? "balanced";
         int periods = mode switch
         {
             "low" => 1,
@@ -27,7 +30,7 @@ internal sealed partial class WebShellController
         int manualMs = mode == "manual" ? Math.Clamp(_settings.OutputBufferManualMs, 2, 40) : 0;
 
         AudioEngineConfig.Configure(block, cushion, periods == 0 ? 2 : periods, manualMs);
-        AudioEngineConfig.ElasticRing = !auto && _settings.ElasticRing;
-        OutputNode.AggressiveCushion = !auto && mode == "low";
+        AudioEngineConfig.ElasticRing = !auto && (lowLatency || _settings.ElasticRing);
+        OutputNode.AggressiveCushion = !auto && (lowLatency || mode == "low");
     }
 }

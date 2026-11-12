@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Background, BackgroundVariant, MiniMap, Panel, ReactFlow, ViewportPortal,
   useNodesState, useReactFlow, useStore,
@@ -21,7 +21,7 @@ import RuseEdge from './components/RuseEdge';
 import RuseConnectionLine from './components/RuseConnectionLine';
 import Sidebar from './components/Sidebar';
 import { StatusBar, TitleBar, Toolbar } from './components/Chrome';
-import { ConfirmDialog, DeviceHelpDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog, TrayPromptDialog } from './components/Dialogs';
+import { ConfirmDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog, TrayPromptDialog } from './components/Dialogs';
 import type { SettingsTab } from './components/Dialogs';
 import ChainEditorDialog from './components/ChainEditorDialog';
 import WelcomeWizard from './components/WelcomeWizard';
@@ -31,14 +31,16 @@ import type {
   CatalogItem, CatalogSnapshot, ChainEditorRequest, FrameModel, GraphSnapshot, HistorySnapshot,
   LinkStateUpdate, NodeStateUpdate, SettingsModel, StatusMessage, TelemetrySnapshot,
 } from './types';
+import type { TimelineAutomationTarget, TimelineState } from './timeline';
 
+const TimelinePanel = lazy(() => import('./components/TimelinePanel'));
 const nodeTypes = { ruseNode: RuseNode };
 const edgeTypes = { ruseEdge: RuseEdge };
 const FRAME_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const;
 type FrameHandle = typeof FRAME_HANDLES[number];
 const emptyCatalog: CatalogSnapshot = {
-  apps: [], outputs: [], inputs: [], virtuals: [], effects: [], chains: [], vst3Plugins: [], frameTemplates: [],
-  defaultOutputId: '', defaultOutputName: '', perAppCaptureAvailable: true,
+  apps: [], outputs: [], inputs: [], virtuals: [], effects: [], chains: [], vst3Plugins: [], frameTemplates: [], samples: [],
+  defaultOutputId: '', defaultOutputName: '', perAppCaptureAvailable: true, asioLoaded: false,
 };
 const initialSettings: SettingsModel = demoSettings;
 const systemItem: CatalogItem = {
@@ -98,7 +100,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
-  const t = (text: string, vars?: Record<string, string | number>) => translate(language, text, vars);
+  const t = useMemo(() => (text: string, vars?: Record<string, string | number>) => translate(language, text, vars), [language]);
   const ui = useUiTelemetry();
   const running = ui.running || graph.running;
   const [status, setStatus] = useState<StatusMessage>({ text: isHosted ? 'Starting native audio engine.' : 'Interface preview - native engine not attached.', isError: false });
@@ -116,6 +118,16 @@ export default function App() {
     () => localStorage.getItem('ruse.sidebarCollapsed') === '1',
   );
   const [mixerOpen, setMixerOpen] = useState(() => localStorage.getItem('ruse.mixerOpen') === '1');
+  const [timelineOpen, setTimelineOpen] = useState(false);
+  const [timeline, setTimeline] = useState<TimelineState>({
+    project: { version: 1, sampleRate: 48000, tempo: 120, loopStartSample: -1, loopEndSample: -1, tracks: [] },
+    playheadSample: 0,
+    playing: false,
+    sampleRate: 48000,
+    canUndo: false,
+    canRedo: false,
+    recording: false,
+  });
   const [mixerWidth, setMixerWidth] = useState(() => {
     const saved = Number(localStorage.getItem('ruse.mixerWidth'));
     return saved >= 240 && saved <= 520 ? saved : 320;
@@ -123,9 +135,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('behavior');
   const [showAudioHelp, setShowAudioHelp] = useState(false);
-  const [showDeviceHelp, setShowDeviceHelp] = useState(false);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [showClear, setShowClear] = useState(false);
+  const [timelineTrackRemoval, setTimelineTrackRemoval] = useState<{ id: string; name: string } | null>(null);
   const [trayPrompt, setTrayPrompt] = useState(false);
   const [renamePrompt, setRenamePrompt] = useState<RenamePrompt | null>(null);
   const [canvasMenu, setCanvasMenu] = useState<CanvasMenu | null>(null);
@@ -425,6 +437,29 @@ export default function App() {
         }
         break;
       case 'settings': setSettings(payload as SettingsModel); break;
+      case 'timeline': {
+        const incoming = payload as TimelineState;
+        setTimeline(current => {
+          const peaks = new Map(current.project.tracks.flatMap(track =>
+            track.clips.map(clip => [clip.id, clip.peaks] as const)));
+          const tracks = incoming.project.tracks.map(track => ({
+            ...track,
+            clips: track.clips.map(clip => ({
+              ...clip,
+              peaks: clip.peaks?.length ? clip.peaks : peaks.get(clip.id) ?? [],
+            })),
+          }));
+          return { ...incoming, project: { ...incoming.project, tracks } };
+        });
+        break;
+      }
+      case 'timeline-playhead': {
+        const update = payload as { playheadSample: number; playing: boolean };
+        setTimeline(current => current.playheadSample === update.playheadSample && current.playing === update.playing
+          ? current
+          : { ...current, playheadSample: update.playheadSample, playing: update.playing });
+        break;
+      }
       case 'history': setHistory(payload as HistorySnapshot); break;
       case 'chain-edit': setChainEditor(payload as ChainEditorRequest); break;
       case 'status': setStatus(payload as StatusMessage); break;
@@ -640,6 +675,7 @@ export default function App() {
       title: aliases[catalogKey(item)]?.trim() || t(item.name),
       processId: item.processId ?? 0,
       micHint: item.micHint ?? '',
+      filePath: item.filePath ?? '',
       linkId: linkId ?? '',
       x: Math.round(position.x / 20) * 20,
       y: Math.round(position.y / 20) * 20,
@@ -734,6 +770,7 @@ export default function App() {
   const newChain = useCallback(
     () => setChainEditor({ name: 'My chain', elements: [] }), []);
   const rescanPlugins = useCallback(() => send('vst3-rescan'), []);
+  const refreshAsio = useCallback(() => send('asio-refresh'), []);
   const editChain = useCallback((item: CatalogItem) => setChainEditor({
     name: item.name,
     previousName: item.name,
@@ -861,7 +898,7 @@ export default function App() {
   };
 
   const fitGraph = () => flow.fitView({ padding: 0.18, duration: 180 });
-  const modalOpen = showSettings || showAudioHelp || showDeviceHelp || welcomeOpen ||
+  const modalOpen = showSettings || showAudioHelp || welcomeOpen ||
     showClear || trayPrompt || renamePrompt != null || chainEditor != null ||
     renameLibrary != null || libraryRemoval != null || canvasMenu != null;
 
@@ -1083,6 +1120,17 @@ export default function App() {
   const mixerSources = useMemo(() => graph.nodes.filter(node => node.kind === 'source'), [graph.nodes]);
   const mixerOutputs = useMemo(() => graph.nodes.filter(node => node.kind === 'output'), [graph.nodes]);
   const mixerModifiers = useMemo(() => graph.nodes.filter(node => node.kind === 'modifier'), [graph.nodes]);
+  const timelineNodeIds = useMemo(() => new Set(graph.nodes.map(node => node.id)), [graph.nodes]);
+  const timelineAutomationTargets = useMemo<TimelineAutomationTarget[]>(() =>
+    graph.nodes.filter(node => node.kind === 'modifier').flatMap(node => node.parameters.map(parameter => ({
+      nodeId: node.id,
+      label: `${node.title} · ${parameter.name}`,
+      processorIndex: parameter.processorIndex,
+      parameterIndex: parameter.parameterIndex,
+      min: parameter.min,
+      max: parameter.max,
+      value: parameter.value,
+    }))), [graph.nodes]);
   const menuNode = canvasMenu?.kind === 'node' ? nodes.find(node => node.id === canvasMenu.id) : undefined;
   const menuLink = canvasMenu?.kind === 'edge' ? graph.links.find(link => link.id === canvasMenu.id) : undefined;
   const menuDbVertical = menuNode?.data.isDbMeter
@@ -1112,12 +1160,13 @@ export default function App() {
         onRedo={() => send('redo')}
         onTidy={tidyGraph}
         onMicMute={() => send('mic-mute', { value: !ui.micMuted })}
-        onDeviceHelp={() => setShowDeviceHelp(true)}
         onSettings={() => { setSettingsTab('behavior'); setShowSettings(true); }}
         mixerOpen={mixerOpen}
         onMixer={() => setMixerOpen(value => !value)}
         diagnosticsOpen={settings.showDiagnostics}
         onDiagnostics={toggleDiagnostics}
+        timelineOpen={timelineOpen}
+        onTimeline={() => { setTimelineOpen(true); send('timeline-open'); }}
       />
       {alert && <div className={`alert-bar ${alert.isError ? 'error' : ''}` }><span>{alert.text}</span><div className="alert-actions"><button onClick={() => send('open-log') }>{t('Open log')}</button><button onClick={() => setAlert(null) }>{t('Dismiss')}</button></div></div>}
       {!catalog.perAppCaptureAvailable && (
@@ -1156,6 +1205,7 @@ export default function App() {
               onNewChain={newChain}
               onRescanPlugins={rescanPlugins}
               onEditChain={editChain}
+              onAsioRefresh={refreshAsio}
             />
             <div className="sidebar-edge">
               <div className="sidebar-resizer" role="separator" aria-label={t('Resize library')} title={t('Drag to resize · double-click to hide')} onDoubleClick={() => setSidebarCollapsed(true)} onPointerDown={startSidebarResize} />
@@ -1339,9 +1389,57 @@ export default function App() {
           onResizeStart={startMixerResize}
           onFocusNode={focusMixerNode}
         />}
+        {timelineOpen && (
+          <Suspense fallback={<div className="timeline-loading">{t('Loading timeline...')}</div>}>
+            <TimelinePanel
+              state={timeline}
+              automationTargets={timelineAutomationTargets}
+              nodeIds={timelineNodeIds}
+              onPlay={() => send('timeline-play')}
+              onStop={() => send('timeline-stop')}
+              onToggleRecord={() => send('timeline-record')}
+              onAddTrack={() => send('timeline-add-track')}
+              onImport={() => send('timeline-add-clip', { trackId: timeline.project.tracks[0]?.id ?? '' })}
+              onSeek={sample => send('timeline-seek', { sample })}
+              onAddClipPath={(trackId, path, startSample) => send('timeline-add-clip-path', { trackId, path, startSample })}
+              onMoveClip={(trackId, clipId, startSample) => send('timeline-move-clip', { trackId, clipId, startSample })}
+              onUpdateClip={(trackId, clipId, update) => send('timeline-update-clip', { trackId, clipId, ...update })}
+              onStretchClip={(trackId, clipId, lengthSamples) => send('timeline-stretch-clip', { trackId, clipId, lengthSamples })}
+              onRemoveClip={(trackId, clipId) => send('timeline-remove-clip', { trackId, clipId })}
+              onSetLoop={(startSample, endSample) => startSample == null ? send('timeline-loop', {}) : send('timeline-loop', { startSample, endSample })}
+              onSetTempo={tempo => send('timeline-tempo', { tempo })}
+              onBounce={() => send('timeline-bounce')}
+              onFreeze={() => send('timeline-freeze')}
+              onTrackUpdate={(trackId, gain, muted, solo) => send('timeline-track-update', { trackId, gain, muted, solo })}
+              onAddAutomation={(trackId, target) => send('timeline-automation-add', {
+                trackId,
+                nodeId: target.nodeId,
+                processorIndex: target.processorIndex,
+                parameterIndex: target.parameterIndex,
+                value: target.value,
+              })}
+              onSetAutomationPoints={(trackId, laneId, points) => send('timeline-automation-points', { trackId, laneId, points })}
+              onRemoveAutomation={(trackId, laneId) => send('timeline-automation-remove', { trackId, laneId })}
+              onRemoveTrack={trackId => {
+                const track = timeline.project.tracks.find(item => item.id === trackId);
+                setTimelineTrackRemoval({ id: trackId, name: track?.name ?? t('Track') });
+              }}
+              onShowTrackNode={(trackId, sourceNodeId) => {
+                if (sourceNodeId && graph.nodes.some(node => node.id === sourceNodeId)) {
+                  focusMixerNode(sourceNodeId);
+                } else {
+                  send('timeline-show-node', { trackId });
+                }
+              }}
+              onUndo={() => send('timeline-undo')}
+              onRedo={() => send('timeline-redo')}
+              onClose={() => setTimelineOpen(false)}
+            />
+          </Suspense>
+        )}
       </div>
       <StatusBar status={status} />
-      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} vstPlugins={catalog.vst3Plugins} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} virtualInputs={catalog.inputs.filter(item => item.virtual)} virtualOutputs={catalog.virtuals} vstPlugins={catalog.vst3Plugins} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
       {trayPrompt && <TrayPromptDialog
         onKeep={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: true }); }}
         onQuit={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: false }); }}
@@ -1404,6 +1502,16 @@ export default function App() {
         }}
         onClose={() => setLibraryRemoval(null)}
       />}
+      {timelineTrackRemoval && <ConfirmDialog
+        title={t('Remove timeline track')}
+        body={t('Remove track “{name}” and all of its clips? Its track node will also be removed.', { name: timelineTrackRemoval.name })}
+        confirmLabel={t('Remove')}
+        onConfirm={() => {
+          send('timeline-remove-track', { trackId: timelineTrackRemoval.id });
+          setTimelineTrackRemoval(null);
+        }}
+        onClose={() => setTimelineTrackRemoval(null)}
+      />}
       {chainEditor && <ChainEditorDialog
         request={chainEditor}
         effects={catalog.effects.filter(item => item.id !== 'transcriber' && item.id !== 'translator')}
@@ -1450,14 +1558,11 @@ export default function App() {
         </div>
       </div>}
       {welcomeOpen && <WelcomeWizard
-        catalog={catalog}
         settings={settings}
         onChange={next => { setSettings(next); send('settings', { ...next }); }}
         onClose={() => { setWelcomeOpen(false); send('onboarding-complete'); }}
-        onOpenHelp={() => setShowAudioHelp(true)}
       />}
       {showAudioHelp && <DuplicateAudioDialog warning={primaryWarning} onClose={() => setShowAudioHelp(false)} />}
-      {showDeviceHelp && <DeviceHelpDialog onClose={() => setShowDeviceHelp(false)} />}
     </div>
     {startup.visible && (
       <div className="startup-overlay" role="status" aria-live="polite">

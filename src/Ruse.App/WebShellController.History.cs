@@ -67,6 +67,8 @@ internal sealed partial class WebShellController
         bool IsNetworkOutput = false,
         float FileSpeed = 1f,
         int TtsVoice = 0,
+        bool SaveToSamples = false,
+        SynthSettings? Synth = null,
         string? ControlId = null);
 
     private void PushAction(
@@ -180,6 +182,7 @@ internal sealed partial class WebShellController
                 ToneFrequency = entry.Source.ToneFrequency,
                 ToneWave = entry.Source.ToneWave,
                 ToneLevelDb = entry.Source.ToneLevelDb,
+                Synth = entry.Source.Kind == SourceKind.Synth ? entry.Source.Synth : null,
                 TtsText = entry.TtsText,
                 TtsSourceNodeId = entry.TtsSourceNodeId,
                 TtsModel = entry.TtsModel,
@@ -204,6 +207,7 @@ internal sealed partial class WebShellController
                 FileFormat = entry.Output.RecordingFormat,
                 RecorderMode = entry.Output.RecorderMode.ToString(),
                 AutoSave = entry.Output.AutoSave,
+                SaveToSamples = entry.Output.SaveToSamples,
                 RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds,
                 RecorderStartThresholdDb = entry.Output.RecorderStartThresholdDb,
                 IsNetworkOutput = entry.Output.IsNetworkOutput,
@@ -251,6 +255,10 @@ internal sealed partial class WebShellController
                 if (snapshot.SourceKind == SourceKind.Tone)
                 {
                     source.SetTone(snapshot.ToneFrequency, snapshot.ToneWave, snapshot.ToneLevelDb);
+                }
+                else if (snapshot.SourceKind == SourceKind.Synth)
+                {
+                    source.SetSynth(snapshot.Synth ?? SynthSettings.Default);
                 }
                 else if (snapshot.SourceKind == SourceKind.Network)
                 {
@@ -311,6 +319,7 @@ internal sealed partial class WebShellController
                 output.RecorderMode = Enum.TryParse<RecorderMode>(snapshot.RecorderMode, true, out var mode)
                     ? mode : RecorderMode.Off;
                 output.AutoSave = snapshot.AutoSave;
+                output.SaveToSamples = snapshot.SaveToSamples;
                 output.RecorderSilenceStopSeconds = snapshot.RecorderSilenceStopSeconds;
                 output.RecorderStartThresholdDb = snapshot.RecorderStartThresholdDb;
                 var outputEntry = RegisterOutput(output, snapshot.X, snapshot.Y, micHint, snapshot.Id, snapshot.ControlId);

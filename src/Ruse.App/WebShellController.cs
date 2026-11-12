@@ -16,6 +16,7 @@ internal sealed partial class WebShellController : IDisposable
 {
     private readonly WebMainWindow _window;
     private readonly AppSettings _settings;
+    private readonly UpdateService _updates;
 
     internal AppSettings UserSettings => _settings;
     private readonly JsonSerializerOptions _json = new()
@@ -32,6 +33,7 @@ internal sealed partial class WebShellController : IDisposable
     private readonly DispatcherTimer _telemetryTimer;
     private readonly DispatcherTimer _appsTimer;
     private readonly DispatcherTimer _devicesTimer;
+    private readonly DispatcherTimer _updateTimer;
     private CoreWebView2? _core;
     private string _webView2Version = "";
     private CatalogDto _catalog = new();
@@ -69,6 +71,7 @@ internal sealed partial class WebShellController : IDisposable
     {
         _window = window;
         _settings = AppSettings.Load();
+        _updates = new UpdateService(this);
         ModelRuntime.UseGpu = _settings.UseGpu;
         Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
         OutputNode.AggressiveCushion = _settings.AggressiveOutputCushion;
@@ -76,7 +79,7 @@ internal sealed partial class WebShellController : IDisposable
         OutputNode.LowLatencyWasapi = _settings.LowLatencyWasapi;
         ConfigureAudioEngine();
         _telemetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
-        _telemetryTimer.Tick += (_, _) => { CheckArmedRecorders(); CheckRecorderSilence(); PublishTelemetry(); FlushMidiParameterChanges(); FlushControlParameterChanges(); };
+        _telemetryTimer.Tick += (_, _) => { CheckArmedRecorders(); CheckRecorderSilence(); PublishTelemetry(); FlushMidiParameterChanges(); FlushControlParameterChanges(); FlushTimelineParameterChanges(); PublishTimelinePlayhead(); };
         _appsTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(_settings.FollowPlayingApps ? 750 : 4000),
@@ -88,6 +91,8 @@ internal sealed partial class WebShellController : IDisposable
             _devicesTimer.Stop();
             RefreshDevicesIfChanged(force: true);
         };
+        _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(30) };
+        _updateTimer.Tick += (_, _) => _ = _updates.MaybeAutoCheckAsync();
     }
 
     public async Task InitializeAsync(WebView2 webView)
@@ -199,6 +204,8 @@ internal sealed partial class WebShellController : IDisposable
         PublishAll();
         PostStartupProgress(1, "Ready");
         Post("startup-complete", new { });
+        _updateTimer.Start();
+        _ = _updates.MaybeAutoCheckAsync();
         if (!App.DemoMode && !App.LiveDemoMode && _settings.ShowWelcomeScreen)
         {
             Post("splash", new
@@ -253,6 +260,36 @@ internal sealed partial class WebShellController : IDisposable
                 return;
             }
 
+            if (message?.Type == "timeline-file-drop")
+            {
+                var paths = e.AdditionalObjects
+                    .OfType<CoreWebView2File>()
+                    .Select(file => file.Path)
+                    .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                    .ToList();
+                if (paths.Count > 0)
+                {
+                    AddTimelineClipPath(String(message, "trackId"), paths[0], (long)Number(message, "startSample"));
+                }
+
+                return;
+            }
+
+            if (message?.Type == "sample-drop")
+            {
+                var paths = e.AdditionalObjects
+                    .OfType<CoreWebView2File>()
+                    .Select(file => file.Path)
+                    .Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                    .ToList();
+                if (paths.Count > 0)
+                {
+                    ImportSamples(paths);
+                }
+
+                return;
+            }
+
             if (message != null)
             {
                 HandleMessage(message);
@@ -284,6 +321,41 @@ internal sealed partial class WebShellController : IDisposable
                 CompleteUiReady();
                 break;
             case "refresh": RefreshCatalog(); break;
+            case "samples-open-folder": OpenSamplesFolder(); break;
+            case "samples-import": ChooseSamples(); break;
+            case "samples-refresh": RefreshSamples(); Post("catalog", _catalog); SetStatus("Samples refreshed."); break;
+            case "sample-import-path": ImportSamplePath(String(message, "path")); break;
+            case "update-status": _updates.PublishState(); break;
+            case "check-updates": _ = _updates.CheckAsync(); break;
+            case "download-update": _ = _updates.DownloadAsync(); break;
+            case "apply-update": _updates.Apply(); break;
+            case "audio-optimizer-status": PostAudioOptimizerState(); break;
+            case "asio-refresh": RefreshAsioDevices(); break;
+            case "timeline-open": OpenTimeline(); break;
+            case "timeline-add-track": AddTimelineTrack(); break;
+            case "timeline-add-clip": AddTimelineClip(String(message, "trackId")); break;
+            case "timeline-add-clip-path": AddTimelineClipPath(String(message, "trackId"), String(message, "path"), (long)Number(message, "startSample")); break;
+            case "timeline-remove-track": RemoveTimelineTrack(String(message, "trackId")); break;
+            case "timeline-show-node": ShowTimelineTrackNode(String(message, "trackId")); break;
+            case "timeline-track-update": UpdateTimelineTrack(String(message, "trackId"), (float)Number(message, "gain", 1), Bool(message, "muted", false), Bool(message, "solo", false)); break;
+            case "timeline-remove-clip": RemoveTimelineClip(String(message, "trackId"), String(message, "clipId")); break;
+            case "timeline-move-clip": MoveTimelineClip(String(message, "trackId"), String(message, "clipId"), (long)Number(message, "startSample")); break;
+            case "timeline-update-clip": UpdateTimelineClip(message); break;
+            case "timeline-stretch-clip": StretchTimelineClip(message); break;
+            case "timeline-automation-add": AddTimelineAutomationLane(message); break;
+            case "timeline-automation-points": SetTimelineAutomationPoints(message); break;
+            case "timeline-automation-remove": RemoveTimelineAutomationLane(String(message, "trackId"), String(message, "laneId")); break;
+            case "timeline-undo": TimelineUndo(); break;
+            case "timeline-redo": TimelineRedo(); break;
+            case "timeline-play": TimelinePlay(); break;
+            case "timeline-stop": TimelineStop(); break;
+            case "timeline-record": ToggleTimelineRecording(); break;
+            case "timeline-seek": TimelineSeek((long)Number(message, "sample")); break;
+            case "timeline-loop": TimelineSetLoop((long?)Number(message, "startSample", -1), (long?)Number(message, "endSample", -1)); break;
+            case "timeline-tempo": TimelineSetTempo(Number(message, "tempo", 120)); break;
+            case "timeline-bounce": BounceTimeline(); break;
+            case "timeline-freeze": FreezeTimeline(); break;
+            case "audio-optimizer-run": StartAudioOptimizer(); break;
             case "add": AddFromMessage(message); break;
             case "add-file-player": AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), String(message, "path")); break;
             case "file-player-file": ChooseFilePlayerFile(String(message, "id")); break;
@@ -300,6 +372,7 @@ internal sealed partial class WebShellController : IDisposable
             case "onboarding-complete": CompleteOnboarding(); break;
             case "show-splash": Post("splash", new { manual = true }); break;
             case "open-sound-settings": OpenSoundSettings(); break;
+            case "create-desktop-shortcut": CreateDesktopShortcut(); break;
             case "move": MoveNode(String(message, "id"), Number(message, "x"), Number(message, "y")); break;
             case "move-many": MoveNodes(message); break;
             case "duplicate": DuplicateNode(String(message, "id")); break;
@@ -328,6 +401,7 @@ internal sealed partial class WebShellController : IDisposable
             case "parallel": SetModifierParallel(String(message, "id"), Bool(message, "value")); break;
             case "send": SetModifierSend(String(message, "id"), (float)Number(message, "value", 0.5)); break;
             case "tone": SetTone(String(message, "id"), (float)Number(message, "frequency", 1000), String(message, "waveform"), (float)Number(message, "level", -18)); break;
+            case "synth": SetSynth(message); break;
             case "ir-file": ChooseImpulseResponse(String(message, "id")); break;
             case "ir-clear": ClearImpulseResponse(String(message, "id")); break;
             case "noise-profile-file": ChooseNoiseProfile(String(message, "id")); break;
@@ -397,6 +471,7 @@ internal sealed partial class WebShellController : IDisposable
             case "recorder-rate": SetRecorderSampleRate(String(message, "id"), (int)Number(message, "value", 48000)); break;
             case "recorder-mode": SetRecorderMode(String(message, "id"), String(message, "mode", "Off")); break;
             case "recorder-autosave": SetRecorderAutoSave(String(message, "id"), Bool(message, "value")); break;
+            case "recorder-save-location": SetRecorderSaveLocation(String(message, "id"), Bool(message, "value")); break;
             case "recorder-silence": SetRecorderSilence(String(message, "id"), Number(message, "value")); break;
             case "recorder-threshold": SetRecorderThreshold(String(message, "id"), Number(message, "value")); break;
             case "recorder-stop": StopRecorder(String(message, "id")); break;
@@ -816,10 +891,15 @@ internal sealed partial class WebShellController : IDisposable
             ControlApiPort = _settings.ControlApiPort,
             ControlApiUrl = _controlServer?.Url ?? "",
             ControlApiToken = _controlServer?.Token ?? "",
+            UpdateAutoCheck = _settings.UpdateAutoCheck,
+            UpdateCheckIntervalDays = _settings.UpdateCheckIntervalDays is 1 or 7 or 30
+                ? _settings.UpdateCheckIntervalDays
+                : 1,
             AggressiveOutputCushion = _settings.AggressiveOutputCushion,
             ClipGuard = _settings.ClipGuard,
             LowLatencyWasapi = _settings.LowLatencyWasapi,
             AudioAutoMode = _settings.AudioAutoMode,
+            LowLatencyMode = _settings.LowLatencyMode,
             AudioBlockSizeMs = _settings.AudioBlockSizeMs,
             OutputBufferMode = _settings.OutputBufferMode,
             OutputBufferManualMs = _settings.OutputBufferManualMs,
@@ -1345,6 +1425,8 @@ internal sealed partial class WebShellController : IDisposable
         }
 
         _disposed = true;
+        _updateTimer.Stop();
+        _updates.Dispose();
         if (_core != null)
         {
             _core.WebMessageReceived -= OnWebMessageReceived;
@@ -1369,8 +1451,10 @@ internal sealed partial class WebShellController : IDisposable
         TranslationModelCache.DropAll();
         _midi.MessageReceived -= OnMidiMessageReceived;
         _midi.Dispose();
+        AbortTimelineRecording();
         StopControlServer();
         DisposeInactiveOutputs();
+        _timeline?.Dispose();
         _graph.Dispose();
     }
 

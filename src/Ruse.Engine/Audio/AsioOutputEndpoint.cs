@@ -227,7 +227,11 @@ internal sealed class AsioFloatProvider : IWaveProvider
         _format = WaveFormat.CreateIeeeFloatWaveFormat(targetRate, 2);
         _converter = new FormatConverter(2, source.WaveFormat.SampleRate, targetRate);
         _scratch = new byte[source.WaveFormat.AverageBytesPerSecond / 20]; // 50 ms
-        _converted.Capacity = _scratch.Length / sizeof(float) * 2;
+        int sourceChannels = Math.Max(1, source.WaveFormat.Channels);
+        int sourceFrames = _scratch.Length / (sizeof(float) * sourceChannels);
+        double ratio = (double)targetRate / Math.Max(1, source.WaveFormat.SampleRate);
+        int outputFrames = (int)Math.Ceiling(sourceFrames * Math.Max(1.0, ratio)) + 16;
+        _converted.Capacity = outputFrames * FormatConverter.TargetChannels;
     }
 
     public WaveFormat WaveFormat => _format;

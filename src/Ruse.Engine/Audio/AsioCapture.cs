@@ -62,12 +62,29 @@ public sealed class AsioCapture : IDisposable
         }
 
         SampleRate = _device.CurrentSampleRate;
+
+        int maxFrames = _device.FramesPerBuffer;
+        if (maxFrames <= 0)
+        {
+            maxFrames = 8192;
+        }
+
+        int needed = maxFrames * Math.Max(1, _channels.Length);
+        if (_interleaved.Length < needed)
+        {
+            _interleaved = new float[needed];
+            _bytes = new byte[needed * sizeof(float)];
+        }
     }
 
     // Interleaved float scratch, reused for every block so the capture thread
     // does not allocate per callback.
     private float[] _interleaved = new float[4096];
-    private byte[] _bytes = new byte[4096 * 4];
+    private byte[] _bytes = new byte[4096 * sizeof(float)];
+    private volatile string? _lastCaptureError;
+
+    /// <summary>Last callback-side read error, stored without logging.</summary>
+    public string? LastCaptureError => _lastCaptureError;
 
     private void OnAudioCaptured(object? sender, AsioAudioCapturedEventArgs e)
     {
@@ -78,12 +95,18 @@ public sealed class AsioCapture : IDisposable
             return;
         }
 
-        int needed = frames * channels;
-        if (_interleaved.Length < needed)
+        int maxFrames = _interleaved.Length / channels;
+        if (maxFrames <= 0)
         {
-            _interleaved = new float[needed];
-            _bytes = new byte[needed * 4];
+            return;
         }
+
+        if (frames > maxFrames)
+        {
+            frames = maxFrames;
+        }
+
+        int needed = frames * channels;
 
         try
         {
@@ -98,7 +121,7 @@ public sealed class AsioCapture : IDisposable
         }
         catch (Exception ex)
         {
-            AppLog.Warning("ASIO capture read failed: " + ex.Message);
+            _lastCaptureError = ex.Message;
             return;
         }
 

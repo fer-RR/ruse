@@ -21,6 +21,7 @@ import LoudnessView from './LoudnessView';
 import ParameterControl from './ParameterControl';
 import ParametricEqView from './ParametricEqView';
 import ToneControls from './ToneControls';
+import SynthControls from './SynthControls';
 import TranscriptionView from './TranscriptionView';
 import TranslationView from './TranslationView';
 import SpectrumView from './SpectrumView';
@@ -48,8 +49,10 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'virtual': return <Radio {...props} />;
     case 'file': return <FileAudio {...props} />;
     case 'tone': return <AudioLines {...props} />;
+    case 'synth': return <SlidersHorizontal {...props} />;
     case 'tts': return <AudioLines {...props} />;
     case 'network': return <Radio {...props} />;
+    case 'timeline': return <Play {...props} />;
     case 'recorder': return <FileAudio {...props} />;
     case 'translator': return <Languages {...props} />;
     case 'vst3': return <Puzzle {...props} />;
@@ -112,7 +115,17 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
 
   return (
     <div className="file-player-controls nodrag">
-      <div className="file-player-name" title={node.filePath ?? ''}>{fileName}</div>
+      <div
+        className="file-player-name"
+        title={node.filePath ?? ''}
+        draggable={hasFile}
+        onDragStart={event => {
+          if (!node.filePath) return;
+          event.stopPropagation();
+          event.dataTransfer.setData('application/ruse-recording', node.filePath);
+          event.dataTransfer.effectAllowed = 'copy';
+        }}
+      >{fileName}</div>
       <div className="file-player-position">
         <span>{formatTime(position)}</span>
         <input
@@ -456,6 +469,7 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
   const { t } = useI18n();
   const mode = node.recorderMode ?? 'Off';
   const autoSave = node.recorderAutoSave === true;
+  const saveToSamples = node.recorderSaveToSamples === true;
   const recording = telemetry?.recordingStatus === 'REC';
   const armed = mode === 'Armed' && !recording;
   const fileName = node.recordingPath ? node.recordingPath.split(/[\\/]/).pop() : t('No file selected');
@@ -493,6 +507,18 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
         />
         <span>{t('Auto save (date and time in filename)')}</span>
       </label>
+      <label className="recorder-save-location">
+        <span>{t('Save auto recordings to')}</span>
+        <select
+          aria-label={t('Save auto recordings to')}
+          value={saveToSamples ? 'samples' : 'recording'}
+          disabled={recording}
+          onChange={event => send('recorder-save-location', { id: node.id, value: event.target.value === 'samples' })}
+        >
+          <option value="recording">{t('Ruse Recordings')}</option>
+          <option value="samples">{t('Ruse Samples')}</option>
+        </select>
+      </label>
       <div className="recorder-format">
         <select
           aria-label={t('Recording format')}
@@ -522,13 +548,20 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
           type="button"
           className="recorder-path link nodrag"
           title={t('Open destination folder')}
+          draggable
+          onDragStart={event => {
+            if (!node.recordingPath) return;
+            event.stopPropagation();
+            event.dataTransfer.setData('application/ruse-recording', node.recordingPath);
+            event.dataTransfer.effectAllowed = 'copy';
+          }}
           onClick={() => send('recorder-open-folder', { id: node.id })}
         >
           {fileName}
         </button>
       ) : (
         <div className="recorder-path" title={node.recordingPath}>
-          {autoSave ? t('Auto save · Music/Ruse Recordings') : fileName}
+          {autoSave ? (saveToSamples ? t('Auto save to Ruse Samples') : t('Auto save to Ruse Recordings')) : fileName}
         </div>
       )}
       <div className={`recorder-state ${recording ? 'recording' : ''} ${armed ? 'armed' : ''} ${telemetry?.recordingError ? 'error' : ''}`}>
@@ -707,6 +740,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isVst3 ? 'vst3-node' : '',
     data.isFilePlayer ? 'file-player-node' : '',
     data.isToneGenerator ? 'tone-node' : '',
+    data.isSynthGenerator ? 'synth-node' : '',
     data.isNoteDetector ? 'note-detector-node' : '',
     data.isTts ? 'tts-node' : '',
     data.isRecorder ? 'recorder-node' : '',
@@ -910,6 +944,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
           {data.isTts && <TtsControls node={data} />}
           {data.isFilePlayer && <FilePlayerControls node={data} telemetry={telemetry} />}
           {data.isToneGenerator && <ToneControls node={data} />}
+          {data.isSynthGenerator && <SynthControls node={data} />}
           <VolumeControl id={data.id} value={data.volume} muted={data.muted} />
           {data.isNetworkOutput && <NetworkOutputControls node={data} />}
           {data.isRecorder && <RecorderControls node={data} telemetry={telemetry} />}

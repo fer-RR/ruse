@@ -2,10 +2,10 @@
 
 ## Snapshot
 
-- Version **0.7.1**, branch `main`
+- Version **0.8.2**, branch `main`
 - Repo: `C:\Users\ih_me\Projects\Ruse`
 - Build: `src\Ruse.App\bin\Debug\net10.0-windows\Ruse.exe`
-- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.7.1-win-x64.zip`
+- Package: `C:\Users\ih_me\Projects\Ruse-package\Ruse-0.8.2-win-x64.zip`
 - Runtime data: `%APPDATA%\Ruse` (settings, session, chains, templates, `control.json`, `ruse.log`, models)
 
 ## Architecture
@@ -23,7 +23,8 @@
 - **Pitch:** selectable autocorrelation/AMDF tracker. Auto-tune analysis runs off the render thread.
 - **Performance:** leased graph snapshots; bounded control API outbox; catalog/app diffing; Core Audio device notifications; true-peak lookahead clip guard; denormal flushing and block-rate smoothing.
 - **Visualizers:** 256-band spectrum/spectrogram, triggered waveform, dB/loudness taps. Spectrogram labels have dark backing bars.
-- **UI/API:** live `param`, `node-state` and `link-state` deltas; structural graph events are reliable and resyncable; library/mixer memoized.
+- **UI/API:** live `param`, `node-state` and `link-state` deltas; structural graph events are reliable and resyncable; library/mixer memoized. The control API is off by default and can be enabled in Settings > Behavior.
+- **Updates:** Settings > Info checks the latest GitHub release manually or automatically every 1/7/30 days, verifies the downloaded ZIP with its published SHA-256, stages it, and swaps it with a backup/rollback helper. Settings can also create a desktop shortcut. The first build with this feature must be installed manually.
 
 ## Build and test
 
@@ -40,7 +41,7 @@ Last verified: clean build, **17/17 regression**, 61 effects, 24 DSP checks, nat
 ## Known / next
 
 - ASIO still needs real loopback/insert testing.
-- Engine rate is fixed at 48 kHz; per-device clock-drift correction is not implemented.
+- Engine rate is fixed at 48 kHz. Source resampling now tracks the measured output clock; per-device output SRC for rate-converted endpoints remains.
 - VST3 editor state/parameter feedback, sidechain buses and MIDI remain incomplete.
 - Control API has no CORS policy or rate limiting.
 - Some native status/history/error text remains English.

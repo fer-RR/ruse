@@ -14,7 +14,8 @@ Everything runs locally. Ruse does not upload audio.
 - VST3 hosting in an isolated process.
 - Sidechains, per-send gain, mixer, saved chains, frame templates, MIDI learn and undo/redo.
 - Offline transcription, translation and text to speech.
-- A local HTTP/WebSocket control API.
+- A local HTTP/WebSocket control API, off by default.
+- Manual or scheduled update checks against GitHub releases, SHA-256 verified.
 
 ## Requirements
 

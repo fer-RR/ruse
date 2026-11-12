@@ -1047,6 +1047,48 @@ public static class LatencySelfTest
 
     public sealed record EffectsTestResult(bool Passed, string Summary);
 
+    public static bool TestOutputMixObserver()
+    {
+        const int frames = 240;
+        const int channels = 2;
+        var source = new SourceNode("mix-observer", SourceKind.Application);
+        var observed = 0;
+        var output = OutputNode.CreateForTest(static (_, _) => { });
+        output.MixObserver = (mix, _) =>
+        {
+            Interlocked.Add(ref observed, mix.Length);
+        };
+        output.Inputs.Add(new OutputNode.Route
+        {
+            Source = source,
+            Gain = 1f,
+            Processors = Array.Empty<IAudioProcessor>(),
+        });
+        output.RefreshRoutes();
+
+        var samples = new float[frames * channels];
+        for (int i = 0; i < samples.Length; i++)
+        {
+            samples[i] = 0.25f;
+        }
+
+        source.WriteTestSamples(samples);
+        var mix = new float[frames * channels];
+        var temp = new float[frames * channels];
+        var bytes = new byte[mix.Length * 4];
+        try
+        {
+            output.RenderChunk(mix, temp, bytes, channels);
+        }
+        finally
+        {
+            output.Dispose();
+            source.Dispose();
+        }
+
+        return observed == frames * channels;
+    }
+
     public static bool TestSendGain()
     {
         var graph = new AudioGraph { AutoRun = false };

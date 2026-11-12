@@ -1,6 +1,6 @@
 export type NodeKind = 'source' | 'output' | 'modifier';
 export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output' | 'sidechain';
-export type CatalogKind = 'app' | 'system' | 'tone' | 'tts' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'recorder' | 'vst3' | 'template';
+export type CatalogKind = 'app' | 'system' | 'tone' | 'synth' | 'tts' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'sample' | 'recorder' | 'vst3' | 'template';
 
 export interface ChainElement {
   typeId: string;
@@ -25,6 +25,7 @@ export interface CatalogItem {
   badge?: string;
   micHint?: string;
   iconDataUrl?: string;
+  filePath?: string;
   parameters?: ParameterModel[];
   elements?: ChainElement[];
 }
@@ -38,9 +39,12 @@ export interface CatalogSnapshot {
   chains: CatalogItem[];
   vst3Plugins: CatalogItem[];
   frameTemplates: CatalogItem[];
+  samples: CatalogItem[];
+  sampleDirectory?: string;
   defaultOutputId: string;
   defaultOutputName: string;
   perAppCaptureAvailable: boolean;
+  asioLoaded: boolean;
   perAppCaptureMessage?: string;
 }
 
@@ -110,6 +114,18 @@ export interface NodeModel {
   toneFrequency?: number;
   toneWaveform?: string;
   toneLevelDb?: number;
+  isSynthGenerator?: boolean;
+  synthFrequency?: number;
+  synthWaveform?: string;
+  synthLevelDb?: number;
+  synthHarmonics?: number;
+  synthDetuneCents?: number;
+  synthNoise?: number;
+  synthCutoffHz?: number;
+  synthResonance?: number;
+  synthMovement?: number;
+  synthLfoRateHz?: number;
+  synthStereoWidth?: number;
   isNoteDetector?: boolean;
   isNetworkInput?: boolean;
   isNetworkOutput?: boolean;
@@ -153,6 +169,7 @@ export interface NodeModel {
   recorderSampleRate?: number;
   recorderMode?: string;
   recorderAutoSave?: boolean;
+  recorderSaveToSamples?: boolean;
   recorderSilenceStopSeconds?: number;
   recorderStartThresholdDb?: number;
   chainName?: string;
@@ -424,10 +441,13 @@ export interface SettingsModel {
   controlApiPort: number;
   controlApiUrl?: string;
   controlApiToken?: string;
+  updateAutoCheck: boolean;
+  updateCheckIntervalDays: number;
   aggressiveOutputCushion: boolean;
   clipGuard?: boolean;
   lowLatencyWasapi?: boolean;
   audioAutoMode?: boolean;
+  lowLatencyMode?: boolean;
   audioBlockSizeMs?: number;
   outputBufferMode?: string;
   outputBufferManualMs?: number;

@@ -28,12 +28,12 @@ internal sealed partial class WebShellController
         return Path.Combine(root, "Ruse Recordings");
     }
 
-    private static string NextRecordingPath(AudioFileFormat format)
+    private static string NextRecordingPath(AudioFileFormat format, bool saveToSamples = false)
     {
-        string directory = RecordingDirectory();
+        string directory = saveToSamples ? SampleDirectory() : RecordingDirectory();
         Directory.CreateDirectory(directory);
         string extension = AudioFileFormats.Get(format).Extension;
-        string stem = "ruse-" + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+        string stem = (saveToSamples ? "sample-" : "ruse-") + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
         string path = Path.Combine(directory, stem + "." + extension);
         for (int suffix = 2; File.Exists(path); suffix++)
         {
@@ -88,7 +88,7 @@ internal sealed partial class WebShellController
 
         if (output.AutoSave)
         {
-            output.SetRecordingDestination(NextRecordingPath(output.RecordingFormat), output.RecordingFormat);
+            output.SetRecordingDestination(NextRecordingPath(output.RecordingFormat, output.SaveToSamples), output.RecordingFormat);
         }
         else if (!output.HasRecordingPath)
         {
@@ -165,6 +165,12 @@ internal sealed partial class WebShellController
         {
             output.Stop();
             _running = _graph.Outputs.Any(item => item.IsRunning);
+            if (output.SaveToSamples)
+            {
+                RefreshSamples();
+                Post("catalog", _catalog);
+            }
+
             SetStatus("Recording saved.");
         }
 
@@ -199,6 +205,24 @@ internal sealed partial class WebShellController
 
         PublishGraph();
         PublishTelemetry(force: true);
+    }
+
+    private void SetRecorderSaveLocation(string id, bool saveToSamples)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Output is not { IsFileRecorder: true } output)
+        {
+            return;
+        }
+
+        if (output.IsRecording)
+        {
+            SetStatus("Stop recording before changing the save location.", isError: true);
+            return;
+        }
+
+        output.SaveToSamples = saveToSamples;
+        SetStatus(saveToSamples ? "Auto-saved recordings will go to Ruse Samples." : "Auto-saved recordings will go to Ruse Recordings.");
+        PublishGraph();
     }
 
     private void SetRecorderAutoSave(string id, bool value)
@@ -299,6 +323,12 @@ internal sealed partial class WebShellController
             output.Stop();
             _recorderSilenceStarted.Remove(entry.Id);
             _running = _graph.Outputs.Any(item => item.IsRunning);
+            if (output.SaveToSamples)
+            {
+                RefreshSamples();
+                Post("catalog", _catalog);
+            }
+
             SetStatus($"{entry.Title}: recording stopped after {seconds:0.#} s of silence.");
             AppLog.Info($"Recording stopped after silence: {path}");
             PublishGraph();

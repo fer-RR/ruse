@@ -463,6 +463,7 @@ internal sealed partial class WebShellController
             sendJson.Contains("\"enabled\":false", StringComparison.Ordinal));
 
         Check("send gain audio", LatencySelfTest.TestSendGain());
+        Check("output mix observer", LatencySelfTest.TestOutputMixObserver());
         Check("native passthrough", LatencySelfTest.TestNativePassthrough());
         Check("native passthrough mono", LatencySelfTest.TestNativePassthroughMono());
         Check("native recorder rate", LatencySelfTest.TestRecorderSampleRate());
@@ -609,6 +610,231 @@ internal sealed partial class WebShellController
             checks.Add($"{name}={(condition ? "ok" : "FAIL")}");
             pass &= condition;
         }
+
+        string timelineWave = Path.Combine(Path.GetTempPath(), "ruse-timeline-selftest.wav");
+        var timeline = new TimelineService();
+        try
+        {
+            using (var writer = new WaveFileWriter(timelineWave, new WaveFormat(48000, 16, 2)))
+            {
+                var samples = new float[12000 * 2];
+                for (int frame = 0; frame < 12000; frame++)
+                {
+                    float value = 0.25f * MathF.Sin(2f * MathF.PI * 440f * frame / 48000f);
+                    samples[frame * 2] = value;
+                    samples[frame * 2 + 1] = value;
+                }
+
+                writer.WriteSamples(samples, 0, samples.Length);
+            }
+
+            var timelineTrack = timeline.AddTrack("Self test");
+            Check("timeline add track", timeline.Project.Tracks.Count == 1);
+            Check("timeline add clip", timeline.AddClip(timelineTrack.Id, timelineWave, out _));
+            var timelineClip = timeline.Project.Tracks[0].Clips[0];
+            var timelineSource = new SourceNode("Timeline self test", SourceKind.Timeline);
+            var timelineSubscription = timelineSource.Subscribe();
+            timeline.AttachSource(timelineTrack.Id, timelineSource);
+            timelineSource.Start();
+            timeline.Play();
+            timeline.RenderBlock(480);
+            var timelineBlock = new float[480 * 2];
+            int timelineRead = timelineSubscription.Read(timelineBlock);
+            Check("timeline clip renders", timelineRead > 0 &&
+                timelineBlock.Any(sample => Math.Abs(sample) > 0.001f));
+            timeline.Stop();
+            timelineSubscription.Dispose();
+            timelineSource.Dispose();
+            Check("timeline clip length", timelineClip.LengthSamples == 12000);
+            Check("timeline clip fades", timeline.UpdateClip(timelineTrack.Id, timelineClip.Id,
+                null, 6000, null, null, 1000, 1200));
+            timelineClip = timeline.Project.Tracks[0].Clips[0];
+            Check("timeline fade limits",
+                timelineClip.FadeInSamples == 1000 && timelineClip.FadeOutSamples == 1200 &&
+                timelineClip.LengthSamples == 6000);
+
+            timeline.SetLoop(1000, 5000);
+            timeline.Seek(6000);
+            Check("timeline loop seek", timeline.PlayheadSample == 1000);
+            timeline.SetLoop(5000, 1000);
+            Check("timeline invalid loop clears",
+                timeline.Project.LoopStartSample < 0 && timeline.Project.LoopEndSample < 0);
+
+            var automationValues = new List<float>();
+            timeline.ApplyAutomation = (_, _, _, value) => automationValues.Add(value);
+            var lane = timeline.AddAutomationLane(timelineTrack.Id, "selftest-node", 0, 0, 0f);
+            timeline.SetAutomationPoints(timelineTrack.Id, lane.Id, new[]
+            {
+                new TimelineAutomationPoint { Sample = 0, Value = 0f },
+                new TimelineAutomationPoint { Sample = 4800, Value = 1f },
+            });
+            timeline.Seek(0);
+            timeline.Play();
+            for (int i = 0; i < 10; i++) timeline.RenderBlock(480);
+            timeline.Stop();
+            Check("timeline automation", automationValues.Count == 10 &&
+                automationValues.First() == 0f && automationValues.Last() > 0.8f);
+
+            timeline.MoveClip(timelineTrack.Id, timelineClip.Id, 2400);
+            Check("timeline move clip", timeline.Project.Tracks[0].Clips[0].StartSample == 2400);
+            Check("timeline undo", timeline.Undo() &&
+                timeline.Project.Tracks[0].Clips[0].StartSample == 0);
+            Check("timeline redo", timeline.Redo() &&
+                timeline.Project.Tracks[0].Clips[0].StartSample == 2400);
+
+            string bouncePath = Path.Combine(Path.GetTempPath(), "ruse-timeline-selftest-bounce.wav");
+            Check("timeline bounce", timeline.BounceToWave(bouncePath, out _) &&
+                File.Exists(bouncePath) && new FileInfo(bouncePath).Length > 44);
+            try { File.Delete(bouncePath); } catch { }
+
+            string stretchPath = Path.Combine(Path.GetTempPath(), "ruse-timeline-selftest-stretch.wav");
+            Check("timeline stretch", timeline.StretchClip(timelineTrack.Id, timelineClip.Id,
+                12000, stretchPath, out _));
+            Check("timeline stretch length", timeline.Project.Tracks[0].Clips[0].LengthSamples == 12000 &&
+                File.Exists(stretchPath));
+            int crossings = 0;
+            int measuredFrames = 0;
+            float previous = 0f;
+            using (var reader = new AudioFileReader(stretchPath))
+            {
+                var buffer = new float[reader.WaveFormat.SampleRate * 2];
+                int read;
+                int frameIndex = 0;
+                while ((read = reader.Read(buffer.AsSpan())) > 0)
+                {
+                    for (int sample = 0; sample < read; sample += 2)
+                    {
+                        if (frameIndex >= 3000 && frameIndex < 9000)
+                        {
+                            if (previous <= 0f && buffer[sample] > 0f) crossings++;
+                            previous = buffer[sample];
+                            measuredFrames++;
+                        }
+
+                        frameIndex++;
+                    }
+                }
+            }
+
+            Check("timeline stretch pitch", measuredFrames > 5000 &&
+                Math.Abs(crossings * (double)AudioEngineConfig.SampleRate / measuredFrames - 440.0) < 35.0);
+            timeline.Undo();
+            Check("timeline stretch undo", timeline.Project.Tracks[0].Clips[0].LengthSamples == 6000);
+            try { File.Delete(stretchPath); } catch { }
+
+            timeline.SetTrackGain(timelineTrack.Id, 0.5f);
+            Check("timeline can undo", timeline.CanUndo);
+            timeline.LoadProject(timeline.SnapshotProject());
+            Check("timeline load clears history", !timeline.CanUndo && !timeline.CanRedo);
+
+            string timelineJson = JsonSerializer.Serialize(timeline.SnapshotProject(), _json);
+            var restoredTimeline = JsonSerializer.Deserialize<TimelineProject>(timelineJson, _json);
+            Check("timeline persistence",
+                restoredTimeline is { Tracks.Count: 1 } &&
+                restoredTimeline.Tracks[0].Automation.Count == 1 &&
+                restoredTimeline.Tracks[0].Clips.Count > 0);
+            if (restoredTimeline != null)
+            {
+                timeline.LoadProject(restoredTimeline);
+            }
+
+            timeline.Seek(0);
+            timeline.Play();
+            var renderTask = Task.Run(() =>
+            {
+                for (int i = 0; i < 200; i++) timeline.RenderBlock(480);
+            });
+            for (int i = 0; i < 12; i++)
+            {
+                var current = timeline.Project.Tracks[0].Clips.LastOrDefault();
+                if (current != null) timeline.RemoveClip(timelineTrack.Id, current.Id);
+                timeline.AddClip(timelineTrack.Id, timelineWave, out _);
+            }
+
+            renderTask.Wait();
+            timeline.Stop();
+            Check("timeline concurrent edits", true);
+
+            var dropTrack = timeline.AddTrack("Drop test");
+            Check("timeline add clip at", timeline.AddClip(dropTrack.Id, timelineWave, out _, 2400) &&
+                timeline.Project.Tracks.First(track => track.Id == dropTrack.Id).Clips[0].StartSample == 2400);
+            Check("timeline remove track", timeline.RemoveTrack(dropTrack.Id) &&
+                timeline.Project.Tracks.All(track => track.Id != dropTrack.Id));
+        }
+        finally
+        {
+            timeline.Dispose();
+            try { File.Delete(timelineWave); } catch { }
+        }
+
+        string sampleSource = Path.Combine(Path.GetTempPath(), "ruse-sample-selftest-" + Guid.NewGuid().ToString("N") + ".wav");
+        try
+        {
+            using (var writer = new WaveFileWriter(sampleSource, new WaveFormat(48000, 16, 2)))
+            {
+                var samples = new float[480 * 2];
+                for (int frame = 0; frame < 480; frame++)
+                {
+                    float value = 0.1f * MathF.Sin(2f * MathF.PI * 440f * frame / 48000f);
+                    samples[frame * 2] = value;
+                    samples[frame * 2 + 1] = value;
+                }
+
+                writer.WriteSamples(samples, 0, samples.Length);
+            }
+
+            ImportSamples(new[] { sampleSource });
+            RefreshSamples();
+            string importedSample = Path.Combine(SampleDirectory(), Path.GetFileName(sampleSource));
+            Check("samples import", File.Exists(importedSample));
+            Check("samples catalog", _catalog.Samples.Any(item =>
+                string.Equals(item.FilePath, importedSample, StringComparison.OrdinalIgnoreCase)));
+            Check("recording default path", NextRecordingPath(AudioFileFormat.Wav24)
+                .StartsWith(RecordingDirectory(), StringComparison.OrdinalIgnoreCase));
+            Check("recording samples path", NextRecordingPath(AudioFileFormat.Wav24, true)
+                .StartsWith(SampleDirectory(), StringComparison.OrdinalIgnoreCase));
+            try { File.Delete(importedSample); } catch { }
+            RefreshSamples();
+        }
+        finally
+        {
+            try { File.Delete(sampleSource); } catch { }
+        }
+
+        var synthSettings = new SynthSettings(
+            Frequency: 99999f,
+            LevelDb: 10f,
+            Harmonics: 2f,
+            CutoffHz: 1f,
+            Resonance: 2f,
+            StereoWidth: -1f).Clamped();
+        Check("synth parameter limits",
+            synthSettings.Frequency == 4000f && synthSettings.LevelDb == 0f &&
+            synthSettings.Harmonics == 1f && synthSettings.CutoffHz == 60f &&
+            synthSettings.Resonance == 1f && synthSettings.StereoWidth == 0f);
+
+        var synthCapture = new SynthGeneratorCapture(new SynthSettings(
+            Frequency: 220f, LevelDb: -18f, Harmonics: 0.2f, CutoffHz: 3000f));
+        int synthBytes = 0;
+        float synthPeak = 0f;
+        var synthEvent = new ManualResetEventSlim(false);
+        synthCapture.DataAvailable += (_, packet) =>
+        {
+            Interlocked.Add(ref synthBytes, packet.BytesRecorded);
+            for (int offset = 0; offset + 3 < packet.BytesRecorded; offset += 4)
+            {
+                float value = Math.Abs(BitConverter.ToSingle(packet.Buffer, offset));
+                if (value > synthPeak) synthPeak = value;
+            }
+
+            if (synthBytes >= 4800) synthEvent.Set();
+        };
+        synthCapture.Start();
+        bool synthAudio = synthEvent.Wait(2000);
+        synthCapture.Stop();
+        synthCapture.Dispose();
+        synthEvent.Dispose();
+        Check("synth audio", synthAudio && synthPeak > 0.001f && float.IsFinite(synthPeak));
 
         var source = RegisterSource(
             new SourceNode("Web test source", SourceKind.Application, 12345), 40, 40);
