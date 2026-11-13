@@ -24,18 +24,21 @@ import { StatusBar, TitleBar, Toolbar } from './components/Chrome';
 import { ConfirmDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog, TrayPromptDialog } from './components/Dialogs';
 import type { SettingsTab } from './components/Dialogs';
 import ChainEditorDialog from './components/ChainEditorDialog';
-import WelcomeWizard from './components/WelcomeWizard';
 import type { ExplainerId } from './components/Explainers';
 import MixerPanel from './components/MixerPanel';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
-  CatalogItem, CatalogSnapshot, ChainEditorRequest, FrameModel, GraphSnapshot, HistorySnapshot,
+  CatalogItem, CatalogSnapshot, ChainEditorRequest, FirstRouteResult, FrameModel, GraphSnapshot, HistorySnapshot,
   LinkStateUpdate, NodeStateUpdate, SettingsModel, StatusMessage, TelemetrySnapshot,
 } from './types';
 import type { TimelineAutomationTarget, TimelineState } from './timeline';
 
 const TimelinePanel = lazy(() => import('./components/TimelinePanel'));
 const ExplainerDialog = lazy(() => import('./components/Explainers'));
+const WelcomeWizard = lazy(() => import('./components/WelcomeWizard'));
+const FirstRouteDialog = lazy(() => import('./components/FirstRouteDialog'));
+const RouteCheckDialog = lazy(() => import('./components/RouteCheckDialog'));
+const ProcessPickerDialog = lazy(() => import('./components/ProcessPickerDialog'));
 const nodeTypes = { ruseNode: RuseNode };
 const edgeTypes = { ruseEdge: RuseEdge };
 const FRAME_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const;
@@ -159,6 +162,10 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('behavior');
   const [showAudioHelp, setShowAudioHelp] = useState(false);
+  const [showRouteCheck, setShowRouteCheck] = useState(false);
+  const [processPicker, setProcessPicker] = useState<{ id: string; title: string; processId?: number; processName?: string } | null>(null);
+  const [firstRouteOpen, setFirstRouteOpen] = useState(false);
+  const [firstRouteResult, setFirstRouteResult] = useState<FirstRouteResult | null>(null);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [showClear, setShowClear] = useState(false);
   const [timelineTrackRemoval, setTimelineTrackRemoval] = useState<{ id: string; name: string } | null>(null);
@@ -208,9 +215,18 @@ export default function App() {
     applyDiagnostics(!settingsRef.current.showDiagnostics);
   }, [applyDiagnostics]);
   const closeMixer = useCallback(() => setMixerOpen(false), []);
+  const openFirstRoute = useCallback(() => {
+    setFirstRouteResult(null);
+    setFirstRouteOpen(true);
+  }, []);
   const openExplainer = useCallback((id: ExplainerId) => {
     localStorage.setItem(`ruse.explainer.${id}`, '1');
     setExplainer(id);
+  }, []);
+  useEffect(() => {
+    const onPickProcess = (event: Event) => setProcessPicker((event as CustomEvent).detail);
+    window.addEventListener('ruse-pick-process', onPickProcess);
+    return () => window.removeEventListener('ruse-pick-process', onPickProcess);
   }, []);
   useEffect(() => {
     const onOpenExplainer = (event: Event) => {
@@ -487,6 +503,9 @@ export default function App() {
         }
         break;
       case 'settings': setSettings(payload as SettingsModel); break;
+      case 'first-route': setFirstRouteResult(payload as FirstRouteResult); break;
+      case 'tray-open-mixer': setMixerOpen(true); break;
+      case 'tray-open-timeline': setTimelineOpen(true); break;
       case 'timeline': {
         const incoming = payload as TimelineState;
         setTimeline(current => {
@@ -949,7 +968,7 @@ export default function App() {
   };
 
   const fitGraph = () => flow.fitView({ padding: 0.18, duration: 180 });
-  const modalOpen = showSettings || showAudioHelp || welcomeOpen || explainer != null ||
+  const modalOpen = showSettings || showAudioHelp || welcomeOpen || firstRouteOpen || showRouteCheck || processPicker != null || explainer != null ||
     showClear || trayPrompt || renamePrompt != null || chainEditor != null ||
     renameLibrary != null || libraryRemoval != null || canvasMenu != null;
 
@@ -1229,6 +1248,7 @@ export default function App() {
         onDiagnostics={toggleDiagnostics}
         timelineOpen={timelineOpen}
         onTimeline={() => { setTimelineOpen(true); send('timeline-open'); }}
+        onCheckRoute={() => setShowRouteCheck(true)}
       />
       {alert && <div className={`alert-bar ${alert.isError ? 'error' : ''}`} role="alert" aria-live="assertive"><span>{alert.text}</span><div className="alert-actions">{alert.action && alert.actionLabel && <button onClick={() => { send(alert.action!); setAlert(null); }}>{t(alert.actionLabel)}</button>}<button onClick={() => send('open-log') }>{t('Open log')}</button><button onClick={() => setAlert(null) }>{t('Dismiss')}</button></div></div>}
       {toast && <div className={`toast ${toast.isError ? 'error' : ''}`} role="status" aria-live="polite"><span>{toast.text}</span><button aria-label={t('Dismiss')} onClick={() => setToast(null)}>×</button></div>}
@@ -1268,7 +1288,6 @@ export default function App() {
               onNewChain={newChain}
               onRescanPlugins={rescanPlugins}
               onEditChain={editChain}
-              onAsioRefresh={refreshAsio}
             />
             <div className="sidebar-edge">
               <div className="sidebar-resizer" role="separator" aria-label={t('Resize library')} title={t('Drag to resize · double-click to hide')} onDoubleClick={() => setSidebarCollapsed(true)} onPointerDown={startSidebarResize} />
@@ -1451,7 +1470,10 @@ export default function App() {
             <h2>{t('Build your first route')}</h2>
             <p>{t('Add a source and an output, then drag from OUT to IN. Processing nodes sit between them.')}</p>
             <div className="empty-steps"><span><b>1</b> {t('Source')}</span><span><b>2</b> {t('Processing')}</span><span><b>3</b> {t('Destination')}</span></div>
-            <button className="primary-button" onClick={() => quickAdd(systemItem) }>{t('Add system audio')}</button>
+            <div className="graph-empty-actions">
+              <button className="primary-button" onClick={() => quickAdd(systemItem) }>{t('Add system audio')}</button>
+              <button className="tool-button" onClick={openFirstRoute}>{t('Set up my first route')}</button>
+            </div>
             <small>{t('Or drag anything from the library onto the canvas.')}</small>
           </div>}
         </main>
@@ -1516,7 +1538,7 @@ export default function App() {
         )}
       </div>
       <StatusBar status={status} />
-      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} virtualInputs={catalog.inputs.filter(item => item.virtual)} virtualOutputs={catalog.virtuals} vstPlugins={catalog.vst3Plugins} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} virtualInputs={catalog.inputs.filter(item => item.virtual)} virtualOutputs={catalog.virtuals} vstPlugins={catalog.vst3Plugins} onFirstRoute={openFirstRoute} onAsioRefresh={refreshAsio} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
       {trayPrompt && <TrayPromptDialog
         onKeep={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: true }); }}
         onQuit={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: false }); }}
@@ -1638,11 +1660,14 @@ export default function App() {
         </div>
       </div>}
       {explainer && <Suspense fallback={null}><ExplainerDialog id={explainer} onClose={() => setExplainer(null)} /></Suspense>}
-      {welcomeOpen && <WelcomeWizard
+      {firstRouteOpen && <Suspense fallback={null}><FirstRouteDialog catalog={catalog} result={firstRouteResult} onClose={() => setFirstRouteOpen(false)} /></Suspense>}
+      {processPicker && <Suspense fallback={null}><ProcessPickerDialog nodeId={processPicker.id} nodeTitle={processPicker.title} processId={processPicker.processId} processName={processPicker.processName} apps={catalog.apps} onClose={() => setProcessPicker(null)} /></Suspense>}
+      {showRouteCheck && <Suspense fallback={null}><RouteCheckDialog nodes={nodes} links={graph.links} warnings={graph.warnings} running={running} onOpenFirstRoute={() => { setShowRouteCheck(false); openFirstRoute(); }} onOpenMixer={() => { setShowRouteCheck(false); setMixerOpen(true); }} onClose={() => setShowRouteCheck(false)} /></Suspense>}
+      {welcomeOpen && <Suspense fallback={null}><WelcomeWizard
         settings={settings}
         onChange={next => { setSettings(next); send('settings', { ...next }); }}
         onClose={() => { setWelcomeOpen(false); send('onboarding-complete'); }}
-      />}
+      /></Suspense>}
       {showAudioHelp && <DuplicateAudioDialog warning={primaryWarning} onClose={() => setShowAudioHelp(false)} />}
     </div>
     {startup.visible && (

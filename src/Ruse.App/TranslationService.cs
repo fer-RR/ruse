@@ -400,9 +400,15 @@ internal sealed class TranslationSession : IDisposable
 
             try
             {
-                string translated = await Task.Run(
-                    () => _opus.Translate(text, detected, _targetCode, _cancel.Token),
-                    _cancel.Token);
+                string? translated = TranslationMemory.TryGet(_provider, _translationModelId, _targetCode, detected, text);
+                if (translated == null)
+                {
+                    translated = await Task.Run(
+                        () => _opus.Translate(text, detected, _targetCode, _cancel.Token),
+                        _cancel.Token);
+                    TranslationMemory.Store(_provider, _translationModelId, _targetCode, detected, text, translated);
+                }
+
                 AppendTranslation(translated, SentenceSplitter.Align(sourceCues, translated));
             }
             catch (OperationCanceledException)
@@ -436,7 +442,13 @@ internal sealed class TranslationSession : IDisposable
 
             try
             {
-                string translated = await TranslateTextAsync(_translator, text, _cancel.Token);
+                string? translated = TranslationMemory.TryGet(_provider, _translationModelId, _targetCode, detected, text);
+                if (translated == null)
+                {
+                    translated = await TranslateTextAsync(_translator, text, _cancel.Token);
+                    TranslationMemory.Store(_provider, _translationModelId, _targetCode, detected, text, translated);
+                }
+
                 AppendTranslation(translated, SentenceSplitter.Align(sourceCues, translated));
             }
             catch (OperationCanceledException)

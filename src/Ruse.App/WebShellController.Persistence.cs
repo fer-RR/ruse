@@ -611,8 +611,12 @@ internal sealed partial class WebShellController
         _settings.ConnectorAnimation = settings.ConnectorAnimation;
         _settings.MinimapMode = Math.Clamp(settings.MinimapMode, 0, 2);
         _settings.ShowWelcomeScreen = settings.ShowWelcomeScreen;
-        bool trayChanged = _settings.MinimizeToTray != settings.MinimizeToTray;
+        bool trayChanged = _settings.MinimizeToTray != settings.MinimizeToTray ||
+            _settings.StartMinimized != settings.StartMinimized ||
+            _settings.MinimizeToTrayOnMinimize != settings.MinimizeToTrayOnMinimize;
         _settings.MinimizeToTray = settings.MinimizeToTray;
+        _settings.StartMinimized = settings.StartMinimized;
+        _settings.MinimizeToTrayOnMinimize = settings.MinimizeToTrayOnMinimize;
         if (trayChanged)
         {
             _settings.TrayPromptShown = true;
@@ -668,6 +672,9 @@ internal sealed partial class WebShellController
         _settings.TranscriberModel = TranscriptionModels.Find(settings.TranscriberModel)?.Id ?? TranscriptionModels.DefaultId;
         _settings.TranslatorModel = TranslationModels.Find(settings.TranslatorModel)?.Id ?? TranslationModels.DefaultId;
         _settings.TranslatorTarget = TranslationLanguages.Normalize(settings.TranslatorTarget);
+        _settings.TranslationGlossary = settings.TranslationGlossary ?? "";
+        _settings.TranslationMemoryEnabled = settings.TranslationMemoryEnabled;
+        TranslationSettings.Update(_settings.TranslationGlossary, _settings.TranslationMemoryEnabled);
         _settings.TranslationProvider = string.Equals(settings.TranslationProvider, "opus", StringComparison.OrdinalIgnoreCase)
             ? "opus" : "qwen";
         _settings.TtsModel = TtsModels.Find(settings.TtsModel)?.Id ?? TtsModels.DefaultId;

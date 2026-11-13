@@ -35,6 +35,11 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
     private string? _noiseProfilePath;
     private string _noiseProfileName = "";
     private string? _noiseProfileError;
+    private float[]? _calibrationBuffer;
+    private int _calibrationFrames;
+    private int _calibrationTargetFrames;
+    private int _calibrationActive;
+    private Thread? _calibrationThread;
 
     public NoiseSuppressionProcessor()
     {
@@ -67,6 +72,7 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
     public string NoiseProfileName => _noiseProfileName;
     public string? NoiseProfileError => _noiseProfileError;
     public bool HasNoiseProfile => _profile != null;
+    public bool IsCalibrating => Volatile.Read(ref _calibrationActive) != 0;
 
     public void LoadNoiseProfile(string path)
     {
@@ -87,6 +93,65 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
         }
     }
 
+    public bool StartLiveCalibration(float seconds = 3f)
+    {
+        if (Interlocked.CompareExchange(ref _calibrationActive, 1, 0) != 0)
+        {
+            return false;
+        }
+
+        _calibrationTargetFrames = (int)(Math.Clamp(seconds, 1f, 10f) * 48000f);
+        _calibrationFrames = 0;
+        _calibrationBuffer = new float[_calibrationTargetFrames * 2];
+        _noiseProfileError = null;
+        _calibrationThread = new Thread(CalibrationWorker)
+        {
+            IsBackground = true,
+            Name = "NoiseCalibration",
+        };
+        _calibrationThread.Start();
+        return true;
+    }
+
+    private void CalibrationWorker()
+    {
+        var timeout = System.Diagnostics.Stopwatch.StartNew();
+        while (Volatile.Read(ref _calibrationActive) != 0 &&
+               Volatile.Read(ref _calibrationFrames) < _calibrationTargetFrames &&
+               timeout.Elapsed < TimeSpan.FromSeconds(15))
+        {
+            Thread.Sleep(50);
+        }
+
+        try
+        {
+            int frames = Volatile.Read(ref _calibrationFrames);
+            float[]? buffer = _calibrationBuffer;
+            if (Volatile.Read(ref _calibrationActive) == 0 || buffer == null || frames < _calibrationTargetFrames)
+            {
+                _noiseProfileError = "Calibration did not receive enough live audio.";
+                return;
+            }
+
+            float[] profile = NoiseProfileAnalyzer.AnalyzeSamples(buffer, frames, 2);
+            _profile = profile;
+            _noiseProfilePath = null;
+            _noiseProfileName = "Live calibration";
+            _noiseProfileError = null;
+            RebuildKernel();
+            Interlocked.Exchange(ref _resetRequested, 1);
+        }
+        catch (Exception ex)
+        {
+            _noiseProfileError = ex.Message;
+        }
+        finally
+        {
+            Volatile.Write(ref _calibrationActive, 0);
+            _calibrationBuffer = null;
+        }
+    }
+
     public void ClearNoiseProfile()
     {
         _profile = null;
@@ -99,6 +164,17 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
 
     public void Process(Span<float> samples, int frames)
     {
+        if (Volatile.Read(ref _calibrationActive) != 0)
+        {
+            int start = Volatile.Read(ref _calibrationFrames);
+            int take = Math.Min(frames, _calibrationTargetFrames - start);
+            if (take > 0 && _calibrationBuffer is { } buffer)
+            {
+                samples[..(take * 2)].CopyTo(buffer.AsSpan(start * 2));
+                Volatile.Write(ref _calibrationFrames, start + take);
+            }
+        }
+
         _inner.Process(samples, frames);
 
         var fir = Volatile.Read(ref _fir);
@@ -333,6 +409,81 @@ internal static class NoiseProfileAnalyzer
         }
 
         Cache[path] = (file.LastWriteTimeUtc, profile);
+        return profile;
+    }
+
+    internal static float[] AnalyzeSamples(float[] samples, int frames, int channels)
+    {
+        channels = Math.Max(1, channels);
+        int usable = Math.Min(frames, TargetSampleRate * MaxSeconds);
+        var window = BuildWindow(FftSize);
+        var complex = new Complex[FftSize];
+        var accumulator = new double[BinCount];
+        int framesProcessed = 0;
+        for (int offset = 0; offset + FftSize <= usable; offset += Hop)
+        {
+            for (int i = 0; i < FftSize; i++)
+            {
+                float mono = 0f;
+                int sampleOffset = (offset + i) * channels;
+                for (int channel = 0; channel < channels; channel++)
+                {
+                    mono += samples[sampleOffset + channel];
+                }
+
+                complex[i] = new Complex { X = (mono / channels) * window[i], Y = 0f };
+            }
+
+            FastFourierTransform.FFT(true, FftLog2, complex);
+            for (int bin = 0; bin < BinCount; bin++)
+            {
+                float real = complex[bin].X;
+                float imaginary = complex[bin].Y;
+                accumulator[bin] += Math.Sqrt(real * real + imaginary * imaginary);
+            }
+
+            framesProcessed++;
+        }
+
+        if (framesProcessed == 0)
+        {
+            throw new InvalidDataException("The live calibration contains no audio.");
+        }
+
+        var raw = new float[BinCount];
+        for (int i = 0; i < BinCount; i++)
+        {
+            raw[i] = (float)(accumulator[i] / framesProcessed);
+        }
+
+        var profile = new float[BinCount];
+        float max = 0f;
+        for (int i = 0; i < BinCount; i++)
+        {
+            float sum = 0f;
+            int count = 0;
+            for (int k = -2; k <= 2; k++)
+            {
+                int index = i + k;
+                if (index < 0 || index >= BinCount) continue;
+                sum += raw[index];
+                count++;
+            }
+
+            profile[i] = sum / Math.Max(1, count);
+            max = Math.Max(max, profile[i]);
+        }
+
+        if (max <= 1e-9f)
+        {
+            throw new InvalidDataException("The live noise floor is silent.");
+        }
+
+        for (int i = 0; i < BinCount; i++)
+        {
+            profile[i] /= max;
+        }
+
         return profile;
     }
 

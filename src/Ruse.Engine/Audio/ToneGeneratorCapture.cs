@@ -71,6 +71,7 @@ public sealed class ToneGeneratorCapture : IDisposable
 
     private void Pump()
     {
+        using var mmcss = MmcssScope.Enter();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long produced = 0;
 

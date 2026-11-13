@@ -158,6 +158,7 @@ public sealed class NetworkPcmCapture : IDisposable
     private long _lostPackets;
     private long _underruns;
     private long _streamResets;
+    private AudioWatchdogToken? _watchdog;
 
     public NetworkPcmCapture(int port, int targetBufferMs = NetworkPcm.DefaultBufferMs)
     {
@@ -189,8 +190,14 @@ public sealed class NetworkPcmCapture : IDisposable
         _ring.Clear();
         var client = new UdpClient(new IPEndPoint(IPAddress.Any, _port));
         client.Client.ReceiveBufferSize = 1 << 20;
+        client.Client.ReceiveTimeout = 250;
         TryDisableConnectionReset(client);
         _client = client;
+        _watchdog = AudioThreadWatchdog.Register($"NetworkInput-{_port}", TimeSpan.FromSeconds(2), () =>
+        {
+            SetError("Network input stopped responding; closing the socket to recover.");
+            try { _client?.Dispose(); } catch { }
+        });
         _receiver = new Thread(ReceiveLoop) { IsBackground = true, Name = $"NetworkInput-{_port}" };
         _pump = new Thread(PumpLoop) { IsBackground = true, Name = $"NetworkPump-{_port}" };
         _receiver.Start();
@@ -203,6 +210,7 @@ public sealed class NetworkPcmCapture : IDisposable
         var remote = new IPEndPoint(IPAddress.Any, 0);
         while (!_stop)
         {
+            _watchdog?.Beat();
             try
             {
                 byte[] packet = _client!.Receive(ref remote);
@@ -214,7 +222,8 @@ public sealed class NetworkPcmCapture : IDisposable
             }
             catch (SocketException ex)
             {
-                if (!_stop)
+                if (_stop) break;
+                if (ex.SocketErrorCode != SocketError.TimedOut)
                 {
                     SetError(ex.Message);
                     Thread.Sleep(5);
@@ -333,6 +342,7 @@ public sealed class NetworkPcmCapture : IDisposable
         int maxFrames = NetworkPcm.SampleRate / 2;
         while (!_stop)
         {
+            _watchdog?.Beat();
             long due = (long)(clock.Elapsed.TotalSeconds * NetworkPcm.SampleRate);
             if (produced >= due)
             {
@@ -431,6 +441,8 @@ public sealed class NetworkPcmCapture : IDisposable
     public bool Stop()
     {
         _stop = true;
+        _watchdog?.Dispose();
+        _watchdog = null;
         try
         {
             _client?.Dispose();

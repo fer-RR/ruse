@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
 using Ruse.App.Diagnostics;
 
@@ -16,6 +17,8 @@ public partial class WebMainWindow : Window
     private bool _exitFromTray;
     private bool _trayPromptOpen;
     private TrayIcon? _tray;
+    private DispatcherTimer? _trayTimer;
+    private bool _lastRecording;
     private WindowState _lastVisibleState = WindowState.Normal;
 
     public WebMainWindow()
@@ -29,6 +32,8 @@ public partial class WebMainWindow : Window
         Closed += (_, _) =>
         {
             _closed = true;
+            _trayTimer?.Stop();
+            _trayTimer = null;
             _tray?.Dispose();
             _tray = null;
             _controller.Dispose();
@@ -118,30 +123,108 @@ public partial class WebMainWindow : Window
             return;
         }
 
-        if (!_controller.UserSettings.MinimizeToTray ||
+        if ((!_controller.UserSettings.MinimizeToTray &&
+             !_controller.UserSettings.StartMinimized &&
+             !_controller.UserSettings.MinimizeToTrayOnMinimize) ||
             !_controller.UserSettings.TrayPromptShown ||
             _tray != null)
         {
             return;
         }
 
-        (string open, string exit) = TrayText(_controller.UserSettings.UiLanguage);
-        _tray = new TrayIcon(this, open, exit);
+        _tray = new TrayIcon(this, TrayText(_controller.UserSettings.UiLanguage));
         _tray.OpenRequested += RestoreFromTray;
         _tray.ExitRequested += ExitFromTray;
+        _tray.ToggleRoutingRequested += ToggleRoutingFromTray;
+        _tray.ToggleMicRequested += ToggleMicFromTray;
+        _tray.ToggleMasterRequested += ToggleMasterFromTray;
+        _tray.MixerRequested += OpenMixerFromTray;
+        _tray.TimelineRequested += OpenTimelineFromTray;
+        UpdateTray();
+        StartTrayTimer();
     }
 
     /// <summary>Creates or removes the tray icon after a settings change.</summary>
     internal void SyncTrayIcon()
     {
-        if (_controller.UserSettings.MinimizeToTray && _controller.UserSettings.TrayPromptShown)
+        if ((_controller.UserSettings.MinimizeToTray ||
+             _controller.UserSettings.StartMinimized ||
+             _controller.UserSettings.MinimizeToTrayOnMinimize) &&
+            _controller.UserSettings.TrayPromptShown)
         {
             CreateTrayIcon();
             return;
         }
 
+        StopTrayTimer();
         _tray?.Dispose();
         _tray = null;
+    }
+
+    private void StartTrayTimer()
+    {
+        if (_trayTimer != null)
+        {
+            return;
+        }
+
+        _trayTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _trayTimer.Tick += (_, _) => UpdateTray();
+        _trayTimer.Start();
+    }
+
+    private void StopTrayTimer()
+    {
+        _trayTimer?.Stop();
+        _trayTimer = null;
+    }
+
+    private void UpdateTray()
+    {
+        if (_tray == null)
+        {
+            return;
+        }
+
+        TraySnapshot snapshot = _controller.GetTraySnapshot();
+        if (_hiddenToTray && snapshot.Recording != _lastRecording)
+        {
+            (string started, string stopped) = RecordingText(_controller.UserSettings.UiLanguage);
+            _tray.ShowNotification("Ruse", snapshot.Recording ? started : stopped);
+        }
+
+        _lastRecording = snapshot.Recording;
+        _tray.Update(snapshot);
+    }
+
+    private void ToggleRoutingFromTray()
+    {
+        _controller.ToggleRoutingFromTray();
+        UpdateTray();
+    }
+
+    private void ToggleMicFromTray()
+    {
+        _controller.ToggleMicMuteFromTray();
+        UpdateTray();
+    }
+
+    private void ToggleMasterFromTray()
+    {
+        _controller.ToggleMasterMuteFromTray();
+        UpdateTray();
+    }
+
+    private void OpenMixerFromTray()
+    {
+        RestoreFromTray();
+        _controller.OpenMixerFromTray();
+    }
+
+    private void OpenTimelineFromTray()
+    {
+        RestoreFromTray();
+        _controller.OpenTimelineFromTray();
     }
 
     private void OnStateChanged(object? sender, EventArgs e)
@@ -150,6 +233,15 @@ public partial class WebMainWindow : Window
         {
             _lastVisibleState = WindowState;
             _hiddenToTray = false;
+        }
+        else if (WindowState == WindowState.Minimized &&
+                 _controller.UserSettings.MinimizeToTrayOnMinimize)
+        {
+            CreateTrayIcon();
+            if (_tray != null)
+            {
+                HideToTray();
+            }
         }
     }
 
@@ -204,17 +296,29 @@ public partial class WebMainWindow : Window
         Close();
     }
 
-    private static (string Open, string Exit) TrayText(string language) => language switch
+    private static (string Started, string Stopped) RecordingText(string language) => language switch
     {
-        "pt-BR" => ("Abrir Ruse", "Sair"),
-        "es" => ("Abrir Ruse", "Salir"),
-        "fr" => ("Ouvrir Ruse", "Quitter"),
-        "de" => ("Ruse öffnen", "Beenden"),
-        "it" => ("Apri Ruse", "Esci"),
-        "ja" => ("Ruse を開く", "終了"),
-        "ko" => ("Ruse 열기", "종료"),
-        "zh-CN" => ("打开 Ruse", "退出"),
-        _ => ("Open Ruse", "Exit"),
+        "de" => ("Aufnahme gestartet", "Aufnahme beendet"),
+        "es" => ("Grabación iniciada", "Grabación detenida"),
+        "fr" => ("Enregistrement démarré", "Enregistrement arrêté"),
+        "it" => ("Registrazione avviata", "Registrazione fermata"),
+        "ja" => ("録音を開始しました", "録音を停止しました"),
+        "ko" => ("녹음이 시작되었습니다", "녹음이 중지되었습니다"),
+        "pt-BR" => ("Gravação iniciada", "Gravação parada"),
+        "zh-CN" => ("录音已开始", "录音已停止"),
+        _ => ("Recording started", "Recording stopped"),
+    };
+    private static TrayLabels TrayText(string language) => language switch
+    {
+        "de" => new("Ruse öffnen", "Beenden", "Routing starten", "Routing stoppen", "Mikrofone stumm schalten", "Mikrofone stummgeschaltet", "Schalten Sie alle Ausgänge stumm", "Stummschaltung aller Ausgänge aufheben", "Mixer", "Zeitleiste", "Aufnahme", "Leerlauf", "Routing"),
+        "es" => new("Abrir Ruse", "Salir", "Iniciar enrutamiento", "Detener enrutamiento", "Silenciar micrófonos", "Micrófonos silenciados", "Silenciar todas las salidas", "Desenmudecer todas las salidas", "Mezclador", "Línea de tiempo", "Grabación", "inactivo", "Enrutamiento"),
+        "fr" => new("Ouvrir Ruse", "Quitter", "Démarrer le routage", "Arrêter le routage", "Couper les micros", "Micros coupés", "Couper toutes les sorties", "Réactiver toutes les sorties", "Mixeur", "Chronologie", "Enregistrement", "Inactif", "Routage"),
+        "it" => new("Apri Ruse", "Esci", "Avvia routing", "Interrompi routing", "Microfoni muti", "Microfoni disattivati", "Disattiva tutte le uscite", "Riattiva tutte le uscite", "Mixer", "Sequenza temporale", "Registrazione", "Inattivo", "Routing"),
+        "ja" => new("Ruse を開く", "終了", "ルーティングを開始", "ルーティングを停止", "マイクをミュートする", "マイクがミュートされています", "すべての出力をミュートする", "すべての出力のミュートを解除する", "ミキサー", "タイムライン", "録音", "アイドル状態", "ルーティング"),
+        "ko" => new("Ruse 열기", "종료", "라우팅 시작", "라우팅 중지", "마이크 음소거", "마이크가 음소거되었습니다.", "모든 출력을 음소거", "모든 출력 음소거 해제", "믹서", "타임라인", "녹음", "유휴", "라우팅"),
+        "pt-BR" => new("Abrir Ruse", "Sair", "Iniciar roteamento", "Parar roteamento", "Silenciar microfones", "Microfones mudos", "Silenciar todas as saídas", "Reativar todas as saídas", "Mixer", "Linha do tempo", "Gravação", "Ocioso", "Roteamento"),
+        "zh-CN" => new("打开 Ruse", "退出", "开始路由", "停止路由", "麦克风静音", "麦克风静音", "将所有输出静音", "取消所有输出静音", "混音器", "时间线", "录音", "空闲", "路由"),
+        _ => new("Open Ruse", "Exit", "Start routing", "Stop routing", "Mute mics", "Mics muted", "Mute all outputs", "Unmute all outputs", "Mixer", "Timeline", "Recording", "Idle", "Routing"),
     };
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -254,6 +358,10 @@ public partial class WebMainWindow : Window
         {
             await _controller.InitializeAsync(WebView);
             CreateTrayIcon();
+            if (_controller.UserSettings.StartMinimized && _tray != null)
+            {
+                HideToTray();
+            }
         }
         catch (Exception ex)
         {

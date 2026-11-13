@@ -20,6 +20,7 @@ internal static class WindowFrameBehavior
     private const int HtBottom = 15;
     private const int HtBottomLeft = 16;
     private const int HtBottomRight = 17;
+    private const int HtMaxButton = 9;
 
     public static void Attach(Window window)
     {
@@ -44,6 +45,18 @@ internal static class WindowFrameBehavior
             if (GetCursorPos(out NativePoint point) && ScreenToClient(hwnd, ref point) &&
                 GetClientRect(hwnd, out NativeRect client))
             {
+                double scale = GetDpiForWindow(hwnd) / 96.0;
+                if (scale <= 0) scale = 1;
+                int titleHeight = (int)Math.Ceiling(48 * scale);
+                int buttonWidth = (int)Math.Ceiling(46 * scale);
+                if (point.Y < titleHeight &&
+                    point.X >= client.Right - buttonWidth * 2 &&
+                    point.X < client.Right - buttonWidth)
+                {
+                    handled = true;
+                    return (IntPtr)HtMaxButton;
+                }
+
                 bool left = point.X < border;
                 bool right = point.X >= client.Right - border;
                 bool top = point.Y < border;

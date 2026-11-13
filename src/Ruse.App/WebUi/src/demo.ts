@@ -2,9 +2,9 @@ import type { CatalogSnapshot, GraphSnapshot, SettingsModel, TelemetrySnapshot }
 
 export const demoCatalog: CatalogSnapshot = {
   apps: [
-    { id: 'demo-discord', kind: 'app', name: 'Discord', subtitle: 'Application', details: 'Discord voice and chat', processId: 1234 },
-    { id: 'demo-game', kind: 'app', name: 'Game (Counter-Strike)', subtitle: 'Application', details: 'Game audio session', processId: 5678 },
-    { id: 'demo-spotify', kind: 'app', name: 'Spotify', subtitle: 'Application', details: 'Music playback', processId: 9012 },
+    { id: 'demo-discord', kind: 'app', name: 'Discord', subtitle: 'Application', details: 'Discord voice and chat', processId: 1234, processName: 'Discord' },
+    { id: 'demo-game', kind: 'app', name: 'Game (Counter-Strike)', subtitle: 'Application', details: 'Game audio session', processId: 5678, processName: 'cs2' },
+    { id: 'demo-spotify', kind: 'app', name: 'Spotify', subtitle: 'Application', details: 'Music playback', processId: 9012, processName: 'Spotify' },
   ],
   outputs: [
     { id: 'demo-headphones', kind: 'output', name: 'Headphones', subtitle: 'WASAPI output', details: 'Primary listening device' },
@@ -39,8 +39,8 @@ export const demoGraph: GraphSnapshot = {
   running: true,
   warnings: [],
   nodes: [
-    { id: 'discord', kind: 'source', flavor: 'app', title: 'Discord', subtitle: 'Application', accent: '#5B8DEF', x: 40, y: 60, volume: 1, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
-    { id: 'game', kind: 'source', flavor: 'app', title: 'Game (Counter-Strike)', subtitle: 'Application', accent: '#5B8DEF', x: 40, y: 330, volume: 0.85, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
+    { id: 'discord', kind: 'source', flavor: 'app', title: 'Discord', subtitle: 'Application', accent: '#5B8DEF', processId: 1234, processName: 'Discord', x: 40, y: 60, volume: 1, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
+    { id: 'game', kind: 'source', flavor: 'app', title: 'Game (Counter-Strike)', subtitle: 'Application', accent: '#5B8DEF', processId: 5678, processName: 'cs2', x: 40, y: 330, volume: 0.85, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'mic', kind: 'source', flavor: 'mic', title: 'Microphone', subtitle: 'Input device', accent: '#F0DC5A', x: 40, y: 620, volume: 1, muted: false, parameters: [], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'hp', kind: 'modifier', flavor: 'effect', title: 'High-pass', subtitle: 'Filter', accent: '#E5AD51', x: 390, y: 270, volume: 1, muted: false, parameters: [{ processorIndex: 0, parameterIndex: 0, name: 'Cutoff', min: 20, max: 1000, value: 80, unit: 'Hz', logarithmic: true, isToggle: false, isInteger: false, isChoice: false, options: [] }], isRecorder: false, recordingPath: '', recordingFormat: 'Wav24' },
     { id: 'comp', kind: 'modifier', flavor: 'effect', title: 'Compressor', subtitle: 'Dynamics', accent: '#E5AD51', x: 680, y: 510, volume: 1, muted: false, parameters: [
@@ -82,6 +82,8 @@ export const demoSettings: SettingsModel = {
   startWithWindows: false,
   showWelcomeScreen: true,
   minimizeToTray: true,
+  startMinimized: false,
+  minimizeToTrayOnMinimize: false,
   showDiagnostics: false,
   controlApiEnabled: false,
   controlApiPort: 47100,
@@ -96,6 +98,8 @@ export const demoSettings: SettingsModel = {
   transcriberModels: [],
   translatorModel: '',
   translatorTarget: 'en',
+  translationGlossary: '',
+  translationMemoryEnabled: true,
   translationProvider: 'qwen',
   ttsModel: '',
   ttsSpeed: 1,

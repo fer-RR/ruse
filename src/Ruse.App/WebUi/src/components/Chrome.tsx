@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import {
   Clock3, FolderOpen, LayoutGrid, MicOff, Minus, RefreshCw, SlidersHorizontal,
-  Redo2, Save, Settings, Square, Trash2, Undo2, Volume2, VolumeX, X, Activity,
+  Redo2, Save, Settings, Square, Stethoscope, Trash2, Undo2, Volume2, VolumeX, X, Activity,
 } from 'lucide-react';
 import { send } from '../bridge';
 import { formatGainDb, nextVolumeValue } from '../gain';
@@ -83,7 +83,7 @@ function ToolButton({ icon, children, title, onClick, danger = false, active = f
   return <button className={`tool-button ${danger ? 'danger' : ''} ${active ? 'active' : ''} ${accent && active ? 'accent' : ''}`} title={title} aria-pressed={active || undefined} onClick={onClick}>{icon}<span>{children}</span></button>;
 }
 
-export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, undoLabel, redoLabel, onTransport, onRefresh, onSave, onLoad, onClear, onUndo, onRedo, onTidy, onMicMute, onSettings, mixerOpen, onMixer, diagnosticsOpen, onDiagnostics, timelineOpen, onTimeline }: {
+export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, undoLabel, redoLabel, onTransport, onRefresh, onSave, onLoad, onClear, onUndo, onRedo, onTidy, onMicMute, onSettings, mixerOpen, onMixer, diagnosticsOpen, onDiagnostics, timelineOpen, onTimeline, onCheckRoute }: {
   running: boolean;
   audioPlaying: boolean;
   micMuted: boolean;
@@ -107,6 +107,7 @@ export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, und
   onDiagnostics: () => void;
   timelineOpen: boolean;
   onTimeline: () => void;
+  onCheckRoute: () => void;
 }) {
   const { t } = useI18n();
   return (
@@ -121,6 +122,7 @@ export function Toolbar({ running, audioPlaying, micMuted, canUndo, canRedo, und
         <button className="toolbar-icon" title={withShortcut(t('Tidy up the graph'), 'tidy')} aria-label={t('Tidy up the graph')} onClick={onTidy}><LayoutGrid size={15} /></button>
         <ToolButton icon={<SlidersHorizontal size={14} />} title={withShortcut(mixerOpen ? t('Hide mixer') : t('Show mixer'), 'mixer')} onClick={onMixer} active={mixerOpen} accent>{t('Mixer')}</ToolButton>
         <ToolButton icon={<Clock3 size={14} />} title={withShortcut(t('Timeline'), 'timeline')} onClick={onTimeline} active={timelineOpen} accent>{t('Timeline')}</ToolButton>
+        <ToolButton icon={<Stethoscope size={14} />} title={t('Check route')} onClick={onCheckRoute}>{t('Check route')}</ToolButton>
       </div>
       <span className="toolbar-separator" />
       <div className="toolbar-group" role="group" aria-label={t('Workspace actions')}>

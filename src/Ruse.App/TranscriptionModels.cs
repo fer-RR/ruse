@@ -114,6 +114,7 @@ internal static class TranscriptionModels
     {
         var model = Find(id) ?? throw new InvalidOperationException("Unknown speech model.");
         if (IsInstalled(id)) return;
+        ModelPreflight.Check(Root, model.SizeMb);
 
         await Gate.WaitAsync(token);
         string temp = PathFor(id) + ".part";

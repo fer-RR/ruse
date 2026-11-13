@@ -267,12 +267,12 @@ export default function DiagnosticsNode({ nodeId }: { nodeId: string }) {
   };
 
   const cpu = diagnostics
-    ? `${diagnostics.cpuPercent.toFixed(1)}% ${t('core')} ${DASH} ${diagnostics.cpuShare.toFixed(2)}% ${t('total')}`
+    ? `${diagnostics.cpuPercent.toFixed(1)}% ${t('of one core')} ${DASH} ${diagnostics.cpuShare.toFixed(2)}% ${t('total')}`
     : DASH;
   const gpu = diagnostics
     ? diagnostics.gpuPercent == null
-      ? `${t('tier')} ${diagnostics.renderTier}`
-      : `${diagnostics.gpuPercent.toFixed(0)}% ${DASH} ${t('tier')} ${diagnostics.renderTier}`
+      ? `${t('render tier')} ${diagnostics.renderTier}`
+      : `${diagnostics.gpuPercent.toFixed(0)}% ${DASH} ${t('render tier')} ${diagnostics.renderTier}`
     : DASH;
   const rowProps = {
     activeGraphs,
@@ -311,16 +311,16 @@ export default function DiagnosticsNode({ nodeId }: { nodeId: string }) {
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Render buffer')} value={formatMs(diagnostics?.outputBufferedMs)} metric="render-buffer" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Engine queue')} value={formatMs(diagnostics?.engineQueueMs)} metric="engine-queue" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Capture backlog')} value={formatMs(diagnostics?.worstBacklogMs)} metric="capture-backlog" />
-          <DiagRow {...rowProps} color="var(--cyan)" label={t('Source fill')} value={diagnostics ? `${formatSigned(diagnostics.sourceFillRateMsPerSec)} ms/s` : DASH} metric="source-fill" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Source fill')} value={diagnostics ? `${formatSigned(diagnostics.sourceFillRateMsPerSec)} ms per second` : DASH} metric="source-fill" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Output ring')} value={diagnostics ? `${diagnostics.outputRingFillPercent.toFixed(1)}%` : DASH} metric="output-ring" />
-          <DiagRow {...rowProps} color="var(--cyan)" label={t('Underruns/min')} value={diagnostics ? diagnostics.underrunsPerMinute.toFixed(1) : DASH} metric="underruns" />
-          <DiagRow {...rowProps} color="var(--cyan)" label={t('Skips/min')} value={diagnostics ? diagnostics.skippedFramesPerMinute.toFixed(1) : DASH} metric="skips" />
-          <DiagRow {...rowProps} color="var(--cyan)" label={t('Latency mean')} value={diagnostics ? `${formatMs(diagnostics.latencyMeanMs)} ${DASH} ${formatMs(diagnostics.latencyStdDevMs)}` : DASH} metric="latency-mean" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Underruns per minute')} value={diagnostics ? diagnostics.underrunsPerMinute.toFixed(1) : DASH} metric="underruns" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Skipped frames per minute')} value={diagnostics ? diagnostics.skippedFramesPerMinute.toFixed(1) : DASH} metric="skips" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Mean latency')} value={diagnostics ? `${formatMs(diagnostics.latencyMeanMs)} ${DASH} ${formatMs(diagnostics.latencyStdDevMs)}` : DASH} metric="latency-mean" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Estimated drift')} value={diagnostics ? `${formatSigned(diagnostics.estimatedDriftPpm)} ppm` : DASH} metric="drift" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Chain delay')} value={formatMs(diagnostics?.chainLatencyMs)} metric="chain-delay" />
-          <DiagRow {...rowProps} color="var(--cyan)" label={t('Skipped / underrun')} value={diagnostics ? `${diagnostics.skippedFrames} / ${diagnostics.shortReadFrames}` : DASH} metric="short-read-frames" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Skipped / short-read frames')} value={diagnostics ? `${diagnostics.skippedFrames} / ${diagnostics.shortReadFrames}` : DASH} metric="short-read-frames" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Output underruns')} value={diagnostics?.outputUnderruns ?? DASH} metric="output-underruns" />
-          <DiagRow {...rowProps} color="var(--cyan)" label={t('Format')} value={diagnostics?.audioFormat ?? '48 kHz \u00b7 stereo \u00b7 f32'} />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Format')} value={diagnostics?.audioFormat ?? '48 kHz \u00b7 stereo \u00b7 float32'} />
         </div>
         <div className="diag-section">
           <span className="diag-title">{t('Performance')}</span>
@@ -337,9 +337,9 @@ export default function DiagnosticsNode({ nodeId }: { nodeId: string }) {
           <span className="diag-title">{t('Interface')}</span>
           <DiagRow {...rowProps} color="var(--signal)" label="FPS" value={fps ? fps.toFixed(0) : DASH} metric="fps" />
           <DiagRow {...rowProps} color="var(--signal)" label={t('Frame')} value={frameMs ? frameMs.toFixed(1) + ' ms' : DASH} metric="frame" />
-          <DiagRow {...rowProps} color="var(--signal)" label="JS heap" value={formatMb(heapMb)} metric="heap" />
+          <DiagRow {...rowProps} color="var(--signal)" label={t('JavaScript heap')} value={formatMb(heapMb)} metric="heap" />
           <DiagRow {...rowProps} color="var(--signal)" label={t('Graph')} value={`${nodeCount} / ${linkCount}`} metric="nodes" />
-          <DiagRow {...rowProps} color="var(--signal)" label={t('Uptime')} value={diagnostics ? `${Math.floor(diagnostics.processUptimeSeconds / 60)}m ${Math.floor(diagnostics.processUptimeSeconds % 60)}s` : DASH} metric="uptime" />
+          <DiagRow {...rowProps} color="var(--signal)" label={t('Uptime')} value={diagnostics ? `${Math.floor(diagnostics.processUptimeSeconds / 60)} min ${Math.floor(diagnostics.processUptimeSeconds % 60)} s` : DASH} metric="uptime" />
         </div>
       </div>
       <div

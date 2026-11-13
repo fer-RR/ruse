@@ -441,6 +441,62 @@ function mixGroups(nodes: NodeModel[]) {
   return [...groups.entries()];
 }
 
+function MixerGroupTools({ items, label }: { items: NodeModel[]; label: string }) {
+  const { t } = useI18n();
+  const average = items.reduce((sum, node) => sum + node.volume, 0) / Math.max(1, items.length);
+  const [gain, setGain] = useState(average);
+  const dragging = useRef(false);
+  const start = useRef<{ gain: number; values: Map<string, number> } | null>(null);
+
+  useEffect(() => {
+    if (!dragging.current) setGain(average);
+  }, [average]);
+
+  const begin = () => {
+    dragging.current = true;
+    start.current = { gain, values: new Map(items.map(node => [node.id, node.volume])) };
+  };
+
+  const change = (next: number) => {
+    const from = start.current ?? { gain, values: new Map(items.map(node => [node.id, node.volume])) };
+    const ratio = next / Math.max(0.0001, from.gain);
+    for (const node of items) {
+      const value = Math.max(0, Math.min(1.5, (from.values.get(node.id) ?? node.volume) * ratio));
+      send('gain', { id: node.id, value });
+    }
+    setGain(next);
+  };
+
+  const end = () => {
+    dragging.current = false;
+    start.current = null;
+  };
+
+  const allMuted = items.length > 0 && items.every(node => node.muted);
+  const allSolo = items.length > 0 && items.every(node => node.solo);
+
+  return (
+    <span className="mixer-group-tools" onClick={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()}>
+      <button type="button" className={`mixer-group-button ${allSolo ? 'active' : ''}`} title={allSolo ? t('Unsolo') : t('Solo')} aria-label={`${label} ${allSolo ? t('Unsolo') : t('Solo')}`} onClick={() => items.forEach(node => send('solo', { id: node.id, value: !allSolo }))}>S</button>
+      <button type="button" className={`mixer-group-button ${allMuted ? 'active' : ''}`} title={allMuted ? t('Unmute') : t('Mute')} aria-label={`${label} ${allMuted ? t('Unmute') : t('Mute')}`} onClick={() => items.forEach(node => send('mute', { id: node.id, value: !allMuted }))}>M</button>
+      <input
+        className="mixer-group-fader"
+        type="range"
+        min={0}
+        max={1.5}
+        step={0.01}
+        value={gain}
+        aria-label={t('{name} volume', { name: label })}
+        aria-valuetext={formatGainDb(gain)}
+        onPointerDown={begin}
+        onPointerUp={end}
+        onPointerCancel={end}
+        onBlur={end}
+        onChange={event => change(Number(event.target.value))}
+      />
+    </span>
+  );
+}
 function MixerPanel({ sources, outputs, modifiers, links, onClose, onExplain, onResizeStart, onFocusNode }: {
   sources: NodeModel[];
   outputs: NodeModel[];
@@ -514,6 +570,7 @@ function MixerPanel({ sources, outputs, modifiers, links, onClose, onExplain, on
                     <i style={{ background: color === 'default' ? 'var(--text-3)' : color }} />
                     <span>{color === 'default' ? t('Ungrouped') : color}</span>
                     <span>{items.length}</span>
+                    <MixerGroupTools items={items} label={color === 'default' ? t('Ungrouped') : color} />
                   </summary>
                   <div className="mixer-strips">
                     {items.map(node => <MixerStrip
@@ -539,6 +596,7 @@ function MixerPanel({ sources, outputs, modifiers, links, onClose, onExplain, on
                     <i style={{ background: color === 'default' ? 'var(--text-3)' : color }} />
                     <span>{color === 'default' ? t('Ungrouped') : color}</span>
                     <span>{items.length}</span>
+                    <MixerGroupTools items={items} label={color === 'default' ? t('Ungrouped') : color} />
                   </summary>
                   <div className="mixer-strips">
                     {items.map(node => <MixerStrip

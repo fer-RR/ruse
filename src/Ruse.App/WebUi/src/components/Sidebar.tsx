@@ -1,7 +1,7 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import type { DragEvent, ReactNode, RefObject } from 'react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, FileAudio, FolderOpen, GripVertical, Headphones, MessageSquare,
+  AppWindow, AudioLines, Check, ChevronDown, Eye, EyeOff, FileAudio, FolderOpen, GripVertical, Headphones, MessageSquare,
   Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, RefreshCw, Search, SlidersHorizontal, Speaker, Trash2, Upload, X,
 } from 'lucide-react';
 import {
@@ -84,20 +84,22 @@ const ItemIcon = memo(function ItemIcon({ item }: { item: CatalogItem }) {
   }
 });
 
-const LibraryItem = memo(function LibraryItem({ item, name, onAdd, onEdit, onRename, onDelete, onCanvas }: {
+const LibraryItem = memo(function LibraryItem({ item, name, onAdd, onEdit, onRename, onDelete, onHide, onCanvas, hidden = false }: {
   item: CatalogItem;
   name: string;
   onAdd: (item: CatalogItem) => void;
   onEdit?: (item: CatalogItem) => void;
   onRename?: (item: CatalogItem) => void;
   onDelete?: (item: CatalogItem) => void;
+  onHide?: (item: CatalogItem) => void;
   onCanvas?: boolean;
+  hidden?: boolean;
 }) {
   const { t } = useI18n();
   const active = useTitleActive(name) || item.active === true;
   return (
     <div
-      className={`library-item item-${item.kind} ${item.kind === 'input' && item.virtual ? 'item-virtual-bus' : ''} ${active ? 'flowing' : ''}`}
+      className={`library-item item-${item.kind} ${item.kind === 'input' && item.virtual ? 'item-virtual-bus' : ''} ${active ? 'flowing' : ''} ${hidden ? 'library-item-hidden' : ''}`}
       role="button"
       tabIndex={onCanvas ? -1 : 0}
       aria-disabled={onCanvas || undefined}
@@ -133,11 +135,12 @@ const LibraryItem = memo(function LibraryItem({ item, name, onAdd, onEdit, onRen
         <span className="library-name">{name}</span>
         <span className="library-subtitle">
           {item.badge && <span className="item-badge">{item.badge}</span>}
+          {hidden && <span className="item-badge hidden-badge">{t('Hidden')}</span>}
           {t(item.subtitle)}
         </span>
       </span>
       {onCanvas
-        ? <span className="library-add library-added" title={t('Already on the canvas')}><Check size={14} /></span>
+        ? <span className="library-actions"><span className="library-add library-added" title={t('Already on the canvas')}><Check size={14} /></span>{onHide && <button className="library-add" title={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} aria-label={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} onClick={event => { event.stopPropagation(); onHide(item); }}>{hidden ? <Eye size={13} /> : <EyeOff size={13} />}</button>}</span>
         : <span className="library-actions">
             {onEdit && <button className="library-add" title={t('Edit {name}', { name })} aria-label={t('Edit {name}', { name })} onClick={event => { event.stopPropagation(); onEdit(item); }}>
               <Layers3 size={13} />
@@ -148,6 +151,7 @@ const LibraryItem = memo(function LibraryItem({ item, name, onAdd, onEdit, onRen
             {onDelete && <button className="library-add library-delete" title={t('Delete {name}', { name })} aria-label={t('Delete {name}', { name })} onClick={event => { event.stopPropagation(); onDelete(item); }}>
               <Trash2 size={13} />
             </button>}
+            {onHide && <button className="library-add" title={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} aria-label={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} onClick={event => { event.stopPropagation(); onHide(item); }}>{hidden ? <Eye size={13} /> : <EyeOff size={13} />}</button>}
             <button className="library-add" title={t('Add {name}', { name })} aria-label={t('Add {name}', { name })} onClick={event => { event.stopPropagation(); onAdd(item); }}>
               <Plus size={14} />
             </button>
@@ -160,9 +164,26 @@ interface Section {
   id: string;
   label: string;
   items: CatalogItem[];
+  total?: number;
+  hiddenCount?: number;
 }
 
 const LIBRARY_ORDER_KEY = 'ruse.librarySectionOrder.v3';
+const LIBRARY_HIDDEN_KEY = 'ruse.libraryHidden.v1';
+
+function loadHiddenItems(): Set<string> {
+  try {
+    const raw = localStorage.getItem(LIBRARY_HIDDEN_KEY);
+    const parsed = raw ? JSON.parse(raw) as unknown : null;
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.filter((value): value is string => typeof value === 'string'));
+    }
+  } catch {
+    // Preferences are optional; fall back to showing everything.
+  }
+
+  return new Set();
+}
 const DEFAULT_SECTION_ORDER = [
   'applications', 'generators', 'samples', 'network', 'physicalOutputs', 'physicalInputs',
   'recording', 'virtualBuses', 'virtualInputs', 'asioOutputs', 'asioInputs', 'effects',
@@ -233,7 +254,7 @@ function SortableSection({ section, collapsed, reorderEnabled, onToggle, childre
           aria-label={t('Reorder {name}', { name: t(section.label) })}
         ><GripVertical size={13} /></button>
         <button type="button" className="section-toggle" onClick={onToggle} aria-expanded={!collapsed}>
-          <span>{t(section.label)}</span><span className="section-count">{section.items.length}</span><ChevronDown size={13} className={collapsed ? 'collapsed' : ''} />
+          <span>{t(section.label)}</span><span className="section-count">{section.total ?? section.items.length}</span>{section.hiddenCount ? <span className="section-hidden-count" title={t('{count} hidden', { count: section.hiddenCount })}>{t('{count} hidden', { count: section.hiddenCount })}</span> : null}<ChevronDown size={13} className={collapsed ? 'collapsed' : ''} />
         </button>
       </div>
       {!collapsed && <div className="section-items">{children}</div>}
@@ -255,7 +276,7 @@ const VIEWS: ReadonlyArray<{ id: View; label: string }> = [
   { id: 'processing', label: 'Processing' },
 ];
 
-function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onDelete, onNewChain, onEditChain, onRescanPlugins, onAsioRefresh }: {
+function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onDelete, onNewChain, onEditChain, onRescanPlugins }: {
   catalog: CatalogSnapshot;
   searchRef: RefObject<HTMLInputElement | null>;
   aliases: Record<string, string>;
@@ -266,7 +287,6 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   onNewChain: () => void;
   onEditChain: (item: CatalogItem) => void;
   onRescanPlugins: () => void;
-  onAsioRefresh: () => void;
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
@@ -275,6 +295,8 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   const [searching, setSearching] = useState(false);
   const [sectionOrder, setSectionOrder] = useState<string[]>(loadSectionOrder);
   const [sampleDropActive, setSampleDropActive] = useState(false);
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(loadHiddenItems);
+  const [showHidden, setShowHidden] = useState(false);
   const sectionRank = useMemo(
     () => new Map(sectionOrder.map((id, index) => [id, index])),
     [sectionOrder],
@@ -290,6 +312,20 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   useEffect(() => {
     localStorage.setItem(LIBRARY_ORDER_KEY, JSON.stringify(sectionOrder));
   }, [sectionOrder]);
+
+  useEffect(() => {
+    localStorage.setItem(LIBRARY_HIDDEN_KEY, JSON.stringify([...hiddenKeys]));
+  }, [hiddenKeys]);
+
+  const toggleHidden = useCallback((item: CatalogItem) => {
+    const key = catalogKey(item);
+    setHiddenKeys(current => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
 
   const openSearch = () => {
     setSearching(true);
@@ -360,6 +396,9 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
     },
   ], [catalogSections, ordered]);
 
+  const hiddenTotal = useMemo(() => Object.values(catalogSections).reduce((sum, section) =>
+    sum + section.items.filter(item => hiddenKeys.has(catalogKey(item))).length, 0), [catalogSections, hiddenKeys]);
+
   const allSections = useMemo(() => ordered([
     catalogSections.applications,
     catalogSections.generators,
@@ -376,7 +415,13 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
     catalogSections.plugins,
     catalogSections.chains,
     catalogSections.templates,
-  ]).filter(section => section.items.length > 0 || section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins' || section.id === 'asioOutputs' || section.id === 'asioInputs'), [catalogSections, ordered]);
+  ]).map(section => {
+    const hiddenCount = section.items.filter(item => hiddenKeys.has(catalogKey(item))).length;
+    const items = showHidden
+      ? section.items
+      : section.items.filter(item => !hiddenKeys.has(catalogKey(item)));
+    return { ...section, items, total: section.items.length, hiddenCount };
+  }).filter(section => section.items.length > 0 || section.hiddenCount > 0 || section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins'), [catalogSections, ordered, hiddenKeys, showHidden]);
 
   useEffect(() => {
     const focusSection = (event: Event) => {
@@ -403,14 +448,18 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   const normalized = deferredQuery.trim().toLowerCase();
   const filtered = useMemo(() => groups.map(group => ({
     ...group,
-    sections: group.sections.map(section => ({
-      ...section,
-      items: normalized
+    sections: group.sections.map(section => {
+      const hiddenCount = section.items.filter(item => hiddenKeys.has(catalogKey(item))).length;
+      const searched = normalized
         ? section.items.filter(item =>
             `${displayName(item)} ${t(item.name)} ${t(item.subtitle)} ${t(item.details)}`.toLowerCase().includes(normalized))
-        : section.items,
-    })).filter(section => section.items.length > 0 || (!normalized && (section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins' || section.id === 'asioOutputs' || section.id === 'asioInputs'))),
-  })), [aliases, groups, normalized, t]);
+        : section.items;
+      const items = showHidden
+        ? searched
+        : searched.filter(item => !hiddenKeys.has(catalogKey(item)));
+      return { ...section, items, total: section.items.length, hiddenCount };
+    }).filter(section => section.items.length > 0 || (!normalized && (section.hiddenCount > 0 || section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins'))),
+  })), [aliases, groups, hiddenKeys, normalized, showHidden, t]);
 
   const visible = useMemo(() => normalized
     ? filtered.filter(group => group.sections.length > 0)
@@ -485,6 +534,19 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
     >
       <div className="sidebar-heading">
         <span className="eyebrow">{t('Library')}</span>
+        {(hiddenTotal > 0 || showHidden) && (
+          <button
+            type="button"
+            className={`icon-button compact library-hidden-toggle ${showHidden ? 'active' : ''}`}
+            title={showHidden ? t('Hide hidden items') : t('Show hidden items')}
+            aria-label={showHidden ? t('Hide hidden items') : t('Show hidden items')}
+            aria-pressed={showHidden}
+            onClick={() => setShowHidden(value => !value)}
+          >
+            {showHidden ? <Eye size={14} /> : <EyeOff size={14} />}
+            {hiddenTotal > 0 && <span className="library-hidden-count">{hiddenTotal}</span>}
+          </button>
+        )}
       </div>
       {searching ? (
         <label className="search-box sidebar-search-active">
@@ -553,9 +615,6 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
                       onToggle={() => {
                         const willExpand = isCollapsed;
                         setExpanded(current => ({ ...current, [key]: willExpand }));
-                        if (willExpand && !catalog.asioLoaded && (section.id === "asioOutputs" || section.id === "asioInputs")) {
-                          onAsioRefresh();
-                        }
                       }}
                     >
                       {section.id === 'samples' && (
@@ -586,14 +645,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
                           </button>
                         </div>
                       )}
-                      {(section.id === 'asioOutputs' || section.id === 'asioInputs') &&
-                        section.items.length === 0 && !catalog.asioLoaded && (
-                        <div className="library-section-actions">
-                          <button type="button" className="library-action" onClick={onAsioRefresh}>
-                            <RefreshCw size={13} /> {t('Load ASIO drivers')}
-                          </button>
-                        </div>
-                      )}
+                      {section.items.length === 0 && (section.hiddenCount ?? 0) > 0 && <p className="library-empty">{t('All items are hidden.')}</p>}
                       {section.items.map(item => <LibraryItem
                         key={`${item.kind}-${item.id}`}
                         item={item}
@@ -602,10 +654,10 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
                         onRename={onRename}
                         onEdit={item.kind === 'chain' ? onEditChain : undefined}
                         onDelete={item.kind === 'chain' || item.kind === 'template' ? onDelete : undefined}
+                        onHide={toggleHidden}
+                        hidden={hiddenKeys.has(catalogKey(item))}
                         onCanvas={isOnCanvas(item)}
                       />)}
-                      {(section.id === 'asioOutputs' || section.id === 'asioInputs') && section.items.length === 0 &&
-                        catalog.asioLoaded && <p className="library-empty">{t('No ASIO drivers found.')}</p>}
                     </SortableSection>
                   );
                 })}

@@ -816,7 +816,12 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         </button>
       </header>
       {!isDbMeter && !isLoudness && <div className="node-subtitle">{t(data.subtitle)}</div>}
-      {!isDbMeter && !isLoudness && data.micHint && <div className="node-hint" title={data.micHint}>{t('Use {name} as the microphone', { name: data.micHint })}</div>}
+      {data.flavor === 'app' && data.processId != null && (
+        <button className="node-process nodrag" title={t('Choose process')} onClick={() => window.dispatchEvent(new CustomEvent('ruse-pick-process', { detail: { id: data.id, title: data.title, processId: data.processId, processName: data.processName } }))}>
+          PID {data.processId}
+        </button>
+      )}
+      {!isDbMeter && !isLoudness && data.micHint && <div className="node-hint" title={data.micHint}>{t('In other apps, choose {name} as the microphone', { name: data.micHint })}</div>}
       {data.showDiagnostics && data.controlId && (
         <div className="node-control-id nodrag" title={`${t('Control ID')}: ${data.controlId}`}>
           <span>{t('Control ID')}</span>

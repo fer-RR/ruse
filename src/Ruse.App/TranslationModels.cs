@@ -88,6 +88,7 @@ internal static class TranslationModels
     {
         var model = Find(id) ?? throw new InvalidOperationException("Unknown translation model.");
         if (IsInstalled(id)) return;
+        ModelPreflight.Check(Root, model.SizeMb);
 
         await Gate.WaitAsync(token);
         string temp = PathFor(id) + ".part";

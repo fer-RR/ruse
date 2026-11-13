@@ -23,6 +23,12 @@ public sealed class AppSettings
     /// <summary>Hide the window to the notification area when minimized.</summary>
     public bool MinimizeToTray { get; set; } = true;
 
+    /// <summary>Start with the window hidden in the notification area.</summary>
+    public bool StartMinimized { get; set; }
+
+    /// <summary>Hide the window to the notification area when minimized.</summary>
+    public bool MinimizeToTrayOnMinimize { get; set; }
+
     /// <summary>True after the first-minimize prompt has been answered.</summary>
     public bool TrayPromptShown { get; set; }
 
@@ -71,6 +77,12 @@ public sealed class AppSettings
     public string TranscriberModel { get; set; } = "whisper-small.en";
     public string TranslatorModel { get; set; } = "qwen2.5-1.5b-instruct-q4_k_m";
     public string TranslatorTarget { get; set; } = "en";
+
+    /// <summary>Optional glossary, one source=target term per line.</summary>
+    public string TranslationGlossary { get; set; } = "";
+
+    /// <summary>Reuse exact source segments from previous translations.</summary>
+    public bool TranslationMemoryEnabled { get; set; } = true;
 
     /// <summary>Translation engine: "qwen" (default) or "opus" (ONNX Runtime).</summary>
     public string TranslationProvider { get; set; } = "qwen";

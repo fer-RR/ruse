@@ -121,6 +121,7 @@ internal static class OpusTranslationModels
     {
         var model = Find(id) ?? throw new InvalidOperationException("Unknown OPUS-MT model.");
         if (IsInstalled(id)) return;
+        ModelPreflight.Check(Root, model.SizeMb);
 
         await Gate.WaitAsync(token);
         string final = PathFor(id);

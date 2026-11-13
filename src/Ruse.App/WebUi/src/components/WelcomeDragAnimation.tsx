@@ -35,7 +35,7 @@ export default function WelcomeDragAnimation({ className = '' }: { className?: s
         <rect className="welcome-drag-panel" x="24" y="24" width="184" height="252" rx="14" />
         <text className="welcome-drag-label" x="42" y="49">{t('Library').toUpperCase()}</text>
 
-        <g className="welcome-drag-source">
+        <g className="welcome-drag-source welcome-drag-library-source">
           <rect className="welcome-drag-card welcome-drag-card-active" x="40" y="66" width="152" height="58" rx="10" />
           <circle className="welcome-drag-bubble" cx="62" cy="95" r="14" />
           <g className="welcome-drag-glyph" transform="translate(53 86) scale(0.75)">
@@ -47,7 +47,7 @@ export default function WelcomeDragAnimation({ className = '' }: { className?: s
           <rect className="welcome-drag-bar welcome-drag-bar-dim" x="84" y="96" width="58" height="5" rx="2.5" />
         </g>
 
-        <g>
+        <g className="welcome-drag-library-effect">
           <rect className="welcome-drag-card" x="40" y="134" width="152" height="58" rx="10" />
           <circle className="welcome-drag-bubble welcome-drag-bubble-violet" cx="62" cy="163" r="14" />
           <path className="welcome-drag-glyph welcome-drag-wave" d="M54 163c3-7 6 7 9 0s6-7 7 0" />
@@ -55,7 +55,7 @@ export default function WelcomeDragAnimation({ className = '' }: { className?: s
           <rect className="welcome-drag-bar welcome-drag-bar-dim" x="84" y="164" width="48" height="5" rx="2.5" />
         </g>
 
-        <g>
+        <g className="welcome-drag-library-output">
           <rect className="welcome-drag-card" x="40" y="202" width="152" height="58" rx="10" />
           <circle className="welcome-drag-bubble welcome-drag-bubble-amber" cx="62" cy="231" r="14" />
           <g className="welcome-drag-glyph" transform="translate(54 222) scale(0.75)">

@@ -71,6 +71,7 @@ internal sealed partial class WebShellController : IDisposable
     {
         _window = window;
         _settings = AppSettings.Load();
+        TranslationSettings.Update(_settings.TranslationGlossary, _settings.TranslationMemoryEnabled);
         _updates = new UpdateService(this);
         ModelRuntime.UseGpu = _settings.UseGpu;
         Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
@@ -393,6 +394,7 @@ internal sealed partial class WebShellController : IDisposable
             case "gain": SetNodeGain(String(message, "id"), (float)Number(message, "value", 1)); break;
             case "mute": SetNodeMute(String(message, "id"), Bool(message, "value")); break;
             case "solo": SetNodeSolo(String(message, "id"), Bool(message, "value")); break;
+            case "retarget-app": RetargetApplication(String(message, "id"), (uint)Number(message, "processId"), String(message, "processName")); break;
             case "node-color": SetNodeColor(String(message, "id"), String(message, "color")); break;
             case "midi-learn": StartMidiLearn(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
             case "midi-unbind": ClearMidiBinding(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
@@ -406,6 +408,7 @@ internal sealed partial class WebShellController : IDisposable
             case "ir-file": ChooseImpulseResponse(String(message, "id")); break;
             case "ir-clear": ClearImpulseResponse(String(message, "id")); break;
             case "noise-profile-file": ChooseNoiseProfile(String(message, "id")); break;
+            case "noise-profile-calibrate": StartNoiseCalibration(String(message, "id")); break;
             case "noise-profile-clear": ClearNoiseProfile(String(message, "id")); break;
             case "loudness-reset": ResetLoudness(String(message, "id")); break;
             case "db-meter-orientation": SetDbMeterOrientation(String(message, "id"), Bool(message, "vertical")); break;
@@ -890,6 +893,8 @@ internal sealed partial class WebShellController : IDisposable
             StartWithWindows = StartupRegistration.IsEnabled(),
             ShowWelcomeScreen = _settings.ShowWelcomeScreen,
             MinimizeToTray = _settings.MinimizeToTray,
+            StartMinimized = _settings.StartMinimized,
+            MinimizeToTrayOnMinimize = _settings.MinimizeToTrayOnMinimize,
             ShowDiagnostics = _settings.ShowDiagnostics,
             ControlApiEnabled = _settings.ControlApiEnabled,
             ControlApiPort = _settings.ControlApiPort,
@@ -935,6 +940,8 @@ internal sealed partial class WebShellController : IDisposable
             TranslatorModel = _settings.TranslatorModel,
             TranslatorTarget = _settings.TranslatorTarget,
             TranslationProvider = _settings.TranslationProvider,
+            TranslationGlossary = _settings.TranslationGlossary,
+            TranslationMemoryEnabled = _settings.TranslationMemoryEnabled,
             TranslatorModels = translationModels,
             TtsModel = _settings.TtsModel,
             TtsSpeed = _settings.TtsSpeed,
@@ -1481,6 +1488,7 @@ internal sealed partial class WebShellController : IDisposable
 
         UnregisterDeviceNotifications();
         _telemetryTimer.Stop();
+        StopNoiseCalibration();
         _appsTimer.Stop();
         _devicesTimer.Stop();
         _modelDownloadCancel?.Cancel();
@@ -1496,6 +1504,7 @@ internal sealed partial class WebShellController : IDisposable
         _midi.MessageReceived -= OnMidiMessageReceived;
         _midi.Dispose();
         AbortTimelineRecording();
+        SetAudioPriorityBoost(false);
         StopControlServer();
         DisposeInactiveOutputs();
         _timeline?.Dispose();

@@ -263,6 +263,7 @@ internal sealed partial class WebShellController
         ToneWaveform oldWave = source.ToneWave;
         float oldLevel = source.ToneLevelDb;
         source.SetTone(frequency, wave, levelDb);
+        PublishGraph();
         PushAction("Change test tone",
             undo: () => ApplyTone(id, oldFrequency, oldWave, oldLevel, publish: true),
             redo: () => ApplyTone(id, frequency, wave, levelDb, publish: true),
@@ -1353,6 +1354,8 @@ internal sealed partial class WebShellController
             dto.Muted = entry.Source.Muted;
             dto.Solo = entry.Source.Solo;
             dto.DeviceId = entry.Source.DeviceId;
+            dto.ProcessId = entry.Source.Kind == SourceKind.Application ? entry.Source.ProcessId : null;
+            dto.ProcessName = entry.Source.ProcessName;
             dto.SampleRate = entry.Source.SampleRate > 0 ? entry.Source.SampleRate : 48000;
             dto.BitsPerSample = entry.Source.SampleRate > 0 ? entry.Source.BitsPerSample : 32;
             dto.IsFilePlayer = entry.Source.Kind == SourceKind.File;
@@ -1608,6 +1611,21 @@ internal sealed partial class WebShellController
         }
 
         if (publish) PublishNodeState(id);
+    }
+
+    private void RetargetApplication(string id, uint processId, string processName)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.Application } source)
+        {
+            ShowError("That application source is no longer on the canvas.");
+            return;
+        }
+
+        source.RetargetApplication(processId, processName);
+        _graph.EnsureRunning(source);
+        SetStatus($"{entry.Title}: following {processName} ({processId}).");
+        PublishGraph();
+        PublishTelemetry(force: true);
     }
 
     private void SetNodeSolo(string id, bool solo)
@@ -2712,6 +2730,7 @@ internal sealed partial class WebShellController
         ActivateNativeRoutes();
         _graph.StartEngine();
         _running = _graph.Outputs.Any(output => output.IsRunning);
+        SetAudioPriorityBoost(_running);
         int outputCount = _graph.Outputs.Count;
         string recordingNote = recordings > 0 ? $", {recordings} recording(s)" : string.Empty;
         string armedNote = armed > 0 ? $", {armed} armed" : string.Empty;
@@ -2736,6 +2755,7 @@ internal sealed partial class WebShellController
         int saved = recorders.Count(output => string.IsNullOrEmpty(output.RecordingError));
         int failed = recorders.Count - saved;
         _running = false;
+        SetAudioPriorityBoost(false);
         SetStatus(recorders.Count == 0
             ? "Routing stopped."
             : $"Routing stopped · {saved} recording(s) saved{(failed > 0 ? $", {failed} failed" : string.Empty)}.");

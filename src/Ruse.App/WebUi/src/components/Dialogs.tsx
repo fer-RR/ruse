@@ -328,7 +328,7 @@ function SettingsSection({ title, summary, children }: {
   );
 }
 
-export function SettingsDialog({ settings, onChange, onClose, initialTab = 'behavior', outputs, virtualInputs = [], virtualOutputs = [], vstPlugins = [] }: {
+export function SettingsDialog({ settings, onChange, onClose, initialTab = 'behavior', outputs, virtualInputs = [], virtualOutputs = [], vstPlugins = [], onFirstRoute, onAsioRefresh }: {
   settings: SettingsModel;
   onChange: (settings: SettingsModel) => void;
   onClose: () => void;
@@ -337,6 +337,8 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
   virtualInputs?: CatalogItem[];
   virtualOutputs?: CatalogItem[];
   vstPlugins?: CatalogItem[];
+  onFirstRoute?: () => void;
+  onAsioRefresh?: () => void;
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<SettingsTab>(initialTab);
@@ -442,6 +444,16 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                   {TRANSLATION_TARGETS.map(target => <option key={target.code} value={target.code}>{target.label}</option>)}
                 </select>
               </label>
+              <label className="setting-row setting-row-stack">
+                <span><strong>{t('Glossary')}</strong><small>{t('One source=target term per line. Qwen translations preserve these terms.')}</small></span>
+                <textarea className="settings-textarea" rows={3} maxLength={4000} value={settings.translationGlossary ?? ''} onChange={event => onChange({ ...settings, translationGlossary: event.target.value })} />
+              </label>
+              <ToggleSetting
+                label={t('Translation memory')}
+                description={t('Reuse previous translations for identical source text.')}
+                checked={settings.translationMemoryEnabled !== false}
+                onChange={value => onChange({ ...settings, translationMemoryEnabled: value })}
+              />
               {settings.translationProvider === 'qwen' ? (
                 <>
                   <label className="setting-row">
@@ -496,8 +508,17 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <ToggleSetting label={t('Start with Windows')} description={t('Add Ruse to your per-user Windows startup apps.')} checked={settings.startWithWindows} onChange={value => onChange({ ...settings, startWithWindows: value })} />
               <ToggleSetting label={t('Show welcome screen on launch')} description={t('Open the welcome screen with a guided setup shortcut when Ruse starts.')} checked={settings.showWelcomeScreen} onChange={value => onChange({ ...settings, showWelcomeScreen: value })} />
               <ToggleSetting label={t('Close to tray')} description={t('Hide Ruse in the notification area when the window is closed; audio keeps routing.')} checked={settings.minimizeToTray} onChange={value => onChange({ ...settings, minimizeToTray: value })} />
+              <ToggleSetting label={t('Minimize to tray')} description={t('Hide the window instead of minimizing it to the taskbar.')} checked={settings.minimizeToTrayOnMinimize} onChange={value => onChange({ ...settings, minimizeToTrayOnMinimize: value })} />
+              <ToggleSetting label={t('Start minimized to tray')} description={t('Open Ruse hidden in the notification area. Useful with Start with Windows.')} checked={settings.startMinimized} onChange={value => onChange({ ...settings, startMinimized: value })} />
               <ToggleSetting label={t('Reattach apps when they play')} description={t('When an app source restarts, reconnect it to its existing route automatically.')} checked={settings.followPlayingApps} onChange={value => onChange({ ...settings, followPlayingApps: value })} />
               <label className="setting-row"><span><strong>{t('Auto-add new apps to')}</strong><small>{t('Add a source and connect it to this output when an app starts playing.')}</small></span><select disabled={!settings.followPlayingApps} value={settings.followOutputId} onChange={event => onChange({ ...settings, followOutputId: event.target.value })}><option value="">{t('Do not auto-add')}</option>{outputs.map(output => <option key={output.id} value={output.id}>{output.name}</option>)}</select></label>
+            </SettingsSection>
+
+            <SettingsSection title="Guided setup" summary={t('Recommended')}>
+              <p className="settings-note">{t('Reopen this guide any time from Settings.')}</p>
+              <div className="settings-actions">
+                <button type="button" className="tool-button" onClick={() => { onFirstRoute?.(); onClose(); }}>{t('Set up my first route')}</button>
+              </div>
             </SettingsSection>
 
             <SettingsSection title="Control API" summary={settings.controlApiEnabled ? t('On') : t('Off')}>
@@ -650,6 +671,13 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 />
               )}
               <p className="settings-note">{t('Audio engine changes restart routing when applied.')}</p>
+            </SettingsSection>
+
+            <SettingsSection title="ASIO" summary={t('Experimental')}>
+              <p className="settings-note">{t('Scan for ASIO drivers. ASIO support is experimental; use WASAPI unless your interface requires ASIO.')}</p>
+              <div className="settings-actions">
+                <button type="button" className="tool-button" onClick={onAsioRefresh}><RefreshCw size={14} /> {t('Load ASIO drivers')}</button>
+              </div>
             </SettingsSection>
 
             <SettingsSection

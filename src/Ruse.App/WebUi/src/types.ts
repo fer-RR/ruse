@@ -82,6 +82,8 @@ export interface NodeModel {
   supportsSidechain?: boolean;
   micHint?: string;
   deviceId?: string;
+  processId?: number;
+  processName?: string;
   sampleRate?: number;
   bitsPerSample?: number;
   showDiagnostics?: boolean;
@@ -436,6 +438,8 @@ export interface SettingsModel {
   startWithWindows: boolean;
   showWelcomeScreen: boolean;
   minimizeToTray: boolean;
+  startMinimized: boolean;
+  minimizeToTrayOnMinimize: boolean;
   showDiagnostics: boolean;
   controlApiEnabled: boolean;
   controlApiPort: number;
@@ -470,6 +474,8 @@ export interface SettingsModel {
   transcriberDownload?: TranscriberDownload | null;
   translatorModel: string;
   translatorTarget: string;
+  translationGlossary: string;
+  translationMemoryEnabled: boolean;
   translatorModels: TranslatorModelInfo[];
   translationProvider: string;
   ttsModel: string;

@@ -149,6 +149,8 @@ internal static class TtsModels
             return;
         }
 
+        ModelPreflight.Check(Root, model.SizeMb);
+
         await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         string archivePath = Path.Combine(Root, model.Id + ".tar.bz2.part");
         string extractPath = Path.Combine(Root, model.Id + ".extract-" + Guid.NewGuid().ToString("N"));

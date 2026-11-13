@@ -6,6 +6,9 @@ export default function WelcomeTimelineAnimation({ className = '' }: { className
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
   const glow = `timeline-glow-${uid}`;
   const clip = `timeline-clip-${uid}`;
+  const micGradient = `timeline-mic-${uid}`;
+  const effectGradient = `timeline-effect-${uid}`;
+  const speakerGradient = `timeline-speaker-${uid}`;
   const dots = `timeline-dots-${uid}`;
   const lead = t('Open the Timeline, add a track, drop samples or recordings, then press Space to play. Drag an effect onto a cable to build an effect chain.');
 
@@ -25,6 +28,18 @@ export default function WelcomeTimelineAnimation({ className = '' }: { className
           <linearGradient id={clip} x1="0" y1="0" x2="1" y2="1">
             <stop offset="0" stopColor="#bfe8ff" />
             <stop offset="1" stopColor="#64b5d8" />
+          </linearGradient>
+          <linearGradient id={micGradient} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#f0dc5a" />
+            <stop offset="1" stopColor="#d69e2e" />
+          </linearGradient>
+          <linearGradient id={effectGradient} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#e5ad51" />
+            <stop offset="1" stopColor="#c05621" />
+          </linearGradient>
+          <linearGradient id={speakerGradient} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#43e39a" />
+            <stop offset="1" stopColor="#149a5d" />
           </linearGradient>
           <pattern id={dots} width="18" height="18" patternUnits="userSpaceOnUse">
             <circle className="welcome-drag-grid-dot" cx="1" cy="1" r="1" />
@@ -46,7 +61,7 @@ export default function WelcomeTimelineAnimation({ className = '' }: { className
         <text className="welcome-timeline-fx-text" x="56" y="117">Compressor</text>
 
         <g className="welcome-timeline-node">
-          <rect x="178" y="58" width="84" height="40" rx="8" />
+          <rect x="178" y="52" width="84" height="52" rx="10" style={{ fill: `url(#${micGradient})`, stroke: 'rgba(255,255,255,0.35)' }} />
           <circle className="welcome-timeline-glyph-bubble" cx="194" cy="78" r="8" />
           <path className="welcome-timeline-glyph" d="M191 76v4M197 76v4M189 77v2a5 5 0 0 0 10 0v-2" />
           <text className="welcome-timeline-node-title" x="208" y="82">Mic</text>
@@ -54,21 +69,21 @@ export default function WelcomeTimelineAnimation({ className = '' }: { className
         </g>
 
         <g className="welcome-timeline-node welcome-timeline-node-hp">
-          <rect x="290" y="58" width="96" height="40" rx="8" />
+          <rect x="290" y="52" width="96" height="52" rx="10" style={{ fill: `url(#${effectGradient})`, stroke: 'rgba(255,255,255,0.35)' }} />
           <text className="welcome-timeline-node-title" x="302" y="82">High-pass</text>
           <circle className="welcome-timeline-port welcome-timeline-port-in" cx="290" cy="78" r="4" />
           <circle className="welcome-timeline-port" cx="386" cy="78" r="4" />
         </g>
 
         <g className="welcome-timeline-node welcome-timeline-node-comp">
-          <rect x="408" y="58" width="96" height="40" rx="8" />
+          <rect x="408" y="52" width="96" height="52" rx="10" style={{ fill: `url(#${effectGradient})`, stroke: 'rgba(255,255,255,0.35)' }} />
           <text className="welcome-timeline-node-title" x="420" y="82">Compressor</text>
           <circle className="welcome-timeline-port welcome-timeline-port-in" cx="408" cy="78" r="4" />
           <circle className="welcome-timeline-port" cx="504" cy="78" r="4" />
         </g>
 
         <g className="welcome-timeline-node">
-          <rect x="536" y="58" width="104" height="40" rx="8" />
+          <rect x="536" y="52" width="104" height="52" rx="10" style={{ fill: `url(#${speakerGradient})`, stroke: 'rgba(255,255,255,0.35)' }} />
           <circle className="welcome-timeline-glyph-bubble" cx="552" cy="78" r="8" />
           <path className="welcome-timeline-glyph" d="M550 75l-4 3h-2v4h2l4 3v-10ZM557 76a5 5 0 0 1 0 8" />
           <text className="welcome-timeline-node-title" x="566" y="82">Speakers</text>

@@ -97,6 +97,8 @@ internal sealed class NodeDto
     public bool SupportsSidechain { get; set; }
     public string? MicHint { get; set; }
     public string? DeviceId { get; set; }
+    public uint? ProcessId { get; set; }
+    public string? ProcessName { get; set; }
     public int SampleRate { get; set; } = 48000;
     public int BitsPerSample { get; set; } = 32;
     public List<ParameterDto> Parameters { get; set; } = new();
@@ -401,7 +403,7 @@ internal sealed class DiagnosticsDto
     public long OutputUnderruns { get; set; }
     public bool LowLatency { get; set; }
     public double TelemetryMs { get; set; }
-    public string AudioFormat { get; set; } = "48 kHz · stereo · f32";
+    public string AudioFormat { get; set; } = "48 kHz · stereo · float32";
     public bool GpuAvailable { get; set; }
     public string? GpuDeviceName { get; set; }
     public string? GpuStatusError { get; set; }
@@ -426,6 +428,8 @@ internal sealed class SettingsDto
     public bool StartWithWindows { get; set; }
     public bool ShowWelcomeScreen { get; set; } = true;
     public bool MinimizeToTray { get; set; } = true;
+    public bool StartMinimized { get; set; }
+    public bool MinimizeToTrayOnMinimize { get; set; }
     public bool ShowDiagnostics { get; set; }
     public bool ControlApiEnabled { get; set; }
     public int ControlApiPort { get; set; } = 47100;
@@ -460,6 +464,8 @@ internal sealed class SettingsDto
     public TranscriberDownloadDto? TranscriberDownload { get; set; }
     public string TranslatorModel { get; set; } = "";
     public string TranslatorTarget { get; set; } = "en";
+    public string TranslationGlossary { get; set; } = "";
+    public bool TranslationMemoryEnabled { get; set; } = true;
     public string TranslationProvider { get; set; } = "qwen";
     public string TtsModel { get; set; } = "";
     public float TtsSpeed { get; set; } = 1f;

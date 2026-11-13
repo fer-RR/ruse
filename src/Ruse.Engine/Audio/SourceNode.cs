@@ -144,6 +144,9 @@ public sealed class SourceNode : IDisposable
     public float ToneFrequency { get; private set; } = 1000f;
     public ToneWaveform ToneWave { get; private set; } = ToneWaveform.Sine;
     public float ToneLevelDb { get; private set; } = -18f;
+
+    /// <summary>Software generators need a small lead so their wall-clock pump cannot starve the mixer.</summary>
+    public double PrebufferMs => Kind is SourceKind.Tone or SourceKind.Synth or SourceKind.File or SourceKind.Tts ? 30.0 : 0.0;
     public SynthSettings Synth { get; private set; } = SynthSettings.Default;
 
     /// <summary>Updates the procedural generator. Takes effect immediately when running.</summary>
@@ -316,6 +319,7 @@ public sealed class SourceNode : IDisposable
         // and keeps each consumer's buffer off the large-object heap.
         private readonly FloatRingBuffer _buffer = new(192_000);
         private int _fadeRemaining;
+        private bool _primed;
         private float _lastLeft;
         private float _lastRight;
         private SourceNode? _owner;
@@ -328,6 +332,15 @@ public sealed class SourceNode : IDisposable
         /// <summary>How much audio is waiting, in ms.</summary>
         public double BufferedMs => _buffer.AvailableToRead / 2.0 * 1000.0 / FormatConverter.TargetSampleRate;
 
+        internal void Reset()
+        {
+            _buffer.Clear();
+            _fadeRemaining = 0;
+            _primed = false;
+            _lastLeft = 0;
+            _lastRight = 0;
+        }
+
         internal void Write(ReadOnlySpan<float> samples) => _buffer.Write(samples);
 
         /// <summary>Reads the next block of audio for this consumer.</summary>
@@ -337,6 +350,22 @@ public sealed class SourceNode : IDisposable
             // the queue holds audio that is now in the past. Playing it would
             // add that delay for good, so the stale head is dropped and the
             // live edge is played instead.
+            if (!_primed)
+            {
+                int prefillFrames = (int)((_owner?.PrebufferMs ?? 0) * FormatConverter.TargetSampleRate / 1000.0);
+                if (prefillFrames > 0)
+                {
+                    if (_buffer.AvailableToRead < prefillFrames * 2)
+                    {
+                        return 0;
+                    }
+
+                    _fadeRemaining = FadeFrames;
+                }
+
+                _primed = true;
+            }
+
             int maxFrames = (int)(StaleLimitMs * FormatConverter.TargetSampleRate / 1000.0);
             int keepFrames = (int)(KeepMs * FormatConverter.TargetSampleRate / 1000.0);
             int available = _buffer.AvailableToRead / 2;
@@ -539,6 +568,12 @@ public sealed class SourceNode : IDisposable
 
         _faulted = false;
         _stopRequested = false;
+
+        var subscriptions = Volatile.Read(ref _subscriptionSnapshot);
+        for (int i = 0; i < subscriptions.Length; i++)
+        {
+            subscriptions[i].Reset();
+        }
 
         switch (Kind)
         {

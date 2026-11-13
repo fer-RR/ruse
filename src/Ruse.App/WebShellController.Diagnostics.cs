@@ -42,7 +42,7 @@ internal sealed partial class WebShellController
             OutputsRunning = _graph.Outputs.Count(output => output.IsRunning),
             TelemetryMs = _lastTelemetryMs,
             EngineBlockMs = AudioEngineConfig.BlockFrames * 1000.0 / AudioEngineConfig.SampleRate,
-            AudioFormat = $"{AudioEngineConfig.SampleRate / 1000.0:0.#} kHz · stereo · f32",
+            AudioFormat = $"{AudioEngineConfig.SampleRate / 1000.0:0.#} kHz · stereo · float32",
         };
 
         double worstBacklog = 0;
