@@ -115,10 +115,20 @@ internal sealed partial class WebShellController
         if (entry != null)
         {
             PushAddNode(entry, restoredLinks);
+            StartRoutingForNewSource(entry);
         }
 
         PublishGraph();
     }
+
+    private void StartRoutingForNewSource(NodeEntry entry)
+    {
+        if (entry.Source != null && !_graph.AutoRun)
+        {
+            StartRouting();
+        }
+    }
+
 
     private void AddFilePlayer(double x = 80, double y = 120, string? path = null)
     {
@@ -141,6 +151,7 @@ internal sealed partial class WebShellController
         }
 
         PushAddNode(entry);
+        StartRoutingForNewSource(entry);
         PublishGraph();
         PublishTelemetry(force: true);
         if (string.IsNullOrWhiteSpace(path))
@@ -2907,7 +2918,7 @@ internal sealed partial class WebShellController
         }
         ActivateNativeRoutes();
         _graph.StartEngine();
-        _running = _graph.Outputs.Any(output => output.IsRunning);
+        _running = _graph.AutoRun;
         SetAudioPriorityBoost(_running);
         int outputCount = _graph.Outputs.Count;
         string recordingNote = recordings > 0 ? $", {recordings} recording(s)" : string.Empty;

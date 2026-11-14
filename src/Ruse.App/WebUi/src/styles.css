@@ -2357,6 +2357,60 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .route-check-signal small { overflow: hidden; color: var(--text-3); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .route-check-hint { display: flex; align-items: flex-start; gap: 7px; padding: 8px 10px; border: 1px solid rgba(229, 173, 81, 0.3); border-radius: 7px; background: rgba(229, 173, 81, 0.06); color: var(--text-2); font-size: 10px; line-height: 1.4; }
 .route-check-hint svg { flex: 0 0 auto; color: #e5ad51; }
+
+.route-hint-outline {
+  position: absolute;
+  z-index: 6;
+  border: 1.5px dashed var(--cyan);
+  border-radius: 12px;
+  pointer-events: none;
+  animation: route-hint-outline 1.6s ease-in-out infinite;
+}
+
+.route-hint {
+  position: absolute;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  animation: route-hint-in 180ms var(--ease-out);
+}
+
+.route-hint.left { flex-direction: row-reverse; }
+.route-hint-dash {
+  width: 34px;
+  height: 2px;
+  flex: 0 0 auto;
+  background: repeating-linear-gradient(90deg, var(--cyan) 0 6px, transparent 6px 10px);
+  animation: route-hint-flow 600ms linear infinite;
+}
+.route-hint.left .route-hint-dash { transform: rotate(180deg); }
+.route-hint-bubble {
+  width: 224px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--cyan) 38%, var(--line-strong));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-1) 94%, var(--cyan));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+  color: var(--text-2);
+  font-size: 10px;
+  line-height: 1.45;
+}
+@keyframes route-hint-outline {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--cyan) 0%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--cyan) 14%, transparent); }
+}
+@keyframes route-hint-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes route-hint-flow {
+  to { background-position: -16px 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .route-hint, .route-hint-outline, .route-hint-dash { animation: none; }
+}
 .route-check-map { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; padding-top: 10px; border-top: 1px solid var(--line); }
 .route-check-map > div { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
 .route-check-map .eyebrow { width: 100%; margin-bottom: 2px; }

@@ -19,6 +19,7 @@ import { getNodeTelemetry, publishTelemetry, setNodeTitles, useUiTelemetry } fro
 import RuseNode from './components/RuseNode';
 import RuseEdge from './components/RuseEdge';
 import RuseConnectionLine from './components/RuseConnectionLine';
+import RouteHintOverlay from './components/RouteHintOverlay';
 import Sidebar from './components/Sidebar';
 import { StatusBar, TitleBar, Toolbar } from './components/Chrome';
 import { ConfirmDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog, TrayPromptDialog } from './components/Dialogs';
@@ -1190,6 +1191,32 @@ export default function App() {
   );
   const showMiniMap = graphNodeCount > 0 && settings.minimapMode !== 1 && anyNodeOffscreen;
   const audioPlaying = catalog.apps.some(item => item.active === true);
+  const audibleSourceSignature = useMemo(() => {
+    const activeApps = catalog.apps.filter(app => app.active === true);
+    return graph.nodes
+      .filter(node => {
+        if (node.kind !== 'source' || node.muted) return false;
+        if (node.flavor === 'system') return activeApps.length > 0;
+        if (node.flavor !== 'app') return false;
+        return activeApps.some(app =>
+          (node.processId != null && app.processId === node.processId) ||
+          (!!node.processName && !!app.processName &&
+            app.processName.toLowerCase() === node.processName.toLowerCase()));
+      })
+      .map(node => node.id)
+      .sort()
+      .join('|');
+  }, [catalog.apps, graph.nodes]);
+
+  const audibleSourceSignatureRef = useRef('');
+  useEffect(() => {
+    if (audibleSourceSignatureRef.current === audibleSourceSignature) return;
+    audibleSourceSignatureRef.current = audibleSourceSignature;
+    if (audibleSourceSignature && !running) {
+      send('transport', { running: true });
+    }
+  }, [audibleSourceSignature, running]);
+
   const primaryWarning = graph.warnings?.find(warning => warning.severity === 'warning') ?? graph.warnings?.[0];
   const warningSignature = primaryWarning
     ? `${primaryWarning.severity}|${primaryWarning.sourceId}|${primaryWarning.outputId}|${primaryWarning.deviceName}|${primaryWarning.message}`
@@ -1466,6 +1493,7 @@ export default function App() {
               nodeStrokeWidth={2}
               maskColor="rgba(7, 10, 14, 0.76)"
             />}
+            <RouteHintOverlay nodes={nodes} links={graph.links} />
           </ReactFlow>
           {graphNodeCount === 0 && <div className="graph-empty">
             <span className="eyebrow">{t('Start with a signal')}</span>

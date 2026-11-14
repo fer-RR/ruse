@@ -145,7 +145,7 @@ internal sealed partial class WebShellController
 
         if (changed)
         {
-            _running = _graph.Outputs.Any(output => output.IsRunning);
+            _running = _graph.AutoRun;
             SetStatus("Armed recorder started.");
             PublishGraph();
             PublishTelemetry(force: true);
@@ -164,7 +164,7 @@ internal sealed partial class WebShellController
         if (output.IsRecording && mode != RecorderMode.On)
         {
             output.Stop();
-            _running = _graph.Outputs.Any(item => item.IsRunning);
+            _running = _graph.AutoRun;
             if (output.SaveToSamples)
             {
                 RefreshSamples();
@@ -322,7 +322,7 @@ internal sealed partial class WebShellController
             string path = output.RecordingPath;
             output.Stop();
             _recorderSilenceStarted.Remove(entry.Id);
-            _running = _graph.Outputs.Any(item => item.IsRunning);
+            _running = _graph.AutoRun;
             if (output.SaveToSamples)
             {
                 RefreshSamples();

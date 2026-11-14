@@ -71,6 +71,7 @@ internal sealed partial class WebShellController : IDisposable
     {
         _window = window;
         _settings = AppSettings.Load();
+        _graph.AutoRun = false;
         _settings.Theme = _settings.Theme switch
         {
             "system" => "dark",
@@ -1023,7 +1024,7 @@ internal sealed partial class WebShellController : IDisposable
         long telemetryStarted = System.Diagnostics.Stopwatch.GetTimestamp();
         var telemetry = new TelemetryDto
         {
-            Running = _graph.Outputs.Any(output => output.IsRunning),
+            Running = _running,
             MasterGain = Finite(OutputNode.MasterGain),
             MasterMuted = OutputNode.MasterMuted,
             MicMuted = _micMuted,

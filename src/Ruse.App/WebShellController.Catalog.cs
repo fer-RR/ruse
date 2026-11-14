@@ -522,6 +522,11 @@ internal sealed partial class WebShellController
             }
         }
 
+        if (changed && !_graph.AutoRun && _nodes.Values.Any(entry => entry.Source != null))
+        {
+            StartRouting();
+        }
+
         return changed;
     }
     private (double X, double Y) FindFreeNodePosition(double x, double y, double width, double height)
