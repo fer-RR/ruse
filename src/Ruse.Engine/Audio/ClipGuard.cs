@@ -1,3 +1,5 @@
+using NAudio.Dsp;
+
 namespace Ruse.App.Audio;
 
 /// <summary>
@@ -10,13 +12,15 @@ public sealed class ClipGuard
 {
     private const int SampleRate = 48000;
     private const int MaxChannels = 2;
+    private const int MaxLookaheadFrames = 64;
     private const int DefaultLookaheadFrames = 64;
     private const float DefaultCeiling = 0.98f;
     private const float DefaultAttackMs = 1.0f;
     private const float DefaultReleaseMs = 180.0f;
 
-    private readonly float[] _delay = new float[MaxChannels * DefaultLookaheadFrames];
-    private readonly float[] _previous = new float[MaxChannels];
+    private readonly float[] _delay = new float[MaxChannels * MaxLookaheadFrames];
+    private readonly Oversampler _oversamplerLeft = new(4, SampleRate);
+    private readonly Oversampler _oversamplerRight = new(4, SampleRate);
 
     private volatile float _ceiling = DefaultCeiling;
     private volatile float _attack = MathF.Exp(-1f / (DefaultAttackMs / 1000f * SampleRate));
@@ -25,6 +29,7 @@ public sealed class ClipGuard
     private float _targetGain = 1f;
     private int _holdFrames;
     private int _delayPos;
+    private int _lookaheadFrames = DefaultLookaheadFrames;
 
     public ClipGuard()
     {
@@ -43,7 +48,22 @@ public sealed class ClipGuard
     }
 
     /// <summary>Look-ahead delay per channel, in frames.</summary>
-    public int LatencySamples => DefaultLookaheadFrames;
+    public int LatencySamples => _lookaheadFrames;
+
+    public int LookaheadFrames => _lookaheadFrames;
+
+    public void SetLookahead(int frames)
+    {
+        frames = Math.Clamp(frames, 1, MaxLookaheadFrames);
+        if (frames == _lookaheadFrames) return;
+        _lookaheadFrames = frames;
+        Array.Clear(_delay);
+        _delayPos = 0;
+        _holdFrames = 0;
+        _gain = 1f;
+        _targetGain = 1f;
+        Engaged = false;
+    }
 
     public bool Engaged { get; private set; }
     public float GainReductionDb => 20f * MathF.Log10(Math.Max(0.0001f, _gain));
@@ -60,25 +80,22 @@ public sealed class ClipGuard
         float attack = _attack;
         float release = _release;
 
+        Span<float> upsampled = stackalloc float[4];
         for (int frame = 0; frame < frames; frame++)
         {
             int index = frame * channels;
             float peak = 0f;
             for (int channel = 0; channel < channels; channel++)
             {
-                float current = samples[index + channel];
-                float previous = _previous[channel];
-                _previous[channel] = current;
-
-                // Four-point interpolation catches most inter-sample peaks
-                // without the cost of a full oversampled true-peak meter.
-                float magnitude = MathF.Max(MathF.Abs(current), MathF.Abs(previous));
-                magnitude = MathF.Max(magnitude, MathF.Abs(previous + ((current - previous) * 0.25f)));
-                magnitude = MathF.Max(magnitude, MathF.Abs(previous + ((current - previous) * 0.5f)));
-                magnitude = MathF.Max(magnitude, MathF.Abs(previous + ((current - previous) * 0.75f)));
-                if (float.IsFinite(magnitude) && magnitude > peak)
+                var oversampler = channel == 0 ? _oversamplerLeft : _oversamplerRight;
+                oversampler.Upsample(samples[index + channel], upsampled);
+                for (int i = 0; i < upsampled.Length; i++)
                 {
-                    peak = magnitude;
+                    float magnitude = MathF.Abs(upsampled[i]);
+                    if (float.IsFinite(magnitude) && magnitude > peak)
+                    {
+                        peak = magnitude;
+                    }
                 }
             }
 
@@ -86,7 +103,7 @@ public sealed class ClipGuard
             if (required <= _targetGain)
             {
                 _targetGain = required;
-                _holdFrames = DefaultLookaheadFrames;
+                _holdFrames = _lookaheadFrames;
             }
             else if (_holdFrames > 0)
             {
@@ -104,14 +121,14 @@ public sealed class ClipGuard
             int delayedIndex = _delayPos;
             for (int channel = 0; channel < channels; channel++)
             {
-                int offset = channel * DefaultLookaheadFrames;
+                int offset = channel * MaxLookaheadFrames;
                 float delayed = _delay[offset + delayedIndex];
                 _delay[offset + delayedIndex] = samples[index + channel];
                 samples[index + channel] = SoftLimit(delayed * _gain, ceiling);
             }
 
             _delayPos++;
-            if (_delayPos >= DefaultLookaheadFrames)
+            if (_delayPos >= _lookaheadFrames)
             {
                 _delayPos = 0;
             }
@@ -121,7 +138,8 @@ public sealed class ClipGuard
     public void Reset()
     {
         Array.Clear(_delay);
-        Array.Clear(_previous);
+        _oversamplerLeft.Reset();
+        _oversamplerRight.Reset();
         _gain = 1f;
         _targetGain = 1f;
         _holdFrames = 0;

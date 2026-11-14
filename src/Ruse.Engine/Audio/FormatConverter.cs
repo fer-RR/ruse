@@ -14,7 +14,7 @@ namespace Ruse.App.Audio;
 ///
 /// Sample-rate conversion uses a precomputed windowed-sinc polyphase kernel.
 /// The kernel is band-limited for downsampling, and all work is allocation-free
-/// after construction so it can run on capture/ASIO threads.
+/// after construction so it can run on capture threads.
 /// </summary>
 public sealed class FormatConverter
 {
@@ -22,11 +22,10 @@ public sealed class FormatConverter
     public const int TargetChannels = 2;
 
     private const int Taps = 63;
-    private const int Phases = 512;
+    private const int Phases = 1024;
     private const int MaxInputFrames = 8192;
     private const int Center = Taps / 2;
     private const float Surround = 0.70710678f;
-    private const float Lfe = 0.5f;
 
     private readonly int _srcChannels;
     private readonly int _sourceRate;
@@ -234,7 +233,7 @@ public sealed class FormatConverter
         left = frame[0];
         right = frame[1];
 
-        if (_srcChannels >= 3)
+        if (_srcChannels == 3 || _srcChannels >= 5)
         {
             float center = frame[2] * Surround;
             left += center;
@@ -243,9 +242,7 @@ public sealed class FormatConverter
 
         if (_srcChannels >= 6)
         {
-            float lfe = frame[3] * Lfe;
-            left += lfe;
-            right += lfe;
+            // LFE is intentionally omitted from the stereo downmix.
             left += frame[4] * Surround;
             right += frame[5] * Surround;
         }
@@ -274,7 +271,10 @@ public sealed class FormatConverter
         for (int k = 0; k < Taps; k++)
         {
             double x = 2.0 * Math.PI * k / (Taps - 1);
-            window[k] = 0.42 - 0.5 * Math.Cos(x) + 0.08 * Math.Cos(2.0 * x);
+            // Four-term Blackman-Harris: lower sidelobes than Blackman at
+            // the same length, with no additional group delay.
+            window[k] = 0.35875 - 0.48829 * Math.Cos(x) +
+                        0.14128 * Math.Cos(2.0 * x) - 0.01168 * Math.Cos(3.0 * x);
         }
 
         for (int phase = 0; phase < Phases; phase++)

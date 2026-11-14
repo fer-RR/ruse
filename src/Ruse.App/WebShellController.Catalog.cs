@@ -14,8 +14,7 @@ namespace Ruse.App;
 
 internal sealed partial class WebShellController
 {
-    private IReadOnlyList<AsioDriverInfo> _asioDrivers = Array.Empty<AsioDriverInfo>();
-    private bool _asioLoaded;
+    private int _appsIdleScans;
     private IReadOnlyList<PluginDescriptor> _vst3Descriptors = Array.Empty<PluginDescriptor>();
     private readonly Dictionary<string, CatalogItemDto> _appCatalogCache = new(StringComparer.OrdinalIgnoreCase);
     private Task? _vst3ScanTask;
@@ -186,37 +185,6 @@ internal sealed partial class WebShellController
         QueueVst3Scan();
     }
 
-    private void EnsureAsioDrivers()
-    {
-        if (_asioLoaded)
-        {
-            return;
-        }
-
-        try
-        {
-            _asioDrivers = AsioCatalog.Discover();
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warning("ASIO enumeration failed: " + ex.Message);
-            _asioDrivers = Array.Empty<AsioDriverInfo>();
-        }
-
-        _asioLoaded = true;
-    }
-
-    private void RefreshAsioDevices()
-    {
-        _asioLoaded = false;
-        EnsureAsioDrivers();
-        RefreshDevices();
-        Post("catalog", _catalog);
-        SetStatus(_asioDrivers.Count == 0
-            ? "No ASIO drivers found."
-            : $"Found {_asioDrivers.Count} ASIO driver(s).");
-    }
-
     private void RefreshDevices()
     {
         using var enumerator = new MMDeviceEnumerator();
@@ -286,42 +254,6 @@ internal sealed partial class WebShellController
                 .OrderByDescending(item => string.Equals(
                     item.Id, _catalog.DefaultOutputId, StringComparison.OrdinalIgnoreCase))
                 .ToList();
-        }
-
-        _catalog.AsioLoaded = _asioLoaded;
-        if (_asioLoaded)
-        {
-            foreach (var driver in _asioDrivers)
-            {
-                string details = $"Experimental ASIO �� {driver.InputChannelCount} in / {driver.OutputChannelCount} out, " +
-                                 $"{driver.SampleRate} Hz, {driver.BufferSize} frame buffer. Latency and audio quality may be unstable.";
-                _catalog.Outputs.Add(new CatalogItemDto
-                {
-                    Id = driver.Id,
-                    Kind = "output",
-                    Name = driver.Name,
-                    Subtitle = "ASIO output (experimental)",
-                    Details = details,
-                    Direction = "playback",
-                    Provider = "ASIO",
-                    Badge = "ASIO EXP",
-                });
-
-                if (driver.InputChannelCount > 0)
-                {
-                    _catalog.Inputs.Add(new CatalogItemDto
-                    {
-                        Id = driver.Id,
-                        Kind = "input",
-                        Name = driver.Name,
-                        Subtitle = "ASIO input (experimental) - first two channels",
-                        Details = details,
-                        Direction = "capture",
-                        Provider = "ASIO",
-                        Badge = "ASIO EXP",
-                    });
-                }
-            }
         }
 
         _catalog.Virtuals = VirtualDeviceCatalog.Discover()
@@ -453,10 +385,14 @@ internal sealed partial class WebShellController
 
             bool reattached = _settings.FollowPlayingApps && ReattachPlayingApps();
             bool autoAdded = _settings.FollowPlayingApps && AutoAddPlayingApps();
-            if (RefreshSourceEndpoints() || reattached || autoAdded)
+            bool endpointsChanged = RefreshSourceEndpoints();
+            bool changed = appsChanged || reattached || autoAdded || endpointsChanged;
+            if (endpointsChanged || reattached || autoAdded)
             {
                 PublishGraph();
             }
+
+            SetAppsScanCadence(changed);
 
             if (publish && appsChanged)
             {
@@ -468,6 +404,18 @@ internal sealed partial class WebShellController
             AppLog.Warning("Session enumeration failed: " + ex.Message);
         }
     }
+
+    private void SetAppsScanCadence(bool changed)
+    {
+        int baseMs = _settings.FollowPlayingApps ? 750 : 4000;
+        _appsIdleScans = changed ? 0 : Math.Min(_appsIdleScans + 1, 4);
+        int interval = baseMs + (_appsIdleScans * 250);
+        if (Math.Abs(_appsTimer.Interval.TotalMilliseconds - interval) > 0.5)
+        {
+            _appsTimer.Interval = TimeSpan.FromMilliseconds(interval);
+        }
+    }
+
 
     private bool ReattachPlayingApps()
     {
@@ -556,10 +504,17 @@ internal sealed partial class WebShellController
                     processName: app.ProcessName);
                 var position = FindFreeNodePosition(60, 120 + index * 160, 220, 180);
                 var entry = RegisterSource(source, position.X, position.Y);
-                ConnectEntries(entry, outputEntry, publish: false);
+                var restored = RestoreSavedAppRoutes(entry);
+                if (restored.Count == 0)
+                {
+                    ConnectEntries(entry, outputEntry, publish: false);
+                }
+
                 index++;
                 changed = true;
-                SetStatus($"{app.Name}: added and connected to {outputEntry.Title}.");
+                SetStatus(restored.Count > 0
+                    ? $"{app.Name}: added and restored {restored.Count} saved route{(restored.Count == 1 ? "" : "s")}."
+                    : $"{app.Name}: added and connected to {outputEntry.Title}.");
             }
             catch (Exception ex)
             {

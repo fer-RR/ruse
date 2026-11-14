@@ -196,6 +196,14 @@ internal sealed class LoudnessTap
                     _sumR = 0;
                 }
             }
+            _z1AL = DenormalMath.Flush(_z1AL);
+            _z2AL = DenormalMath.Flush(_z2AL);
+            _z1BL = DenormalMath.Flush(_z1BL);
+            _z2BL = DenormalMath.Flush(_z2BL);
+            _z1AR = DenormalMath.Flush(_z1AR);
+            _z2AR = DenormalMath.Flush(_z2AR);
+            _z1BR = DenormalMath.Flush(_z1BR);
+            _z2BR = DenormalMath.Flush(_z2BR);
         }
     }
 

@@ -22,7 +22,7 @@ summary; keep the complete licence texts with any distributed build.
   https://github.com/microsoft/onnxruntime
 - **Microsoft.ML.Tokenizers** — Copyright (c) Microsoft Corporation.
   https://github.com/dotnet/machinelearning
-- **NAudio / NAudio.Asio** — Copyright (c) Mark Heath
+- **NAudio** — Copyright (c) Mark Heath
   https://github.com/naudio/NAudio
 - **React, React DOM, React Flow** — https://react.dev, https://reactflow.dev
 - **Whisper model files** — converted from OpenAI Whisper weights under the

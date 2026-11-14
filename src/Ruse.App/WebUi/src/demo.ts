@@ -31,7 +31,6 @@ export const demoCatalog: CatalogSnapshot = {
   defaultOutputId: 'demo-headphones',
   defaultOutputName: 'Headphones',
   perAppCaptureAvailable: true,
-  asioLoaded: false,
 };
 
 export const demoGraph: GraphSnapshot = {
@@ -68,6 +67,9 @@ export const demoGraph: GraphSnapshot = {
 export const demoSettings: SettingsModel = {
   autoLoadSession: true,
   followPlayingApps: false,
+  restoreAppRoutes: false,
+  timelineBounceOutputId: '',
+  timelineBounceTailSeconds: 2,
   followOutputId: '',
   uiLanguage: 'en',
   theme: 'dark',
@@ -77,6 +79,7 @@ export const demoSettings: SettingsModel = {
   snapToGrid: true,
   highlightCableOnHover: true,
   cableAnimation: true,
+  cablePhysics: false,
   connectorAnimation: true,
   minimapMode: 2,
   startWithWindows: false,

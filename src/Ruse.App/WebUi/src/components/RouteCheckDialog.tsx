@@ -117,6 +117,7 @@ export default function RouteCheckDialog({ nodes, links, warnings, running, onOp
         </div>
       </div>
       <div className="modal-actions">
+        <button type="button" className="tool-button" onClick={() => send('route-check-test-tone')}><Volume2 size={13} /> {t('Test tone')}</button>
         <button type="button" className="tool-button" onClick={onOpenMixer}>{t('Mixer')}</button>
         <button type="button" className="primary-button" onClick={onClose}>{t('Done')}</button>
       </div>

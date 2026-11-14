@@ -186,7 +186,7 @@ export default function FirstRouteDialog({ catalog, result, onClose }: {
             {sourceMode === 'input' && (
               <div className="first-route-picker">
                 <div className="first-route-picker-head">
-                  <span>{t('Microphones and ASIO inputs')}</span>
+                  <span>{t('Microphones & inputs')}</span>
                   <button type="button" className="icon-button compact" title={t('Refresh inputs')} aria-label={t('Refresh inputs')} onClick={() => send('refresh')}><RefreshCw size={14} /></button>
                 </div>
                 {catalog.inputs.length === 0

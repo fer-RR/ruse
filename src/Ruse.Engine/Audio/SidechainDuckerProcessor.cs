@@ -138,6 +138,9 @@ public sealed class SidechainDuckerProcessor : IAudioProcessor, IParameterizedPr
                 samples[index + 1] *= applied;
             }
         }
+
+        _keyLevel = DenormalMath.Flush(_keyLevel);
+        _gain = DenormalMath.Flush(_gain);
     }
 
     public void Reset()

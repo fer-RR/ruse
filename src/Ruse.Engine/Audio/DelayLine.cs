@@ -20,6 +20,13 @@ public sealed class DelayLine
     /// <summary>Delay applied, in frames.</summary>
     public int Frames { get; }
 
+    /// <summary>Clears the delay memory. Call only while the owner is stopped.</summary>
+    public void Reset()
+    {
+        Array.Clear(_buffer);
+        _write = 0;
+    }
+
     public void Process(Span<float> data, int channels)
     {
         if (Frames == 0)

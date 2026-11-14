@@ -8,6 +8,7 @@ namespace Ruse.App;
 internal static class TranslationMemory
 {
     private static readonly object Lock = new();
+    private static readonly object WriteLock = new();
     private static Dictionary<string, string>? _entries;
     private static bool _dirty;
     private static bool _saving;
@@ -46,6 +47,20 @@ internal static class TranslationMemory
         }
 
         SaveSoon();
+    }
+
+    /// <summary>Writes pending entries synchronously, for application shutdown.</summary>
+    public static void Flush()
+    {
+        Dictionary<string, string> snapshot;
+        lock (Lock)
+        {
+            LoadLocked();
+            snapshot = new Dictionary<string, string>(_entries!);
+            _dirty = false;
+        }
+
+        WriteSnapshot(snapshot);
     }
 
     private static void LoadLocked()
@@ -89,8 +104,7 @@ internal static class TranslationMemory
                     snapshot = new Dictionary<string, string>(_entries!);
                 }
 
-                Directory.CreateDirectory(AppSettings.Directory);
-                File.WriteAllText(FilePath, JsonSerializer.Serialize(snapshot));
+                WriteSnapshot(snapshot);
             }
             catch
             {
@@ -104,6 +118,17 @@ internal static class TranslationMemory
                 }
             }
         });
+    }
+
+    private static void WriteSnapshot(Dictionary<string, string> snapshot)
+    {
+        lock (WriteLock)
+        {
+            string temp = FilePath + ".tmp";
+            Directory.CreateDirectory(AppSettings.Directory);
+            File.WriteAllText(temp, JsonSerializer.Serialize(snapshot));
+            File.Move(temp, FilePath, overwrite: true);
+        }
     }
 
     private static string Key(string provider, string model, string target, string? sourceLanguage, string text)

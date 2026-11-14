@@ -12,7 +12,7 @@ import { isHosted, send, subscribe } from './bridge';
 import { createDemoTelemetry, demoCatalog, demoGraph, demoSettings } from './demo';
 import { I18nProvider, normalizeLanguage, translate } from './i18n';
 import type { RuseFlowNode } from './flow';
-import { nearestFreePosition } from './layout';
+import { chainLayout, nearestFreePosition } from './layout';
 import { catalogKey } from './library';
 import { SHORTCUTS } from './shortcuts';
 import { getNodeTelemetry, publishTelemetry, setNodeTitles, useUiTelemetry } from './telemetry';
@@ -26,6 +26,7 @@ import type { SettingsTab } from './components/Dialogs';
 import ChainEditorDialog from './components/ChainEditorDialog';
 import type { ExplainerId } from './components/Explainers';
 import MixerPanel from './components/MixerPanel';
+import TimelineBoundary from './components/TimelineBoundary';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
   CatalogItem, CatalogSnapshot, ChainEditorRequest, FirstRouteResult, FrameModel, GraphSnapshot, HistorySnapshot,
@@ -45,7 +46,7 @@ const FRAME_HANDLES = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as const;
 type FrameHandle = typeof FRAME_HANDLES[number];
 const emptyCatalog: CatalogSnapshot = {
   apps: [], outputs: [], inputs: [], virtuals: [], effects: [], chains: [], vst3Plugins: [], frameTemplates: [], samples: [],
-  defaultOutputId: '', defaultOutputName: '', perAppCaptureAvailable: true, asioLoaded: false,
+  defaultOutputId: '', defaultOutputName: '', perAppCaptureAvailable: true,
 };
 const initialSettings: SettingsModel = demoSettings;
 const systemItem: CatalogItem = {
@@ -101,21 +102,7 @@ export default function App() {
   const [graph, setGraph] = useState<GraphSnapshot>(isHosted ? { version: 0, nodes: [], links: [], running: false } : demoGraph);
   const [settings, setSettings] = useState<SettingsModel>(initialSettings);
   const language = normalizeLanguage(settings.uiLanguage);
-  const [systemPrefersDark, setSystemPrefersDark] = useState(() =>
-    typeof window === 'undefined' || !window.matchMedia
-      ? true
-      : window.matchMedia('(prefers-color-scheme: dark)').matches);
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.matchMedia) return;
-    const query = window.matchMedia('(prefers-color-scheme: dark)');
-    const update = () => setSystemPrefersDark(query.matches);
-    update();
-    query.addEventListener?.('change', update);
-    return () => query.removeEventListener?.('change', update);
-  }, []);
-  const theme = settings.theme === 'system'
-    ? (systemPrefersDark ? 'dark' : 'light')
-    : settings.theme;
+  const theme = settings.theme;
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
@@ -146,6 +133,7 @@ export default function App() {
   const [explainer, setExplainer] = useState<ExplainerId | null>(null);
   const explainerUsage = useRef({ mixer: false, sidechain: false, vst3: false, native: false });
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [timelineReady, setTimelineReady] = useState(false);
   const [timeline, setTimeline] = useState<TimelineState>({
     project: { version: 1, sampleRate: 48000, tempo: 120, loopStartSample: -1, loopEndSample: -1, tracks: [] },
     playheadSample: 0,
@@ -730,13 +718,13 @@ export default function App() {
         sourceHandle: source?.isNoteDetector ? 'key' : 'out',
         targetHandle: link.kind === 'sidechain' ? 'sidechain' : 'in',
         type: 'ruseEdge',
-        data: { kind: link.kind, native: link.native === true, nativeRate: link.native === true ? (link.nativeRate || source?.sampleRate) : undefined, rejected: rejectedLinkId === link.id },
+        data: { kind: link.kind, native: link.native === true, nativeRate: link.native === true ? (link.nativeRate || source?.sampleRate) : undefined, rejected: rejectedLinkId === link.id, physics: settings.cablePhysics },
         animated: false,
         interactionWidth: 22,
         style: { stroke: source?.accent ?? '#5B8DEF', strokeWidth: 2, opacity: 0.84 },
       };
     });
-  }, [graph.links, graph.nodes, rejectedLinkId]);
+  }, [graph.links, graph.nodes, rejectedLinkId, settings.cablePhysics]);
 
   const sendAdd = useCallback((item: CatalogItem, position: { x: number; y: number }, linkId?: string) => {
     send('add', {
@@ -840,7 +828,6 @@ export default function App() {
   const newChain = useCallback(
     () => setChainEditor({ name: 'My chain', elements: [] }), []);
   const rescanPlugins = useCallback(() => send('vst3-rescan'), []);
-  const refreshAsio = useCallback(() => send('asio-refresh'), []);
   const editChain = useCallback((item: CatalogItem) => setChainEditor({
     name: item.name,
     previousName: item.name,
@@ -848,19 +835,18 @@ export default function App() {
   }), []);
 
   const tidyGraph = () => {
-    const rank = { source: 0, modifier: 1, output: 2 };
-    const columns = [80, 420, 760];
-    const nextY = [80, 80, 80];
-    const positions = [...nodesRef.current]
+    const layoutNodes = nodesRef.current
       .filter(node => !node.data.diagnostics)
-      .sort((a, b) => rank[a.data.kind] - rank[b.data.kind] ||
-        a.position.y - b.position.y || a.position.x - b.position.x)
-      .map(node => {
-        const column = rank[node.data.kind];
-        const position = { id: node.id, x: columns[column], y: nextY[column] };
-        nextY[column] += (node.measured?.height ?? 140) + 44;
-        return position;
-      });
+      .map(node => ({
+        id: node.id,
+        kind: node.data.kind,
+        width: node.measured?.width ?? 204,
+        height: node.measured?.height ?? 140,
+      }));
+    const positions = chainLayout(
+      layoutNodes,
+      graph.links.map(link => ({ from: link.from, to: link.to, kind: link.kind })),
+    );
 
     const byId = new Map(positions.map(position => [position.id, position]));
     setNodes(current => current.map(node => {
@@ -870,6 +856,25 @@ export default function App() {
     send('move-many', { positions });
     setCanvasMenu(null);
   };
+
+
+  const openTimeline = useCallback(() => {
+    setTimelineReady(false);
+    setTimelineOpen(true);
+    send('timeline-open');
+  }, [send]);
+
+  const toggleTimeline = useCallback(() => {
+    if (timelineOpen) {
+      if (timelineReady) setTimelineOpen(false);
+      return;
+    }
+
+    openTimeline();
+  }, [openTimeline, timelineOpen, timelineReady]);
+
+  const readyTimeline = useCallback(() => setTimelineReady(true), []);
+
 
   const duplicateSelected = () => {
     const selected = nodesRef.current.find(node => node.selected && !node.data.diagnostics);
@@ -1053,8 +1058,7 @@ export default function App() {
         setMixerOpen(value => !value);
       } else if (modifier && event.key.toLowerCase() === 't') {
         event.preventDefault();
-        setTimelineOpen(true);
-        send('timeline-open');
+        toggleTimeline();
       } else if (modifier && !event.shiftKey && event.key.toLowerCase() === 'r') {
         event.preventDefault();
         send('transport', { running: !running });
@@ -1113,7 +1117,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [flow, toggleDiagnostics, modalOpen, running, ui.micMuted, timeline.playing, timelineOpen]);
+  }, [flow, toggleDiagnostics, modalOpen, running, ui.micMuted, timeline.playing, timelineOpen, toggleTimeline]);
 
   const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1247,7 +1251,7 @@ export default function App() {
         diagnosticsOpen={settings.showDiagnostics}
         onDiagnostics={toggleDiagnostics}
         timelineOpen={timelineOpen}
-        onTimeline={() => { setTimelineOpen(true); send('timeline-open'); }}
+        onTimeline={toggleTimeline}
         onCheckRoute={() => setShowRouteCheck(true)}
       />
       {alert && <div className={`alert-bar ${alert.isError ? 'error' : ''}`} role="alert" aria-live="assertive"><span>{alert.text}</span><div className="alert-actions">{alert.action && alert.actionLabel && <button onClick={() => { send(alert.action!); setAlert(null); }}>{t(alert.actionLabel)}</button>}<button onClick={() => send('open-log') }>{t('Open log')}</button><button onClick={() => setAlert(null) }>{t('Dismiss')}</button></div></div>}
@@ -1405,12 +1409,9 @@ export default function App() {
             <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color={
               theme === 'light' ? '#C5CFDD'
                 : theme === 'midnight' ? '#22304A'
-                : theme === 'ocean' ? '#1B4A52'
-                : theme === 'ember' ? '#4A352C'
-                : theme === 'blueprint' ? '#5A8FC7'
+                : theme === 'blueprint' ? '#2B6BA8'
                 : theme === 'deepdive' ? '#4C2C7A'
                 : theme === 'studio74' ? '#4A5D4E'
-                : theme === 'midnightstudy' ? '#2E3450'
                 : '#34465A'
             } />
             <ViewportPortal>
@@ -1458,6 +1459,7 @@ export default function App() {
             </Panel>
             {showMiniMap && <MiniMap
               className="ruse-minimap"
+              style={timelineOpen ? { bottom: 'var(--timeline-dock-height, 340px)' } : undefined}
               pannable
               zoomable
               nodeColor={node => (node.data as RuseFlowNode['data']).accent}
@@ -1489,6 +1491,7 @@ export default function App() {
         />}
         {timelineOpen && (
           <Suspense fallback={<div className="timeline-loading">{t('Loading timeline...')}</div>}>
+            <TimelineBoundary onClose={() => setTimelineOpen(false)} onError={readyTimeline}>
             <TimelinePanel
               state={timeline}
               automationTargets={timelineAutomationTargets}
@@ -1532,13 +1535,15 @@ export default function App() {
               }}
               onUndo={() => send('timeline-undo')}
               onRedo={() => send('timeline-redo')}
+              onReady={readyTimeline}
               onClose={() => setTimelineOpen(false)}
             />
+            </TimelineBoundary>
           </Suspense>
         )}
       </div>
       <StatusBar status={status} />
-      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} virtualInputs={catalog.inputs.filter(item => item.virtual)} virtualOutputs={catalog.virtuals} vstPlugins={catalog.vst3Plugins} onFirstRoute={openFirstRoute} onAsioRefresh={refreshAsio} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} virtualInputs={catalog.inputs.filter(item => item.virtual)} virtualOutputs={catalog.virtuals} vstPlugins={catalog.vst3Plugins} onFirstRoute={openFirstRoute} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
       {trayPrompt && <TrayPromptDialog
         onKeep={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: true }); }}
         onQuit={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: false }); }}

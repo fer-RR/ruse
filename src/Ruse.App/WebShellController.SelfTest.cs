@@ -15,6 +15,20 @@ internal sealed partial class WebShellController
         var checks = new List<string>();
         bool pass = true;
 
+        const string groupTestKey = "selftest:group";
+        MixerGroupBus.SetGain(groupTestKey, 0.5f);
+        MixerGroupBus.SetMuted(groupTestKey, true);
+        MixerGroupBus.SetSolo(groupTestKey, true);
+        Check("output wave buffer", LatencySelfTest.TestOutputWaveBuffer());
+        Check("graph swap under load", LatencySelfTest.TestGraphSwapUnderLoad());
+        Check("network packet reorder", LatencySelfTest.TestNetworkPacketReorder());
+        Check("mixer group solo audio", LatencySelfTest.TestMixerGroupSolo());
+        Check("mixer output group solo", LatencySelfTest.TestMixerOutputGroupSolo());
+        Check("mixer group bus",
+            Math.Abs(MixerGroupBus.Gain(groupTestKey) - 0.5f) < 1e-6f &&
+            MixerGroupBus.Muted(groupTestKey) && MixerGroupBus.Solo(groupTestKey));
+        MixerGroupBus.Configure(null);
+
         Check("non-finite telemetry", Meter(float.NaN) == 0 &&
                                       Meter(float.PositiveInfinity) == 0 &&
                                       Finite(double.NegativeInfinity) == 0);
@@ -463,6 +477,7 @@ internal sealed partial class WebShellController
             sendJson.Contains("\"enabled\":false", StringComparison.Ordinal));
 
         Check("send gain audio", LatencySelfTest.TestSendGain());
+        Check("parallel send alignment", LatencySelfTest.TestParallelSendAlignment());
         Check("output mix observer", LatencySelfTest.TestOutputMixObserver());
         Check("native passthrough", LatencySelfTest.TestNativePassthrough());
         Check("native passthrough mono", LatencySelfTest.TestNativePassthroughMono());
@@ -528,8 +543,8 @@ internal sealed partial class WebShellController
             _graph.ConnectSourceToModifier(singleSource, singleModifier);
             var singleOutput = _graph.AddOutputForFile(singlePassPath, AudioFileFormat.Wav16);
             _graph.ConnectModifierToOutput(singleModifier, singleOutput);
-            singleOutput.Start();
             _graph.StartEngine();
+            singleOutput.Start();
 
             const int blocks = 60;
             var block = new float[240 * 2];
@@ -551,12 +566,37 @@ internal sealed partial class WebShellController
             _graph.StopEngine();
             singleOutput.Stop();
 
-            // With a tap monitor this used to run the shared processor twice;
-            // compare the calls with the blocks that actually reached the file.
-            int renderedBlocks = Math.Max(1, (int)Math.Round(
-                singleOutput.RecordedSeconds * 48000.0 / 240.0));
-            Check($"shared processor runs once ({counter.Calls}/{renderedBlocks})",
-                counter.Calls >= renderedBlocks - 8 && counter.Calls <= renderedBlocks + 8);
+            // A tap monitor used to run the shared processor twice. Use a
+            // deterministic offline render so timing cannot affect the count.
+            {
+                var onceGraph = new AudioGraph { AutoRun = false };
+                var onceSource = new SourceNode("Shared processor count", SourceKind.Application, 4242);
+                var onceCounter = new CountingSharedProcessor();
+                var onceModifier = new ModifierNode("Shared processor chain");
+                onceModifier.Add(onceCounter);
+                var onceSpectrum = new SpectrumProcessor();
+                onceSpectrum.SetTapId(SpectrumProcessor.NextTapId());
+                onceModifier.Add(onceSpectrum);
+                onceGraph.AddSource(onceSource);
+                onceGraph.AddModifier(onceModifier);
+                var onceOutput = OutputNode.CreateForTest(static (_, _) => { });
+                onceOutput.EnableGraphEngine();
+                onceGraph.AddOutputNode(onceOutput);
+                onceGraph.ConnectSourceToModifier(onceSource, onceModifier);
+                onceGraph.ConnectModifierToOutput(onceModifier, onceOutput);
+                var onceBlock = new float[240 * 2];
+                Array.Fill(onceBlock, 0.1f);
+                for (int i = 0; i < 60; i++)
+                {
+                    onceSource.WriteTestSamples(onceBlock);
+                    onceGraph.RenderOfflineBlock();
+                }
+
+                Check($"shared processor runs once ({onceCounter.Calls}/60)", onceCounter.Calls == 60);
+                onceGraph.Dispose();
+                SpectrumProcessor.RemoveTap(onceSpectrum.TapId);
+            }
+
             Check("single-pass recording",
                 singleOutput.RecordedSeconds > 0.15 && string.IsNullOrEmpty(singleOutput.RecordingError));
 
@@ -686,6 +726,102 @@ internal sealed partial class WebShellController
             Check("timeline bounce", timeline.BounceToWave(bouncePath, out _) &&
                 File.Exists(bouncePath) && new FileInfo(bouncePath).Length > 44);
             try { File.Delete(bouncePath); } catch { }
+
+            {
+                var graphBounce = new AudioGraph { AutoRun = false };
+                var graphTimeline = new TimelineService();
+                graphTimeline.LoadProject(timeline.SnapshotProject(includePeaks: false));
+                var graphSource = new SourceNode("Timeline graph self test", SourceKind.Timeline);
+                graphTimeline.AttachSource(timelineTrack.Id, graphSource);
+                graphSource.Start();
+                graphBounce.Timeline = graphTimeline;
+                graphBounce.AddSource(graphSource);
+                var graphOutput = OutputNode.CreateForTest(static (_, _) => { });
+                graphOutput.EnableGraphEngine();
+                graphBounce.AddOutputNode(graphOutput);
+                graphBounce.Connect(graphSource, graphOutput, 1f);
+                graphTimeline.Seek(0);
+                graphTimeline.Play();
+                var graphBlock = new float[AudioEngineConfig.BlockFrames * 2];
+                double graphPeak = 0;
+                for (int i = 0; i < 40; i++)
+                {
+                    graphBounce.RenderOfflineBlock();
+                    int read = graphOutput.ReadOfflineBlock(graphBlock);
+                    for (int sample = 0; sample < read; sample++)
+                    {
+                        graphPeak = Math.Max(graphPeak, Math.Abs(graphBlock[sample]));
+                    }
+                }
+
+                Check("timeline graph bounce", graphPeak > 0.05);
+                graphBounce.Dispose();
+                graphTimeline.Dispose();
+            }
+
+            {
+                var multiTimeline = new TimelineService();
+                var trackA = multiTimeline.AddTrack("A");
+                var trackB = multiTimeline.AddTrack("B");
+                bool clipsOk = multiTimeline.AddClip(trackA.Id, timelineWave, out _) &&
+                               multiTimeline.AddClip(trackB.Id, timelineWave, out _);
+                var sourceA = new SourceNode("Multi A", SourceKind.Timeline);
+                var sourceB = new SourceNode("Multi B", SourceKind.Timeline);
+                multiTimeline.AttachSource(trackA.Id, sourceA);
+                multiTimeline.AttachSource(trackB.Id, sourceB);
+                sourceA.Start();
+                sourceB.Start();
+
+                var multiGraph = new AudioGraph { AutoRun = false };
+                multiGraph.Timeline = multiTimeline;
+                multiGraph.AddSource(sourceA);
+                multiGraph.AddSource(sourceB);
+
+                var outA = OutputNode.CreateForTest(static (_, _) => { });
+                var outB = OutputNode.CreateForTest(static (_, _) => { });
+                outA.EnableGraphEngine();
+                outB.EnableGraphEngine();
+                multiGraph.AddOutputNode(outA);
+                multiGraph.AddOutputNode(outB);
+
+                var gain = new GainProcessor();
+                gain.Parameters.First(p => p.Name == "Gain").Set(0.5f);
+                var gainNode = new ModifierNode("Gain send");
+                gainNode.Add(gain);
+                multiGraph.AddModifier(gainNode);
+                multiGraph.ConnectSourceToModifier(sourceA, gainNode);
+                multiGraph.ConnectModifierToOutput(gainNode, outA, 0.8f);
+                multiGraph.Connect(sourceA, outA, 0.8f);
+
+                var ducker = new SidechainDuckerProcessor();
+                var duckNode = new ModifierNode("Keyed send");
+                duckNode.Add(ducker);
+                multiGraph.AddModifier(duckNode);
+                multiGraph.ConnectSourceToModifier(sourceB, duckNode);
+                multiGraph.ConnectSourceToModifierSidechain(sourceA, duckNode);
+                multiGraph.ConnectModifierToOutput(duckNode, outA, 1f);
+                multiGraph.Connect(sourceB, outB, 1f);
+
+                multiTimeline.Seek(0);
+                multiTimeline.Play();
+                var multiBlock = new float[AudioEngineConfig.BlockFrames * 2];
+                var multiBlockB = new float[AudioEngineConfig.BlockFrames * 2];
+                double peakA = 0;
+                double peakB = 0;
+                for (int i = 0; i < 40; i++)
+                {
+                    multiGraph.RenderOfflineBlock();
+                    int readA = outA.ReadOfflineBlock(multiBlock);
+                    int readB = outB.ReadOfflineBlock(multiBlockB);
+                    for (int sample = 0; sample < readA; sample++) peakA = Math.Max(peakA, Math.Abs(multiBlock[sample]));
+                    for (int sample = 0; sample < readB; sample++) peakB = Math.Max(peakB, Math.Abs(multiBlockB[sample]));
+                }
+
+                Check("timeline multi-route bounce", clipsOk && peakA > 0.05 && peakB > 0.05 && peakA > peakB);
+                multiTimeline.Stop();
+                multiGraph.Dispose();
+                multiTimeline.Dispose();
+            }
 
             string stretchPath = Path.Combine(Path.GetTempPath(), "ruse-timeline-selftest-stretch.wav");
             Check("timeline stretch", timeline.StretchClip(timelineTrack.Id, timelineClip.Id,

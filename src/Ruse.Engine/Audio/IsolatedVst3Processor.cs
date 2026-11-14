@@ -20,24 +20,22 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     private readonly IReadOnlyDictionary<string, float>? _pendingParameters;
     private string? _lastState;
     private readonly object _audioLock = new();
-    private readonly object _audioQueueLock = new();
     private readonly object _controlLock = new();
     private readonly object _stateLock = new();
     private readonly object _editorPollLock = new();
-    private readonly AutoResetEvent _audioWake = new(false);
-    private readonly float[] _audioPending = new float[MaxFrames * Channels];
-    private readonly float[] _audioWorking = new float[MaxFrames * Channels];
-    private readonly float[] _audioReady = new float[MaxFrames * Channels];
-    private int _audioPendingFrames;
-    private int _audioReadyFrames;
-    private long _audioPendingEpoch;
-    private long _audioReadyEpoch;
+    private readonly float[] _audioInput = new float[MaxFrames * Channels];
+    private const int AudioSlotCount = 4;
+    private readonly AudioSlot[] _audioSlots = CreateAudioSlots();
+    private int _freeAudioSlots = (1 << AudioSlotCount) - 1;
+    private AudioSlot? _audioPending;
+    private AudioSlot? _audioReady;
     private long _audioEpoch;
     private Thread? _audioThread;
     private volatile bool _audioStop;
 
     private NamedPipeServerStream? _audioPipe;
     private NamedPipeServerStream? _controlPipe;
+    private Vst3SharedAudio? _sharedAudio;
     private Process? _process;
     private volatile Vst3HostInfo? _info;
     private volatile AudioParameter[] _parameters = Array.Empty<AudioParameter>();
@@ -83,7 +81,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     public bool IsReady => _ready && _info?.IsReady == true;
     public bool HasEditor => _info?.HasEditor == true;
     public bool IsEditorOpen => _info?.IsEditorOpen == true;
-    public int LatencySamples => (_info?.LatencySamples ?? 0) + AudioEngineConfig.BlockFrames;
+    public int LatencySamples => IsReady ? (_info?.LatencySamples ?? 0) + AudioEngineConfig.BlockFrames : 0;
     public IReadOnlyList<AudioParameter> Parameters => _parameters;
 
     public void Start()
@@ -128,6 +126,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
                 PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             _controlPipe = new NamedPipeServerStream(controlName, PipeDirection.InOut, 1,
                 PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+            _sharedAudio = Vst3SharedAudio.Create(audioName);
 
             string? executable = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(executable))
@@ -329,80 +328,134 @@ public sealed class IsolatedVst3Processor : IVst3Processor
             return;
         }
 
+        if (!IsReady || _disposed)
+        {
+            return;
+        }
+
         int validSamples = frames * Channels;
-        int readyFrames = 0;
-        lock (_audioQueueLock)
+        long epoch = Volatile.Read(ref _audioEpoch);
+
+        // Stage the dry input before consuming the previous block so a fast
+        // worker can never make this block's output appear early.
+        samples[..validSamples].CopyTo(_audioInput);
+
+        AudioSlot? ready = Interlocked.Exchange(ref _audioReady, null);
+        if (ready != null)
         {
-            if (IsReady && !_disposed)
+            if (ready.Epoch == epoch)
             {
-                samples[..validSamples].CopyTo(_audioPending);
-                _audioPendingFrames = frames;
-                _audioPendingEpoch = Volatile.Read(ref _audioEpoch);
+                int readyFrames = Math.Min(frames, ready.Frames);
+                ready.Samples.AsSpan(0, readyFrames * Channels).CopyTo(samples);
+                if (readyFrames < frames)
+                {
+                    samples[(readyFrames * Channels)..validSamples].Clear();
+                }
             }
 
-            if (_audioReadyFrames > 0 && _audioReadyEpoch == Volatile.Read(ref _audioEpoch))
-            {
-                readyFrames = Math.Min(frames, _audioReadyFrames);
-                _audioReady.AsSpan(0, readyFrames * Channels).CopyTo(samples);
-                _audioReadyFrames = 0;
-            }
+            ReturnAudioSlot(ready);
         }
 
-        if (readyFrames > 0 && readyFrames < frames)
+        AudioSlot? pending = RentAudioSlot();
+        if (pending == null)
         {
-            samples[(readyFrames * Channels)..validSamples].Clear();
+            return;
         }
 
-        _audioWake.Set();
+        _audioInput.AsSpan(0, validSamples).CopyTo(pending.Samples);
+        pending.Frames = frames;
+        pending.Epoch = epoch;
+
+        AudioSlot? dropped = Interlocked.Exchange(ref _audioPending, pending);
+        if (dropped != null)
+        {
+            ReturnAudioSlot(dropped);
+        }
+
     }
 
     private void AudioWorkerLoop()
     {
         while (!_audioStop)
         {
-            _audioWake.WaitOne(50);
-            if (_audioStop)
+            AudioSlot? pending = Interlocked.Exchange(ref _audioPending, null);
+            if (pending == null)
             {
-                break;
-            }
-
-            int frames;
-            long epoch;
-            lock (_audioQueueLock)
-            {
-                frames = _audioPendingFrames;
-                epoch = _audioPendingEpoch;
-                _audioPendingFrames = 0;
-                if (frames > 0)
-                {
-                    Array.Copy(_audioPending, _audioWorking, frames * Channels);
-                }
-            }
-
-            if (frames <= 0)
-            {
+                Thread.Sleep(1);
                 continue;
             }
 
-            bool processed = HostProcess(_audioWorking, frames);
-            lock (_audioQueueLock)
+            int frames = pending.Frames;
+            long epoch = pending.Epoch;
+            bool processed = HostProcess(pending.Samples, frames);
+
+            if (processed && !_audioStop && epoch == Volatile.Read(ref _audioEpoch))
             {
-                if (processed && !_audioStop && epoch == Volatile.Read(ref _audioEpoch))
+                pending.Frames = frames;
+                pending.Epoch = epoch;
+                AudioSlot? dropped = Interlocked.Exchange(ref _audioReady, pending);
+                if (dropped != null)
                 {
-                    Array.Copy(_audioWorking, _audioReady, frames * Channels);
-                    _audioReadyFrames = frames;
-                    _audioReadyEpoch = epoch;
+                    ReturnAudioSlot(dropped);
                 }
+            }
+            else
+            {
+                ReturnAudioSlot(pending);
             }
         }
     }
 
-    private bool HostProcess(Span<float> samples, int frames)
+    private static AudioSlot[] CreateAudioSlots()
+    {
+        var slots = new AudioSlot[AudioSlotCount];
+        for (int i = 0; i < slots.Length; i++)
+        {
+            slots[i] = new AudioSlot(i);
+        }
+
+        return slots;
+    }
+
+    private AudioSlot? RentAudioSlot()
+    {
+        while (true)
+        {
+            int mask = Volatile.Read(ref _freeAudioSlots);
+            if (mask == 0)
+            {
+                return null;
+            }
+
+            int index = System.Numerics.BitOperations.TrailingZeroCount(mask);
+            int next = mask & ~(1 << index);
+            if (Interlocked.CompareExchange(ref _freeAudioSlots, next, mask) == mask)
+            {
+                return _audioSlots[index];
+            }
+        }
+    }
+
+    private void ReturnAudioSlot(AudioSlot slot) =>
+        Interlocked.Or(ref _freeAudioSlots, 1 << slot.Index);
+
+
+    private sealed class AudioSlot
+    {
+        public AudioSlot(int index) => Index = index;
+
+        public int Index { get; }
+        public float[] Samples { get; } = new float[MaxFrames * Channels];
+        public int Frames;
+        public long Epoch;
+    }
+
+    private bool HostProcess(float[] samples, int frames)
     {
         lock (_audioLock)
         {
-            var pipe = _audioPipe;
-            if (pipe == null || !pipe.IsConnected || _disposed || !IsReady)
+            var shared = _sharedAudio;
+            if (shared == null || _disposed || !IsReady)
             {
                 return false;
             }
@@ -410,15 +463,9 @@ public sealed class IsolatedVst3Processor : IVst3Processor
             try
             {
                 Interlocked.Exchange(ref _audioCallStarted, Environment.TickCount64);
-                Vst3HostProtocol.WriteAudio(
-                    pipe, samples[..(frames * Channels)], frames, Channels,
-                    Vst3HostProtocol.CommandProcess);
-                int read = Vst3HostProtocol.ReadAudio(pipe, samples, out int outFrames, out int outChannels, out _)
-                    ? outFrames * outChannels
-                    : 0;
-                if (read <= 0)
+                if (!shared.Process(samples, frames))
                 {
-                    Fail("The isolated VST3 host returned an empty block.");
+                    Fail("The isolated VST3 host did not return an audio block.");
                     return false;
                 }
 
@@ -682,10 +729,16 @@ public sealed class IsolatedVst3Processor : IVst3Processor
 
     private void ClearAudioBuffers()
     {
-        lock (_audioQueueLock)
+        AudioSlot? pending = Interlocked.Exchange(ref _audioPending, null);
+        if (pending != null)
         {
-            _audioPendingFrames = 0;
-            _audioReadyFrames = 0;
+            ReturnAudioSlot(pending);
+        }
+
+        AudioSlot? ready = Interlocked.Exchange(ref _audioReady, null);
+        if (ready != null)
+        {
+            ReturnAudioSlot(ready);
         }
     }
 
@@ -704,6 +757,8 @@ public sealed class IsolatedVst3Processor : IVst3Processor
 
         _audioPipe = null;
         _controlPipe = null;
+        _sharedAudio?.Dispose();
+        _sharedAudio = null;
 
         try
         {
@@ -840,7 +895,11 @@ public sealed class IsolatedVst3Processor : IVst3Processor
         }
         catch
         {
+
         }
+
+        _sharedAudio?.Dispose();
+        _sharedAudio = null;
 
         ScheduleRestart();
     }
@@ -855,7 +914,6 @@ public sealed class IsolatedVst3Processor : IVst3Processor
         _disposed = true;
         StopEditorPolling();
         _audioStop = true;
-        _audioWake.Set();
         _watchdog?.Join(100);
 
         // Never write a stop command into a host that is already stuck; the
@@ -893,6 +951,8 @@ public sealed class IsolatedVst3Processor : IVst3Processor
         _controlPipe?.Dispose();
         _audioPipe = null;
         _controlPipe = null;
+        _sharedAudio?.Dispose();
+        _sharedAudio = null;
         try
         {
             _audioThread?.Join(250);

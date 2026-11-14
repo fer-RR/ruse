@@ -102,6 +102,71 @@ public static class DspSelfTest
         Check("filter decay", tailFinite && tailRms < 1e-4,
             $"finite {tailFinite}, tail RMS {tailRms:0.###e+0}");
 
+        var denormalFilter = new BiquadProcessor(
+            BiquadKind.LowPass, "dsp-denormal", "DSP denormal", 500f, "Frequency", hasQ: true);
+        SetState(denormalFilter, "_x1L", 1e-30);
+        SetState(denormalFilter, "_x2L", 1e-30);
+        SetState(denormalFilter, "_y1L", 1e-30);
+        SetState(denormalFilter, "_y2L", 1e-30);
+        SetState(denormalFilter, "_x1R", 1e-30);
+        SetState(denormalFilter, "_x2R", 1e-30);
+        SetState(denormalFilter, "_y1R", 1e-30);
+        SetState(denormalFilter, "_y2R", 1e-30);
+        var silence = new float[BlockFrames * Channels];
+        denormalFilter.Process(silence, BlockFrames);
+        Check("biquad denormal state", !HasSubnormalState(denormalFilter),
+            "recursive filter state remained subnormal");
+
+        var denormalDucker = new SidechainDuckerProcessor();
+        SetState(denormalDucker, "_keyLevel", 1e-30f);
+        var duckerSilence = new float[BlockFrames * Channels];
+        denormalDucker.Process(duckerSilence, BlockFrames);
+        Check("ducker denormal state", !HasSubnormalState(denormalDucker),
+            "envelope state remained subnormal");
+
+        Check("denormal math",
+            DenormalMath.Flush(1e-30) == 0.0 &&
+            DenormalMath.Flush(1e-30f) == 0f &&
+            DenormalMath.Flush(1.0) == 1.0 &&
+            DenormalMath.Flush(1.0f) == 1f,
+            "flush did not preserve normal values");
+
+
+        Check("vst3 shared audio", TestVst3SharedAudio(), "shared-memory block round-trip failed");
+
+
+        var lowLatencyGuard = new ClipGuard();
+        lowLatencyGuard.SetLookahead(32);
+        var guardBlock = new float[BlockFrames * Channels];
+        Array.Fill(guardBlock, 2f);
+        lowLatencyGuard.Process(guardBlock, BlockFrames);
+        float guardPeak = Peak(guardBlock, 0, BlockFrames);
+        Check("clip guard 32-frame lookahead",
+            lowLatencyGuard.LatencySamples == 32 && guardPeak > 0.9f && guardPeak < 1f,
+            $"latency {lowLatencyGuard.LatencySamples}, peak {guardPeak:0.###}");
+
+        var emptySource = new SourceNode("empty read", SourceKind.Application);
+        var emptySubscription = emptySource.Subscribe();
+        bool emptyReadOk;
+        try
+        {
+            emptyReadOk = emptySubscription.Read(new float[BlockFrames * Channels]) == 0;
+        }
+        catch
+        {
+            emptyReadOk = false;
+        }
+
+        emptySubscription.Dispose();
+        emptySource.Dispose();
+        Check("empty source read", emptyReadOk, "empty subscription threw or returned data");
+
+        var legacyPitch = AudioProcessorCatalog.Create(PitchShiftProcessor.LegacyHqId) as IParameterizedProcessor;
+        bool legacyPitchOk = legacyPitch != null &&
+            Math.Abs(legacyPitch.Parameters.First(parameter => parameter.Name == "Quality").Get() - 1f) < 0.01f;
+        Check("pitch shift legacy alias", legacyPitchOk, "legacy HQ preset did not restore HQ quality");
+
+
         double aliasDb = AliasEnergyDb(
             Tone(1000.0, 0.25, TestFrames), AnalysisStart, FftSize, 1000.0, harmonics: 1, halfWidthHz: 50.0);
         Check("alias measurement", aliasDb < -60.0,
@@ -371,6 +436,71 @@ public static class DspSelfTest
             : $"{failures.Count} of {checks} checks failed: " + string.Join("; ", failures);
         return new DspTestResult(failures.Count == 0, summary);
     }
+
+    private static void SetState(object instance, string name, object value)
+    {
+        var field = instance.GetType().GetField(
+            name, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        if (field == null)
+        {
+            throw new InvalidOperationException($"Missing state field '{name}'.");
+        }
+
+        field.SetValue(instance, value);
+    }
+
+    private static bool HasSubnormalState(object instance)
+    {
+        foreach (var field in instance.GetType().GetFields(
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic))
+        {
+            object? value = field.GetValue(instance);
+            if (value is float single && float.IsSubnormal(single))
+            {
+                return true;
+            }
+
+            if (value is double number && double.IsSubnormal(number))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+
+    private static bool TestVst3SharedAudio()
+    {
+        string name = "ruse-shm-test-" + Guid.NewGuid().ToString("N");
+        using var owner = Vst3SharedAudio.Create(name);
+        using var client = Vst3SharedAudio.Open(name);
+        var samples = new float[240 * Vst3SharedAudio.Channels];
+        Array.Fill(samples, 0.25f);
+        bool clientOk = false;
+        var thread = new Thread(() =>
+        {
+            var buffer = new float[Vst3SharedAudio.MaxFrames * Vst3SharedAudio.Channels];
+            if (!client.Receive(buffer, out int frames))
+            {
+                return;
+            }
+
+            for (int i = 0; i < frames * Vst3SharedAudio.Channels; i++)
+            {
+                buffer[i] += 0.5f;
+            }
+
+            client.Send(buffer, frames);
+            clientOk = true;
+        })
+        { IsBackground = true, Name = "Vst3SharedAudioTest" };
+        thread.Start();
+        bool ownerOk = owner.Process(samples, 240);
+        thread.Join(4000);
+        return ownerOk && clientOk && Math.Abs(samples[0] - 0.75f) < 0.001f;
+    }
+
 
     private static void Set(IParameterizedProcessor processor, string name, float value)
     {

@@ -1,6 +1,6 @@
 # Ruse — Windows Audio Router
 
-**Send audio anywhere on Windows.** Ruse is a free, open-source audio router with a visual node graph. Capture audio from apps, the whole PC, microphones or ASIO interfaces, shape it with effects, and send it to speakers, headphones, virtual cables, another PC or a recorder.
+**Send audio anywhere on Windows.** Ruse is a free, open-source audio router with a visual node graph. Capture audio from apps, the whole PC or microphones, shape it with effects, and send it to speakers, headphones, virtual cables, another PC or a recorder.
 
 [Download for Windows](https://github.com/fer-RR/ruse/releases/latest) · [Features](#features) · [Quick start](#quick-start) · [Common setups](#common-setups) · [Build from source](#build-from-source)
 
@@ -10,7 +10,7 @@
 
 Ruse is a desktop audio router for Windows 10 and 11. It gives you one place to capture, process, monitor, record and forward sound. Instead of stacking several utilities, you build a routing graph: drag a source and a destination onto the canvas, connect them with a cable, and add effects in between.
 
-It is **not** a DAW, and it does **not** install a kernel driver. It works with the audio devices you already have, including virtual cables such as VB-CABLE and Voicemeeter.
+It is **not** a DAW, and it does **not** install a kernel driver. ASIO support is temporarily unavailable in this build. It works with the audio devices you already have, including virtual cables such as VB-CABLE and Voicemeeter.
 
 Audio is processed locally. Ruse does not upload your audio. Optional transcription, translation and text-to-speech models run on your machine after download.
 
@@ -30,8 +30,8 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 
 ### Routing
 
-- Per-app audio capture, system loopback, microphones, line inputs and ASIO inputs.
-- WASAPI and ASIO outputs (ASIO is experimental).
+- Per-app audio capture, system loopback, microphones and line inputs.
+- WASAPI outputs with low-latency shared mode where the driver supports it.
 - Existing virtual cables and virtual buses.
 - File playback, test-tone generator, network input and network output.
 - Direct source-to-device routes and **native passthrough** without sample-rate conversion.
@@ -39,16 +39,16 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 
 ### Processing
 
-- **61 built-in effects**, including EQ, filters, dynamics, gates, saturation, pitch, auto-tune, vocoder, delays, reverbs, convolution and character effects.
+- **60 built-in effects**, including EQ, filters, dynamics, gates, saturation, pitch, auto-tune, vocoder, delays, reverbs, convolution and character effects.
 - VST3 hosting in an isolated child process.
-- Effect chains, saved chains, frame templates and per-effect bypass.
+- Effect chains, saved chains, frame templates, per-effect bypass and mixer groups with independent gain/mute/solo.
 - Timeline tracks, clips, fades, gain, automation and offline bounce/freeze.
 
 ### Output and recording
 
-- Speakers, headphones, ASIO devices and virtual cables.
+- Speakers, headphones and virtual cables.
 - WAV (16/24-bit, 32-bit float), FLAC and MP3 recording.
-- Timeline bounce and freeze with effect-chain rendering.
+- Timeline bounce and freeze with full graph rendering: sends, sidechains, link gains and latency alignment. VST3 effects are skipped in the offline path.
 - Ruse-to-Ruse UDP audio for a trusted local network.
 - SHA-256 verified release packages and an optional in-app updater.
 
@@ -66,7 +66,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 flowchart LR
     A[Apps] --> G[Ruse routing graph]
     B[System audio] --> G
-    C[Microphone / ASIO] --> G
+    C[Microphone] --> G
     D[Files / test tone] --> G
     E[Network input] --> G
     G --> F[EQ · dynamics · filters · VST3 · meters]
@@ -85,7 +85,7 @@ Each node is a source, processor or destination. Cables carry audio. You can ins
 3. Extract the ZIP and run `Ruse.exe`.
 4. Optionally verify the download with the published `.sha256` file.
 
-The package is self-contained and includes the .NET runtime. It does not include VST3 plugins, ASIO drivers or speech/translation model files.
+The package is self-contained and includes the .NET runtime. It does not include VST3 plugins or speech/translation model files.
 
 ## Requirements
 
@@ -94,11 +94,11 @@ The package is self-contained and includes the .NET runtime. It does not include
 - **Runtime:** Microsoft Edge WebView2 Runtime. Windows 11 includes it; most Windows 10 devices have it, and Ruse links to the installer if it is missing.
 - **Build tools:** .NET 10 SDK and Node.js 20 or newer.
 - **Network audio:** Ruse-to-Ruse UDP PCM on the same trusted LAN. It is not encrypted.
-- **Models and drivers:** Whisper, translation, TTS, VST3 plugins and ASIO drivers are installed separately.
+- **Models and drivers:** Whisper, translation, TTS and VST3 plugins are installed separately.
 
 ## Quick start
 
-1. **Add a source.** Drag an app, system audio, microphone, ASIO input, file, tone or network input from the Library onto the canvas.
+1. **Add a source.** Drag an app, system audio, microphone, file, tone or network input from the Library onto the canvas.
 2. **Add a destination.** Drag speakers, headphones, a virtual cable, a recorder or a network output onto the canvas.
 3. **Connect them.** Drag from the source's **OUT** port to the destination's **IN** port.
 4. **Add processing (optional).** Drag an effect onto the cable or between two nodes.
@@ -151,7 +151,7 @@ This writes `Ruse-<version>-win-x64.zip` and its SHA-256 file to the package fol
 
 ## Contributing
 
-Issues and pull requests are welcome. Before opening a PR, run the regression script above and describe the audio device, driver and Windows version used for testing. Real-device results are especially useful for WASAPI, ASIO, VST3 and low-latency work.
+Issues and pull requests are welcome. Before opening a PR, run the regression script above and describe the audio device, driver and Windows version used for testing. Real-device results are especially useful for WASAPI, VST3 and low-latency work.
 
 ## License
 

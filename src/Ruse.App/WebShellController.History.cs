@@ -35,8 +35,6 @@ internal sealed partial class WebShellController
         uint? ProcessId,
         string? ProcessName,
         string? DeviceId,
-        string? AsioDriver,
-        int[] AsioChannels,
         bool IsVirtual,
         bool IsFile,
         string? FilePath,
@@ -163,8 +161,8 @@ internal sealed partial class WebShellController
     {
         var snapshot = new NodeSnapshot(
             entry.Id, entry.Kind, entry.Flavor, entry.Title, entry.Subtitle, entry.Accent,
-            entry.X, entry.Y, entry.Width, entry.Height, entry.MicHint, SourceKind.Application, null, null, null, null,
-            Array.Empty<int>(), false, false, null, AudioFileFormat.Wav24, RecorderMode.Off.ToString(), false,
+            entry.X, entry.Y, entry.Width, entry.Height, entry.MicHint, SourceKind.Application, null, null, null,
+            false, false, null, AudioFileFormat.Wav24, RecorderMode.Off.ToString(), false,
             new List<PresetProcessor>(), 1, false, true, null, null, null, false,
             ControlId: entry.ControlId);
 
@@ -189,8 +187,6 @@ internal sealed partial class WebShellController
                 TtsSpeed = entry.TtsSpeed,
                 TtsVoice = entry.TtsVoice,
                 NetworkPort = entry.Source.NetworkPort,
-                AsioDriver = entry.Source.AsioDriver,
-                AsioChannels = entry.Source.AsioChannels.ToArray(),
                 Volume = entry.Source.Gain,
                 Muted = entry.Source.Muted,
             };
@@ -246,8 +242,6 @@ internal sealed partial class WebShellController
                     snapshot.SourceKind,
                     snapshot.ProcessId,
                     snapshot.DeviceId,
-                    snapshot.AsioDriver,
-                    snapshot.AsioChannels,
                     processName: snapshot.ProcessName,
                     filePath: snapshot.FilePath,
                     fileLoop: snapshot.FileLoop);
@@ -303,10 +297,6 @@ internal sealed partial class WebShellController
                     micHint = info.CaptureFriendlyName;
                     using var enumerator = new MMDeviceEnumerator();
                     output = new OutputNode(enumerator.GetDevice(info.RenderDeviceId));
-                }
-                else if (AsioCatalog.IsAsioId(snapshot.DeviceId ?? string.Empty))
-                {
-                    output = new OutputNode(FindAsioDriver(snapshot.DeviceId!));
                 }
                 else
                 {
@@ -395,7 +385,7 @@ internal sealed partial class WebShellController
         }
     }
 
-    private void PushAddNode(NodeEntry entry)
+    private void PushAddNode(NodeEntry entry, IReadOnlyList<LinkEntry>? links = null)
     {
         var snapshot = CaptureNode(entry);
         PushAction("Add node",
@@ -407,6 +397,10 @@ internal sealed partial class WebShellController
             redo: () =>
             {
                 RestoreNodeSnapshot(snapshot);
+                if (links != null)
+                {
+                    RestoreLinks(links);
+                }
                 PublishGraph();
             });
     }

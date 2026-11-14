@@ -174,6 +174,11 @@ internal sealed class TranscriptionTap
                 Push((byte)value, (byte)(value >> 8));
                 _phase = 1;
             }
+            _z1A = DenormalMath.Flush(_z1A);
+            _z2A = DenormalMath.Flush(_z2A);
+            _z1B = DenormalMath.Flush(_z1B);
+            _z2B = DenormalMath.Flush(_z2B);
+            Volatile.Write(ref _level, DenormalMath.Flush(Volatile.Read(ref _level)));
         }
         finally
         {

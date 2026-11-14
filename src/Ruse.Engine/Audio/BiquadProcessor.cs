@@ -293,6 +293,8 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
             _rampCoefficients = false;
         }
 
+        FlushState();
+
         if (!double.IsFinite(_y1L) || !double.IsFinite(_y2L) ||
             !double.IsFinite(_y1R) || !double.IsFinite(_y2R))
         {
@@ -301,6 +303,19 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
             Reset();
         }
     }
+
+    private void FlushState()
+    {
+        _x1L = DenormalMath.Flush(_x1L);
+        _x2L = DenormalMath.Flush(_x2L);
+        _y1L = DenormalMath.Flush(_y1L);
+        _y2L = DenormalMath.Flush(_y2L);
+        _x1R = DenormalMath.Flush(_x1R);
+        _x2R = DenormalMath.Flush(_x2R);
+        _y1R = DenormalMath.Flush(_y1R);
+        _y2R = DenormalMath.Flush(_y2R);
+    }
+
 
     public void Reset()
     {

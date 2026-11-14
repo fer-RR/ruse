@@ -623,30 +623,44 @@ internal sealed partial class WebShellController
         SetStatus("Bouncing timeline...");
         bool ok;
         string error;
-        using var plan = BuildTimelineBouncePlan();
-        TimelineService timeline = _timeline;
-        timeline.TrackProcessor = plan.ProcessTrack;
-        timeline.MasterProcessor = plan.ProcessMaster;
+        OfflineTimelineBounce? bounce;
         try
         {
-            (ok, error) = await Task.Run(() =>
-            {
-                bool success = timeline.BounceToWave(path, out string message);
-                return (success, message);
-            });
+            bounce = BuildTimelineBounceGraph();
         }
         catch (Exception ex)
         {
-            ok = false;
-            error = ex.Message;
+            _timelineBounceActive = false;
+            SetStatus("Could not prepare the timeline bounce: " + ex.Message, isError: true);
+            return;
         }
-        finally
+
+        if (bounce == null)
         {
-            timeline.TrackProcessor = null;
-            timeline.MasterProcessor = null;
+            _timelineBounceActive = false;
+            SetStatus("Add an output device before bouncing the timeline.", isError: true);
+            return;
+        }
+
+        using (bounce)
+        {
+            try
+            {
+                (ok, error) = await Task.Run(() =>
+                {
+                    bool success = bounce.Render(path, out string message);
+                    return (success, message);
+                });
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                error = ex.Message;
+            }
         }
 
         _timelineBounceActive = false;
+        if (_disposed)
         if (_disposed)
         {
             return;
@@ -655,7 +669,8 @@ internal sealed partial class WebShellController
         if (ok)
         {
             string message = $"Timeline bounced to {path}." +
-                (plan.SkippedVst3 ? " VST3 effects were skipped in the offline bounce." : "");
+                (bounce.SkippedVst3 ? " VST3 effects were skipped in the offline bounce." : "") +
+                (bounce.SkippedProcessor ? " Some effects could not be cloned and were skipped." : "");
             SetStatus(message);
             ShowToast(message);
         }
@@ -692,27 +707,40 @@ internal sealed partial class WebShellController
         SetStatus("Freezing timeline...");
         bool ok;
         string error;
-        using var plan = BuildTimelineBouncePlan();
-        TimelineService timeline = _timeline;
-        timeline.TrackProcessor = plan.ProcessTrack;
-        timeline.MasterProcessor = plan.ProcessMaster;
+        OfflineTimelineBounce? bounce;
         try
         {
-            (ok, error) = await Task.Run(() =>
-            {
-                bool success = timeline.BounceToWave(path, out string message);
-                return (success, message);
-            });
+            bounce = BuildTimelineBounceGraph();
         }
         catch (Exception ex)
         {
-            ok = false;
-            error = ex.Message;
+            _timelineBounceActive = false;
+            SetStatus("Could not prepare the timeline freeze: " + ex.Message, isError: true);
+            return;
         }
-        finally
+
+        if (bounce == null)
         {
-            timeline.TrackProcessor = null;
-            timeline.MasterProcessor = null;
+            _timelineBounceActive = false;
+            SetStatus("Add an output device before freezing the timeline.", isError: true);
+            return;
+        }
+
+        using (bounce)
+        {
+            try
+            {
+                (ok, error) = await Task.Run(() =>
+                {
+                    bool success = bounce.Render(path, out string message);
+                    return (success, message);
+                });
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                error = ex.Message;
+            }
         }
 
         if (!ok)
@@ -722,6 +750,7 @@ internal sealed partial class WebShellController
             return;
         }
 
+        if (_disposed)
         if (_disposed)
         {
             _timelineBounceActive = false;
@@ -752,7 +781,8 @@ internal sealed partial class WebShellController
         PublishGraph();
         _timelineBounceActive = false;
         string frozen = $"Timeline frozen to {Path.GetFileName(path)}. Original tracks are preserved but muted by solo." +
-            (plan.SkippedVst3 ? " VST3 effects were skipped in the offline freeze." : "");
+            (bounce.SkippedVst3 ? " VST3 effects were skipped in the offline freeze." : "") +
+            (bounce.SkippedProcessor ? " Some effects could not be cloned and were skipped." : "");
         SetStatus(frozen);
         ShowToast(frozen);
     }

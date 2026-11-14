@@ -31,6 +31,7 @@ internal sealed class ControlServer : IDisposable
 
     private readonly WebShellController _owner;
     private readonly ConcurrentDictionary<Guid, ControlSocket> _clients = new();
+    private readonly ConcurrentDictionary<string, RateCounter> _rate = new(StringComparer.Ordinal);
     private WebApplication? _app;
     private string _token = "";
     private string? _lastGraphJson;
@@ -84,9 +85,24 @@ internal sealed class ControlServer : IDisposable
         app.Use(async (context, next) =>
         {
             context.Response.Headers.CacheControl = "no-store";
+            string origin = context.Request.Headers.Origin.ToString();
             if (!IsAllowedHost(context) || !IsAllowedOrigin(context))
             {
                 context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(origin) && !string.Equals(origin, "null", StringComparison.OrdinalIgnoreCase))
+            {
+                context.Response.Headers.AccessControlAllowOrigin = origin;
+                context.Response.Headers.AccessControlAllowHeaders = "Authorization, Content-Type";
+                context.Response.Headers.AccessControlAllowMethods = "GET, PATCH, POST, OPTIONS";
+                context.Response.Headers.Vary = "Origin";
+            }
+
+            if (HttpMethods.IsOptions(context.Request.Method))
+            {
+                context.Response.StatusCode = StatusCodes.Status204NoContent;
                 return;
             }
 
@@ -94,6 +110,20 @@ internal sealed class ControlServer : IDisposable
             {
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                 return;
+            }
+
+            string client = context.Connection.RemoteIpAddress?.ToString() ?? "loopback";
+            if (!AllowRequest(client))
+            {
+                context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                await context.Response.WriteAsJsonAsync(new { error = "Too many control requests. Try again shortly." });
+                return;
+            }
+
+            if (HttpMethods.IsPatch(context.Request.Method) || HttpMethods.IsPost(context.Request.Method))
+            {
+                Ruse.App.Diagnostics.AppLog.Info(
+                    $"Control API {context.Request.Method} {context.Request.Path} from {client}");
             }
 
             await next();
@@ -352,6 +382,35 @@ internal sealed class ControlServer : IDisposable
         byte[] expected = Encoding.UTF8.GetBytes(_token);
         return provided.Length == expected.Length &&
                CryptographicOperations.FixedTimeEquals(provided, expected);
+    }
+
+    private bool AllowRequest(string client)
+    {
+        var counter = _rate.GetOrAdd(client, static _ => new RateCounter());
+        lock (counter.Gate)
+        {
+            long now = Environment.TickCount64;
+            if (now - counter.WindowStart >= 60_000)
+            {
+                counter.WindowStart = now;
+                counter.Count = 0;
+            }
+
+            if (counter.Count >= 600)
+            {
+                return false;
+            }
+
+            counter.Count++;
+            return true;
+        }
+    }
+
+    private sealed class RateCounter
+    {
+        public readonly object Gate = new();
+        public long WindowStart = Environment.TickCount64;
+        public int Count;
     }
 
     private static bool IsAllowedHost(HttpContext context)

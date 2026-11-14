@@ -57,7 +57,6 @@ internal sealed class CatalogDto
     public string DefaultOutputId { get; set; } = "";
     public string DefaultOutputName { get; set; } = "";
     public bool PerAppCaptureAvailable { get; set; } = true;
-    public bool AsioLoaded { get; set; }
     public string PerAppCaptureMessage { get; set; } = "";
 }
 
@@ -91,6 +90,9 @@ internal sealed class NodeDto
     public double X { get; set; }
     public double Y { get; set; }
     public float Volume { get; set; } = 1;
+    public float GroupGain { get; set; } = 1;
+    public bool GroupMuted { get; set; }
+    public bool GroupSolo { get; set; }
     public bool Muted { get; set; }
     public bool Solo { get; set; }
     public string? Color { get; set; }
@@ -414,6 +416,9 @@ internal sealed class SettingsDto
 {
     public bool AutoLoadSession { get; set; } = true;
     public bool FollowPlayingApps { get; set; }
+    public bool RestoreAppRoutes { get; set; }
+    public string TimelineBounceOutputId { get; set; } = "";
+    public double TimelineBounceTailSeconds { get; set; } = 2.0;
     public string FollowOutputId { get; set; } = "";
     public string UiLanguage { get; set; } = "en";
     public string Theme { get; set; } = "dark";
@@ -423,6 +428,7 @@ internal sealed class SettingsDto
     public bool SnapToGrid { get; set; } = true;
     public bool HighlightCableOnHover { get; set; } = true;
     public bool CableAnimation { get; set; } = true;
+    public bool CablePhysics { get; set; } = false;
     public bool ConnectorAnimation { get; set; } = true;
     public int MinimapMode { get; set; } = 2;
     public bool StartWithWindows { get; set; }

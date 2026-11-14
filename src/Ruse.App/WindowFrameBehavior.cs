@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Windows.Media;
 using System.Windows;
 using System.Windows.Interop;
 
@@ -21,6 +22,57 @@ internal static class WindowFrameBehavior
     private const int HtBottomLeft = 16;
     private const int HtBottomRight = 17;
     private const int HtMaxButton = 9;
+
+    /// <summary>
+    /// Keeps a restored normal window inside the work area of the monitor it
+    /// currently occupies. Call after the window has a native handle.
+    /// </summary>
+    public static void ClampToWorkArea(Window window)
+    {
+        if (window.WindowState != WindowState.Normal)
+        {
+            return;
+        }
+
+        IntPtr hwnd = new WindowInteropHelper(window).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        IntPtr monitor = MonitorFromWindow(hwnd, MonitorDefaultToNearest);
+        if (monitor == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(monitor, ref info))
+        {
+            return;
+        }
+
+        PresentationSource? source = PresentationSource.FromVisual(window);
+        Matrix fromDevice = source?.CompositionTarget?.TransformFromDevice ?? Matrix.Identity;
+        Point topLeft = fromDevice.Transform(new Point(info.Work.Left, info.Work.Top));
+        Point bottomRight = fromDevice.Transform(new Point(info.Work.Right, info.Work.Bottom));
+        double workWidth = Math.Max(320, bottomRight.X - topLeft.X);
+        double workHeight = Math.Max(240, bottomRight.Y - topLeft.Y);
+
+        double width = Math.Min(window.Width, workWidth);
+        double height = Math.Min(window.Height, workHeight);
+        double left = Math.Clamp(window.Left, topLeft.X, topLeft.X + workWidth - width);
+        double top = Math.Clamp(window.Top, topLeft.Y, topLeft.Y + workHeight - height);
+
+        if (Math.Abs(width - window.Width) > 0.5 || Math.Abs(height - window.Height) > 0.5 ||
+            Math.Abs(left - window.Left) > 0.5 || Math.Abs(top - window.Top) > 0.5)
+        {
+            window.Width = width;
+            window.Height = height;
+            window.Left = left;
+            window.Top = top;
+        }
+    }
 
     public static void Attach(Window window)
     {

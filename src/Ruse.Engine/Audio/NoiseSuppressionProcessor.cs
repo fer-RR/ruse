@@ -39,6 +39,7 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
     private int _calibrationFrames;
     private int _calibrationTargetFrames;
     private int _calibrationActive;
+    private int _calibrationCancelled;
     private Thread? _calibrationThread;
 
     public NoiseSuppressionProcessor()
@@ -101,6 +102,7 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
         }
 
         _calibrationTargetFrames = (int)(Math.Clamp(seconds, 1f, 10f) * 48000f);
+        Interlocked.Exchange(ref _calibrationCancelled, 0);
         _calibrationFrames = 0;
         _calibrationBuffer = new float[_calibrationTargetFrames * 2];
         _noiseProfileError = null;
@@ -129,7 +131,11 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
             float[]? buffer = _calibrationBuffer;
             if (Volatile.Read(ref _calibrationActive) == 0 || buffer == null || frames < _calibrationTargetFrames)
             {
-                _noiseProfileError = "Calibration did not receive enough live audio.";
+                if (Volatile.Read(ref _calibrationCancelled) == 0)
+                {
+                    _noiseProfileError = "Calibration did not receive enough live audio.";
+                }
+
                 return;
             }
 
@@ -149,7 +155,15 @@ public sealed class NoiseSuppressionProcessor : IAudioProcessor, IParameterizedP
         {
             Volatile.Write(ref _calibrationActive, 0);
             _calibrationBuffer = null;
+            Interlocked.Exchange(ref _calibrationCancelled, 0);
         }
+    }
+
+    /// <summary>Cancels a running live calibration without publishing a new profile.</summary>
+    public void CancelLiveCalibration()
+    {
+        Interlocked.Exchange(ref _calibrationCancelled, 1);
+        Interlocked.Exchange(ref _calibrationActive, 0);
     }
 
     public void ClearNoiseProfile()

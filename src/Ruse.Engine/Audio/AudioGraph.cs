@@ -41,6 +41,9 @@ public sealed class AudioGraph : IDisposable
         _engine.RenderOnceForTest();
     }
 
+    /// <summary>Renders one block offline for timeline bounce/freeze.</summary>
+    public void RenderOfflineBlock() => RenderEngineOnceForTest();
+
     /// <summary>Number of tap workers (diagnostics/self-test).</summary>
     public int TapWorkerCount => _engine?.TapWorkerCount ?? 0;
 
@@ -76,14 +79,6 @@ public sealed class AudioGraph : IDisposable
     public OutputNode AddOutput(MMDevice device)
     {
         var node = new OutputNode(device);
-        Outputs.Add(node);
-        return node;
-    }
-
-    /// <summary>Adds an output that renders to an ASIO driver.</summary>
-    public OutputNode AddOutput(AsioDriverInfo driver)
-    {
-        var node = new OutputNode(driver);
         Outputs.Add(node);
         return node;
     }

@@ -296,9 +296,24 @@ public static class AudioProcessorCatalog
         _ordered.Add(descriptor);
     }
 
-    public static Descriptor? Find(string typeId) =>
-        ById.TryGetValue(typeId, out var d) ? d : null;
+    public static Descriptor? Find(string typeId)
+    {
+        if (string.Equals(typeId, PitchShiftProcessor.LegacyHqId, StringComparison.OrdinalIgnoreCase))
+        {
+            typeId = PitchShiftProcessor.Id;
+        }
+
+        return ById.TryGetValue(typeId, out var descriptor) ? descriptor : null;
+    }
 
     /// <summary>Creates a fresh instance of the given type, or null if unknown.</summary>
-    public static IAudioProcessor? Create(string typeId) => Find(typeId)?.Create();
+    public static IAudioProcessor? Create(string typeId)
+    {
+        if (string.Equals(typeId, PitchShiftProcessor.LegacyHqId, StringComparison.OrdinalIgnoreCase))
+        {
+            return new PitchShiftProcessor(PitchShiftProcessor.Id, "Pitch shift", 4096);
+        }
+
+        return Find(typeId)?.Create();
+    }
 }

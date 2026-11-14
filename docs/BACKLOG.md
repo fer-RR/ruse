@@ -23,8 +23,8 @@ Keep this short. Nothing is started unless noted.
 
 ## Performance follow-ups
 
-- ASIO changes still require a manual refresh; WASAPI device changes use Core
-  Audio notifications now.
+- ASIO support is removed for now. WASAPI device changes use Core Audio
+  notifications.
 
 ## Visualizers
 
@@ -39,9 +39,8 @@ Keep this short. Nothing is started unless noted.
 
 ## Control API
 
-- Optional local CORS policy for browser dashboards; native/server clients
-  already work.
-- Rate limiting and an audit log for external control.
+- Local CORS, a 600-request/minute loopback rate limit, and write-request audit
+  logging are in place.
 - UI editor for persisted `ControlId` aliases; currently auto-generated and
   settable via `PATCH /api/v1/nodes/{id}`.
 - Optional read endpoints for links/frames; current API is node/parameter/
@@ -82,9 +81,9 @@ Keep this short. Nothing is started unless noted.
 
 ## VST3
 
-- Shared-memory audio for the isolated host; current pipes and watchdog work.
-  Block copies are small at 120-240 frames, so this is an optimization, not a
-  correctness fix.
+- Shared-memory audio transport for the isolated host is in place; the named
+  pipes remain for control/lifetime and the watchdog restart path is the
+  fallback.
 - Capture editor-only state before a watchdog kill. The isolated proxy now
   caches a state snapshot every ~2 s while the editor is open; a true last-
   instant capture before a hung host is killed still needs a safe nonblocking
@@ -98,24 +97,24 @@ Keep this short. Nothing is started unless noted.
 
 ## Audio and nodes
 
-- Mixer color groups are visual; true group buses with one fader/mute/solo
-  remain.
+- Mixer color groups now have a separate gain/mute/solo stage that preserves
+  member faders. Group insert chains remain.
 - Graphic EQ: presets, per-band reset, optional live spectrum behind curve.
 - Frame templates: rename/delete/thumbnail and refresh after external edits.
-- Per-device asynchronous SRC with clock-drift correction. The engine is fixed
-  at 48 kHz; ASIO and rate-converted WASAPI endpoints resample at the output.
-  Converter drift is tested offline; real-device clock soak remains.
+- Per-output asynchronous clock resampling is in: each device output and the
+  network receiver gently adjust their ratio to hold the queue. Real-device
+  multi-output clock soak remains.
 - Persist native-chain link flags across sessions and presets.
-- ASIO testing with an insert patch or real loopback interface.
+- Re-add ASIO only with a native, callback-safe host and real loopback testing.
 - A 2.5 ms low-latency mode with a larger safety ring is available behind an
   experimental toggle; long soak tests, real-device validation and 128-frame
   device testing remain.
-- Realtime residuals: `GraphEngine` no longer disposes its wake event if the
-  render thread misses the join, and `OutputNode.Dispose` keeps resources when
-  its pump is still alive. `NetworkPcmCapture` can still abandon a blocked
-  thread; a job object or watchdog is the next step if a real driver/device
-  reproduces it. ASIO capture now preallocates for `FramesPerBuffer` and
-  truncates if a driver exceeds it.
+- Realtime residuals: graph render faults are logged by a deferred
+  `AudioFaultLog`; isolated VST3 uses a lock-free slot handoff; output rings
+  trim overfill with a crossfade. `NetworkPcmCapture` can still abandon a
+  blocked thread; a job object is the next step if a real driver reproduces it.
+  In-process VST3 still runs on the render thread and needs a dedicated plugin
+  thread.
 - `SourceNode` decode scratch can still grow for capture packets above 16384
   samples; verify large 96 kHz/multichannel devices.
 - `AudioFileRecorder.Stop` joins the writer for 2 s; on a failing disk it can
@@ -124,10 +123,13 @@ Keep this short. Nothing is started unless noted.
 
 ## App, onboarding and platform
 
-- Per-app route templates so a removed source can return.
+- Per-app route memory is in: removing an app source saves its outgoing
+  cables, and Settings > Behavior can restore them when the app is added again.
 - Pick which instance to follow when several processes share a name.
 - Permanent intentional-monitoring flag per route.
 - Better virtual-cable setup helper.
 - Tray: start-minimized and live icon updates.
 - Re-check WebView render tier in Settings > Info.
 - Release notes and richer thread/device diagnostics.
+- Noise calibration now has a countdown and cancel; profile preview remains.
+- Window restore is clamped to the current monitor work area.

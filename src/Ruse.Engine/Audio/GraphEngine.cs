@@ -17,7 +17,7 @@ internal sealed class GraphEngine : IDisposable
     private readonly Action _wakeCallback;
     private Thread? _thread;
     private volatile bool _running;
-    private CompiledGraph? _compiled;
+    private volatile CompiledGraph? _compiled;
     private long _lastTapTick;
     private bool _disposed;
     private AudioWatchdogToken? _watchdog;
@@ -296,20 +296,16 @@ internal sealed class GraphEngine : IDisposable
                 _watchdog?.Beat();
                 bool rendered = false;
                 int waitMs = 20;
-                CompiledGraph? compiled;
-                lock (_sync)
+                CompiledGraph? compiled = _compiled;
+                if (!_running)
                 {
-                    if (!_running)
-                    {
-                        break;
-                    }
+                    break;
+                }
 
-                    compiled = _compiled;
-                    if (compiled == null)
-                    {
-                        Monitor.Wait(_sync, 20);
-                        continue;
-                    }
+                if (compiled == null)
+                {
+                    _wake.WaitOne(20);
+                    continue;
                 }
 
                 if (!compiled.TryAcquire())
@@ -401,8 +397,8 @@ internal sealed class GraphEngine : IDisposable
         private readonly object _leaseGate = new();
         private readonly List<Action> _retireActions = new();
         private int _leases;
-        private bool _disposeRequested;
-        private bool _disposed;
+        private int _disposeRequested;
+        private int _disposed;
         private bool _forceRenderForTest;
 
         internal void ForceRenderForTest() => _forceRenderForTest = true;
@@ -410,36 +406,27 @@ internal sealed class GraphEngine : IDisposable
         /// <summary>Claims the snapshot for one render pass.</summary>
         public bool TryAcquire()
         {
-            lock (_leaseGate)
+            if (Volatile.Read(ref _disposeRequested) != 0)
             {
-                if (_disposeRequested)
-                {
-                    return false;
-                }
+                return false;
+            }
 
-                _leases++;
+            Interlocked.Increment(ref _leases);
+            if (Volatile.Read(ref _disposeRequested) == 0)
+            {
                 return true;
             }
+
+            Interlocked.Decrement(ref _leases);
+            return false;
         }
 
         public void Release()
         {
-            bool dispose = false;
-            lock (_leaseGate)
-            {
-                if (_leases > 0)
-                {
-                    _leases--;
-                }
-
-                if (_leases == 0 && _disposeRequested && !_disposed)
-                {
-                    _disposed = true;
-                    dispose = true;
-                }
-            }
-
-            if (dispose)
+            int leases = Interlocked.Decrement(ref _leases);
+            if (leases == 0 &&
+                Volatile.Read(ref _disposeRequested) != 0 &&
+                Interlocked.Exchange(ref _disposed, 1) == 0)
             {
                 // The last lease is normally released on the render thread.
                 // Disposing tap workers joins them, so move teardown off the
@@ -454,7 +441,7 @@ internal sealed class GraphEngine : IDisposable
         {
             lock (_leaseGate)
             {
-                if (!_disposed)
+                if (Volatile.Read(ref _disposed) == 0)
                 {
                     _retireActions.Add(action);
                     return;
@@ -899,10 +886,12 @@ internal sealed class GraphEngine : IDisposable
         public void Render()
         {
             _audioGraph.Timeline?.RenderBlock(_blockFrames);
+            bool groupSoloSource = MixerGroupBus.AnySourceSolo;
             bool anySoloSource = false;
             for (int i = 0; i < Sources.Count; i++)
             {
-                if (Sources[i].Source.Solo)
+                if (Sources[i].Source.Solo ||
+                    (groupSoloSource && MixerGroupBus.Solo(Sources[i].Source.GroupKey)))
                 {
                     anySoloSource = true;
                     break;
@@ -919,10 +908,12 @@ internal sealed class GraphEngine : IDisposable
                 Nodes[i].Process();
             }
 
+            bool groupSoloOutput = MixerGroupBus.AnyOutputSolo;
             bool anySoloOutput = false;
             for (int i = 0; i < Outputs.Count; i++)
             {
-                if (Outputs[i].Output.Solo)
+                if (Outputs[i].Output.Solo ||
+                    (groupSoloOutput && MixerGroupBus.Solo(Outputs[i].Output.GroupKey)))
                 {
                     anySoloOutput = true;
                     break;
@@ -940,18 +931,9 @@ internal sealed class GraphEngine : IDisposable
 
         public void Dispose()
         {
-            bool dispose = false;
-            lock (_leaseGate)
-            {
-                _disposeRequested = true;
-                if (_leases == 0 && !_disposed)
-                {
-                    _disposed = true;
-                    dispose = true;
-                }
-            }
-
-            if (dispose)
+            Interlocked.Exchange(ref _disposeRequested, 1);
+            if (Volatile.Read(ref _leases) == 0 &&
+                Interlocked.Exchange(ref _disposed, 1) == 0)
             {
                 DisposeCore();
             }
@@ -1008,7 +990,8 @@ internal sealed class GraphEngine : IDisposable
                     Array.Clear(_block, read, _block.Length - read);
                 }
 
-                if (anySoloSource && !_source.Solo)
+                if (anySoloSource && !_source.Solo &&
+                    (!MixerGroupBus.AnySourceSolo || !MixerGroupBus.Solo(_source.GroupKey)))
                 {
                     Array.Clear(_block);
                 }
@@ -1074,7 +1057,9 @@ internal sealed class GraphEngine : IDisposable
                     ReadOnlySpan<float> block;
                     if (source != null)
                     {
-                        float targetGain = source.Source.Muted ? 0f : source.Source.Gain;
+                        float targetGain = source.Source.Muted || MixerGroupBus.Muted(source.Source.GroupKey)
+                            ? 0f
+                            : source.Source.Gain * MixerGroupBus.Gain(source.Source.GroupKey);
                         float applied = float.IsNaN(input.AppliedGain) ? targetGain : input.AppliedGain;
                         if (input.Delay != null)
                         {
@@ -1233,8 +1218,7 @@ internal sealed class GraphEngine : IDisposable
                         if (!_chainFaulted)
                         {
                             _chainFaulted = true;
-                            AppLog.Error(
-                                $"Effect chain '{_modifier.Title}' failed; passing its input through.", ex);
+                            AudioFaultLog.ReportEffectFault(_modifier.Title, ex);
                         }
 
                         Array.Copy(hasChainLatency ? _dry : _input, _block, _block.Length);
@@ -1264,8 +1248,7 @@ internal sealed class GraphEngine : IDisposable
                     if (!_nonFiniteLogged)
                     {
                         _nonFiniteLogged = true;
-                        AppLog.Warning(
-                            $"Effect chain '{_modifier.Title}' produced non-finite samples; state was reset.");
+                        AudioFaultLog.ReportEffectWarning(_modifier.Title);
                     }
                 }
 
@@ -1321,7 +1304,9 @@ internal sealed class GraphEngine : IDisposable
                 int floats = _blockFrames * Channels;
                 _mix = new float[floats];
                 _temp = new float[floats];
-                _volumeGain = output.Volume * OutputNode.MasterGain;
+                _volumeGain = MixerGroupBus.Muted(output.GroupKey)
+                    ? 0f
+                    : output.Volume * OutputNode.MasterGain * MixerGroupBus.Gain(output.GroupKey);
             }
 
             public OutputNode Output => _output;
@@ -1329,7 +1314,8 @@ internal sealed class GraphEngine : IDisposable
 
             public void Render(bool anySoloOutput)
             {
-                if (anySoloOutput && !_output.Solo)
+                if (anySoloOutput && !_output.Solo &&
+                    (!MixerGroupBus.AnyOutputSolo || !MixerGroupBus.Solo(_output.GroupKey)))
                 {
                     Array.Clear(_mix);
                     _output.SetMixResult(0f, 0f, -60f, -60f, false);
@@ -1343,9 +1329,10 @@ internal sealed class GraphEngine : IDisposable
                     var contribution = Contributions[i];
                     if (contribution.Source is { } source)
                     {
-                        float targetGain = source.Source.Muted
+                        float targetGain = source.Source.Muted || MixerGroupBus.Muted(source.Source.GroupKey)
                             ? 0f
-                            : contribution.Gain * source.Source.Gain;
+                            : contribution.Gain * source.Source.Gain *
+                              MixerGroupBus.Gain(source.Source.GroupKey);
                         float applied = float.IsNaN(contribution.AppliedGain)
                             ? targetGain
                             : contribution.AppliedGain;
@@ -1427,9 +1414,11 @@ internal sealed class GraphEngine : IDisposable
                     }
                 }
 
-                float targetVolume = _output.Muted || OutputNode.MasterMuted
+                float targetVolume = _output.Muted || OutputNode.MasterMuted ||
+                    MixerGroupBus.Muted(_output.GroupKey)
                     ? 0f
-                    : _output.Volume * OutputNode.MasterGain;
+                    : _output.Volume * OutputNode.MasterGain *
+                      MixerGroupBus.Gain(_output.GroupKey);
 
                 if (targetVolume != _volumeGain)
                 {

@@ -59,6 +59,22 @@ internal sealed partial class WebShellController
             isError: noise.NoiseProfileError != null);
     }
 
+    private void CancelNoiseCalibration(string id)
+    {
+        if (_noiseCalibrationNodeId != id ||
+            !_nodes.TryGetValue(id, out var entry) ||
+            entry.Modifier?.Processors.OfType<NoiseSuppressionProcessor>().FirstOrDefault() is not { } noise)
+        {
+            return;
+        }
+
+        noise.CancelLiveCalibration();
+        StopNoiseCalibration();
+        PublishGraph();
+        PublishTelemetry(force: true);
+        SetStatus("Noise calibration cancelled.");
+    }
+
     private void StopNoiseCalibration()
     {
         _noiseCalibrationTimer?.Stop();

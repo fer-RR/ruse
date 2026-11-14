@@ -5,7 +5,7 @@ namespace Ruse.App.Audio;
 /// <summary>
 /// Finds a low-latency audio profile that is stable on this machine.
 /// The test uses the default output device and a quiet tone; it never selects
-/// an experimental ASIO endpoint.
+/// an experimental non-default endpoint.
 /// </summary>
 public static class AudioConfigOptimizer
 {

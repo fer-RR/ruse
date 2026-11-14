@@ -9,6 +9,17 @@ internal static class DenormalMath
 {
     private const double Threshold = 1e-15;
 
+    public static void Flush(float[] values)
+    {
+        for (int i = 0; i < values.Length; i++)
+        {
+            if (MathF.Abs(values[i]) < Threshold)
+            {
+                values[i] = 0f;
+            }
+        }
+    }
+
     public static void Flush(double[] values)
     {
         for (int i = 0; i < values.Length; i++)
@@ -36,4 +47,7 @@ internal static class DenormalMath
 
     public static double Flush(double value) =>
         Math.Abs(value) < Threshold ? 0.0 : value;
+
+    public static float Flush(float value) =>
+        MathF.Abs(value) < Threshold ? 0f : value;
 }

@@ -41,7 +41,7 @@ function MixerExplainer() {
 
         {strips.map((strip, index) => (
           <g key={strip.name}>
-            <rect className={`welcome-drag-card ${index === strips.length - 1 ? 'explainer-mixer-master' : ''}`} x={strip.x} y="56" width="108" height="154" rx="9" />
+            <rect className={`welcome-drag-card ${index === strips.length - 1 ? 'explainer-mixer-master explainer-output-card' : index === 1 ? 'explainer-effect-card' : 'explainer-source-card'}`} x={strip.x} y="56" width="108" height="154" rx="9" />
             <text className="welcome-timeline-node-title" x={strip.x + 12} y="76">{strip.name}</text>
             <rect className="explainer-mixer-meter-track" x={strip.x + 14} y="90" width="10" height="96" rx="3" />
             <rect className={`explainer-mixer-meter ${strip.meter}`} x={strip.x + 15} y="90" width="8" height="96" rx="2" />
@@ -76,7 +76,7 @@ function SidechainExplainer() {
         <text className="welcome-drag-label" x="42" y="41">SIDECHAIN DUCKER</text>
 
         <g className="welcome-timeline-node">
-          <rect x="62" y="76" width="140" height="62" rx="9" />
+          <rect className="explainer-source-card" x="62" y="76" width="140" height="62" rx="9" />
           <circle className="welcome-timeline-glyph-bubble" cx="82" cy="97" r="10" />
           <path className="welcome-timeline-glyph" d="M78 94v6M83 94v6M86 95v4a5 5 0 0 1-10 0v-4" />
           <text className="welcome-timeline-node-title" x="100" y="101">Music</text>
@@ -85,7 +85,7 @@ function SidechainExplainer() {
         </g>
 
         <g className="welcome-timeline-node explainer-sc-ducker">
-          <rect x="306" y="76" width="150" height="62" rx="9" />
+          <rect className="explainer-effect-card" x="306" y="76" width="150" height="62" rx="9" />
           <text className="welcome-timeline-node-title" x="320" y="99">Ducker</text>
           <text className="explainer-sc-subtitle" x="320" y="115">Key input</text>
           <circle className="welcome-timeline-port welcome-timeline-port-in" cx="306" cy="107" r="4" />
@@ -95,7 +95,7 @@ function SidechainExplainer() {
         </g>
 
         <g className="welcome-timeline-node">
-          <rect x="552" y="76" width="108" height="62" rx="9" />
+          <rect className="explainer-output-card" x="552" y="76" width="108" height="62" rx="9" />
           <circle className="welcome-timeline-glyph-bubble" cx="570" cy="97" r="10" />
           <path className="welcome-timeline-glyph" d="M568 94l-4 3h-2v4h2l4 3v-10ZM575 95a5 5 0 0 1 0 8" />
           <text className="welcome-timeline-node-title" x="586" y="101">Speakers</text>
@@ -103,7 +103,7 @@ function SidechainExplainer() {
         </g>
 
         <g className="welcome-timeline-node">
-          <rect x="62" y="176" width="140" height="52" rx="9" />
+          <rect className="explainer-source-card" x="62" y="176" width="140" height="52" rx="9" />
           <circle className="welcome-timeline-glyph-bubble" cx="82" cy="195" r="10" />
           <path className="welcome-timeline-glyph" d="M79 193v7M84 193v7M87 194v4a5 5 0 0 1-10 0v-4" />
           <text className="welcome-timeline-node-title" x="100" y="199">Voice</text>
@@ -136,7 +136,7 @@ function Vst3Explainer() {
         <text className="welcome-drag-label" x="42" y="41">VST3 PLUGINS</text>
 
         <g>
-          <rect className="welcome-drag-card" x="46" y="66" width="144" height="138" rx="9" />
+          <rect className="welcome-drag-card explainer-effect-card" x="46" y="66" width="144" height="138" rx="9" />
           <text className="welcome-timeline-node-title" x="60" y="88">Library</text>
           <rect className="explainer-vst3-library-row" x="60" y="102" width="116" height="30" rx="6" />
           <text className="explainer-vst3-small" x="72" y="121">Plugins</text>
@@ -145,7 +145,7 @@ function Vst3Explainer() {
         </g>
 
         <g className="welcome-timeline-node">
-          <rect x="258" y="104" width="156" height="66" rx="9" />
+          <rect className="explainer-effect-card" x="258" y="104" width="156" height="66" rx="9" />
           <circle className="welcome-timeline-glyph-bubble" cx="278" cy="126" r="10" />
           <path className="welcome-timeline-glyph" d="M274 124h8v7h-8zM277 124v-3h2v3M277 131v2M280 131v2" />
           <text className="welcome-timeline-node-title" x="296" y="130">VST3 effect</text>
@@ -196,7 +196,7 @@ function NativeExplainer() {
         <text className="welcome-drag-label" x="42" y="41">NATIVE PASSTHROUGH</text>
 
         <g className="welcome-timeline-node">
-          <rect x="58" y="76" width="130" height="60" rx="9" />
+          <rect className="explainer-source-card" x="58" y="76" width="130" height="60" rx="9" />
           <circle className="welcome-timeline-glyph-bubble" cx="78" cy="96" r="10" />
           <path className="welcome-timeline-glyph" d="M76 92v8M80 92v8M83 94v4a5 5 0 0 1-10 0v-4" />
           <text className="welcome-timeline-node-title" x="96" y="100">Source</text>
@@ -205,7 +205,7 @@ function NativeExplainer() {
         </g>
 
         <g className="welcome-timeline-node explainer-native-chain">
-          <rect x="266" y="76" width="142" height="60" rx="9" />
+          <rect className="explainer-effect-card" x="266" y="76" width="142" height="60" rx="9" />
           <text className="welcome-timeline-node-title" x="280" y="100">Effects</text>
           <text className="explainer-sc-subtitle" x="280" y="116">Graph processing</text>
           <circle className="welcome-timeline-port welcome-timeline-port-in" cx="266" cy="106" r="4" />
@@ -213,7 +213,7 @@ function NativeExplainer() {
         </g>
 
         <g className="welcome-timeline-node">
-          <rect x="540" y="76" width="120" height="60" rx="9" />
+          <rect className="explainer-output-card" x="540" y="76" width="120" height="60" rx="9" />
           <circle className="welcome-timeline-glyph-bubble" cx="558" cy="96" r="10" />
           <path className="welcome-timeline-glyph" d="M556 93l-4 3h-2v4h2l4 3v-10ZM563 94a5 5 0 0 1 0 8" />
           <text className="welcome-timeline-node-title" x="574" y="100">Output</text>

@@ -71,6 +71,15 @@ internal sealed partial class WebShellController : IDisposable
     {
         _window = window;
         _settings = AppSettings.Load();
+        _settings.Theme = _settings.Theme switch
+        {
+            "system" => "dark",
+            "ocean" => "blueprint",
+            "ember" => "studio74",
+            "midnightstudy" => "midnight",
+            var theme => theme,
+        };
+        MixerGroupBus.Configure(_settings.MixerGroups);
         TranslationSettings.Update(_settings.TranslationGlossary, _settings.TranslationMemoryEnabled);
         _updates = new UpdateService(this);
         ModelRuntime.UseGpu = _settings.UseGpu;
@@ -331,7 +340,6 @@ internal sealed partial class WebShellController : IDisposable
             case "download-update": _ = _updates.DownloadAsync(); break;
             case "apply-update": _updates.Apply(); break;
             case "audio-optimizer-status": PostAudioOptimizerState(); break;
-            case "asio-refresh": RefreshAsioDevices(); break;
             case "timeline-open": OpenTimeline(); break;
             case "timeline-add-track": AddTimelineTrack(); break;
             case "timeline-add-clip": AddTimelineClip(String(message, "trackId")); break;
@@ -359,6 +367,7 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-freeze": FreezeTimeline(); break;
             case "audio-optimizer-run": StartAudioOptimizer(); break;
             case "add": AddFromMessage(message); break;
+            case "route-check-test-tone": AddRouteCheckTestTone(); break;
             case "add-file-player": AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), String(message, "path")); break;
             case "file-player-file": ChooseFilePlayerFile(String(message, "id")); break;
             case "file-player-loop": SetFilePlayerLoop(String(message, "id"), Bool(message, "value")); break;
@@ -396,6 +405,9 @@ internal sealed partial class WebShellController : IDisposable
             case "solo": SetNodeSolo(String(message, "id"), Bool(message, "value")); break;
             case "retarget-app": RetargetApplication(String(message, "id"), (uint)Number(message, "processId"), String(message, "processName")); break;
             case "node-color": SetNodeColor(String(message, "id"), String(message, "color")); break;
+            case "group-gain": SetGroupGain(String(message, "key"), (float)Number(message, "value", 1)); break;
+            case "group-mute": SetGroupMuted(String(message, "key"), Bool(message, "value")); break;
+            case "group-solo": SetGroupSolo(String(message, "key"), Bool(message, "value")); break;
             case "midi-learn": StartMidiLearn(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
             case "midi-unbind": ClearMidiBinding(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
             case "midi-refresh": _midi.RefreshDevices(); PublishSettings(); break;
@@ -409,6 +421,7 @@ internal sealed partial class WebShellController : IDisposable
             case "ir-clear": ClearImpulseResponse(String(message, "id")); break;
             case "noise-profile-file": ChooseNoiseProfile(String(message, "id")); break;
             case "noise-profile-calibrate": StartNoiseCalibration(String(message, "id")); break;
+            case "noise-profile-calibrate-cancel": CancelNoiseCalibration(String(message, "id")); break;
             case "noise-profile-clear": ClearNoiseProfile(String(message, "id")); break;
             case "loudness-reset": ResetLoudness(String(message, "id")); break;
             case "db-meter-orientation": SetDbMeterOrientation(String(message, "id"), Bool(message, "vertical")); break;
@@ -879,6 +892,9 @@ internal sealed partial class WebShellController : IDisposable
         {
             AutoLoadSession = _settings.AutoLoadSession,
             FollowPlayingApps = _settings.FollowPlayingApps,
+            RestoreAppRoutes = _settings.RestoreAppRoutes,
+            TimelineBounceOutputId = _settings.TimelineBounceOutputId,
+            TimelineBounceTailSeconds = _settings.TimelineBounceTailSeconds,
             FollowOutputId = _settings.FollowOutputId,
             UiLanguage = _settings.UiLanguage,
             Theme = _settings.Theme,
@@ -888,6 +904,7 @@ internal sealed partial class WebShellController : IDisposable
             SnapToGrid = _settings.SnapToGrid,
             HighlightCableOnHover = _settings.HighlightCableOnHover,
             CableAnimation = _settings.CableAnimation,
+            CablePhysics = _settings.CablePhysics,
             ConnectorAnimation = _settings.ConnectorAnimation,
             MinimapMode = _settings.MinimapMode,
             StartWithWindows = StartupRegistration.IsEnabled(),
@@ -1012,15 +1029,22 @@ internal sealed partial class WebShellController : IDisposable
             MicMuted = _micMuted,
         };
 
-        var sourceLevels = _nodes.Values
-            .Where(entry => entry.Source != null)
-            .ToDictionary(entry => entry.Id, entry => Meter(entry.Source!.MeterLevel));
-        var sourceClipping = _nodes.Values
-            .Where(entry => entry.Source != null)
-            .ToDictionary(entry => entry.Id, entry => entry.Source!.Clipping);
-        var outputClipping = _nodes.Values
-            .Where(entry => entry.Output != null)
-            .ToDictionary(entry => entry.Id, entry => entry.Output!.Clipping);
+        var sourceLevels = new Dictionary<string, float>(_nodes.Count);
+        var sourceClipping = new Dictionary<string, bool>(_nodes.Count);
+        var outputClipping = new Dictionary<string, bool>(_nodes.Count);
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Source is { } source)
+            {
+                sourceLevels[entry.Id] = Meter(source.MeterLevel);
+                sourceClipping[entry.Id] = source.Clipping;
+            }
+            else if (entry.Output is { } output)
+            {
+                outputClipping[entry.Id] = output.Clipping;
+            }
+        }
+
         var modifierLevels = new Dictionary<string, float>();
 
         foreach (var entry in _nodes.Values)
@@ -1066,18 +1090,41 @@ internal sealed partial class WebShellController : IDisposable
                     new HashSet<string>(), new HashSet<string>());
                 if (entry.Modifier is { } modifier)
                 {
-                    if (modifier.Processors.OfType<DbMeterProcessor>().FirstOrDefault() is { } orientationMeter)
+                    DbMeterProcessor? dbMeter = null;
+                    SpectrumProcessor? spectrum = null;
+                    SpectrogramProcessor? spectrogram = null;
+                    WaveformProcessor? waveform = null;
+                    LoudnessProcessor? loudness = null;
+                    NoteDetectorProcessor? noteDetector = null;
+                    TranslatorProcessor? translator = null;
+                    TranscriptionProcessor? transcriber = null;
+
+                    var processors = modifier.Processors;
+                    for (int index = 0; index < processors.Count; index++)
                     {
-                        meter.DbMeterVertical = orientationMeter.IsVertical;
+                        var processor = processors[index];
+                        dbMeter ??= processor as DbMeterProcessor;
+                        spectrum ??= processor as SpectrumProcessor;
+                        spectrogram ??= processor as SpectrogramProcessor;
+                        waveform ??= processor as WaveformProcessor;
+                        loudness ??= processor as LoudnessProcessor;
+                        noteDetector ??= processor as NoteDetectorProcessor;
+                        translator ??= processor as TranslatorProcessor;
+                        transcriber ??= processor as TranscriptionProcessor;
                     }
 
-                    if (modifier.Enabled && modifier.Processors.OfType<SpectrumProcessor>().FirstOrDefault() is { } spectrum)
+                    if (dbMeter != null)
+                    {
+                        meter.DbMeterVertical = dbMeter.IsVertical;
+                    }
+
+                    if (modifier.Enabled && spectrum != null)
                     {
                         meter.Spectrum = SpectrumProcessor.GetBands(spectrum.TapId);
                         meter.SpectrumPeakHz = SpectrumProcessor.GetPeakHz(spectrum.TapId);
                     }
 
-                    if (modifier.Enabled && modifier.Processors.OfType<SpectrogramProcessor>().FirstOrDefault() is { } spectrogram)
+                    if (modifier.Enabled && spectrogram != null)
                     {
                         long cursor = _spectrogramCursors.TryGetValue(entry.Id, out var value) ? value : -1;
                         var update = SpectrogramProcessor.GetUpdate(spectrogram.TapId, cursor);
@@ -1095,14 +1142,14 @@ internal sealed partial class WebShellController : IDisposable
                         meter.SpectrogramWindowSeconds = SpectrogramProcessor.WindowSeconds;
                     }
 
-                    if (modifier.Enabled && modifier.Processors.OfType<WaveformProcessor>().FirstOrDefault() is { } waveform &&
+                    if (modifier.Enabled && waveform != null &&
                         WaveformProcessor.GetReading(waveform.TapId, waveform.Trigger) is { } reading)
                     {
                         meter.Waveform = reading.Samples;
                         meter.WaveformPeak = reading.Peak;
                     }
 
-                    if (modifier.Enabled && modifier.Processors.OfType<DbMeterProcessor>().FirstOrDefault() is { } dbMeter)
+                    if (modifier.Enabled && dbMeter != null)
                     {
                         meter.Db = DbMeterProcessor.GetDb(dbMeter.TapId);
                         meter.PeakDb = DbMeterProcessor.GetPeakDb(dbMeter.TapId);
@@ -1112,7 +1159,7 @@ internal sealed partial class WebShellController : IDisposable
                         meter.PeakDbRight = DbMeterProcessor.GetPeakDbRight(dbMeter.TapId);
                     }
 
-                    if (modifier.Enabled && modifier.Processors.OfType<LoudnessProcessor>().FirstOrDefault() is { } loudness)
+                    if (modifier.Enabled && loudness != null)
                     {
                         meter.LoudnessIntegrated = LoudnessProcessor.GetIntegratedLufs(loudness.TapId);
                         meter.LoudnessShortTerm = LoudnessProcessor.GetShortTermLufs(loudness.TapId);
@@ -1120,7 +1167,7 @@ internal sealed partial class WebShellController : IDisposable
                         meter.LoudnessTruePeak = LoudnessProcessor.GetTruePeakDb(loudness.TapId);
                     }
 
-                    if (modifier.Enabled && modifier.Processors.OfType<NoteDetectorProcessor>().FirstOrDefault() is { } noteDetector &&
+                    if (modifier.Enabled && noteDetector != null &&
                         NoteDetectorProcessor.TryGetReading(noteDetector.TapId, out var note))
                     {
                         meter.NoteName = note.Name;
@@ -1130,7 +1177,8 @@ internal sealed partial class WebShellController : IDisposable
                         meter.NoteConfidence = Finite(note.Confidence);
                         meter.NoteActive = true;
                     }
-                    if (modifier.Enabled && modifier.Processors.OfType<TranslatorProcessor>().FirstOrDefault() is { } translator)
+
+                    if (modifier.Enabled && translator != null)
                     {
                         meter.TranscriptionLevel = Meter(TranscriptionProcessor.GetLevel(translator.TapId));
                         long lastAudio = TranscriptionProcessor.GetLastAudioTick(translator.TapId);
@@ -1154,7 +1202,7 @@ internal sealed partial class WebShellController : IDisposable
                             meter.UsesGpu = snapshot?.GpuActive;
                         }
                     }
-                    else if (modifier.Enabled && modifier.Processors.OfType<TranscriptionProcessor>().FirstOrDefault() is { } transcriber)
+                    else if (modifier.Enabled && transcriber != null)
                     {
                         meter.TranscriptionLevel = Meter(TranscriptionProcessor.GetLevel(transcriber.TapId));
                         long lastAudio = TranscriptionProcessor.GetLastAudioTick(transcriber.TapId);
@@ -1337,39 +1385,16 @@ internal sealed partial class WebShellController : IDisposable
     private void ApplyWindowTheme()
     {
         string theme = _settings.Theme;
-        if (theme == "system")
-        {
-            theme = WindowsUsesLightTheme() ? "light" : "dark";
-        }
-
         Color color = theme switch
         {
             "light" => Color.FromRgb(0xEE, 0xF1, 0xF6),
             "midnight" => Color.FromRgb(0x08, 0x0B, 0x11),
-            "ocean" => Color.FromRgb(0x07, 0x17, 0x1B),
-            "ember" => Color.FromRgb(0x18, 0x11, 0x0E),
-            "blueprint" => Color.FromRgb(0x0B, 0x4C, 0x97),
+            "blueprint" => Color.FromRgb(0x08, 0x3B, 0x78),
             "deepdive" => Color.FromRgb(0x14, 0x0A, 0x24),
             "studio74" => Color.FromRgb(0x1E, 0x1D, 0x1B),
-            "midnightstudy" => Color.FromRgb(0x16, 0x19, 0x25),
             _ => Color.FromRgb(0x17, 0x1E, 0x29),
         };
         _window.Background = new SolidColorBrush(color);
-    }
-
-    private static bool WindowsUsesLightTheme()
-    {
-        try
-        {
-            object? value = Microsoft.Win32.Registry.GetValue(
-                @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
-                "AppsUseLightTheme", 0);
-            return value is int flag && flag != 0;
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     /// <summary>Persists the answer to the first-close tray prompt.</summary>
@@ -1412,6 +1437,8 @@ internal sealed partial class WebShellController : IDisposable
             _window.Top = _settings.Top;
         }
 
+        _window.Loaded += (_, _) => WindowFrameBehavior.ClampToWorkArea(_window);
+
         // The first launch has no saved placement, so open full screen instead
         // of the small default size. Later launches respect what the user chose.
         if (_settings.IsFirstRun || _settings.Maximized)
@@ -1449,6 +1476,7 @@ internal sealed partial class WebShellController : IDisposable
                 _settings.Top = _window.Top;
             }
 
+            TranslationMemory.Flush();
             _settings.Save();
             if (!App.LiveDemoMode)
             {

@@ -44,7 +44,6 @@ export interface CatalogSnapshot {
   defaultOutputId: string;
   defaultOutputName: string;
   perAppCaptureAvailable: boolean;
-  asioLoaded: boolean;
   perAppCaptureMessage?: string;
 }
 
@@ -78,6 +77,9 @@ export interface NodeModel {
   volume: number;
   muted: boolean;
   solo?: boolean;
+  groupGain?: number;
+  groupMuted?: boolean;
+  groupSolo?: boolean;
   color?: string;
   supportsSidechain?: boolean;
   micHint?: string;
@@ -186,6 +188,9 @@ export interface NodeStateUpdate {
   volume?: number;
   muted?: boolean;
   solo?: boolean;
+  groupGain?: number;
+  groupMuted?: boolean;
+  groupSolo?: boolean;
   enabled?: boolean;
   send?: number;
   parallel?: boolean;
@@ -424,15 +429,19 @@ export interface TranslatorDownload {
 export interface SettingsModel {
   autoLoadSession: boolean;
   followPlayingApps: boolean;
+  restoreAppRoutes: boolean;
+  timelineBounceOutputId: string;
+  timelineBounceTailSeconds: number;
   followOutputId: string;
   uiLanguage: string;
-  theme: 'dark' | 'light' | 'system' | 'midnight' | 'ocean' | 'ember' | 'blueprint' | 'deepdive' | 'studio74' | 'midnightstudy';
+  theme: 'dark' | 'light' | 'midnight' | 'blueprint' | 'deepdive' | 'studio74';
   startRoutingOnLaunch: boolean;
   highlightMutedNodes: boolean;
   signalGlow: boolean;
   snapToGrid: boolean;
   highlightCableOnHover: boolean;
   cableAnimation: boolean;
+  cablePhysics: boolean;
   connectorAnimation: boolean;
   minimapMode: number;
   startWithWindows: boolean;

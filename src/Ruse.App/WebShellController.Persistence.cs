@@ -245,6 +245,13 @@ internal sealed partial class WebShellController
 
         foreach (var saved in preset.Sources)
         {
+            if (string.Equals(saved.Kind, "Asio", StringComparison.OrdinalIgnoreCase))
+            {
+                sources.Add(null);
+                AppLog.Warning($"Skipped ASIO source '{saved.Title}': ASIO support is not available in this build.");
+                continue;
+            }
+
             try
             {
                 var kind = Enum.TryParse<SourceKind>(saved.Kind, out var parsed) ? parsed : SourceKind.Application;
@@ -293,6 +300,7 @@ internal sealed partial class WebShellController
                 sourceEntry.Width = saved.Width;
                 sourceEntry.Height = saved.Height;
                 sourceEntry.Color = NormalizeNodeColor(saved.Color);
+                SyncEntryGroup(sourceEntry);
                 sources.Add(sourceEntry);
             }
             catch (Exception ex)
@@ -323,10 +331,6 @@ internal sealed partial class WebShellController
                     {
                         disarmedRecorders++;
                     }
-                }
-                else if (AsioCatalog.IsAsioId(saved.DeviceId))
-                {
-                    output = new OutputNode(FindAsioDriver(saved.DeviceId));
                 }
                 else if (saved.IsVirtual)
                 {
@@ -365,6 +369,7 @@ internal sealed partial class WebShellController
                 outputEntry.Width = saved.Width;
                 outputEntry.Height = saved.Height;
                 outputEntry.Color = NormalizeNodeColor(saved.Color);
+                SyncEntryGroup(outputEntry);
                 outputs.Add(outputEntry);
             }
             catch (Exception ex)
@@ -402,6 +407,7 @@ internal sealed partial class WebShellController
             modifierEntry.Width = saved.Width;
             modifierEntry.Height = saved.Height;
             modifierEntry.Color = NormalizeNodeColor(saved.Color);
+            SyncEntryGroup(modifierEntry);
             modifiers.Add(modifierEntry);
         }
 
@@ -593,14 +599,21 @@ internal sealed partial class WebShellController
         string oldTtsModel = _settings.TtsModel;
         _settings.AutoLoadSession = settings.AutoLoadSession;
         _settings.FollowPlayingApps = settings.FollowPlayingApps;
+        _settings.RestoreAppRoutes = settings.RestoreAppRoutes;
+        _settings.TimelineBounceOutputId = settings.TimelineBounceOutputId ?? "";
+        _settings.TimelineBounceTailSeconds = Math.Clamp(settings.TimelineBounceTailSeconds, 0, 30);
         _settings.FollowOutputId = settings.FollowOutputId ?? "";
         _settings.UiLanguage = settings.UiLanguage is "pt-BR" or "es" or "fr" or "de" or "it" or "ja" or "ko" or "zh-CN"
             ? settings.UiLanguage
             : "en";
-        _settings.Theme = settings.Theme is "light" or "system" or "midnight" or "ocean" or "ember"
-            or "blueprint" or "deepdive" or "studio74" or "midnightstudy"
-            ? settings.Theme
-            : "dark";
+        _settings.Theme = settings.Theme switch
+        {
+            "ocean" => "blueprint",
+            "ember" => "studio74",
+            "midnightstudy" => "midnight",
+            "light" or "midnight" or "blueprint" or "deepdive" or "studio74" => settings.Theme,
+            _ => "dark",
+        };
         ApplyWindowTheme();
         _settings.StartRoutingOnLaunch = settings.StartRoutingOnLaunch;
         _settings.HighlightMutedNodes = settings.HighlightMutedNodes;
@@ -608,6 +621,7 @@ internal sealed partial class WebShellController
         _settings.SnapToGrid = settings.SnapToGrid;
         _settings.HighlightCableOnHover = settings.HighlightCableOnHover;
         _settings.CableAnimation = settings.CableAnimation;
+        _settings.CablePhysics = settings.CablePhysics;
         _settings.ConnectorAnimation = settings.ConnectorAnimation;
         _settings.MinimapMode = Math.Clamp(settings.MinimapMode, 0, 2);
         _settings.ShowWelcomeScreen = settings.ShowWelcomeScreen;
@@ -686,6 +700,7 @@ internal sealed partial class WebShellController
 
         // App-follow should notice a newly playing app as it starts, not up to
         // four seconds later when the first sound is already gone.
+        _appsIdleScans = 0;
         _appsTimer.Interval = TimeSpan.FromMilliseconds(_settings.FollowPlayingApps ? 750 : 4000);
         if (_settings.FollowPlayingApps)
         {

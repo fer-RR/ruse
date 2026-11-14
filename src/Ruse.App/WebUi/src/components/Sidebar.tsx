@@ -140,7 +140,7 @@ const LibraryItem = memo(function LibraryItem({ item, name, onAdd, onEdit, onRen
         </span>
       </span>
       {onCanvas
-        ? <span className="library-actions"><span className="library-add library-added" title={t('Already on the canvas')}><Check size={14} /></span>{onHide && <button className="library-add" title={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} aria-label={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} onClick={event => { event.stopPropagation(); onHide(item); }}>{hidden ? <Eye size={13} /> : <EyeOff size={13} />}</button>}</span>
+        ? <span className="library-actions"><span className="library-add library-added" title={t('Already on the canvas')}><Check size={14} /></span>{onHide && <button className="library-add" title={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} aria-label={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} onClick={event => { event.stopPropagation(); onHide(item); }}>{hidden ? <EyeOff size={13} /> : <Eye size={13} />}</button>}</span>
         : <span className="library-actions">
             {onEdit && <button className="library-add" title={t('Edit {name}', { name })} aria-label={t('Edit {name}', { name })} onClick={event => { event.stopPropagation(); onEdit(item); }}>
               <Layers3 size={13} />
@@ -151,7 +151,7 @@ const LibraryItem = memo(function LibraryItem({ item, name, onAdd, onEdit, onRen
             {onDelete && <button className="library-add library-delete" title={t('Delete {name}', { name })} aria-label={t('Delete {name}', { name })} onClick={event => { event.stopPropagation(); onDelete(item); }}>
               <Trash2 size={13} />
             </button>}
-            {onHide && <button className="library-add" title={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} aria-label={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} onClick={event => { event.stopPropagation(); onHide(item); }}>{hidden ? <Eye size={13} /> : <EyeOff size={13} />}</button>}
+            {onHide && <button className="library-add" title={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} aria-label={hidden ? t('Unhide {name}', { name }) : t('Hide {name}', { name })} onClick={event => { event.stopPropagation(); onHide(item); }}>{hidden ? <EyeOff size={13} /> : <Eye size={13} />}</button>}
             <button className="library-add" title={t('Add {name}', { name })} aria-label={t('Add {name}', { name })} onClick={event => { event.stopPropagation(); onAdd(item); }}>
               <Plus size={14} />
             </button>
@@ -186,7 +186,7 @@ function loadHiddenItems(): Set<string> {
 }
 const DEFAULT_SECTION_ORDER = [
   'applications', 'generators', 'samples', 'network', 'physicalOutputs', 'physicalInputs',
-  'recording', 'virtualBuses', 'virtualInputs', 'asioOutputs', 'asioInputs', 'effects',
+  'recording', 'virtualBuses', 'virtualInputs', 'effects',
   'plugins', 'chains', 'templates',
 ] as const;
 
@@ -222,11 +222,13 @@ function loadSectionOrder(): string[] {
   return [...DEFAULT_SECTION_ORDER];
 }
 
-function SortableSection({ section, collapsed, reorderEnabled, onToggle, children }: {
+function SortableSection({ section, collapsed, reorderEnabled, hiddenRevealed, onToggle, onToggleHidden, children }: {
   section: Section;
   collapsed: boolean;
   reorderEnabled: boolean;
+  hiddenRevealed: boolean;
   onToggle: () => void;
+  onToggleHidden: () => void;
   children: ReactNode;
 }) {
   const { t } = useI18n();
@@ -254,8 +256,10 @@ function SortableSection({ section, collapsed, reorderEnabled, onToggle, childre
           aria-label={t('Reorder {name}', { name: t(section.label) })}
         ><GripVertical size={13} /></button>
         <button type="button" className="section-toggle" onClick={onToggle} aria-expanded={!collapsed}>
-          <span>{t(section.label)}</span><span className="section-count">{section.total ?? section.items.length}</span>{section.hiddenCount ? <span className="section-hidden-count" title={t('{count} hidden', { count: section.hiddenCount })}>{t('{count} hidden', { count: section.hiddenCount })}</span> : null}<ChevronDown size={13} className={collapsed ? 'collapsed' : ''} />
+          <span>{t(section.label)}</span><span className="section-count">{section.total ?? section.items.length}</span>{section.hiddenCount ? <span className="section-hidden-count" title={t('{count} hidden', { count: section.hiddenCount })}>{t('{count} hidden', { count: section.hiddenCount })}</span> : null}
         </button>
+        {section.hiddenCount ? <button type="button" className={`section-hidden-toggle ${hiddenRevealed ? 'active' : ''}`} title={hiddenRevealed ? t('Hide hidden items') : t('Show hidden items')} aria-label={hiddenRevealed ? t('Hide hidden items') : t('Show hidden items')} aria-pressed={hiddenRevealed} onClick={onToggleHidden}>{hiddenRevealed ? <Eye size={12} /> : <EyeOff size={12} />}</button> : null}
+        <button type="button" className="section-expand" onClick={onToggle} aria-expanded={!collapsed} title={collapsed ? t('Expand {name}', { name: t(section.label) }) : t('Collapse {name}', { name: t(section.label) })} aria-label={collapsed ? t('Expand {name}', { name: t(section.label) }) : t('Collapse {name}', { name: t(section.label) })}><ChevronDown size={13} className={collapsed ? 'collapsed' : ''} /></button>
       </div>
       {!collapsed && <div className="section-items">{children}</div>}
     </div>
@@ -296,7 +300,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   const [sectionOrder, setSectionOrder] = useState<string[]>(loadSectionOrder);
   const [sampleDropActive, setSampleDropActive] = useState(false);
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(loadHiddenItems);
-  const [showHidden, setShowHidden] = useState(false);
+  const [revealedSections, setRevealedSections] = useState<Set<string>>(new Set());
   const sectionRank = useMemo(
     () => new Map(sectionOrder.map((id, index) => [id, index])),
     [sectionOrder],
@@ -316,6 +320,15 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   useEffect(() => {
     localStorage.setItem(LIBRARY_HIDDEN_KEY, JSON.stringify([...hiddenKeys]));
   }, [hiddenKeys]);
+
+  const toggleSectionHidden = useCallback((id: string) => {
+    setRevealedSections(current => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const toggleHidden = useCallback((item: CatalogItem) => {
     const key = catalogKey(item);
@@ -344,11 +357,9 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   }, []);
 
   const catalogSections = useMemo(() => {
-    const physicalInputs = catalog.inputs.filter(item => !item.virtual && item.provider !== 'ASIO');
-    const asioInputs = catalog.inputs.filter(item => item.provider === 'ASIO');
+    const physicalInputs = catalog.inputs.filter(item => !item.virtual);
     const virtualInputs = catalog.inputs.filter(item => item.virtual);
-    const physicalOutputs = catalog.outputs.filter(item => item.provider !== 'ASIO');
-    const asioOutputs = catalog.outputs.filter(item => item.provider === 'ASIO');
+    const physicalOutputs = catalog.outputs;
     return {
       applications: { id: 'applications', label: 'Applications', items: [systemItem, ...catalog.apps] },
       network: { id: 'network', label: 'Network', items: [networkInputItem, networkOutputItem] },
@@ -359,8 +370,6 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
       samples: { id: 'samples', label: 'Samples', items: catalog.samples ?? [] },
       virtualBuses: { id: 'virtualBuses', label: 'Virtual buses', items: virtualInputs },
       virtualInputs: { id: 'virtualInputs', label: 'Virtual inputs', items: catalog.virtuals },
-      asioOutputs: { id: 'asioOutputs', label: `${t('ASIO outputs')} (${t('Experimental')})`, items: asioOutputs },
-      asioInputs: { id: 'asioInputs', label: `${t('ASIO inputs')} (${t('Experimental')})`, items: asioInputs },
       effects: { id: 'effects', label: 'Effects', items: catalog.effects },
       plugins: { id: 'plugins', label: 'VST3 plugins', items: catalog.vst3Plugins },
       chains: { id: 'chains', label: 'Saved chains', items: catalog.chains },
@@ -378,7 +387,6 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
         catalogSections.network,
         catalogSections.physicalInputs,
         catalogSections.virtualBuses,
-        catalogSections.asioInputs,
       ]),
     },
     {
@@ -387,7 +395,6 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
         catalogSections.physicalOutputs,
         catalogSections.recording,
         catalogSections.virtualInputs,
-        catalogSections.asioOutputs,
       ]),
     },
     {
@@ -395,9 +402,6 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
       sections: ordered([catalogSections.effects, catalogSections.plugins, catalogSections.chains, catalogSections.templates]),
     },
   ], [catalogSections, ordered]);
-
-  const hiddenTotal = useMemo(() => Object.values(catalogSections).reduce((sum, section) =>
-    sum + section.items.filter(item => hiddenKeys.has(catalogKey(item))).length, 0), [catalogSections, hiddenKeys]);
 
   const allSections = useMemo(() => ordered([
     catalogSections.applications,
@@ -409,19 +413,17 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
     catalogSections.recording,
     catalogSections.virtualBuses,
     catalogSections.virtualInputs,
-    catalogSections.asioOutputs,
-    catalogSections.asioInputs,
     catalogSections.effects,
     catalogSections.plugins,
     catalogSections.chains,
     catalogSections.templates,
   ]).map(section => {
     const hiddenCount = section.items.filter(item => hiddenKeys.has(catalogKey(item))).length;
-    const items = showHidden
+    const items = revealedSections.has(section.id)
       ? section.items
       : section.items.filter(item => !hiddenKeys.has(catalogKey(item)));
     return { ...section, items, total: section.items.length, hiddenCount };
-  }).filter(section => section.items.length > 0 || section.hiddenCount > 0 || section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins'), [catalogSections, ordered, hiddenKeys, showHidden]);
+  }).filter(section => section.items.length > 0 || section.hiddenCount > 0 || section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins'), [catalogSections, ordered, hiddenKeys, revealedSections]);
 
   useEffect(() => {
     const focusSection = (event: Event) => {
@@ -454,12 +456,12 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
         ? section.items.filter(item =>
             `${displayName(item)} ${t(item.name)} ${t(item.subtitle)} ${t(item.details)}`.toLowerCase().includes(normalized))
         : section.items;
-      const items = showHidden
+      const items = revealedSections.has(section.id)
         ? searched
         : searched.filter(item => !hiddenKeys.has(catalogKey(item)));
       return { ...section, items, total: section.items.length, hiddenCount };
     }).filter(section => section.items.length > 0 || (!normalized && (section.hiddenCount > 0 || section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins'))),
-  })), [aliases, groups, hiddenKeys, normalized, showHidden, t]);
+  })), [aliases, groups, hiddenKeys, normalized, revealedSections, t]);
 
   const visible = useMemo(() => normalized
     ? filtered.filter(group => group.sections.length > 0)
@@ -534,19 +536,6 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
     >
       <div className="sidebar-heading">
         <span className="eyebrow">{t('Library')}</span>
-        {(hiddenTotal > 0 || showHidden) && (
-          <button
-            type="button"
-            className={`icon-button compact library-hidden-toggle ${showHidden ? 'active' : ''}`}
-            title={showHidden ? t('Hide hidden items') : t('Show hidden items')}
-            aria-label={showHidden ? t('Hide hidden items') : t('Show hidden items')}
-            aria-pressed={showHidden}
-            onClick={() => setShowHidden(value => !value)}
-          >
-            {showHidden ? <Eye size={14} /> : <EyeOff size={14} />}
-            {hiddenTotal > 0 && <span className="library-hidden-count">{hiddenTotal}</span>}
-          </button>
-        )}
       </div>
       {searching ? (
         <label className="search-box sidebar-search-active">
@@ -612,6 +601,11 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
                       section={section}
                       collapsed={isCollapsed}
                       reorderEnabled={!normalized}
+                      hiddenRevealed={revealedSections.has(section.id)}
+                      onToggleHidden={() => {
+                        if (!revealedSections.has(section.id)) setExpanded(current => ({ ...current, [key]: true }));
+                        toggleSectionHidden(section.id);
+                      }}
                       onToggle={() => {
                         const willExpand = isCollapsed;
                         setExpanded(current => ({ ...current, [key]: willExpand }));

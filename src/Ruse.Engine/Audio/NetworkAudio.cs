@@ -136,7 +136,7 @@ public sealed class NetworkPcmSender : IDisposable
 public sealed class NetworkPcmCapture : IDisposable
 {
     private readonly int _port;
-    private readonly int _targetBufferMs;
+    private int _targetBufferMs;
     private readonly FloatRingBuffer _ring = new(NetworkPcm.SampleRate * NetworkPcm.Channels * 2);
     private readonly float[] _samples = new float[NetworkPcm.BlockFrames * NetworkPcm.Channels];
     private readonly float[] _decode = new float[NetworkPcm.BlockFrames * NetworkPcm.Channels];
@@ -146,10 +146,21 @@ public sealed class NetworkPcmCapture : IDisposable
     private readonly object _errorLock = new();
 
     private UdpClient? _client;
+    private readonly byte[] _receiveBuffer = new byte[65_536];
+    private const int ReorderSlots = 32;
+    private const int ReorderPacketBytes = NetworkPcm.HeaderBytes + NetworkPcm.BlockFrames * NetworkPcm.Channels * 2;
+    private readonly byte[] _reorderBuffer = new byte[ReorderSlots * ReorderPacketBytes];
+    private readonly int[] _reorderLengths = new int[ReorderSlots];
+    private readonly long[] _reorderSequences = new long[ReorderSlots];
+    private readonly long[] _reorderTimestamps = new long[ReorderSlots];
+    private readonly bool[] _reorderReady = new bool[ReorderSlots];
+    private long _expectedSequence = -1;
+    private long _expectedTimestamp = -1;
+    private long _reorderDeadline;
+    private long _lastPacketTick;
     private Thread? _receiver;
     private Thread? _pump;
     private volatile bool _stop;
-    private long _lastSequence = -1;
     private int _lastPacketFrames = NetworkPcm.BlockFrames;
     private int _session = -1;
     private volatile bool _primed;
@@ -158,6 +169,8 @@ public sealed class NetworkPcmCapture : IDisposable
     private long _lostPackets;
     private long _underruns;
     private long _streamResets;
+    private long _lastUnderrunMark;
+    private long _lastBufferAdjustTick;
     private AudioWatchdogToken? _watchdog;
 
     public NetworkPcmCapture(int port, int targetBufferMs = NetworkPcm.DefaultBufferMs)
@@ -184,13 +197,16 @@ public sealed class NetworkPcmCapture : IDisposable
 
         _stop = false;
         _primed = false;
-        _lastSequence = -1;
+        _targetBufferMs = Math.Clamp(_targetBufferMs, 10, 250);
+        _lastUnderrunMark = 0;
+        _lastBufferAdjustTick = Environment.TickCount64;
         _session = -1;
+        ResetReorder();
         Interlocked.Exchange(ref _streamResets, 0);
         _ring.Clear();
         var client = new UdpClient(new IPEndPoint(IPAddress.Any, _port));
         client.Client.ReceiveBufferSize = 1 << 20;
-        client.Client.ReceiveTimeout = 250;
+        client.Client.ReceiveTimeout = 20;
         TryDisableConnectionReset(client);
         _client = client;
         _watchdog = AudioThreadWatchdog.Register($"NetworkInput-{_port}", TimeSpan.FromSeconds(2), () =>
@@ -207,14 +223,17 @@ public sealed class NetworkPcmCapture : IDisposable
     private void ReceiveLoop()
     {
         using var mmcss = MmcssScope.Enter();
-        var remote = new IPEndPoint(IPAddress.Any, 0);
+        EndPoint remote = new IPEndPoint(IPAddress.Any, 0);
         while (!_stop)
         {
             _watchdog?.Beat();
             try
             {
-                byte[] packet = _client!.Receive(ref remote);
-                Parse(packet);
+                int received = _client!.Client.ReceiveFrom(_receiveBuffer, ref remote);
+                if (received > 0)
+                {
+                    Parse(_receiveBuffer, received);
+                }
             }
             catch (ObjectDisposedException)
             {
@@ -223,7 +242,11 @@ public sealed class NetworkPcmCapture : IDisposable
             catch (SocketException ex)
             {
                 if (_stop) break;
-                if (ex.SocketErrorCode != SocketError.TimedOut)
+                if (ex.SocketErrorCode == SocketError.TimedOut)
+                {
+                    FlushReorder(Environment.TickCount64);
+                }
+                else
                 {
                     SetError(ex.Message);
                     Thread.Sleep(5);
@@ -240,9 +263,9 @@ public sealed class NetworkPcmCapture : IDisposable
         }
     }
 
-    private void Parse(byte[] packet)
+    private void Parse(byte[] packet, int length)
     {
-        if (packet.Length < NetworkPcm.HeaderBytes + 4 ||
+        if (length < NetworkPcm.HeaderBytes + 4 ||
             packet[0] != 'R' || packet[1] != 'U' || packet[2] != 'S' || packet[3] != 'E' ||
             packet[4] != 1 ||
             packet[5] != NetworkPcm.Channels ||
@@ -251,7 +274,7 @@ public sealed class NetworkPcmCapture : IDisposable
             return;
         }
 
-        int frames = (packet.Length - NetworkPcm.HeaderBytes) / (NetworkPcm.Channels * 2);
+        int frames = (length - NetworkPcm.HeaderBytes) / (NetworkPcm.Channels * 2);
         if (frames <= 0 || frames > NetworkPcm.BlockFrames)
         {
             return;
@@ -260,8 +283,6 @@ public sealed class NetworkPcmCapture : IDisposable
         ushort session = BinaryPrimitives.ReadUInt16LittleEndian(packet.AsSpan(6));
         if (session != _session)
         {
-            // A different sender means a new sequence space. Accept it at once
-            // instead of waiting for the old sequence number to be exceeded.
             if (_session != -1)
             {
                 ResetStream();
@@ -270,56 +291,149 @@ public sealed class NetworkPcmCapture : IDisposable
             _session = session;
         }
 
-        uint sequence = BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(12));
-        if (_lastSequence >= 0)
+        long sequence = BinaryPrimitives.ReadUInt32LittleEndian(packet.AsSpan(12));
+        long timestamp = BinaryPrimitives.ReadInt64LittleEndian(packet.AsSpan(16));
+        long now = Environment.TickCount64;
+        _lastPacketTick = now;
+        _lastPacketFrames = frames;
+
+        if (_expectedSequence < 0)
         {
-            if (sequence <= (uint)_lastSequence)
+            _expectedSequence = sequence;
+            _expectedTimestamp = timestamp;
+        }
+        else if (sequence < _expectedSequence)
+        {
+            if (_expectedSequence - sequence > 64)
             {
-                // A re-added sender restarts at 0. Treat a clear rewind as a
-                // new stream; only a small backwards step is a late packet.
-                if ((uint)_lastSequence - sequence > 64)
-                {
-                    ResetStream();
-                }
-                else
-                {
-                    return;
-                }
+                ResetStream();
+                _expectedSequence = sequence;
+                _expectedTimestamp = timestamp;
             }
             else
             {
-                long missing = (long)sequence - _lastSequence - 1;
-                if (missing > 0)
-                {
-                    // Packets can have different sizes when a block is split,
-                    // so estimate the gap from the last packet we saw.
-                    int missingFrames = (int)Math.Min(missing * _lastPacketFrames, NetworkPcm.SampleRate / 2);
-                    WriteSilence(missingFrames);
-                    Interlocked.Add(ref _lostPackets, missing);
-                }
+                return;
             }
         }
-
-        _lastSequence = sequence;
-        _lastPacketFrames = frames;
-        int offset = NetworkPcm.HeaderBytes;
-        for (int frame = 0; frame < frames; frame++)
+        else if (sequence >= _expectedSequence + ReorderSlots)
         {
-            short left = BinaryPrimitives.ReadInt16LittleEndian(packet.AsSpan(offset));
-            short right = BinaryPrimitives.ReadInt16LittleEndian(packet.AsSpan(offset + 2));
-            _decode[frame * 2] = left / 32768f;
-            _decode[frame * 2 + 1] = right / 32768f;
-            offset += 4;
+            int missing = (int)Math.Clamp(timestamp - _expectedTimestamp, 0, NetworkPcm.SampleRate / 2);
+            WriteSilence(missing);
+            Interlocked.Add(ref _lostPackets, Math.Max(0, sequence - _expectedSequence));
+            _expectedSequence = sequence;
+            _expectedTimestamp = timestamp;
         }
 
-        _ring.Write(_decode.AsSpan(0, frames * NetworkPcm.Channels));
-        Interlocked.Increment(ref _packets);
+        int slot = (int)(sequence % ReorderSlots);
+        if (_reorderReady[slot] && _reorderSequences[slot] == sequence)
+        {
+            return;
+        }
+
+        packet.AsSpan(0, length).CopyTo(_reorderBuffer.AsSpan(slot * ReorderPacketBytes, length));
+        _reorderLengths[slot] = length;
+        _reorderSequences[slot] = sequence;
+        _reorderTimestamps[slot] = timestamp;
+        _reorderReady[slot] = true;
+        if (sequence != _expectedSequence && _reorderDeadline == 0)
+        {
+            _reorderDeadline = now + 20;
+        }
+
+        FlushReorder(now);
+    }
+
+    private void FlushReorder(long now)
+    {
+        while (_expectedSequence >= 0)
+        {
+            int slot = (int)(_expectedSequence % ReorderSlots);
+            if (_reorderReady[slot] && _reorderSequences[slot] == _expectedSequence)
+            {
+                int length = _reorderLengths[slot];
+                int frames = (length - NetworkPcm.HeaderBytes) / (NetworkPcm.Channels * 2);
+                int offset = slot * ReorderPacketBytes + NetworkPcm.HeaderBytes;
+                for (int frame = 0; frame < frames; frame++)
+                {
+                    short left = BinaryPrimitives.ReadInt16LittleEndian(
+                        _reorderBuffer.AsSpan(offset));
+                    short right = BinaryPrimitives.ReadInt16LittleEndian(
+                        _reorderBuffer.AsSpan(offset + 2));
+                    _decode[frame * 2] = left / 32768f;
+                    _decode[frame * 2 + 1] = right / 32768f;
+                    offset += 4;
+                }
+
+                _ring.Write(_decode.AsSpan(0, frames * NetworkPcm.Channels));
+                Interlocked.Increment(ref _packets);
+                _expectedTimestamp = _reorderTimestamps[slot] + frames;
+                _expectedSequence++;
+                _reorderReady[slot] = false;
+                _reorderDeadline = 0;
+                continue;
+            }
+
+            if (_reorderDeadline == 0)
+            {
+                _reorderDeadline = now + 20;
+            }
+
+            if (now < _reorderDeadline)
+            {
+                return;
+            }
+
+            if (now - _lastPacketTick > 500)
+            {
+                ResetReorder();
+                return;
+            }
+
+            long nextTimestamp = -1;
+            for (int i = 1; i < ReorderSlots; i++)
+            {
+                int candidate = (int)((_expectedSequence + i) % ReorderSlots);
+                if (_reorderReady[candidate] &&
+                    _reorderSequences[candidate] > _expectedSequence)
+                {
+                    nextTimestamp = _reorderTimestamps[candidate];
+                    break;
+                }
+            }
+
+            if (nextTimestamp < 0)
+            {
+                _reorderDeadline = now + 20;
+                return;
+            }
+
+            int missingFrames = _lastPacketFrames;
+            if (nextTimestamp >= _expectedTimestamp)
+            {
+                missingFrames = (int)Math.Clamp(
+                    nextTimestamp - _expectedTimestamp, 0, NetworkPcm.SampleRate / 2);
+            }
+
+            WriteSilence(missingFrames);
+            Interlocked.Increment(ref _lostPackets);
+            _expectedSequence++;
+            _expectedTimestamp += missingFrames;
+            _reorderDeadline = 0;
+        }
+    }
+
+    private void ResetReorder()
+    {
+        Array.Clear(_reorderReady);
+        _expectedSequence = -1;
+        _expectedTimestamp = -1;
+        _reorderDeadline = 0;
     }
 
     private void ResetStream()
     {
-        _lastSequence = -1;
         _primed = false;
+        ResetReorder();
         Interlocked.Increment(ref _streamResets);
     }
 
@@ -332,17 +446,39 @@ public sealed class NetworkPcmCapture : IDisposable
         }
     }
 
+    private void AdaptJitterBuffer()
+    {
+        long now = Environment.TickCount64;
+        long underruns = Interlocked.Read(ref _underruns);
+        if (underruns > _lastUnderrunMark)
+        {
+            _lastUnderrunMark = underruns;
+            if (now - _lastBufferAdjustTick >= 1000)
+            {
+                _targetBufferMs = Math.Min(250, _targetBufferMs + 10);
+                _lastBufferAdjustTick = now;
+            }
+        }
+        else if (_targetBufferMs > NetworkPcm.DefaultBufferMs &&
+                 now - _lastBufferAdjustTick >= 10_000)
+        {
+            _targetBufferMs = Math.Max(NetworkPcm.DefaultBufferMs, _targetBufferMs - 5);
+            _lastBufferAdjustTick = now;
+        }
+    }
+
     private void PumpLoop()
     {
         using var mmcss = MmcssScope.Enter();
         using var timer = HighResolutionTimer.TryCreate();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long produced = 0;
-        int targetFrames = NetworkPcm.SampleRate * _targetBufferMs / 1000;
         int maxFrames = NetworkPcm.SampleRate / 2;
         while (!_stop)
         {
             _watchdog?.Beat();
+            AdaptJitterBuffer();
+            int targetFrames = NetworkPcm.SampleRate * _targetBufferMs / 1000;
             long due = (long)(clock.Elapsed.TotalSeconds * NetworkPcm.SampleRate);
             if (produced >= due)
             {

@@ -4,14 +4,14 @@ using NAudio.Wave;
 namespace Ruse.App.Audio;
 
 /// <summary>
-/// Pitch shifter built on NAudio's Bernsee phase vocoder, with the FFT size
-/// fixed per node so the route latency stays stable. The balanced variant uses
-/// a 2048-point FFT (about 43 ms); the HQ variant keeps 4096 points (about 85 ms).
+/// Pitch shifter built on NAudio's Bernsee phase vocoder, with a selectable
+/// FFT size. The Quality control selects a 2048-point FFT (about 43 ms) or
+/// 4096 points (about 85 ms).
 /// </summary>
 public sealed class PitchShiftProcessor : IAudioProcessor, IParameterizedProcessor
 {
     public const string Id = "pitch-shift";
-    public const string HqId = "pitch-shift-hq";
+    public const string LegacyHqId = "pitch-shift-hq";
 
     private readonly PitchShiftEffect _effect;
     private readonly AudioParameter[] _parameters;
@@ -38,6 +38,18 @@ public sealed class PitchShiftProcessor : IAudioProcessor, IParameterizedProcess
                 Unit = "st",
                 Get = () => _effect.PitchSemitones,
                 Set = value => _effect.PitchSemitones = Math.Clamp(value, -12f, 12f),
+            },
+            new AudioParameter
+            {
+                Name = "Quality",
+                Min = 0f,
+                Max = 1f,
+                Default = 0f,
+                IsChoice = true,
+                IsInteger = true,
+                Options = new[] { "Balanced", "HQ" },
+                Get = () => _effect.FftSize <= 2048 ? 0f : 1f,
+                Set = value => _effect.FftSize = value < 0.5f ? 2048 : 4096,
             },
             new AudioParameter
             {

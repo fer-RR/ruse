@@ -25,8 +25,8 @@ public sealed class Vst3Processor : IVst3Processor
     private CancellationTokenSource? _pollCancellation;
     private AudioParameter[] _parameters = Array.Empty<AudioParameter>();
     private float[] _values = Array.Empty<float>();
-    private float[][] _inputPlanes = Array.Empty<float[]>();
-    private float[][] _outputPlanes = Array.Empty<float[]>();
+    private float[][] _inputPlanes = CreatePlanes();
+    private float[][] _outputPlanes = CreatePlanes();
     private string _state = "Loading plugin";
     private string? _error;
     private string _pluginName = "VST3 plugin";
@@ -65,7 +65,7 @@ public sealed class Vst3Processor : IVst3Processor
     public string TypeId => Id;
     public string DisplayName => _pluginName;
     public IReadOnlyList<AudioParameter> Parameters => _parameters;
-    public int LatencySamples => _latency;
+    public int LatencySamples => _ready ? _latency : 0;
     public string Identifier => _identifier;
     public string PluginName => _pluginName;
     public string Vendor => _vendor;
@@ -260,6 +260,9 @@ public sealed class Vst3Processor : IVst3Processor
             }
         }
     }
+
+    private static float[][] CreatePlanes() =>
+        new[] { new float[MaxBlockFrames], new float[MaxBlockFrames] };
 
     private void EnsurePlanes(int frames)
     {

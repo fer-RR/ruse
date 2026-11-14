@@ -8,7 +8,7 @@ public sealed class OutputNode : IDisposable
 {
     private readonly MMDevice _device;
     private WasapiPlayer? _wasapiOut;
-    private BufferedWaveProvider? _buffer;
+    private OutputWaveBuffer? _buffer;
     private Thread? _pumpThread;
     private volatile bool _running;
     private AudioWatchdogToken? _watchdog;
@@ -18,17 +18,13 @@ public sealed class OutputNode : IDisposable
     private float _meterDbLeft = -60f;
     private float _meterDbRight = -60f;
 
-    // ASIO path: when set, the mix is rendered to an ASIO driver instead of a
-    // WASAPI endpoint. The driver owns its clock, so the rate can differ.
-    private AsioOutputEndpoint? _asioEndpoint;
-    private AsioDriverInfo? _asioDriver;
-
     // File path: when set, the mix is written to disk instead of a device.
     private AudioFileRecorder? _recorder;
     private string? _recordingPath;
     private AudioFileFormat _recordingFormat = AudioFileFormat.Wav24;
     private double _lastRecordedSeconds;
     private string? _lastRecordingError;
+    private int _recorderSkipFrames;
 
     /// <summary>Persistent recorder control state.</summary>
     public RecorderMode RecorderMode { get; set; } = RecorderMode.Off;
@@ -40,6 +36,7 @@ public sealed class OutputNode : IDisposable
     public string DeviceId { get; }
     public string Title { get; set; }
     public float Volume { get; set; } = 1.0f;
+    public string? GroupKey { get; set; }
     public bool Solo { get; set; }
     public bool Muted { get; set; }
 
@@ -48,6 +45,9 @@ public sealed class OutputNode : IDisposable
 
     /// <summary>Try IAudioClient3 low-latency shared mode before normal shared mode.</summary>
     public static volatile bool LowLatencyWasapi = true;
+
+    /// <summary>Look-ahead frames used by the master clip guard.</summary>
+    public static volatile int ClipGuardLookaheadFrames = 64;
 
     /// <summary>True while the guard is reducing gain on this output.</summary>
     public bool ClipGuardActive { get; internal set; }
@@ -66,6 +66,9 @@ public sealed class OutputNode : IDisposable
     /// </summary>
     internal bool UseGraphEngine { get; set; } = true;
 
+    /// <summary>Routes this output through the shared graph renderer.</summary>
+    public void EnableGraphEngine() => UseGraphEngine = true;
+
     /// <summary>True when this output is rendered by the shared graph engine.</summary>
     public bool UsesGraphEngine => UseGraphEngine;
 
@@ -78,6 +81,7 @@ public sealed class OutputNode : IDisposable
     private FormatConverter? _recorderConverter;
     private readonly List<float> _recorderConverted = new(16384);
     private float[] _nativeScratch = Array.Empty<float>();
+    private float _nativeAppliedGain = float.NaN;
     private IAudioProcessor[] _nativeProcessors = Array.Empty<IAudioProcessor>();
     private bool _nativeFaultReported;
 
@@ -116,8 +120,13 @@ public sealed class OutputNode : IDisposable
     }
 
     private const int EngineRingSeconds = 2;
+    private const int MaxEngineLatencyMs = 80;
+    private const int TrimEngineLatencyMs = 30;
+    private const int EngineTrimFadeFrames = 240;
     private readonly FloatRingBuffer _engineBuffer = new(48000 * 2 * EngineRingSeconds);
-    private readonly object _engineLock = new();
+    private int _engineTrimFade;
+    private float _engineLastLeft;
+    private float _engineLastRight;
 
     internal int ElasticTargetFrames { get; set; }
     internal int ElasticVersion { get; set; } = -1;
@@ -131,30 +140,14 @@ public sealed class OutputNode : IDisposable
     public double EngineQueuePercent =>
         _engineBuffer.AvailableToRead / (48000.0 * 2 * EngineRingSeconds) * 100.0;
 
-    internal void SubmitEngineBlock(ReadOnlySpan<float> block)
-    {
-        // Control-side clears are rare; never block the render thread behind one.
-        if (!Monitor.TryEnter(_engineLock))
-        {
-            return;
-        }
-
-        try
-        {
-            _engineBuffer.Write(block);
-        }
-        finally
-        {
-            Monitor.Exit(_engineLock);
-        }
-    }
+    internal void SubmitEngineBlock(ReadOnlySpan<float> block) => _engineBuffer.Write(block);
 
     internal void ClearEngineAudio()
     {
-        lock (_engineLock)
-        {
-            _engineBuffer.Clear();
-        }
+        _engineBuffer.Clear();
+        _engineTrimFade = 0;
+        _engineLastLeft = 0f;
+        _engineLastRight = 0f;
     }
 
     internal bool ApplyClipGuard(float[] mix, int frames)
@@ -165,10 +158,19 @@ public sealed class OutputNode : IDisposable
             return false;
         }
 
+        int lookahead = Math.Clamp(ClipGuardLookaheadFrames, 1, 64);
+        if (_clipGuard.LookaheadFrames != lookahead)
+        {
+            _clipGuard.SetLookahead(lookahead);
+        }
+
         _clipGuard.Process(mix, frames);
         ClipGuardActive = _clipGuard.Engaged;
         return ClipGuardActive;
     }
+
+    /// <summary>Reads one rendered block from the graph ring for offline rendering.</summary>
+    public int ReadOfflineBlock(float[] destination) => _engineBuffer.Read(destination);
 
     internal float DrainEngineLevelForTest(int frames)
     {
@@ -269,9 +271,6 @@ public sealed class OutputNode : IDisposable
 
     private bool _lowLatency;
 
-    /// <summary>Rate the ASIO driver actually runs at (0 for WASAPI outputs).</summary>
-    private int _asioSampleRate;
-
     /// <summary>Routes (source + gain) feeding this output.</summary>
     public List<Route> Inputs { get; } = new();
 
@@ -333,15 +332,6 @@ public sealed class OutputNode : IDisposable
         Title = device.FriendlyName;
     }
 
-    /// <summary>Creates an output that renders to an ASIO driver.</summary>
-    public OutputNode(AsioDriverInfo driver)
-    {
-        _device = null!;
-        DeviceId = AsioCatalog.IdFor(driver.Name);
-        Title = driver.Name;
-        _asioDriver = driver;
-    }
-
     /// <summary>
     /// Checks whether a source can bypass the 48 kHz graph and feed this
     /// endpoint at its native rate. Channel adaptation inside the driver is
@@ -385,18 +375,6 @@ public sealed class OutputNode : IDisposable
             if (!AudioFileFormats.SupportsSampleRate(_recordingFormat, source.SampleRate))
             {
                 reason = $"{AudioFileFormats.Get(_recordingFormat).DisplayName} cannot record at {source.SampleRate} Hz.";
-                return false;
-            }
-
-            return true;
-        }
-
-        if (_asioDriver != null)
-        {
-            int driverRate = _asioDriver.SampleRate;
-            if (driverRate > 0 && driverRate != source.SampleRate)
-            {
-                reason = $"The ASIO driver is configured for {driverRate} Hz; the source is {source.SampleRate} Hz.";
                 return false;
             }
 
@@ -449,6 +427,7 @@ public sealed class OutputNode : IDisposable
             _nativeSampleRate = source?.SampleRate ?? 0;
             _nativeChannels = source?.Channels ?? 0;
             _nativeFaultReported = false;
+            _nativeAppliedGain = float.NaN;
             if (source != null && source.SampleRate > 0)
             {
                 _nativeSubscription = source.SubscribeNative();
@@ -560,7 +539,7 @@ public sealed class OutputNode : IDisposable
             }
         }
 
-        if (_wasapiOut != null || _asioEndpoint != null)
+        if (_wasapiOut != null)
         {
             ResetFailedStart();
         }
@@ -637,6 +616,7 @@ public sealed class OutputNode : IDisposable
         _latencyPenaltyMs = 0;
         ClearEngineAudio();
         _clipGuard.Reset();
+        _nativeAppliedGain = float.NaN;
         ClipGuardActive = false;
         if (IsNetworkOutput)
         {
@@ -656,6 +636,9 @@ public sealed class OutputNode : IDisposable
             {
                 _recorder = new AudioFileRecorder(
                     _recordingPath!, _recordingFormat, recordRate, recordChannels);
+                _recorderSkipFrames = _nativeSource == null && ClipGuardEnabled && !BypassClipGuardForTest
+                    ? _clipGuard.LatencySamples
+                    : 0;
                 _recorderConverter = native || recordRate == 48000
                     ? null
                     : new FormatConverter(2, 48000, recordRate);
@@ -678,44 +661,8 @@ public sealed class OutputNode : IDisposable
 
             // Keep only a small cushion so we don't add latency. DiscardOnBufferOverflow
             // makes the render pull fresh audio instead of falling further behind.
-            _buffer = new BufferedWaveProvider(format, TimeSpan.FromMilliseconds(120))
-            {
-                DiscardOnBufferOverflow = true,
-            };
+            _buffer = new OutputWaveBuffer(format, 120);
 
-            if (_asioDriver != null)
-            {
-                // ASIO pulls the mix straight out of the render buffer, so the
-                // pump below feeds the driver instead of a WASAPI endpoint.
-                // A restart needs a fresh handle: the driver is exclusive and
-                // the previous one was closed on stop.
-                _asioEndpoint = new AsioOutputEndpoint(_asioDriver);
-                _asioEndpoint.Start(_buffer, native ? pumpRate : 0);
-                _outputLatencyMs = _asioEndpoint.LatencyMs;
-                _lowLatency = true;
-                _asioSampleRate = _asioEndpoint.SampleRate;
-                _outputSampleRate = _asioEndpoint.SampleRate;
-
-                if (native && _asioEndpoint.UsesResampler)
-                {
-                    Faulted?.Invoke(this,
-                        $"ASIO driver '{_asioDriver.Name}' could not open at {pumpRate} Hz; native passthrough needs the driver rate to match the source.");
-                    ResetFailedStart();
-                    return;
-                }
-
-                if (!_asioEndpoint.Streaming)
-                {
-                    // No clock: the driver's host is not running, so the node
-                    // would be silent. Say so instead of failing quietly.
-                    Faulted?.Invoke(this,
-                        $"ASIO driver '{_asioDriver.Name}' is not streaming (state {_asioEndpoint.State}). " +
-                        "Its host application may not be running.");
-                    ResetFailedStart();
-                    return;
-                }
-            }
-            else
             {
                 // Ask WASAPI for a low-latency shared-mode stream via IAudioClient3.
                 // If the device can't grant it, WasapiPlayer transparently falls back
@@ -798,18 +745,10 @@ public sealed class OutputNode : IDisposable
             {
             }
         }
-        try
-        {
-            _asioEndpoint?.Dispose();
-        }
-        catch
-        {
-        }
-
-        _asioEndpoint = null;
         _buffer = null;
         var recorder = _recorder;
         _recorder = null;
+        _recorderSkipFrames = 0;
         _recorderConverter = null;
         _recorderConverted.Clear();
         recorder?.Dispose();
@@ -877,6 +816,17 @@ public sealed class OutputNode : IDisposable
                 return;
             }
 
+            if (UnpacedTestSink)
+            {
+                while (_running)
+                {
+                    _watchdog?.Beat();
+                    RenderOrDrainChunk(mix, temp, byteBuffer, channels);
+                }
+
+                return;
+            }
+
             while (_running)
             {
                 _watchdog?.Beat();
@@ -887,12 +837,14 @@ public sealed class OutputNode : IDisposable
             return;
         }
 
+
         // Drive production from what the device has actually consumed: top the
         // render buffer up to a small target instead of pushing on a fixed
         // cadence. This keeps us locked to real time, so capture is never read
         // faster than it is produced (a fixed 5 ms chunk per 3 ms sleep drained
         // the source ring buffer and left the output silent).
         TimeBeginPeriod(1);
+        using var timer = HighResolutionTimer.TryCreate();
         try
         {
             while (_running)
@@ -911,7 +863,16 @@ public sealed class OutputNode : IDisposable
                 }
                 else
                 {
-                    Thread.Sleep(1);
+                    double waitMs = buffer == null
+                        ? 1.0
+                        : buffer.BufferedDuration.TotalMilliseconds - RenderTargetBufferMs - 0.5;
+                    long waitTicks = (long)(Math.Max(0.0, waitMs) * System.Diagnostics.Stopwatch.Frequency / 1000.0);
+                    if (waitTicks > 0 && timer != null && timer.Wait(waitTicks))
+                    {
+                        continue;
+                    }
+
+                    Thread.Sleep(waitMs > 0 ? 1 : 0);
                 }
             }
         }
@@ -971,17 +932,7 @@ public sealed class OutputNode : IDisposable
             // Keep roughly two device periods buffered; that is the minimum
             // that survives one late pump wake without inserting silence.
             // Aggressive mode keeps one period instead.
-            double endpointMs;
-            if (_asioEndpoint != null)
-            {
-                endpointMs = _asioEndpoint.SampleRate > 0 && _asioEndpoint.BufferSize > 0
-                    ? _asioEndpoint.BufferSize * 1000.0 / _asioEndpoint.SampleRate
-                    : _asioEndpoint.LatencyMs;
-            }
-            else
-            {
-                endpointMs = _outputLatencyMs;
-            }
+            double endpointMs = _outputLatencyMs;
 
             if (endpointMs <= 0)
             {
@@ -1040,6 +991,9 @@ public sealed class OutputNode : IDisposable
 
     /// <summary>Set by diagnostics to pace a test sink at real time instead of full speed.</summary>
     public bool PaceRealTime { get; set; }
+
+    /// <summary>Runs a test sink as fast as the mixer can produce blocks.</summary>
+    internal bool UnpacedTestSink { get; set; }
 
     /// <summary>Frames that had to be silence-padded because the source underran.</summary>
     public long ShortReadFrames { get; private set; }
@@ -1156,22 +1110,45 @@ public sealed class OutputNode : IDisposable
         var processors = _nativeProcessors;
         for (int i = 0; i < processors.Length; i++)
         {
-            processors[i].Process(mix.AsSpan(0, mix.Length), channels == 1 ? outFrames : outFrames);
+            processors[i].Process(mix.AsSpan(0, mix.Length), outFrames);
         }
 
-        if (Muted || MasterMuted || source.Muted)
+        bool sourceSoloSuppressed = MixerGroupBus.AnySourceSolo &&
+                                    !source.Solo && !MixerGroupBus.Solo(source.GroupKey);
+        bool outputSoloSuppressed = MixerGroupBus.AnyOutputSolo &&
+                                    !Solo && !MixerGroupBus.Solo(GroupKey);
+        float targetGain = Muted || MasterMuted || source.Muted ||
+            MixerGroupBus.Muted(GroupKey) || MixerGroupBus.Muted(source.GroupKey) ||
+            sourceSoloSuppressed || outputSoloSuppressed
+            ? 0f
+            : Volume * MasterGain * source.Gain *
+              MixerGroupBus.Gain(GroupKey) * MixerGroupBus.Gain(source.GroupKey);
+
+        if (float.IsNaN(_nativeAppliedGain))
         {
-            Array.Clear(mix);
+            _nativeAppliedGain = targetGain;
         }
-        else
+
+        if (targetGain != _nativeAppliedGain)
         {
-            float gain = Volume * MasterGain * source.Gain;
-            if (Math.Abs(gain - 1f) > 1e-6f)
+            float step = (targetGain - _nativeAppliedGain) / Math.Max(1, outFrames);
+            for (int frame = 0; frame < outFrames; frame++)
             {
-                for (int i = 0; i < mix.Length; i++)
+                _nativeAppliedGain += step;
+                int index = frame * channels;
+                for (int channel = 0; channel < channels; channel++)
                 {
-                    mix[i] *= gain;
+                    mix[index + channel] *= _nativeAppliedGain;
                 }
+            }
+
+            _nativeAppliedGain = targetGain;
+        }
+        else if (targetGain != 1f)
+        {
+            for (int i = 0; i < mix.Length; i++)
+            {
+                mix[i] *= targetGain;
             }
         }
 
@@ -1205,10 +1182,26 @@ public sealed class OutputNode : IDisposable
     /// <summary>Emits one block produced by the shared graph renderer.</summary>
     private void DrainEngineChunk(float[] mix, byte[] byteBuffer, int channels)
     {
+        int availableFrames = _engineBuffer.AvailableToRead / 2;
+        int maxFrames = 48000 * MaxEngineLatencyMs / 1000;
+        if (!IsFileRecorder && availableFrames > maxFrames)
+        {
+            int keepFrames = 48000 * TrimEngineLatencyMs / 1000;
+            int dropped = _engineBuffer.Skip((availableFrames - keepFrames) * 2) / 2;
+            if (dropped > 0)
+            {
+                _engineTrimFade = EngineTrimFadeFrames;
+            }
+        }
+
         int read = _engineBuffer.Read(mix);
         if (read < mix.Length)
         {
             Array.Clear(mix, read, mix.Length - read);
+        }
+
+        if (read < mix.Length)
+        {
             if (_renderedOnce)
             {
                 Underruns++;
@@ -1216,6 +1209,27 @@ public sealed class OutputNode : IDisposable
             }
 
             ShortReadFrames += (mix.Length - read) / channels;
+        }
+
+        if (_engineTrimFade > 0 && read >= 2)
+        {
+            int frames = read / 2;
+            int fade = Math.Min(frames, _engineTrimFade);
+            for (int frame = 0; frame < fade; frame++)
+            {
+                float t = 1f - ((_engineTrimFade - frame) / (float)EngineTrimFadeFrames);
+                int index = frame * 2;
+                mix[index] = _engineLastLeft + ((mix[index] - _engineLastLeft) * t);
+                mix[index + 1] = _engineLastRight + ((mix[index + 1] - _engineLastRight) * t);
+            }
+
+            _engineTrimFade -= fade;
+        }
+
+        if (read >= 2)
+        {
+            _engineLastLeft = mix[read - 2];
+            _engineLastRight = mix[read - 1];
         }
 
         _renderedOnce = true;
@@ -1289,15 +1303,21 @@ public sealed class OutputNode : IDisposable
 
         if (_recorder != null)
         {
-            if (_recorderConverter == null)
+            int skipFrames = Math.Min(_recorderSkipFrames, mix.Length / 2);
+            _recorderSkipFrames -= skipFrames;
+            int offset = skipFrames * 2;
+            if (offset < mix.Length)
             {
-                _recorder.Write(mix, mix.Length);
-            }
-            else
-            {
-                _recorderConverted.Clear();
-                _recorderConverter.Convert(mix.AsSpan(0, mix.Length), _recorderConverted);
-                _recorder.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_recorderConverted));
+                if (_recorderConverter == null)
+                {
+                    _recorder.Write(mix.AsSpan(offset, mix.Length - offset));
+                }
+                else
+                {
+                    _recorderConverted.Clear();
+                    _recorderConverter.Convert(mix.AsSpan(offset, mix.Length - offset), _recorderConverted);
+                    _recorder.Write(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_recorderConverted));
+                }
             }
         }
         else if (_testSink != null)
@@ -1307,7 +1327,7 @@ public sealed class OutputNode : IDisposable
         else
         {
             Buffer.BlockCopy(mix, 0, byteBuffer, 0, byteBuffer.Length);
-            _buffer!.AddSamples(byteBuffer, 0, byteBuffer.Length);
+            _buffer!.Write(byteBuffer, 0, byteBuffer.Length);
             BytesWritten += byteBuffer.Length;
             ReportOutputClock(byteBuffer.Length, channels);
         }
@@ -1369,10 +1389,24 @@ public sealed class OutputNode : IDisposable
         Array.Clear(mix, 0, mix.Length);
 
         var routes = _routeSnapshot;
+        bool anySoloSource = false;
+        for (int r = 0; r < routes.Length; r++)
+        {
+            var candidate = routes[r].Source;
+            if (candidate != null && (candidate.Solo || MixerGroupBus.Solo(candidate.GroupKey)))
+            {
+                anySoloSource = true;
+                break;
+            }
+        }
+
         for (int r = 0; r < routes.Length; r++)
         {
             var route = routes[r];
-            if (route.Source == null || route.Source.Muted)
+            if (route.Source == null || route.Source.Muted ||
+                MixerGroupBus.Muted(route.Source.GroupKey) ||
+                (anySoloSource && !route.Source.Solo &&
+                 !MixerGroupBus.Solo(route.Source.GroupKey)))
             {
                 continue;
             }
@@ -1393,7 +1427,8 @@ public sealed class OutputNode : IDisposable
             // this stays allocation- and lock-free on the render thread.
             route.Process(temp.AsSpan(0, read), read / channels, channels);
 
-            float gain = route.Gain * route.Source.Gain;
+            float gain = route.Gain * route.Source.Gain *
+                         MixerGroupBus.Gain(route.Source.GroupKey);
             for (int i = 0; i < read; i++)
             {
                 mix[i] += temp[i] * gain;
@@ -1412,13 +1447,16 @@ public sealed class OutputNode : IDisposable
             }
         }
 
-        float outputGain = Volume * MasterGain;
+        float outputGain = MixerGroupBus.Muted(GroupKey)
+            ? 0f
+            : Volume * MasterGain * MixerGroupBus.Gain(GroupKey);
         for (int i = 0; i < mix.Length; i++)
         {
             mix[i] *= outputGain;
         }
 
-        if (Muted || MasterMuted)
+        if (Muted || MasterMuted ||
+            (MixerGroupBus.AnyOutputSolo && !Solo && !MixerGroupBus.Solo(GroupKey)))
         {
             Array.Clear(mix, 0, mix.Length);
         }
@@ -1476,15 +1514,9 @@ public sealed class OutputNode : IDisposable
     /// <summary>Playback state of the underlying endpoint ("Playing", "Stopped", …).</summary>
     public string PlaybackState => _recorder != null
         ? "Recording"
-        : _wasapiOut?.PlaybackState.ToString() ?? (_asioEndpoint?.State ?? "none");
+        : _wasapiOut?.PlaybackState.ToString() ?? "none";
 
-    /// <summary>True when the ASIO driver has delivered at least one buffer.</summary>
-    public bool AsioStreaming => _asioEndpoint?.Streaming ?? false;
-
-    /// <summary>Buffer callbacks delivered by the ASIO driver (diagnostics).</summary>
-    public long AsioCallbackCount => _asioEndpoint?.CallbackCount ?? 0;
-
-    /// <summary>Rate the endpoint renders at: 48 kHz for WASAPI, the driver's rate for ASIO.</summary>
+    /// <summary>Rate the endpoint renders at.</summary>
     public int EndpointSampleRate => _outputSampleRate > 0 ? _outputSampleRate : 48000;
 
     private void OnPlaybackStopped(object? sender, StoppedEventArgs e)
@@ -1510,7 +1542,7 @@ public sealed class OutputNode : IDisposable
 
     public bool Stop()
     {
-        if (!_running && _wasapiOut == null && _recorder == null && _asioEndpoint == null && _pumpThread == null)
+        if (!_running && _wasapiOut == null && _recorder == null && _pumpThread == null)
         {
             return true;
         }
@@ -1554,15 +1586,6 @@ public sealed class OutputNode : IDisposable
             }
         }
 
-        try
-        {
-            _asioEndpoint?.Dispose();
-        }
-        catch
-        {
-        }
-
-        _asioEndpoint = null;
 
         if (_recorder != null)
         {

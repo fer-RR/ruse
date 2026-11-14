@@ -30,6 +30,7 @@ internal sealed partial class WebShellController
         int manualMs = mode == "manual" ? Math.Clamp(_settings.OutputBufferManualMs, 2, 40) : 0;
 
         AudioEngineConfig.Configure(block, cushion, periods == 0 ? 2 : periods, manualMs);
+        OutputNode.ClipGuardLookaheadFrames = !auto && (lowLatency || block <= AudioEngineConfig.MinBlockFrames) ? 32 : 64;
         AudioEngineConfig.ElasticRing = !auto && (lowLatency || _settings.ElasticRing);
         OutputNode.AggressiveCushion = !auto && (lowLatency || mode == "low");
     }

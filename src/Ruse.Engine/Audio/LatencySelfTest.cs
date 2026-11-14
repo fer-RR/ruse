@@ -1,3 +1,6 @@
+using System.Buffers.Binary;
+using System.Net;
+using System.Net.Sockets;
 using NAudio.Wave;
 
 namespace Ruse.App.Audio;
@@ -329,13 +332,29 @@ public static class LatencySelfTest
             input[5] = -0.25f; // BR
             var output = new List<float>();
             conv.Convert(input, output);
-            float expectedLeft = 0.5f + 0.5f * 0.70710678f + 0.25f * 0.5f + 0.25f * 0.70710678f;
-            float expectedRight = -0.5f + 0.5f * 0.70710678f + 0.25f * 0.5f - 0.25f * 0.70710678f;
+            float expectedLeft = 0.5f + 0.5f * 0.70710678f + 0.25f * 0.70710678f;
+            float expectedRight = -0.5f + 0.5f * 0.70710678f - 0.25f * 0.70710678f;
             if (output.Count != 2 ||
                 Math.Abs(output[0] - expectedLeft) > 1e-4f ||
                 Math.Abs(output[1] - expectedRight) > 1e-4f)
             {
                 failures.Add("5.1->stereo: downmix incorrect");
+            }
+        }
+
+        // --- quad (4ch) -> stereo: rear channels only, no center duplication ---
+        {
+            var conv = new FormatConverter(4, 48000);
+            var input = new float[] { 0.5f, -0.5f, 0.25f, -0.25f };
+            var output = new List<float>();
+            conv.Convert(input, output);
+            float expectedLeft = 0.5f + 0.25f * 0.70710678f;
+            float expectedRight = -0.5f - 0.25f * 0.70710678f;
+            if (output.Count != 2 ||
+                Math.Abs(output[0] - expectedLeft) > 1e-4f ||
+                Math.Abs(output[1] - expectedRight) > 1e-4f)
+            {
+                failures.Add("quad->stereo: downmix incorrect");
             }
         }
 
@@ -1328,6 +1347,295 @@ public static class LatencySelfTest
         return full > 0.4f && quiet is > 0.1f and < 0.3f && quiet < full * 0.6f;
     }
 
+    public static bool TestParallelSendAlignment()
+    {
+        const int delayFrames = 240;
+        const int frames = delayFrames * 2;
+        var parallel = new ParallelChainProcessor(new IAudioProcessor[]
+        {
+            new TestDelayProcessor(delayFrames),
+        }, 1f);
+
+        var block = new float[frames * 2];
+        block[0] = 0.5f;
+        block[1] = 0.5f;
+        parallel.Process(block, frames);
+
+        return parallel.LatencySamples == delayFrames &&
+               Math.Abs(block[0]) < 1e-6f &&
+               Math.Abs(block[delayFrames * 2] - 1f) < 1e-4f;
+    }
+
+    public static bool TestOutputWaveBuffer()
+    {
+        var buffer = new OutputWaveBuffer(
+            NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(48000, 2), 120);
+        var source = new byte[960];
+        for (int i = 0; i < source.Length; i++) source[i] = (byte)(i & 0xFF);
+        int written = buffer.Write(source, 0, source.Length);
+        var destination = new byte[1920];
+        int read = buffer.Read(destination, 0, destination.Length);
+        bool payload = written == source.Length && read == destination.Length;
+        for (int i = 0; i < source.Length && payload; i++) payload = destination[i] == source[i];
+        for (int i = source.Length; i < destination.Length && payload; i++) payload = destination[i] == 0;
+        buffer.Clear();
+        return payload && buffer.BufferedBytes == 0;
+    }
+
+    public static bool TestGraphSwapUnderLoad()
+    {
+        var graph = new AudioGraph { AutoRun = false };
+        var source = new SourceNode("Graph swap", SourceKind.Tone);
+        source.SetTone(1000f, ToneWaveform.Sine, -36f);
+        var output = OutputNode.CreateForTest(static (_, _) => { });
+        output.EnableGraphEngine();
+        graph.AddSource(source);
+        graph.AddOutputNode(output);
+        graph.Connect(source, output, 1f);
+        source.Start();
+
+        int stop = 0;
+        int errors = 0;
+        var renderer = new Thread(() =>
+        {
+            while (Volatile.Read(ref stop) == 0)
+            {
+                try { graph.RenderEngineOnceForTest(); }
+                catch { Interlocked.Increment(ref errors); break; }
+            }
+        })
+        { IsBackground = true, Name = "GraphSwapTest" };
+        renderer.Start();
+        for (int i = 0; i < 100; i++)
+        {
+            graph.RefreshModifiers();
+            Thread.Sleep(1);
+        }
+
+        Volatile.Write(ref stop, 1);
+        bool joined = renderer.Join(5000);
+        graph.Dispose();
+        source.Dispose();
+        return joined && Volatile.Read(ref errors) == 0;
+    }
+
+    public static bool TestNetworkPacketReorder()
+    {
+        NetworkPcmCapture? capture = null;
+        int port = 0;
+        for (int attempt = 0; attempt < 8 && capture == null; attempt++)
+        {
+            int candidatePort = Random.Shared.Next(20_000, 50_000);
+            var candidate = new NetworkPcmCapture(candidatePort, 10);
+            try
+            {
+                candidate.Start();
+                capture = candidate;
+                port = candidatePort;
+            }
+            catch
+            {
+                candidate.Dispose();
+            }
+        }
+
+        if (capture == null)
+        {
+            return false;
+        }
+
+        var received = new List<float>(4096);
+        capture.DataAvailable += (_, args) =>
+        {
+            var block = new float[args.BytesRecorded / sizeof(float)];
+            Buffer.BlockCopy(args.Buffer, 0, block, 0, args.BytesRecorded);
+            lock (received)
+            {
+                received.AddRange(block);
+            }
+        };
+
+        try
+        {
+            using var sender = new UdpClient(AddressFamily.InterNetwork);
+            var target = new IPEndPoint(IPAddress.Loopback, port);
+            ushort session = (ushort)Random.Shared.Next(1, 60_000);
+            sender.Send(BuildNetworkPacket(session, 0u, 0L, 0.1f), target);
+            sender.Send(BuildNetworkPacket(session, 2u, 480L, 0.3f), target);
+            sender.Send(BuildNetworkPacket(session, 1u, 240L, 0.2f), target);
+
+            Thread.Sleep(250);
+            bool packets = capture.Packets >= 3;
+            bool complete = capture.LostPackets == 0;
+            float[] samples;
+            lock (received)
+            {
+                samples = received.ToArray();
+            }
+
+            int start = -1;
+            for (int i = 0; i + 1 < samples.Length; i += 2)
+            {
+                if (Math.Abs(samples[i]) > 0.01f)
+                {
+                    start = i;
+                    break;
+                }
+            }
+
+            bool ordered = start >= 0 &&
+                           start + NetworkPcm.BlockFrames * NetworkPcm.Channels * 3 <= samples.Length;
+            for (int block = 0; block < 3 && ordered; block++)
+            {
+                int index = start + block * NetworkPcm.BlockFrames * NetworkPcm.Channels;
+                float expected = 0.1f * (block + 1);
+                ordered = Math.Abs(samples[index] - expected) < 0.01f &&
+                          Math.Abs(samples[index + 1] - expected) < 0.01f;
+            }
+
+            return packets && complete && ordered;
+        }
+        finally
+        {
+            capture.Stop();
+            capture.Dispose();
+        }
+    }
+
+    private static byte[] BuildNetworkPacket(
+        ushort session, uint sequence, long timestamp, float value)
+    {
+        var packet = new byte[NetworkPcm.HeaderBytes +
+                              NetworkPcm.BlockFrames * NetworkPcm.Channels * 2];
+        packet[0] = (byte)'R';
+        packet[1] = (byte)'U';
+        packet[2] = (byte)'S';
+        packet[3] = (byte)'E';
+        packet[4] = 1;
+        packet[5] = NetworkPcm.Channels;
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(6), session);
+        BinaryPrimitives.WriteInt32LittleEndian(packet.AsSpan(8), NetworkPcm.SampleRate);
+        BinaryPrimitives.WriteUInt32LittleEndian(packet.AsSpan(12), sequence);
+        BinaryPrimitives.WriteInt64LittleEndian(packet.AsSpan(16), timestamp);
+        short sample = (short)MathF.Round(value * short.MaxValue);
+        int offset = NetworkPcm.HeaderBytes;
+        for (int frame = 0; frame < NetworkPcm.BlockFrames; frame++)
+        {
+            BinaryPrimitives.WriteInt16LittleEndian(packet.AsSpan(offset), sample);
+            BinaryPrimitives.WriteInt16LittleEndian(packet.AsSpan(offset + 2), sample);
+            offset += 4;
+        }
+
+        return packet;
+    }
+
+    public static bool TestMixerGroupSolo()
+    {
+        const string soloGroup = "source:#selftest-solo";
+        const string otherGroup = "source:#selftest-other";
+        MixerGroupBus.SetSolo(soloGroup, false);
+        MixerGroupBus.SetSolo(otherGroup, false);
+        var graph = new AudioGraph { AutoRun = false };
+        var sourceA = new SourceNode("Group solo A", SourceKind.Application) { GroupKey = soloGroup };
+        var sourceB = new SourceNode("Group solo B", SourceKind.Application) { GroupKey = otherGroup };
+        var output = OutputNode.CreateForTest(static (_, _) => { });
+        output.EnableGraphEngine();
+        graph.AddSource(sourceA);
+        graph.AddSource(sourceB);
+        graph.AddOutputNode(output);
+        graph.Connect(sourceA, output, 1f);
+        graph.Connect(sourceB, output, 1f);
+        var block = new float[240 * 2];
+        Array.Fill(block, 0.5f);
+        float oldMaster = OutputNode.MasterGain;
+        try
+        {
+            OutputNode.MasterGain = 1f;
+            sourceA.WriteTestSamples(block);
+            sourceB.WriteTestSamples(block);
+            graph.RenderEngineOnceForTest();
+            output.ClearEngineAudio();
+            MixerGroupBus.SetSolo(soloGroup, true);
+            sourceA.WriteTestSamples(block);
+            sourceB.WriteTestSamples(block);
+            graph.RenderEngineOnceForTest();
+            float soloPeak = output.DrainEngineLevelForTest(240);
+            MixerGroupBus.SetSolo(soloGroup, false);
+            sourceA.WriteTestSamples(block);
+            sourceB.WriteTestSamples(block);
+            graph.RenderEngineOnceForTest();
+            float combinedPeak = output.DrainEngineLevelForTest(240);
+            MixerGroupBus.SetSolo(soloGroup, false);
+            sourceA.Solo = true;
+            sourceA.WriteTestSamples(block);
+            sourceB.WriteTestSamples(block);
+            graph.RenderEngineOnceForTest();
+            float directSoloPeak = output.DrainEngineLevelForTest(240);
+            sourceA.Solo = false;
+            return soloPeak > 0.1f && combinedPeak > soloPeak * 1.4f &&
+                   directSoloPeak > 0.1f && directSoloPeak < combinedPeak * 0.75f;
+        }
+        finally
+        {
+            MixerGroupBus.SetSolo(soloGroup, false);
+            MixerGroupBus.SetSolo(otherGroup, false);
+            OutputNode.MasterGain = oldMaster;
+            graph.Dispose();
+            sourceA.Dispose();
+            sourceB.Dispose();
+        }
+    }
+
+
+    public static bool TestMixerOutputGroupSolo()
+    {
+        const string soloGroup = "output:#selftest-out-a";
+        const string otherGroup = "output:#selftest-out-b";
+        MixerGroupBus.SetSolo(soloGroup, false);
+        MixerGroupBus.SetSolo(otherGroup, false);
+        var graph = new AudioGraph { AutoRun = false };
+        var source = new SourceNode("Output group solo", SourceKind.Application);
+        var outputA = OutputNode.CreateForTest(static (_, _) => { });
+        var outputB = OutputNode.CreateForTest(static (_, _) => { });
+        outputA.GroupKey = soloGroup;
+        outputB.GroupKey = otherGroup;
+        outputA.EnableGraphEngine();
+        outputB.EnableGraphEngine();
+        graph.AddSource(source);
+        graph.AddOutputNode(outputA);
+        graph.AddOutputNode(outputB);
+        graph.Connect(source, outputA, 1f);
+        graph.Connect(source, outputB, 1f);
+        var block = new float[240 * 2];
+        Array.Fill(block, 0.5f);
+        float oldMaster = OutputNode.MasterGain;
+        try
+        {
+            OutputNode.MasterGain = 1f;
+            source.WriteTestSamples(block);
+            graph.RenderEngineOnceForTest();
+            outputA.ClearEngineAudio();
+            outputB.ClearEngineAudio();
+            MixerGroupBus.SetSolo(soloGroup, true);
+            source.WriteTestSamples(block);
+            graph.RenderEngineOnceForTest();
+            float levelA = outputA.DrainEngineLevelForTest(240);
+            float levelB = outputB.DrainEngineLevelForTest(240);
+            return levelA > 0.1f && levelB == 0f;
+        }
+        finally
+        {
+            MixerGroupBus.SetSolo(soloGroup, false);
+            MixerGroupBus.SetSolo(otherGroup, false);
+            OutputNode.MasterGain = oldMaster;
+            graph.Dispose();
+            outputA.Dispose();
+            outputB.Dispose();
+            source.Dispose();
+        }
+    }
+
+
     public static bool TestParametricEqResponse()
     {
         var flat = new ParametricEqProcessor();
@@ -1734,7 +2042,7 @@ public static class LatencySelfTest
         const int frames = 240; // matches the mixer pump
         const int blocks = sampleRate / frames * 5; // 5 seconds of audio
 
-        const int expectedEffectCount = 61;
+        const int expectedEffectCount = 60;
         string[] requiredIds =
         [
             GainProcessor.Id,
@@ -1992,7 +2300,7 @@ public static class LatencySelfTest
     /// </summary>
     private static double EffectBudgetMs(string typeId) => typeId switch
     {
-        "pitch-shift" or "pitch-shift-hq" or "auto-tune" or "auto-tune-experimental" or
+        "pitch-shift" or "auto-tune" or "auto-tune-experimental" or
             "convolution-reverb" or "noise-suppression" or "multiband-compressor" or
             "room-reverb" => 2.5,
         _ => 1.0,
@@ -2026,7 +2334,7 @@ public static class LatencySelfTest
         long framesMixed = 0;
         // Preallocated feed buffer — the harness must not allocate either, or it
         // would pollute the allocation measurement of the engine.
-        var feed = new float[480];
+        var feed = new float[4800];
         Array.Fill(feed, 0.2f);
 
         var sinks = new OutputNode[outputs];
@@ -2035,11 +2343,6 @@ public static class LatencySelfTest
             var sink = OutputNode.CreateForTest((mix, length) =>
             {
                 System.Threading.Interlocked.Add(ref framesMixed, length / 2);
-                // Keep the ring buffers fed so the mix is never starved.
-                for (int i = 0; i < sources; i++)
-                {
-                    src[i].WriteTestSamples(feed);
-                }
             });
 
             for (int i = 0; i < sources; i++)
@@ -2047,15 +2350,33 @@ public static class LatencySelfTest
                 sink.Inputs.Add(new OutputNode.Route { Source = src[i], Gain = 1f });
             }
 
+            sink.UnpacedTestSink = true;
             sink.RefreshRoutes();
             sink.Start();
             sinks[o] = sink;
         }
 
+        int feedStop = 0;
+        var feeder = new Thread(() =>
+        {
+            while (Volatile.Read(ref feedStop) == 0)
+            {
+                for (int i = 0; i < sources; i++)
+                {
+                    src[i].WriteTestSamples(feed);
+                }
+            }
+        })
+        { IsBackground = true, Name = "BenchFeed" };
+        feeder.Start();
+
         long allocBefore = GC.GetTotalAllocatedBytes(precise: false);
         var cpuBefore = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
 
         Thread.Sleep((int)(seconds * 1000));
+        Volatile.Write(ref feedStop, 1);
+        feeder.Join();
+
 
         var cpuAfter = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
         long allocAfter = GC.GetTotalAllocatedBytes(precise: false);
@@ -2136,11 +2457,12 @@ public static class LatencySelfTest
         long shortRead = output.ShortReadFrames;
         float meter = source.MeterLevel;
 
+
+
         output.Stop();
         output.Dispose();
         source.Stop();
         source.Dispose();
-
         long samples = Math.Max(1, mixedFrames * channels);
         double rms = Math.Sqrt(sumSquares / samples);
 
@@ -3246,157 +3568,16 @@ public static class LatencySelfTest
                 $"ring={source.BufferedMs:0}ms meter={source.MeterLevel:0.00}");
         }
 
+        long finalCaptured = source.CapturedFrames;
+        double finalRing = source.BufferedMs;
         output.Stop();
         output.Dispose();
         source.Stop();
         source.Dispose();
-
-        long finalCaptured = source.CapturedFrames;
         double drift = (finalCaptured - consumed) / 48000.0 * 1000.0;
 
         return "latency profile: " + string.Join(" | ", samples) +
-               $" | drift (captured-consumed) {drift:0} ms, final ring {source.BufferedMs:0} ms";
-    }
-
-    /// <summary>
-    /// Reports the ASIO drivers on this machine and, when there is one, opens it
-    /// and renders the mix through it for a moment. Drivers whose host is not
-    /// running have no clock, so "no clock" is reported rather than failed.
-    /// </summary>
-    public static string TestAsioDevices()
-    {
-        var drivers = AsioCatalog.Discover();
-        if (drivers.Count == 0)
-        {
-            return "asio: no ASIO drivers installed -> PASS (nothing to drive)";
-        }
-
-        var lines = new List<string>();
-        bool anyStarted = false;
-        bool allOpened = true;
-
-        foreach (var driver in drivers)
-        {
-            string line = $"asio: '{driver.Name}' {driver.InputChannelCount} in / {driver.OutputChannelCount} out, " +
-                          $"{driver.SampleRate} Hz, buffer {driver.BufferSize} frames, " +
-                          $"latency {driver.OutputLatencySamples} out / {driver.InputLatencySamples} in";
-
-            try
-            {
-                var graph = new AudioGraph { AutoRun = false };
-                var output = graph.AddOutput(driver);
-                output.Start();
-
-                // Start() waits for the first buffer; let a few more flow so
-                // the callback count and FlexASIO's log prove sustained
-                // streaming rather than a single kick from ASIOStart.
-                if (output.AsioStreaming)
-                {
-                    Thread.Sleep(150);
-                }
-
-                line += $", state {output.PlaybackState}, rate {output.EndpointSampleRate} Hz, " +
-                        $"callbacks {output.AsioCallbackCount}, buffered {output.BufferedMs:0} ms, " +
-                        $"latency {output.EstimatedLatencyMs:0.0} ms";
-
-                // The driver needs a clock from its host; without one it stays
-                // configured but never streams. That is a driver condition, not
-                // a bug in the app, so it is reported rather than failed.
-                if (output.AsioStreaming)
-                {
-                    anyStarted = true;
-                }
-                else
-                {
-                    line += " (no clock: is the driver host running?)";
-                }
-
-                output.Stop();
-            }
-            catch (Exception ex)
-            {
-                allOpened = false;
-                line += $" -> FAILED: {ex.Message}";
-            }
-
-            lines.Add(line);
-        }
-
-        lines.Add(TestAsioRateConversion());
-
-        string verdict = anyStarted ? "PASS" : allOpened ? "PASS (driver present, idle)" : "FAIL";
-        return string.Join(" | ", lines) + " -> " + verdict;
-    }
-
-    /// <summary>
-    /// Checks the 48 kHz mixer to driver-rate conversion: the frame count must
-    /// follow the rate ratio and the tone must keep its pitch.
-    /// </summary>
-    private static string TestAsioRateConversion()
-    {
-        const int mixRate = 48000;
-        const int targetRate = 44100;
-        const double toneHz = 440.0;
-
-        var format = NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(mixRate, 2);
-        var buffer = new NAudio.Wave.BufferedWaveProvider(format, TimeSpan.FromSeconds(2));
-
-        int frames = mixRate;
-        var tone = new float[frames * 2];
-        for (int i = 0; i < frames; i++)
-        {
-            float v = (float)(0.5 * Math.Sin(2 * Math.PI * toneHz * i / mixRate));
-            tone[i * 2] = v;
-            tone[(i * 2) + 1] = v;
-        }
-
-        buffer.AddSamples(System.Runtime.InteropServices.MemoryMarshal.AsBytes(tone.AsSpan()));
-
-        var provider = new AsioFloatProvider(buffer, targetRate);
-        var outBytes = new byte[targetRate * 2 * 4];
-        int total = 0;
-        while (total < outBytes.Length)
-        {
-            int read = provider.Read(outBytes, total, outBytes.Length - total);
-            if (read <= 0)
-            {
-                break;
-            }
-
-            total += read;
-        }
-
-        int outFrames = total / 8;
-
-        // Measure the pitch of the converted signal.
-        var samples = new float[outFrames * 2];
-        outBytes.AsSpan(0, total).CopyTo(System.Runtime.InteropServices.MemoryMarshal.AsBytes(samples.AsSpan()));
-
-        int crossings = 0;
-        double peak = 0;
-        for (int i = 1; i < outFrames; i++)
-        {
-            if ((samples[(i * 2) - 2] < 0) != (samples[(i * 2)] < 0))
-            {
-                crossings++;
-            }
-        }
-
-        for (int i = 0; i < outFrames * 2; i++)
-        {
-            peak = Math.Max(peak, Math.Abs(samples[i]));
-        }
-
-        double measuredHz = crossings > 0 ? crossings * targetHz() / 2.0 / outFrames : 0;
-
-        int expected = (int)Math.Round(frames * (targetRate / (double)mixRate));
-        bool rateOk = Math.Abs(outFrames - expected) <= expected / 100 + 8;
-        bool pitchOk = Math.Abs(measuredHz - toneHz) < 2.0 && peak > 0.2;
-
-        return $"asio rate: 48k -> {targetRate / 1000.0:0.0}k gave {outFrames} frames (expected {expected}), " +
-               $"peak {peak:0.000}, tone {measuredHz:0.0} Hz -> {(rateOk && pitchOk ? "PASS" : "FAIL")}";
-
-        static double targetHz() => 44100;
+               $" | drift (captured-consumed) {drift:0} ms, final ring {finalRing:0} ms";
     }
 
     /// <summary>

@@ -10,7 +10,6 @@ public enum SourceKind
     Application,
     Device,
     SystemLoopback,
-    Asio,
     File,
     Tone,
     Synth,
@@ -72,11 +71,6 @@ public sealed class SourceNode : IDisposable
     public double NetworkBufferedMs => (_capture as NetworkPcmCapture)?.BufferedMs ?? 0;
     public int TtsQueuedFiles => (_capture as TtsAudioCapture)?.QueuedFiles ?? 0;
 
-    /// <summary>ASIO driver name when <see cref="Kind"/> is <see cref="SourceKind.Asio"/>.</summary>
-    public string? AsioDriver { get; }
-
-    /// <summary>ASIO input channels to capture (first two are used for the stereo mix).</summary>
-    public int[] AsioChannels { get; }
     private volatile bool _timelineRunning;
     public bool IsRunning => (_timelineRunning || _capture != null) && !_faulted &&
         (_capture is not AudioFileCapture file || file.IsRunning) &&
@@ -89,6 +83,7 @@ public sealed class SourceNode : IDisposable
     private volatile bool _stopRequested;
 
     public float Gain { get; set; } = 1.0f;
+    public string? GroupKey { get; set; }
     public bool Muted { get; set; }
     public bool Solo { get; set; }
     public string? SelectedOutputId { get; set; }
@@ -120,8 +115,7 @@ public sealed class SourceNode : IDisposable
     public bool CaptureLowLatencyActive => _capture is DeviceCapture capture && capture.LowLatencyActive;
 
     public SourceNode(string title, SourceKind kind, uint? processId = null, string? deviceId = null,
-        string? asioDriver = null, int[]? asioChannels = null, string? processName = null,
-        string? filePath = null, bool fileLoop = false, float fileSpeed = 1f)
+        string? processName = null, string? filePath = null, bool fileLoop = false, float fileSpeed = 1f)
     {
         Title = title;
         Kind = kind;
@@ -134,8 +128,6 @@ public sealed class SourceNode : IDisposable
         _fileDurationSeconds = !string.IsNullOrWhiteSpace(filePath)
             ? AudioFileCapture.GetDuration(filePath)
             : 0;
-        AsioDriver = asioDriver;
-        AsioChannels = asioChannels ?? new[] { 0, 1 };
     }
 
     public bool FileLoop { get; private set; }
@@ -402,8 +394,12 @@ public sealed class SourceNode : IDisposable
                 _fadeRemaining -= fade;
             }
 
-            _lastLeft = destination[read - 2];
-            _lastRight = destination[read - 1];
+            if (read >= 2)
+            {
+                _lastLeft = destination[read - 2];
+                _lastRight = destination[read - 1];
+            }
+
             return read;
         }
 
@@ -586,9 +582,6 @@ public sealed class SourceNode : IDisposable
             case SourceKind.SystemLoopback:
                 StartSystemLoopback();
                 break;
-            case SourceKind.Asio:
-                StartAsioCapture();
-                break;
             case SourceKind.File:
                 StartFileCapture();
                 break;
@@ -625,9 +618,6 @@ public sealed class SourceNode : IDisposable
             case WasapiRecorder wlc:
                 wlc.RecordingStopped += OnCaptureStopped;
                 break;
-            case AsioCapture ac:
-                ac.Stopped += OnAsioStopped;
-                break;
         }
     }
 
@@ -644,22 +634,9 @@ public sealed class SourceNode : IDisposable
             case WasapiRecorder wlc:
                 wlc.RecordingStopped -= OnCaptureStopped;
                 break;
-            case AsioCapture ac:
-                ac.Stopped -= OnAsioStopped;
-                break;
         }
     }
 
-    private void OnAsioStopped(AsioCapture capture, string reason)
-    {
-        if (_stopRequested)
-        {
-            return;
-        }
-
-        _faulted = true;
-        Faulted?.Invoke(this, reason);
-    }
 
     private void OnCaptureStopped(object? sender, NAudio.Wave.StoppedEventArgs e)
     {
@@ -835,86 +812,64 @@ public sealed class SourceNode : IDisposable
         }
     }
 
-    private void StartAsioCapture()
-    {
-        if (string.IsNullOrWhiteSpace(AsioDriver))
-        {
-            throw new InvalidOperationException("No ASIO driver was given for this source.");
-        }
-
-        var capture = new AsioCapture(AsioDriver, AsioChannels);
-        capture.DataAvailable += OnAsioData;
-        WireStopEvents(capture);
-
-        // ASIO delivers float at the driver's own rate; the converter brings it
-        // to the mixer's 48 kHz stereo format like every other source.
-        SetSourceFormat(capture.ChannelCount, capture.SampleRate, bitsPerSample: 32);
-        _capture = capture;
-
-        try
-        {
-            capture.Start();
-        }
-        catch
-        {
-            _capture = null;
-            capture.DataAvailable -= OnAsioData;
-            UnwireStopEvents(capture);
-            capture.Dispose();
-            throw;
-        }
-    }
-
-    private readonly AudioPacketEventArgs _asioArgs = new();
-
-    private void OnAsioData(AsioCapture capture, byte[] data, int bytesRecorded)
-    {
-        _asioArgs.Set(data, bytesRecorded);
-        OnDataAvailable(this, _asioArgs);
-    }
-
     private void StartSystemLoopback()
     {
         using var enumerator = new MMDeviceEnumerator();
-        MMDevice device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-        _loopbackDevice = device;
-        WasapiRecorder? capture = null;
-        try
-        {
-            // Loopback capture is incompatible with low-latency mode, so use plain
-            // event-driven shared mode on the default render endpoint.
-            capture = new WasapiRecorderBuilder()
-                .WithDevice(device)
-                .WithSharedMode()
-                .WithEventSync()
-                .WithBufferLength(20)
-                .WithLoopbackCapture()
-                .Build();
+        Exception? failure = null;
 
-            _loopbackBuffer = new byte[Math.Max(16384, capture.WaveFormat.AverageBytesPerSecond / 5)];
-            SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate,
-                isFloat: IsFloatFormat(capture.WaveFormat),
-                bitsPerSample: capture.WaveFormat.BitsPerSample);
-            capture.DataAvailable += OnLoopbackData;
-            WireStopEvents(capture);
-            _capture = capture;
-            capture.StartRecording();
-        }
-        catch
+        // Loopback cannot use IAudioClient3 low-latency mode. Try a 10 ms
+        // internal buffer first and fall back to the safer 20 ms if the
+        // endpoint or driver rejects it. Use a fresh endpoint for each try
+        // because a failed recorder may have invalidated the device wrapper.
+        foreach (int bufferMs in new[] { 10, 20 })
         {
-            _capture = null;
-            if (capture != null)
+            MMDevice? device = null;
+            WasapiRecorder? capture = null;
+            try
             {
-                capture.DataAvailable -= OnLoopbackData;
-                UnwireStopEvents(capture);
-                capture.Dispose();
-            }
+                device = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                capture = new WasapiRecorderBuilder()
+                    .WithDevice(device)
+                    .WithSharedMode()
+                    .WithEventSync()
+                    .WithBufferLength(bufferMs)
+                    .WithLoopbackCapture()
+                    .Build();
 
-            _loopbackDevice?.Dispose();
-            _loopbackDevice = null;
-            throw;
+                _loopbackBuffer = new byte[Math.Max(16384, capture.WaveFormat.AverageBytesPerSecond / 5)];
+                SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate,
+                    isFloat: IsFloatFormat(capture.WaveFormat),
+                    bitsPerSample: capture.WaveFormat.BitsPerSample);
+                capture.DataAvailable += OnLoopbackData;
+                WireStopEvents(capture);
+                _capture = capture;
+                _loopbackDevice = device;
+                capture.StartRecording();
+                return;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+                _capture = null;
+                if (capture != null)
+                {
+                    capture.DataAvailable -= OnLoopbackData;
+                    UnwireStopEvents(capture);
+                    capture.Dispose();
+                }
+
+                if (ReferenceEquals(_loopbackDevice, device))
+                {
+                    _loopbackDevice = null;
+                }
+
+                device?.Dispose();
+            }
         }
+
+        throw new InvalidOperationException("Loopback capture could not start.", failure);
     }
+
 
     // WasapiRecorder delivers a span; bridge it to the reusable packet shape the
     // rest of the pipeline uses, with a reusable buffer to avoid per-packet allocs.
@@ -1281,10 +1236,6 @@ public sealed class SourceNode : IDisposable
                 wlc.DataAvailable -= OnLoopbackData;
                 wlc.StopRecording();
                 wlc.Dispose();
-                break;
-            case AsioCapture ac:
-                ac.DataAvailable -= OnAsioData;
-                ac.Dispose();
                 break;
             case AudioFileCapture file:
                 file.DataAvailable -= OnDataAvailable;

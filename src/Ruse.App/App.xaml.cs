@@ -730,23 +730,6 @@ public partial class App : Application
             return;
         }
 
-        if (e.Args.Contains("--asio-test", StringComparer.OrdinalIgnoreCase))
-        {
-            string asioLine;
-            try
-            {
-                asioLine = $"Ruse asio test: {LatencySelfTest.TestAsioDevices()}";
-            }
-            catch (Exception ex)
-            {
-                asioLine = $"Ruse asio test FAILED: {ex}";
-            }
-
-            WriteResult("asio-test.txt", asioLine);
-            Shutdown();
-            return;
-        }
-
         if (e.Args.Contains("--record-test", StringComparer.OrdinalIgnoreCase))
         {
             string recordLine;
@@ -881,11 +864,11 @@ public partial class App : Application
         {
             var r = LatencySelfTest.Benchmark(sources, outputs, seconds);
             double perSecond = r.FramesMixed / r.Seconds;
-            double cpuPercent = r.CpuMs / (r.Seconds * 1000.0) * 100.0 / Environment.ProcessorCount;
+            double coresUsed = r.CpuMs / (r.Seconds * 1000.0);
             double allocPerSec = r.AllocBytes / r.Seconds / 1024.0;
-            line = $"Ruse bench: {r.Sources} src → {r.Outputs} out, {r.Seconds:0}s | " +
+            line = $"Ruse bench: {r.Sources} src -> {r.Outputs} out, {r.Seconds:0}s | " +
                    $"{perSecond:0} frames/s mixed | CPU {r.CpuMs:0} ms " +
-                   $"({cpuPercent:0.0}% of one core) | GC alloc {allocPerSec:0.0} KiB/s.";
+                   $"({coresUsed:0.00} cores) | GC alloc {allocPerSec:0.0} KiB/s.";
         }
         catch (Exception ex)
         {

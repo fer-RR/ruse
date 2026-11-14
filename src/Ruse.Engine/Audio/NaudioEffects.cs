@@ -77,12 +77,8 @@ public static class NaudioEffects
             "Lo-fi reduction of bit depth and sample rate.", () => new BitCrusherEffect());
 
         RegisterProcessor("pitch-shift", "Pitch shift",
-            "Shifts pitch with about 43 ms latency.",
+            "Shifts pitch with balanced or HQ quality and selectable latency.",
             () => new PitchShiftProcessor(PitchShiftProcessor.Id, "Pitch shift", 2048));
-
-        RegisterProcessor("pitch-shift-hq", "Pitch shift HQ",
-            "Highest-quality pitch shift, with about 85 ms latency.",
-            () => new PitchShiftProcessor(PitchShiftProcessor.HqId, "Pitch shift HQ", 4096));
 
         Register("transient-shaper", "Transient shaper",
             "Shapes the attack and sustain of the signal.", () => new TransientShaperEffect());

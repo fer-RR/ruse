@@ -16,15 +16,15 @@ public static class Vst3HostRunner
             audio.Connect(15000);
             control.Connect(15000);
 
+            using var shared = Vst3SharedAudio.Open(audioPipeName);
             using var processor = new Vst3Processor(identifier, stateBase64, start: true);
-            var audioThread = new Thread(() => AudioLoop(audio, processor))
+            var audioThread = new Thread(() => AudioLoop(processor, shared))
             {
                 IsBackground = true,
                 Name = "Vst3HostAudio",
             };
             audioThread.Start();
 
-            var buffer = new float[8192];
             while (true)
             {
                 var request = Vst3HostProtocol.ReadRequest(control);
@@ -103,23 +103,22 @@ public static class Vst3HostRunner
         }
     }
 
-    private static void AudioLoop(NamedPipeClientStream stream, Vst3Processor processor)
+    private static void AudioLoop(Vst3Processor processor, Vst3SharedAudio shared)
     {
         using var mmcss = MmcssScope.Enter();
-        var buffer = new float[8192];
+        var buffer = new float[Vst3SharedAudio.MaxFrames * Vst3SharedAudio.Channels];
         try
         {
             while (true)
             {
-                if (!Vst3HostProtocol.ReadAudio(stream, buffer, out int frames, out int channels, out _))
+                if (!shared.Receive(buffer, out int frames))
                 {
                     return;
                 }
 
-                int samples = frames * channels;
+                int samples = frames * Vst3SharedAudio.Channels;
                 processor.Process(buffer.AsSpan(0, samples), frames);
-                Vst3HostProtocol.WriteAudio(stream, buffer.AsSpan(0, samples), frames, channels,
-                    Vst3HostProtocol.CommandProcess);
+                shared.Send(buffer, frames);
             }
         }
         catch (Exception ex)
@@ -130,6 +129,7 @@ public static class Vst3HostRunner
             }
         }
     }
+
 
     private static Vst3HostInfo BuildInfo(Vst3Processor processor)
     {

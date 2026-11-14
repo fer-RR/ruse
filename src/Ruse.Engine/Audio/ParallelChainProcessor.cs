@@ -11,6 +11,8 @@ public sealed class ParallelChainProcessor : IAudioProcessor, IParameterizedProc
 
     private readonly IAudioProcessor[] _processors;
     private readonly AudioParameter[] _parameters;
+    private readonly int _latency;
+    private readonly DelayLine? _dryDelay;
     private float[] _dry = new float[8192];
     private volatile float _send;
     private float _currentSend;
@@ -20,6 +22,12 @@ public sealed class ParallelChainProcessor : IAudioProcessor, IParameterizedProc
     {
         _processors = processors;
         _send = Math.Clamp(send, 0f, 1f);
+        for (int i = 0; i < processors.Length; i++)
+        {
+            _latency += processors[i].LatencySamples;
+        }
+
+        _dryDelay = _latency > 0 ? new DelayLine(_latency, 2) : null;
         _currentSend = _send;
         _parameters = new[]
         {
@@ -46,11 +54,10 @@ public sealed class ParallelChainProcessor : IAudioProcessor, IParameterizedProc
     }
 
     /// <summary>
-    /// The dry path is immediate, so reporting the wet latency here would make
-    /// the route aligner delay unrelated routes. The wet tail is intentionally
-    /// allowed to lag behind the dry signal, as on a mixer send.
+    /// The dry path is delayed by the same amount as the wet path, so the two
+    /// sum in phase and the graph can align this route with other routes.
     /// </summary>
-    public int LatencySamples => 0;
+    public int LatencySamples => _latency;
 
     public void Process(Span<float> samples, int frames)
     {
@@ -72,6 +79,8 @@ public sealed class ParallelChainProcessor : IAudioProcessor, IParameterizedProc
         }
 
         samples.CopyTo(_dry);
+        var dry = _dry.AsSpan(0, samples.Length);
+        _dryDelay?.Process(dry, 2);
         for (int i = 0; i < _processors.Length; i++)
         {
             _processors[i].Process(samples, frames);
@@ -80,13 +89,14 @@ public sealed class ParallelChainProcessor : IAudioProcessor, IParameterizedProc
         for (int i = 0; i < samples.Length; i++)
         {
             _currentSend = ParameterSmoothing.Approach(_currentSend, targetSend, ParameterSmoothing.FastAlpha);
-            samples[i] = _dry[i] + (samples[i] * _currentSend);
+            samples[i] = dry[i] + (samples[i] * _currentSend);
         }
     }
 
     public void Reset()
     {
         _primed = false;
+        _dryDelay?.Reset();
         for (int i = 0; i < _processors.Length; i++)
         {
             _processors[i].Reset();

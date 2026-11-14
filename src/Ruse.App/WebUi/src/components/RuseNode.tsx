@@ -45,7 +45,6 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'app': return <AppWindow {...props} />;
     case 'mic': return <Mic {...props} />;
     case 'system': return <AudioLines {...props} />;
-    case 'asio': return <Radio {...props} />;
     case 'output': return <MonitorSpeaker {...props} />;
     case 'virtual': return <Radio {...props} />;
     case 'file': return <FileAudio {...props} />;
@@ -740,8 +739,14 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const formatRateValue = data.sampleRate && data.sampleRate > 0 ? data.sampleRate : 48000;
   const formatBits = data.bitsPerSample ?? 32;
   const flowing = enabled && active;
+  const hasBadges = !enabled || recording || data.duplicateRisk || telemetry?.clipping ||
+    telemetry?.clipGuardActive || (data.isTts && data.ttsUsesGpu !== true) ||
+    ((data.isTranscriber || data.isTranslator) && typeof telemetry?.usesGpu === 'boolean') ||
+    (data.showDiagnostics && (data.kind === 'source' || data.kind === 'output'));
+
   const classes = [
     'ruse-node',
+    hasBadges ? 'has-badges' : '',
 
     `node-${data.kind}`,
     selected ? 'selected' : '',

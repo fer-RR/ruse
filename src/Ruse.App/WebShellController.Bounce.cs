@@ -1,240 +1,232 @@
+﻿using System.IO;
+using NAudio.Wave;
 using Ruse.App.Audio;
+using Ruse.App.Diagnostics;
 
 namespace Ruse.App;
 
 internal sealed partial class WebShellController
 {
     /// <summary>
-    /// Snapshot of the effect chains used for an offline timeline bounce. The
-    /// live graph nodes are cloned so the render cannot disturb realtime state.
+    /// Offline graph used by timeline bounce/freeze. It clones the live
+    /// timeline, effect chains and the destination output, then renders the
+    /// whole routing graph one block at a time on a virtual clock.
     /// </summary>
-    private sealed class TimelineBouncePlan : IDisposable
+    private sealed class OfflineTimelineBounce : IDisposable
     {
-        public Dictionary<string, List<IAudioProcessor>> Tracks { get; } = new(StringComparer.Ordinal);
-        public List<IAudioProcessor> Master { get; } = new();
+        public AudioGraph Graph { get; } = new() { AutoRun = false };
+        public TimelineService Timeline { get; } = new();
+        public required OutputNode Output { get; init; }
         public bool SkippedVst3 { get; set; }
         public bool SkippedProcessor { get; set; }
+        public double TailSeconds { get; set; } = 2.0;
 
-        public void ProcessTrack(TimelineTrack track, float[] buffer, int frames)
+        public bool Render(string path, out string error)
         {
-            if (Tracks.TryGetValue(track.Id, out var chain))
+            error = "";
+            long length = Timeline.TotalLengthSamples();
+            if (length <= 0)
             {
-                ProcessChain(chain, buffer, frames);
-            }
-        }
-
-        public void ProcessMaster(float[] buffer, int frames) => ProcessChain(Master, buffer, frames);
-
-        private static void ProcessChain(List<IAudioProcessor> chain, float[] buffer, int frames)
-        {
-            if (chain.Count == 0)
-            {
-                return;
+                error = "The timeline has no audio to bounce.";
+                return false;
             }
 
-            const int chunkFrames = 1024;
-            for (int offset = 0; offset < frames; offset += chunkFrames)
+            // Let delay and reverb tails finish naturally.
+            length += (long)Math.Round(Math.Clamp(TailSeconds, 0, 30) * AudioEngineConfig.SampleRate);
+            Timeline.Seek(0);
+            Timeline.Play();
+
+            try
             {
-                int count = Math.Min(chunkFrames, frames - offset);
-                var span = buffer.AsSpan(offset * 2, count * 2);
-                foreach (var processor in chain)
+                const int channels = 2;
+                int blockFrames = AudioEngineConfig.BlockFrames;
+                var block = new float[blockFrames * channels];
+                var output = new float[blockFrames * channels];
+                using var writer = new WaveFileWriter(
+                    path, new WaveFormat(AudioEngineConfig.SampleRate, 24, channels));
+                long position = 0;
+                while (position < length)
                 {
-                    processor.Process(span, count);
+                    Graph.RenderOfflineBlock();
+                    int read = Output.ReadOfflineBlock(output);
+                    if (read < output.Length)
+                    {
+                        Array.Clear(output, read, output.Length - read);
+                    }
+
+                    writer.WriteSamples(output, 0, output.Length);
+                    position += blockFrames;
                 }
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = "Could not bounce the timeline: " + ex.Message;
+                try
+                {
+                    if (File.Exists(path)) File.Delete(path);
+                }
+                catch
+                {
+                }
+
+                return false;
             }
         }
 
         public void Dispose()
         {
-            var seen = new HashSet<IAudioProcessor>(ReferenceEqualityComparer.Instance);
-            foreach (var chain in Tracks.Values)
-            {
-                DisposeChain(chain, seen);
-            }
-
-            DisposeChain(Master, seen);
-        }
-
-        private static void DisposeChain(List<IAudioProcessor> chain, HashSet<IAudioProcessor> seen)
-        {
-            foreach (var processor in chain)
-            {
-                if (seen.Add(processor))
-                {
-                    (processor as IDisposable)?.Dispose();
-                }
-            }
+            Timeline.Stop();
+            Timeline.Dispose();
+            Graph.Dispose();
         }
     }
 
-    /// <summary>
-    /// Walks each timeline track to its first output, clones the modifiers on
-    /// the way, and separates the suffix shared by every track (the master bus)
-    /// from per-track chains.
-    /// </summary>
-    private TimelineBouncePlan BuildTimelineBouncePlan()
+    private OfflineTimelineBounce? BuildTimelineBounceGraph()
     {
-        var plan = new TimelineBouncePlan();
         if (_timeline == null)
         {
-            return plan;
+            return null;
         }
 
-        var paths = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        foreach (var track in _timeline.Project.Tracks)
+        string preferredOutput = _settings.TimelineBounceOutputId;
+        NodeEntry? targetEntry = !string.IsNullOrWhiteSpace(preferredOutput)
+            ? _nodes.Values.FirstOrDefault(entry =>
+                entry.Output is { IsFileRecorder: false, IsNetworkOutput: false } &&
+                string.Equals(entry.Output.DeviceId, preferredOutput, StringComparison.OrdinalIgnoreCase))
+            : null;
+        targetEntry ??= _nodes.Values.FirstOrDefault(entry =>
+            entry.Output is { IsFileRecorder: false, IsNetworkOutput: false });
+        if (targetEntry?.Output == null)
         {
-            if (string.IsNullOrWhiteSpace(track.SourceNodeId))
-            {
-                continue;
-            }
-
-            var path = FindTimelinePathToOutput(track.SourceNodeId);
-            if (path is { Count: > 0 })
-            {
-                paths[track.Id] = path;
-            }
+            return null;
         }
 
-        var allPaths = paths.Values.ToList();
-        var masterIds = new List<string>();
-        if (allPaths.Count > 0)
+        var bounce = new OfflineTimelineBounce
         {
-            int common = 0;
-            int shortest = allPaths.Min(path => path.Count);
-            while (common < shortest)
+            Output = OutputNode.CreateForTest(static (_, _) => { }),
+        };
+        bounce.Output.EnableGraphEngine();
+        bounce.Output.Volume = targetEntry.Output.Volume;
+        bounce.Output.Muted = targetEntry.Output.Muted;
+        bounce.Output.GroupKey = targetEntry.Output.GroupKey;
+        bounce.TailSeconds = Math.Clamp(_settings.TimelineBounceTailSeconds, 0, 30);
+
+        try
+        {
+            var timelineProject = _timeline.SnapshotProject(includePeaks: false);
+            bounce.Timeline.LoadProject(timelineProject);
+            bounce.Graph.Timeline = bounce.Timeline;
+            bounce.Graph.AddOutputNode(bounce.Output);
+
+            var sources = new Dictionary<string, SourceNode>(StringComparer.Ordinal);
+            foreach (var track in bounce.Timeline.Project.Tracks)
             {
-                string id = allPaths[0][allPaths[0].Count - 1 - common];
-                if (allPaths.All(path => path[path.Count - 1 - common] == id))
+                if (string.IsNullOrWhiteSpace(track.SourceNodeId) ||
+                    !_nodes.TryGetValue(track.SourceNodeId, out var live) ||
+                    live.Source is not { Kind: SourceKind.Timeline } liveSource)
                 {
-                    common++;
+                    continue;
                 }
-                else
+
+                var source = new SourceNode(track.Name, SourceKind.Timeline)
                 {
-                    break;
-                }
+                    Gain = liveSource.Gain,
+                    Muted = liveSource.Muted,
+                    GroupKey = liveSource.GroupKey,
+                };
+                bounce.Graph.AddSource(source);
+                bounce.Timeline.AttachSource(track.Id, source);
+                sources[live.Id] = source;
+                source.Start();
             }
 
-            if (common > 0)
+            var modifiers = new Dictionary<string, ModifierNode>(StringComparer.Ordinal);
+            foreach (var live in _nodes.Values.Where(entry => entry.Modifier != null))
             {
-                masterIds = allPaths[0].Skip(allPaths[0].Count - common).ToList();
-                foreach (string id in masterIds)
+                var sourceModifier = live.Modifier!;
+                var modifier = new ModifierNode(live.Title)
                 {
-                    AddModifierProcessors(plan.Master, id, plan);
+                    Enabled = sourceModifier.Enabled,
+                    Parallel = sourceModifier.Parallel,
+                    Send = sourceModifier.Send,
+                };
+
+                foreach (var processor in sourceModifier.Processors)
+                {
+                    if (processor is ITapProcessor) continue;
+                    if (processor is IVst3Processor)
+                    {
+                        bounce.SkippedVst3 = true;
+                        continue;
+                    }
+
+                    try
+                    {
+                        var clone = PresetSerializer.CreateProcessor(
+                            PresetSerializer.SerializeProcessor(processor));
+                        if (clone != null) modifier.Add(clone);
+                    }
+                    catch
+                    {
+                        bounce.SkippedProcessor = true;
+                    }
                 }
-            }
-        }
 
-        foreach (var (trackId, path) in paths)
-        {
-            bool sharesMaster = masterIds.Count > 0 &&
-                path.Count >= masterIds.Count &&
-                path.Skip(path.Count - masterIds.Count).SequenceEqual(masterIds);
-            var trackPath = sharesMaster ? path.Take(path.Count - masterIds.Count) : path;
-            var chain = new List<IAudioProcessor>();
-            foreach (string id in trackPath)
-            {
-                AddModifierProcessors(chain, id, plan);
-            }
-
-            if (chain.Count > 0)
-            {
-                plan.Tracks[trackId] = chain;
-            }
-        }
-
-        return plan;
-    }
-
-    private List<string>? FindTimelinePathToOutput(string startId)
-    {
-        var visited = new HashSet<string>(StringComparer.Ordinal) { startId };
-        var queue = new Queue<(string Id, List<string> Path)>();
-        queue.Enqueue((startId, new List<string>()));
-
-        while (queue.Count > 0)
-        {
-            var (id, path) = queue.Dequeue();
-            if (_nodes.TryGetValue(id, out var entry) && entry.Output != null)
-            {
-                return path;
+                bounce.Graph.AddModifier(modifier);
+                modifiers[live.Id] = modifier;
             }
 
             foreach (var link in _links)
             {
-                if (link.From != id || !link.Enabled ||
-                    string.Equals(link.Kind, "sidechain", StringComparison.OrdinalIgnoreCase))
+                if (!link.Enabled) continue;
+
+                if (link.Kind == "direct" &&
+                    sources.TryGetValue(link.From, out var directSource) &&
+                    link.To == targetEntry.Id)
                 {
-                    continue;
+                    bounce.Graph.Connect(directSource, bounce.Output, link.Gain);
                 }
-
-                if (!_nodes.TryGetValue(link.To, out var next) || !visited.Add(next.Id))
+                else if (link.Kind == "source-modifier" &&
+                         sources.TryGetValue(link.From, out var linkedSource) &&
+                         modifiers.TryGetValue(link.To, out var linkedModifier))
                 {
-                    continue;
+                    bounce.Graph.ConnectSourceToModifier(linkedSource, linkedModifier);
                 }
-
-                var nextPath = new List<string>(path);
-                if (next.Modifier != null)
+                else if (link.Kind == "sidechain")
                 {
-                    nextPath.Add(next.Id);
+                    if (sources.TryGetValue(link.From, out var keySource) &&
+                        modifiers.TryGetValue(link.To, out var keyModifier))
+                    {
+                        bounce.Graph.ConnectSourceToModifierSidechain(keySource, keyModifier);
+                    }
+                    else if (modifiers.TryGetValue(link.From, out var keyModifierSource) &&
+                             modifiers.TryGetValue(link.To, out var keyModifierTarget))
+                    {
+                        bounce.Graph.ConnectModifierToModifierSidechain(keyModifierSource, keyModifierTarget);
+                    }
                 }
-
-                queue.Enqueue((next.Id, nextPath));
-            }
-        }
-
-        return null;
-    }
-
-    private void AddModifierProcessors(List<IAudioProcessor> chain, string modifierId,
-        TimelineBouncePlan plan)
-    {
-        if (!_nodes.TryGetValue(modifierId, out var entry) ||
-            entry.Modifier is not { } modifier || !modifier.Enabled)
-        {
-            return;
-        }
-
-        var clones = new List<IAudioProcessor>();
-        foreach (var processor in modifier.Processors)
-        {
-            if (processor is ITapProcessor)
-            {
-                continue;
-            }
-
-            if (processor is IVst3Processor)
-            {
-                plan.SkippedVst3 = true;
-                continue;
-            }
-
-            try
-            {
-                var spec = PresetSerializer.SerializeProcessor(processor);
-                var clone = PresetSerializer.CreateProcessor(spec);
-                if (clone != null)
+                else if (link.Kind == "modifier-output" &&
+                         link.To == targetEntry.Id &&
+                         modifiers.TryGetValue(link.From, out var outputModifier))
                 {
-                    clones.Add(clone);
+                    bounce.Graph.ConnectModifierToOutput(outputModifier, bounce.Output, link.Gain);
+                }
+                else if (link.Kind == "modifier-modifier" &&
+                         modifiers.TryGetValue(link.From, out var fromModifier) &&
+                         modifiers.TryGetValue(link.To, out var toModifier))
+                {
+                    bounce.Graph.ConnectModifierToModifier(fromModifier, toModifier);
                 }
             }
-            catch
-            {
-                plan.SkippedProcessor = true;
-            }
-        }
 
-        if (clones.Count == 0)
-        {
-            return;
+            return bounce;
         }
-
-        if (modifier.Parallel)
+        catch
         {
-            chain.Add(new ParallelChainProcessor(clones.ToArray(), modifier.Send));
-        }
-        else
-        {
-            chain.AddRange(clones);
+            bounce.Dispose();
+            throw;
         }
     }
 }

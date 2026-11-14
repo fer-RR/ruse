@@ -15,16 +15,12 @@ import { formatBytes, useUpdates } from '../updates';
 import { useAudioOptimizer } from '../audioOptimizer';
 
 const THEME_OPTIONS = [
-  { id: 'system', label: 'Windows' },
   { id: 'dark', label: 'Dark' },
   { id: 'light', label: 'Light' },
   { id: 'midnight', label: 'Midnight' },
-  { id: 'ocean', label: 'Ocean' },
-  { id: 'ember', label: 'Ember' },
   { id: 'blueprint', label: 'Blueprint' },
   { id: 'deepdive', label: 'Deep Dive' },
   { id: 'studio74', label: "Studio '74" },
-  { id: 'midnightstudy', label: 'Midnight Study' },
 ] as const;
 
 export function Modal({ title, onClose, children, className = '', movable = false }: {
@@ -256,7 +252,7 @@ const LICENSES: ReadonlyArray<readonly [string, string, string]> = [
   ['LLamaSharp / llama.cpp', 'MIT', 'Offline translation runtime'],
   ['Qwen2.5 Instruct', 'Apache-2.0', 'Offline translation model weights'],
   ['OwnAudioVst / VST 3 SDK', 'MIT', 'VST3 plugin hosting and native editor windows'],
-  ['NAudio', 'MIT', 'Audio capture, effects, WASAPI and ASIO'],
+  ['NAudio', 'MIT', 'Audio capture and WASAPI'],
   ['WebView2', 'Microsoft', 'Embedded browser runtime and SDK'],
   ['React / React DOM / React Flow', 'MIT', 'Web interface'],
   ['Lucide', 'ISC', 'Interface icons'],
@@ -328,7 +324,7 @@ function SettingsSection({ title, summary, children }: {
   );
 }
 
-export function SettingsDialog({ settings, onChange, onClose, initialTab = 'behavior', outputs, virtualInputs = [], virtualOutputs = [], vstPlugins = [], onFirstRoute, onAsioRefresh }: {
+export function SettingsDialog({ settings, onChange, onClose, initialTab = 'behavior', outputs, virtualInputs = [], virtualOutputs = [], vstPlugins = [], onFirstRoute }: {
   settings: SettingsModel;
   onChange: (settings: SettingsModel) => void;
   onClose: () => void;
@@ -338,7 +334,6 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
   virtualOutputs?: CatalogItem[];
   vstPlugins?: CatalogItem[];
   onFirstRoute?: () => void;
-  onAsioRefresh?: () => void;
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<SettingsTab>(initialTab);
@@ -511,6 +506,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <ToggleSetting label={t('Minimize to tray')} description={t('Hide the window instead of minimizing it to the taskbar.')} checked={settings.minimizeToTrayOnMinimize} onChange={value => onChange({ ...settings, minimizeToTrayOnMinimize: value })} />
               <ToggleSetting label={t('Start minimized to tray')} description={t('Open Ruse hidden in the notification area. Useful with Start with Windows.')} checked={settings.startMinimized} onChange={value => onChange({ ...settings, startMinimized: value })} />
               <ToggleSetting label={t('Reattach apps when they play')} description={t('When an app source restarts, reconnect it to its existing route automatically.')} checked={settings.followPlayingApps} onChange={value => onChange({ ...settings, followPlayingApps: value })} />
+              <ToggleSetting label={t('Restore removed app routes')} description={t('When you add an app again, reconnect the cables it used before you removed it. The effect chain and output must still exist.')} checked={settings.restoreAppRoutes} onChange={value => onChange({ ...settings, restoreAppRoutes: value })} />
               <label className="setting-row"><span><strong>{t('Auto-add new apps to')}</strong><small>{t('Add a source and connect it to this output when an app starts playing.')}</small></span><select disabled={!settings.followPlayingApps} value={settings.followOutputId} onChange={event => onChange({ ...settings, followOutputId: event.target.value })}><option value="">{t('Do not auto-add')}</option>{outputs.map(output => <option key={output.id} value={output.id}>{output.name}</option>)}</select></label>
             </SettingsSection>
 
@@ -597,6 +593,20 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <p className="settings-note">{t('The guard engages briefly on loud transients; a GUARD badge appears on the affected output.')}</p>
             </SettingsSection>
 
+            <SettingsSection title="Timeline bounce" summary={t('Offline')}>
+              <label className="setting-row">
+                <span><strong>{t('Bounce output')}</strong><small>{t('Render the graph through this output when bouncing or freezing the timeline. Its volume, mute and group state are applied.')}</small></span>
+                <select value={settings.timelineBounceOutputId} onChange={event => onChange({ ...settings, timelineBounceOutputId: event.target.value })}>
+                  <option value="">{t('First device output')}</option>
+                  {outputs.map(output => <option key={output.id} value={output.id}>{output.name}</option>)}
+                </select>
+              </label>
+              <label className="setting-row">
+                <span><strong>{t('Tail seconds')}</strong><small>{t('Extra time rendered after the last clip so reverb and delay tails finish.')}</small></span>
+                <NumberField value={settings.timelineBounceTailSeconds} min={0} max={30} step={1} onChange={value => onChange({ ...settings, timelineBounceTailSeconds: value })} ariaLabel={t('Tail seconds')} />
+              </label>
+            </SettingsSection>
+
             <SettingsSection title="Audio engine" summary={settings.audioAutoMode !== false ? t('Auto audio settings') : t('Manual')}>
 
               <ToggleSetting label={t('Low-latency WASAPI')} description={t('Try Windows low-latency shared mode before falling back to normal shared mode. Takes effect the next time routing starts.')} checked={settings.lowLatencyWasapi !== false} onChange={value => onChange({ ...settings, lowLatencyWasapi: value })} />
@@ -673,12 +683,6 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <p className="settings-note">{t('Audio engine changes restart routing when applied.')}</p>
             </SettingsSection>
 
-            <SettingsSection title="ASIO" summary={t('Experimental')}>
-              <p className="settings-note">{t('Scan for ASIO drivers. ASIO support is experimental; use WASAPI unless your interface requires ASIO.')}</p>
-              <div className="settings-actions">
-                <button type="button" className="tool-button" onClick={onAsioRefresh}><RefreshCw size={14} /> {t('Load ASIO drivers')}</button>
-              </div>
-            </SettingsSection>
 
             <SettingsSection
               title="Virtual buses"
@@ -814,6 +818,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
             <SettingsSection title="Visual feedback">
               <ToggleSetting label={t('Signal glow')} description={t('Glow active nodes and matching library items while sound is flowing.')} checked={settings.signalGlow} onChange={value => onChange({ ...settings, signalGlow: value })} />
               <ToggleSetting label={t('Cable animation')} description={t('Show small packets moving along cables that carry signal.')} checked={settings.cableAnimation} onChange={value => onChange({ ...settings, cableAnimation: value })} />
+              <ToggleSetting label={t('Cable physics')} description={t('Let cables sag and spring when nodes move.')} checked={settings.cablePhysics} onChange={value => onChange({ ...settings, cablePhysics: value })} />
               <ToggleSetting label={t('Animate active connectors')} description={t('Pulse the input and output dots on nodes while signal is flowing.')} checked={settings.connectorAnimation} onChange={value => onChange({ ...settings, connectorAnimation: value })} />
               <ToggleSetting label={t('Highlight cables on hover')} description={t('Brighten a cable when the pointer moves over it.')} checked={settings.highlightCableOnHover} onChange={value => onChange({ ...settings, highlightCableOnHover: value })} />
               <ToggleSetting label={t('Highlight muted nodes')} description={t('Use a red outline when a node is muted.')} checked={settings.highlightMutedNodes} onChange={value => onChange({ ...settings, highlightMutedNodes: value })} />

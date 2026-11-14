@@ -4,6 +4,13 @@ using System.Text.Json.Serialization;
 
 namespace Ruse.App;
 
+public sealed class MixerGroupSettings
+{
+    public float Gain { get; set; } = 1f;
+    public bool Muted { get; set; }
+    public bool Solo { get; set; }
+}
+
 /// <summary>User settings stored in %APPDATA%\Ruse\settings.json.</summary>
 public sealed class AppSettings
 {
@@ -34,6 +41,14 @@ public sealed class AppSettings
 
     public bool FollowPlayingApps { get; set; }
 
+    /// <summary>Per-group gain, mute and solo state keyed by source:#color or output:#color.</summary>
+    public Dictionary<string, MixerGroupSettings> MixerGroups { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Reconnect a removed app's previous outgoing route when it is added again.</summary>
+    public bool RestoreAppRoutes { get; set; }
+    public string TimelineBounceOutputId { get; set; } = "";
+    public double TimelineBounceTailSeconds { get; set; } = 2.0;
+
     /// <summary>Output device used when auto-adding a newly playing app.</summary>
     public string FollowOutputId { get; set; } = "";
 
@@ -57,6 +72,9 @@ public sealed class AppSettings
 
     /// <summary>Animate small packets along cables that carry signal.</summary>
     public bool CableAnimation { get; set; } = true;
+
+    /// <summary>Let cables sag and spring as nodes move.</summary>
+    public bool CablePhysics { get; set; } = false;
 
     /// <summary>Pulse node input/output connectors while signal flows through the node.</summary>
     public bool ConnectorAnimation { get; set; } = true;

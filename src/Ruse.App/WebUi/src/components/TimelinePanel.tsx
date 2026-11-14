@@ -179,6 +179,7 @@ export default function TimelinePanel({
   onShowTrackNode,
   onUndo,
   onRedo,
+  onReady,
   onClose,
 }: {
   state: TimelineState;
@@ -208,9 +209,14 @@ export default function TimelinePanel({
   onShowTrackNode: (trackId: string, sourceNodeId?: string) => void;
   onUndo: () => void;
   onRedo: () => void;
+  onReady?: () => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
+
+  useEffect(() => {
+    onReady?.();
+  }, [onReady]);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const panRef = useRef<{ clientX: number; scrollLeft: number } | null>(null);

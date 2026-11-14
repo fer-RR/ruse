@@ -102,6 +102,10 @@ internal sealed partial class WebShellController
             ApplyRename(entry.Id, title, publish: false);
         }
 
+        List<LinkEntry> restoredLinks = entry != null
+            ? RestoreSavedAppRoutes(entry)
+            : new List<LinkEntry>();
+
         if (entry != null && !string.IsNullOrEmpty(linkId) && InsertModifierIntoLink(entry, linkId))
         {
             PublishGraph();
@@ -110,7 +114,7 @@ internal sealed partial class WebShellController
 
         if (entry != null)
         {
-            PushAddNode(entry);
+            PushAddNode(entry, restoredLinks);
         }
 
         PublishGraph();
@@ -737,14 +741,6 @@ internal sealed partial class WebShellController
 
     private NodeEntry AddDeviceInput(string id, double x, double y)
     {
-        if (AsioCatalog.IsAsioId(id))
-        {
-            var driver = FindAsioDriver(id);
-            return RegisterSource(new SourceNode(
-                driver.Name, SourceKind.Asio, deviceId: id,
-                asioDriver: driver.Name, asioChannels: new[] { 0, 1 }), x, y);
-        }
-
         using var enumerator = new MMDeviceEnumerator();
         using var device = enumerator.GetDevice(id);
         var entry = RegisterSource(new SourceNode(device.FriendlyName, SourceKind.Device, deviceId: id), x, y);
@@ -760,16 +756,8 @@ internal sealed partial class WebShellController
             return null;
         }
 
-        OutputNode output;
-        if (AsioCatalog.IsAsioId(id))
-        {
-            output = new OutputNode(FindAsioDriver(id));
-        }
-        else
-        {
-            using var enumerator = new MMDeviceEnumerator();
-            output = new OutputNode(enumerator.GetDevice(id));
-        }
+        using var enumerator = new MMDeviceEnumerator();
+        var output = new OutputNode(enumerator.GetDevice(id));
 
         var entry = RegisterOutput(output, x, y);
         SetStatus($"Added output: {output.Title}");
@@ -914,21 +902,6 @@ internal sealed partial class WebShellController
         return entry;
     }
 
-    private AsioDriverInfo FindAsioDriver(string id)
-    {
-        AsioDriverInfo? driver = _asioDrivers.FirstOrDefault(item =>
-            string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase));
-        if (driver == null)
-        {
-            EnsureAsioDrivers();
-            driver = _asioDrivers.FirstOrDefault(item =>
-                string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase));
-        }
-
-        return driver ?? throw new InvalidOperationException(
-            $"ASIO driver '{AsioCatalog.NameFromId(id)}' is not available.");
-    }
-
     private NodeEntry? FindOutputByDevice(string id)
     {
         return _nodes.Values.FirstOrDefault(entry => entry.Output != null &&
@@ -946,7 +919,6 @@ internal sealed partial class WebShellController
             {
                 SourceKind.Application => "app",
                 SourceKind.Device => "mic",
-                SourceKind.Asio => "asio",
                 SourceKind.File => "file",
                 SourceKind.Tone => "tone",
                 SourceKind.Synth => "synth",
@@ -960,7 +932,6 @@ internal sealed partial class WebShellController
             {
                 SourceKind.Application => SourceNode.SupportsApplicationCapture ? "Application" : "Capture unavailable",
                 SourceKind.Device => "Input device",
-                SourceKind.Asio => "ASIO input (experimental)",
                 SourceKind.File => "Audio file",
                 SourceKind.Tone => "Test tone",
                 SourceKind.Synth => "Procedural synth",
@@ -973,7 +944,6 @@ internal sealed partial class WebShellController
             {
                 SourceKind.Application => "#5B8DEF",
                 SourceKind.SystemLoopback => "#65D6D0",
-                SourceKind.Asio => "#F0DC5A",
                 SourceKind.File => "#F08CB8",
                 SourceKind.Tone => "#F0DC5A",
                 SourceKind.Synth => "#A78BFA",
@@ -1002,14 +972,14 @@ internal sealed partial class WebShellController
         {
             _graph.AddOutputNode(output);
         }
-        string flavor = output.IsFileRecorder ? "recorder" : output.IsNetworkOutput ? "network" : micHint != null ? "virtual" : AsioCatalog.IsAsioId(output.DeviceId) ? "asio" : "output";
+        string flavor = output.IsFileRecorder ? "recorder" : output.IsNetworkOutput ? "network" : micHint != null ? "virtual" : "output";
         var entry = new NodeEntry
         {
             Id = id ?? output.Id,
             Kind = "output",
             Flavor = flavor,
             Title = output.Title,
-            Subtitle = output.IsFileRecorder ? "File output" : output.IsNetworkOutput ? "Network output" : micHint != null ? "Virtual output" : AsioCatalog.IsAsioId(output.DeviceId) ? "ASIO output (experimental)" : "Output device",
+            Subtitle = output.IsFileRecorder ? "File output" : output.IsNetworkOutput ? "Network output" : micHint != null ? "Virtual output" : "Output device",
             Accent = output.IsFileRecorder ? "#FF8B72" : output.IsNetworkOutput ? "#4FD1C5" : micHint != null ? "#D9A8FF" : "#43E39A",
             X = x,
             Y = y,
@@ -1353,6 +1323,9 @@ internal sealed partial class WebShellController
             dto.Volume = entry.Source.Gain;
             dto.Muted = entry.Source.Muted;
             dto.Solo = entry.Source.Solo;
+            dto.GroupGain = MixerGroupBus.Gain(entry.Source.GroupKey);
+            dto.GroupMuted = MixerGroupBus.Muted(entry.Source.GroupKey);
+            dto.GroupSolo = MixerGroupBus.Solo(entry.Source.GroupKey);
             dto.DeviceId = entry.Source.DeviceId;
             dto.ProcessId = entry.Source.Kind == SourceKind.Application ? entry.Source.ProcessId : null;
             dto.ProcessName = entry.Source.ProcessName;
@@ -1401,6 +1374,9 @@ internal sealed partial class WebShellController
             dto.Volume = entry.Output.Volume;
             dto.Muted = entry.Output.Muted;
             dto.Solo = entry.Output.Solo;
+            dto.GroupGain = MixerGroupBus.Gain(entry.Output.GroupKey);
+            dto.GroupMuted = MixerGroupBus.Muted(entry.Output.GroupKey);
+            dto.GroupSolo = MixerGroupBus.Solo(entry.Output.GroupKey);
             dto.DeviceId = entry.Output.DeviceId;
             dto.SampleRate = entry.Output.EndpointSampleRate;
             dto.IsRecorder = entry.Output.IsFileRecorder;
@@ -1636,6 +1612,60 @@ internal sealed partial class WebShellController
         PublishNodeState(id);
     }
 
+    private void SetGroupGain(string key, float value)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return;
+        var before = MixerGroupBus.Snapshot(key);
+        var after = new MixerGroupSettings
+        {
+            Gain = Math.Clamp(value, 0f, 2f),
+            Muted = before.Muted,
+            Solo = before.Solo,
+        };
+        ApplyGroupState(key, after, publish: true);
+        PushAction("Change group volume",
+            undo: () => ApplyGroupState(key, before, publish: true),
+            redo: () => ApplyGroupState(key, after, publish: true),
+            coalesceKey: $"group-gain:{key}");
+    }
+
+    private void SetGroupMuted(string key, bool muted)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return;
+        var before = MixerGroupBus.Snapshot(key);
+        var after = new MixerGroupSettings { Gain = before.Gain, Muted = muted, Solo = before.Solo };
+        ApplyGroupState(key, after, publish: true);
+        PushAction(muted ? "Mute group" : "Unmute group",
+            undo: () => ApplyGroupState(key, before, publish: true),
+            redo: () => ApplyGroupState(key, after, publish: true));
+    }
+
+    private void SetGroupSolo(string key, bool solo)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return;
+        var before = MixerGroupBus.Snapshot(key);
+        var after = new MixerGroupSettings { Gain = before.Gain, Muted = before.Muted, Solo = solo };
+        ApplyGroupState(key, after, publish: true);
+        PushAction(solo ? "Solo group" : "Unsolo group",
+            undo: () => ApplyGroupState(key, before, publish: true),
+            redo: () => ApplyGroupState(key, after, publish: true));
+    }
+
+    private void ApplyGroupState(string key, MixerGroupSettings state, bool publish)
+    {
+        MixerGroupBus.SetGain(key, state.Gain);
+        MixerGroupBus.SetMuted(key, state.Muted);
+        MixerGroupBus.SetSolo(key, state.Solo);
+        _settings.MixerGroups ??= new Dictionary<string, MixerGroupSettings>(
+            StringComparer.OrdinalIgnoreCase);
+        _settings.MixerGroups[key] = state;
+        if (publish)
+        {
+            PublishGraph();
+            PublishTelemetry(force: true);
+        }
+    }
+
     private void SetNodeColor(string id, string color)
     {
         if (!_nodes.TryGetValue(id, out var entry)) return;
@@ -1653,7 +1683,24 @@ internal sealed partial class WebShellController
             entry.Color = normalized;
         }
 
-        PublishNodeState(id);
+        SyncEntryGroup(entry);
+        PublishGraph();
+    }
+
+    private static string? GroupKeyFor(string kind, string? color) =>
+        string.IsNullOrWhiteSpace(color) ? null : $"{kind}:{color.Trim().ToUpperInvariant()}";
+
+    private static void SyncEntryGroup(NodeEntry entry)
+    {
+        if (entry.Source != null)
+        {
+            entry.Source.GroupKey = GroupKeyFor("source", entry.Color);
+        }
+
+        if (entry.Output != null)
+        {
+            entry.Output.GroupKey = GroupKeyFor("output", entry.Color);
+        }
     }
 
     private static string? NormalizeNodeColor(string? color) =>
@@ -1685,7 +1732,12 @@ internal sealed partial class WebShellController
         value = Math.Clamp(value, parameter.Min, parameter.Max);
         if (parameter.IsInteger) value = MathF.Round(value);
         float old = parameter.Get();
+        int latencyBefore = parameterized is IAudioProcessor audioBefore ? audioBefore.LatencySamples : 0;
         parameter.Set(value);
+        if (parameterized is IAudioProcessor audioAfter && audioAfter.LatencySamples != latencyBefore)
+        {
+            _graph.RefreshModifiers();
+        }
         string key = $"param:{id}:{processorIndex}:{parameterIndex}";
         PushAction($"Change {parameter.Name}",
             undo: () => ApplyParameter(id, processorIndex, parameterIndex, old, publish: true),
@@ -1731,7 +1783,12 @@ internal sealed partial class WebShellController
         var parameter = parameterized.Parameters[parameterIndex];
         value = Math.Clamp(value, parameter.Min, parameter.Max);
         if (parameter.IsInteger) value = MathF.Round(value);
+        int latencyBefore = parameterized is IAudioProcessor audioBefore ? audioBefore.LatencySamples : 0;
         parameter.Set(value);
+        if (parameterized is IAudioProcessor audioAfter && audioAfter.LatencySamples != latencyBefore)
+        {
+            _graph.RefreshModifiers();
+        }
         if (publish) PublishGraph();
     }
 
@@ -2456,9 +2513,130 @@ internal sealed partial class WebShellController
         PublishGraph();
     }
 
+    private void AddRouteCheckTestTone()
+    {
+        var output = _nodes.Values.FirstOrDefault(entry =>
+            entry.Output != null && !entry.Output.IsFileRecorder && !entry.Output.IsNetworkOutput);
+        if (output == null)
+        {
+            ShowError("Add an output before testing the route.");
+            return;
+        }
+
+        var existing = _nodes.Values.FirstOrDefault(entry =>
+            entry.Source is { Kind: SourceKind.Tone } source &&
+            string.Equals(source.Title, "Route test tone", StringComparison.Ordinal));
+        NodeEntry toneEntry;
+        if (existing?.Source is { } toneSource)
+        {
+            toneEntry = existing;
+            toneSource.SetTone(1000f, ToneWaveform.Sine, -30f);
+        }
+        else
+        {
+            var tone = new SourceNode("Route test tone", SourceKind.Tone);
+            tone.SetTone(1000f, ToneWaveform.Sine, -30f);
+            toneEntry = RegisterSource(tone, 80, 520);
+        }
+
+        if (!_links.Any(link => link.From == toneEntry.Id && link.To == output.Id && link.Enabled))
+        {
+            ConnectEntries(toneEntry, output);
+        }
+
+        if (!_running)
+        {
+            StartRouting();
+        }
+
+        PublishGraph();
+        SetStatus($"Test tone connected to {output.Title}.");
+    }
+
+    private void RememberAppRoutes(NodeEntry entry)
+    {
+        if (entry.Source is not { Kind: SourceKind.Application } source ||
+            string.IsNullOrWhiteSpace(source.ProcessName))
+        {
+            return;
+        }
+
+        var routes = new List<AppRouteMemory.SavedRoute>();
+        foreach (var link in _links.Where(link => link.From == entry.Id))
+        {
+            if (!_nodes.TryGetValue(link.To, out var target) || target.Id == entry.Id)
+            {
+                continue;
+            }
+
+            routes.Add(new AppRouteMemory.SavedRoute
+            {
+                TargetControlId = target.ControlId,
+                TargetTitle = target.Title,
+                Kind = link.Kind,
+                Gain = link.Gain,
+                Native = link.Native,
+            });
+        }
+
+        AppRouteMemory.Remember(source.ProcessName, routes);
+    }
+
+    private List<LinkEntry> RestoreSavedAppRoutes(NodeEntry entry)
+    {
+        var restoredLinks = new List<LinkEntry>();
+        if (!_settings.RestoreAppRoutes ||
+            entry.Source is not { Kind: SourceKind.Application } source)
+        {
+            return restoredLinks;
+        }
+
+        int restored = 0;
+        foreach (var saved in AppRouteMemory.Load(source.ProcessName))
+        {
+            NodeEntry? target = _nodes.Values.FirstOrDefault(candidate =>
+                candidate.Id != entry.Id &&
+                !string.IsNullOrWhiteSpace(saved.TargetControlId) &&
+                string.Equals(candidate.ControlId, saved.TargetControlId, StringComparison.Ordinal));
+            target ??= _nodes.Values.FirstOrDefault(candidate =>
+                candidate.Id != entry.Id &&
+                !string.IsNullOrWhiteSpace(saved.TargetTitle) &&
+                string.Equals(candidate.Title, saved.TargetTitle, StringComparison.Ordinal));
+            if (target == null || _links.Any(link => link.From == entry.Id && link.To == target.Id))
+            {
+                continue;
+            }
+
+            try
+            {
+                var link = ConnectEntries(entry, target, saved.Gain, kind: saved.Kind);
+                link.Native = saved.Native;
+                if (saved.Native)
+                {
+                    ApplyLinkRouting(link, publish: false);
+                }
+
+                restoredLinks.Add(link);
+                restored++;
+            }
+            catch
+            {
+                // A target that no longer accepts this route is left alone.
+            }
+        }
+
+        if (restored > 0)
+        {
+            SetStatus($"Restored {restored} saved route{(restored == 1 ? "" : "s")} for {source.ProcessName}.");
+        }
+
+        return restoredLinks;
+    }
+
     private void RemoveNode(string id)
     {
         if (!_nodes.TryGetValue(id, out var entry)) return;
+        RememberAppRoutes(entry);
         var snapshot = CaptureNode(entry);
         var links = _links.Where(link => link.From == id || link.To == id).Select(CloneLink).ToList();
         var upstream = entry.Modifier == null
