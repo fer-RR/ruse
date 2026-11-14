@@ -6,7 +6,6 @@ const ITERATIONS = 4;
 const GRAVITY = 620;
 const DAMPING = 0.92;
 const SLEEP_FRAMES = 30;
-const MIN_MOTION = 0.02;
 
 let frame = 0;
 let lastFrame = 0;
@@ -65,18 +64,31 @@ export class CableRope {
     this.targetX = targetX;
     this.targetY = targetY;
     this.restLength = Math.max(24, Math.hypot(targetX - sourceX, targetY - sourceY) / SEGMENTS);
-    if (!this.initialized) this.seed();
-    this.initialized = true;
+
+    if (!this.initialized) {
+      this.seed();
+      this.initialized = true;
+      this.lastPath = this.path();
+      this.draw(this.lastPath);
+      this.sleeping = true;
+      this.frameCount = 0;
+      return;
+    }
+
     this.sleeping = false;
     this.frameCount = 0;
     wake();
+  }
+
+  labelPoint(): { x: number; y: number } {
+    const point = this.points[Math.floor(this.points.length / 2)];
+    return { x: point.x, y: point.y };
   }
 
   step(dt: number): boolean {
     if (this.sleeping) return false;
 
     const gravity = GRAVITY * dt * dt;
-    let motion = 0;
     for (let i = 1; i < this.points.length - 1; i++) {
       const point = this.points[i];
       const vx = (point.x - point.px) * DAMPING;
@@ -85,7 +97,6 @@ export class CableRope {
       point.py = point.y;
       point.x += vx;
       point.y += vy + gravity;
-      motion = Math.max(motion, Math.abs(vx), Math.abs(vy));
     }
 
     this.points[0].x = this.points[0].px = this.sourceX;
@@ -116,19 +127,17 @@ export class CableRope {
     }
 
     const path = this.path();
-    if (path !== this.lastPath) {
+    const changed = path !== this.lastPath;
+    if (changed) {
       this.lastPath = path;
       this.draw(path);
-    }
-
-    if (motion < MIN_MOTION) {
+      this.frameCount = 0;
+    } else {
       this.frameCount++;
       if (this.frameCount >= SLEEP_FRAMES) {
         this.sleeping = true;
         return false;
       }
-    } else {
-      this.frameCount = 0;
     }
 
     return true;

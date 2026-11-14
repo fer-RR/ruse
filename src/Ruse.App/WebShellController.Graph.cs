@@ -123,10 +123,22 @@ internal sealed partial class WebShellController
 
     private void StartRoutingForNewSource(NodeEntry entry)
     {
-        if (entry.Source != null && !_graph.AutoRun)
+        if (_graph.AutoRun || entry.Source is not { } source)
         {
-            StartRouting();
+            return;
         }
+
+        if (source.Kind is SourceKind.Tts or SourceKind.Timeline)
+        {
+            return;
+        }
+
+        if (source.Kind == SourceKind.File && !source.HasFile)
+        {
+            return;
+        }
+
+        StartRouting();
     }
 
 

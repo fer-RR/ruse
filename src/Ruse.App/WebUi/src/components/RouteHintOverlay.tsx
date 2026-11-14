@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'react';
-import { ViewportPortal } from '@xyflow/react';
+import { useStore, ViewportPortal } from '@xyflow/react';
 import { useI18n } from '../i18n';
 import { useGlobalTelemetry } from '../telemetry';
 import type { LinkModel } from '../types';
@@ -13,6 +13,10 @@ export default function RouteHintOverlay({ nodes, links }: { nodes: RuseFlowNode
   const telemetry = useGlobalTelemetry();
   const [hintId, setHintId] = useState<string | null>(null);
   const soundStarted = useRef(new Map<string, number>());
+  const dismissed = useRef(new Set<string>());
+  const width = useStore(state => state.width);
+  const height = useStore(state => state.height);
+  const transform = useStore(state => state.transform);
 
   const connected = useMemo(() => {
     const ids = new Set<string>();
@@ -38,9 +42,12 @@ export default function RouteHintOverlay({ nodes, links }: { nodes: RuseFlowNode
       if (!sounding.has(id)) soundStarted.current.delete(id);
     }
 
+    for (const id of dismissed.current) {
+      if (!sounding.has(id)) dismissed.current.delete(id);
+    }
     let next: string | null = null;
     for (const [id, since] of soundStarted.current) {
-      if (now - since >= HINT_DELAY_MS) {
+      if (now - since >= HINT_DELAY_MS && !dismissed.current.has(id)) {
         next = id;
         break;
       }
@@ -49,28 +56,41 @@ export default function RouteHintOverlay({ nodes, links }: { nodes: RuseFlowNode
     setHintId(current => current === next ? current : next);
   }, [connected, nodes, telemetry]);
 
+  useEffect(() => {
+    if (!hintId) return;
+    const timer = window.setTimeout(() => {
+      dismissed.current.add(hintId);
+      setHintId(null);
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [hintId]);
+
   const node = hintId ? nodes.find(candidate => candidate.id === hintId) : undefined;
   if (!node) return null;
 
-  const width = node.measured?.width ?? 204;
-  const height = node.measured?.height ?? 140;
-  const placeLeft = node.position.x > 520;
+  const nodeWidth = node.measured?.width ?? 204;
+  const nodeHeight = node.measured?.height ?? 140;
+  const [translateX, translateY, zoom] = transform;
   const bubbleWidth = 224;
   const gap = 26;
+  const screenRight = (node.position.x + nodeWidth) * zoom + translateX;
+  const placeLeft = width - screenRight < (bubbleWidth + gap) * zoom;
   const left = placeLeft
     ? node.position.x - bubbleWidth - gap
-    : node.position.x + width + gap;
-  const top = node.position.y + Math.max(0, height / 2 - 20);
+    : node.position.x + nodeWidth + gap;
+  const viewportTop = -translateY / zoom;
+  const viewportBottom = (height - translateY) / zoom;
+  const top = Math.min(Math.max(node.position.y + Math.max(0, nodeHeight / 2 - 20), viewportTop + 12), viewportBottom - 72);
 
   return (
     <ViewportPortal>
       <div
         className="route-hint-outline"
-        style={{ left: node.position.x - 6, top: node.position.y - 6, width: width + 12, height: height + 12 }}
+        style={{ left: node.position.x - 6, top: node.position.y - 6, width: nodeWidth + 12, height: nodeHeight + 12 }}
       />
       <div className={`route-hint ${placeLeft ? 'left' : 'right'}`} style={{ left, top }}>
         <span className="route-hint-dash" />
-        <span className="route-hint-bubble">
+        <span className="route-hint-bubble" role="status">
           {t('Drag from the OUT dot on a node to the IN dot on another node. The cable carries the sound.')}
         </span>
       </div>

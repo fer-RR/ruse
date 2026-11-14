@@ -4,18 +4,21 @@ import { CableRope } from '../cablePhysics';
 import { Lock } from 'lucide-react';
 import type { EdgeProps } from '@xyflow/react';
 import { useNodeActive } from '../telemetry';
+import { useReducedMotion } from '../useReducedMotion';
 
-const reducedMotion = typeof window !== 'undefined' &&
-  window.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true;
 
 export default function RuseEdge({
   id, source, sourceX, sourceY, targetX, targetY,
   sourcePosition, targetPosition, style, label, markerEnd, data,
 }: EdgeProps) {
+  const reducedMotion = useReducedMotion();
   const physics = (data as { physics?: boolean } | undefined)?.physics === true && !reducedMotion;
   const pathRef = useRef<SVGPathElement>(null);
   const interactionRef = useRef<SVGPathElement>(null);
   const flowRef = useRef<SVGPathElement>(null);
+  const keyLabelRef = useRef<HTMLDivElement>(null);
+  const nativeLabelRef = useRef<HTMLDivElement>(null);
+  const labelRef = useRef<HTMLDivElement>(null);
   const ropeRef = useRef<CableRope | null>(null);
   const active = useNodeActive(source);
   const sidechain = (data as { kind?: string } | undefined)?.kind === 'sidechain';
@@ -40,9 +43,18 @@ export default function RuseEdge({
       pathRef.current?.setAttribute('d', path);
       interactionRef.current?.setAttribute('d', path);
       flowRef.current?.setAttribute('d', path);
+      const point = ropeRef.current?.labelPoint();
+      if (point) {
+        const update = (element: HTMLDivElement | null, offset = 0) => {
+          if (element) element.style.transform = `translate(-50%, -50%) translate(${point.x}px, ${point.y + offset}px)`;
+        };
+        update(keyLabelRef.current);
+        update(nativeLabelRef.current, -14);
+        update(labelRef.current);
+      }
     });
-    rope.setAnchors(sourceX, sourceY, targetX, targetY);
     ropeRef.current = rope;
+    rope.setAnchors(sourceX, sourceY, targetX, targetY);
     return () => {
       rope.dispose();
       if (ropeRef.current === rope) ropeRef.current = null;
@@ -57,9 +69,9 @@ export default function RuseEdge({
     <>
       {physics ? (
         <>
-          <path ref={pathRef} d={path} fill="none" className="react-flow__edge-path" style={lineStyle} markerEnd={markerEnd} />
-          <path ref={interactionRef} d={path} fill="none" strokeOpacity={0} strokeWidth={22} className="react-flow__edge-interaction" />
-          <path ref={flowRef} d={path} className={`ruse-edge-flow ${active ? 'active' : ''}`} style={{ stroke: color, opacity: active ? 0.72 : 0 }} />
+          <path ref={pathRef} fill="none" className="react-flow__edge-path" style={lineStyle} markerEnd={markerEnd} />
+          <path ref={interactionRef} fill="none" strokeOpacity={0} strokeWidth={22} className="react-flow__edge-interaction" />
+          <path ref={flowRef} className={`ruse-edge-flow ${active ? 'active' : ''}`} style={{ stroke: color, opacity: active ? 0.72 : 0 }} />
         </>
       ) : (
         <>
@@ -73,21 +85,21 @@ export default function RuseEdge({
       )}
       {sidechain && (
         <EdgeLabelRenderer>
-          <div className="edge-key-label" style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
+          <div ref={keyLabelRef} className="edge-key-label" style={physics ? undefined : { transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
             KEY
           </div>
         </EdgeLabelRenderer>
       )}
       {native && (
         <EdgeLabelRenderer>
-          <div className="edge-gain-label" style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY - 14}px)`, color: 'var(--cyan)', display: 'flex', alignItems: 'center', gap: 3 }}>
+          <div ref={nativeLabelRef} className="edge-gain-label" style={physics ? { color: 'var(--cyan)', display: 'flex', alignItems: 'center', gap: 3 } : { transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY - 14}px)`, color: 'var(--cyan)', display: 'flex', alignItems: 'center', gap: 3 }}>
             <Lock size={9} /> {nativeRate ? `${(nativeRate / 1000).toFixed(nativeRate % 1000 === 0 ? 0 : 1)} kHz` : 'NATIVE'}
           </div>
         </EdgeLabelRenderer>
       )}
       {label && (
         <EdgeLabelRenderer>
-          <div className="edge-gain-label" style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
+          <div ref={labelRef} className="edge-gain-label" style={physics ? undefined : { transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
             {label}
           </div>
         </EdgeLabelRenderer>
