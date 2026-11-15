@@ -154,8 +154,9 @@ function MasterVolume({ value, onChange }: { value: number; onChange: (value: nu
   );
 }
 
-export function StatusBar({ status }: {
+export function StatusBar({ status, showDiagnostics }: {
   status: StatusMessage;
+  showDiagnostics: boolean;
 }) {
   const { t } = useI18n();
   const telemetry = useGlobalTelemetry();
@@ -167,12 +168,36 @@ export function StatusBar({ status }: {
         <span className={status.isError ? 'error-text' : ''}>{status.text}</span>
       </div>
       <div className="status-controls">
+        {showDiagnostics && <WindowSizeReadout />}
         {telemetry.clipping && <span className="clip-chip" role="status">CLIP</span>}
         <button className={`icon-button ${telemetry.masterMuted ? 'danger-text' : ''}`} title={telemetry.masterMuted ? t('Unmute all outputs') : t('Mute all outputs')} aria-label={telemetry.masterMuted ? t('Unmute all outputs') : t('Mute all outputs')} aria-pressed={telemetry.masterMuted} onClick={() => send('master-mute', { value: !telemetry.masterMuted })}>{telemetry.masterMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}</button>
         <MasterVolume value={telemetry.masterGain} onChange={value => send('master-gain', { value })} />
       </div>
     </footer>
   );
+}
+
+function WindowSizeReadout() {
+  const { t } = useI18n();
+  const measure = () => ({
+    width: window.outerWidth || window.innerWidth,
+    height: window.outerHeight || window.innerHeight,
+  });
+  const [size, setSize] = useState(measure);
+  useEffect(() => {
+    let frame = 0;
+    const update = () => setSize(measure());
+    const onResize = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
+    };
+    window.addEventListener('resize', onResize);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', onResize);
+    };
+  }, []);
+  return <span className="window-size-readout" title={t('Window size')} aria-label={t('Window size') + ': ' + size.width + ' x ' + size.height}>{size.width} x {size.height}</span>;
 }
 
 function formatSeconds(seconds: number): string {

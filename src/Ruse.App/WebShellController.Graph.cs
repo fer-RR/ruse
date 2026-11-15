@@ -191,8 +191,10 @@ internal sealed partial class WebShellController
             return;
         }
 
+        string? previousPath = source.FilePath;
         string path = dialog.FileName;
         source.SetFile(path, source.FileLoop);
+        ReleaseFrozenProxyPath(previousPath);
         entry.Title = Path.GetFileNameWithoutExtension(path);
         source.Title = entry.Title;
         PublishGraph();
@@ -1355,6 +1357,10 @@ internal sealed partial class WebShellController
             dto.SampleRate = entry.Source.SampleRate > 0 ? entry.Source.SampleRate : 48000;
             dto.BitsPerSample = entry.Source.SampleRate > 0 ? entry.Source.BitsPerSample : 32;
             dto.IsFilePlayer = entry.Source.Kind == SourceKind.File;
+            dto.CanFreezeEffects = entry.Source is { Kind: SourceKind.File, FilePath: not null } &&
+                !_freezingSources.Contains(entry.Id) &&
+                FindSourceChain(entry.Id) is { } freezeChain &&
+                CanFreezeSourceChain(entry.Id, freezeChain);
             dto.FilePath = entry.Source.FilePath;
             dto.FileOutputId = entry.Source.SelectedOutputId;
             dto.FileLoop = entry.Source.FileLoop;
@@ -2023,14 +2029,19 @@ internal sealed partial class WebShellController
     private void SetLinkNative(string id, bool enabled)
     {
         var link = _links.FirstOrDefault(item => item.Id == id);
-        if (link == null || link.Native == enabled)
+        if (link == null)
         {
             return;
         }
 
-        if (!enabled && link.Native)
+        if (!enabled)
         {
             DisableNativeChainForLink(link);
+            return;
+        }
+
+        if (link.Native)
+        {
             return;
         }
 
@@ -2253,28 +2264,73 @@ internal sealed partial class WebShellController
         return false;
     }
 
-    private void DisableNativeChainForLink(LinkEntry link)
+    private bool TryFindOutputForLink(LinkEntry link, out OutputNode? output)
     {
-        if (!TryFindNativeOutput(link, out var output) || output == null)
+        output = null;
+        var pending = new Queue<string>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        pending.Enqueue(link.To);
+        while (pending.Count > 0)
         {
-            return;
-        }
-
-        if (TryBuildNativeChain(output, out _, out _, out var links, out _))
-        {
-            foreach (var pathLink in links)
+            string current = pending.Dequeue();
+            if (!visited.Add(current) || !_nodes.TryGetValue(current, out var entry))
             {
-                pathLink.Native = false;
+                continue;
+            }
+
+            if (entry.Output != null)
+            {
+                output = entry.Output;
+                return true;
+            }
+
+            foreach (var next in _links.Where(item => item.From == current && item.Kind != "sidechain"))
+            {
+                pending.Enqueue(next.To);
             }
         }
 
-        if (output.NativeSource != null)
+        return false;
+    }
+
+    private void ClearNativeFlagsIntoOutput(OutputNode output)
+    {
+        var outputEntry = _nodes.Values.FirstOrDefault(entry => ReferenceEquals(entry.Output, output));
+        if (outputEntry == null) return;
+
+        var pending = new Queue<string>();
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        pending.Enqueue(outputEntry.Id);
+        while (pending.Count > 0)
         {
-            _graph.SetNativePassthrough(output, output.NativeSource, false);
+            string current = pending.Dequeue();
+            if (!visited.Add(current)) continue;
+            foreach (var link in _links.Where(item => item.To == current))
+            {
+                link.Native = false;
+                pending.Enqueue(link.From);
+            }
+        }
+    }
+
+    private void DisableNativeChainForLink(LinkEntry link)
+    {
+        bool found = TryFindOutputForLink(link, out var output);
+        link.Native = false;
+        if (found && output != null)
+        {
+            ClearNativeFlagsIntoOutput(output);
+        }
+
+        string? error = null;
+        if (found && output?.NativeSource != null)
+        {
+            error = _graph.SetNativePassthrough(output, output.NativeSource, false);
         }
 
         PublishGraph();
-        SetStatus("Native passthrough disabled.");
+        PublishTelemetry(force: true);
+        SetStatus(error ?? "Native passthrough disabled.", error != null);
     }
 
     private void ApplyLinkNative(string id, bool enabled, bool publish)
@@ -2282,6 +2338,12 @@ internal sealed partial class WebShellController
         var link = _links.FirstOrDefault(item => item.Id == id);
         if (link == null || link.Native == enabled)
         {
+            return;
+        }
+
+        if (!enabled)
+        {
+            DisableNativeChainForLink(link);
             return;
         }
 
@@ -2745,6 +2807,7 @@ internal sealed partial class WebShellController
         }
 
         _nodes.Remove(id);
+        ReleaseFrozenProxyPath(entry.Source?.FilePath);
         _nodeClipHoldUntil.Remove(id);
         _spectrogramCursors.Remove(id);
         _midiBindings.RemoveAll(binding => binding.NodeId == id);

@@ -131,6 +131,7 @@ internal sealed class NodeDto
     public string? NoiseProfileName { get; set; }
     public string? NoiseProfileError { get; set; }
     public bool IsFilePlayer { get; set; }
+    public bool CanFreezeEffects { get; set; }
     public string? FilePath { get; set; }
     public string? FileOutputId { get; set; }
     public bool FileLoop { get; set; }
@@ -356,6 +357,8 @@ internal sealed class NodeTelemetryDto
     public float? NoteHz { get; set; }
     public float? NoteConfidence { get; set; }
     public bool NoteActive { get; set; }
+    public double? InputLatencyMs { get; set; }
+    public double? OutputLatencyMs { get; set; }
 }
 
 internal sealed class TelemetryDto

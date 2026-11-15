@@ -463,6 +463,15 @@ internal sealed partial class WebShellController
         var telemetryJson = JsonSerializer.Serialize(new NodeTelemetryDto { UsesGpu = false }, _json);
         Check("gpu telemetry contract", telemetryJson.Contains("\"usesGpu\":false", StringComparison.Ordinal));
 
+        var latencyTelemetryJson = JsonSerializer.Serialize(new NodeTelemetryDto
+        {
+            InputLatencyMs = 1.2,
+            OutputLatencyMs = 3.4,
+        }, _json);
+        Check("latency telemetry contract",
+            latencyTelemetryJson.Contains("\"inputLatencyMs\":1.2", StringComparison.Ordinal) &&
+            latencyTelemetryJson.Contains("\"outputLatencyMs\":3.4", StringComparison.Ordinal));
+
         var diagnosticsJson = JsonSerializer.Serialize(new DiagnosticsDto { OutputUnderruns = 2 }, _json);
         Check("underrun diagnostics contract", diagnosticsJson.Contains("\"outputUnderruns\":2", StringComparison.Ordinal));
 
@@ -643,6 +652,148 @@ internal sealed partial class WebShellController
         finally
         {
             _graph.AutoRun = warningAutoRun;
+        }
+
+        bool freezeAutoRun = _graph.AutoRun;
+        _graph.AutoRun = false;
+        string freezeInput = Path.Combine(Path.GetTempPath(), $"ruse-freeze-in-{Guid.NewGuid():N}.wav");
+        string freezeOutput = Path.Combine(Path.GetTempPath(), $"ruse-freeze-out-{Guid.NewGuid():N}.wav");
+        string freezeSourceId = "";
+        string freezeModifierId = "";
+        string freezeOutputId = "";
+        string freezeSecondOutputId = "";
+        try
+        {
+            using (var writer = new WaveFileWriter(freezeInput, new WaveFormat(48000, 16, 2)))
+            {
+                var toneSamples = new float[9600 * 2];
+                for (int frame = 0; frame < 9600; frame++)
+                {
+                    float value = 0.3f * MathF.Sin(2f * MathF.PI * 440f * frame / 48000f);
+                    toneSamples[frame * 2] = value;
+                    toneSamples[frame * 2 + 1] = value;
+                }
+
+                writer.WriteSamples(toneSamples, 0, toneSamples.Length);
+            }
+
+            var freezeSource = RegisterSource(new SourceNode("Freeze self test", SourceKind.File), 40, 900);
+            freezeSourceId = freezeSource.Id;
+            freezeSource.Source!.SetFile(freezeInput, false);
+            freezeSource.Source.Gain = 0.5f;
+            var freezeModifier = new ModifierNode("Freeze self test chain");
+            freezeModifier.Add(new GainProcessor { Gain = 0.5f });
+            var freezeModifierEntry = RegisterModifier(freezeModifier, 40, 1000);
+            freezeModifierId = freezeModifierEntry.Id;
+            var freezeTarget = RegisterOutput(OutputNode.CreateForTest(static (_, _) => { }), 300, 1000);
+            freezeOutputId = freezeTarget.Id;
+            ConnectEntries(freezeSource, freezeModifierEntry, publish: false);
+            ConnectEntries(freezeModifierEntry, freezeTarget, publish: false);
+
+            var freezeBounce = BuildSourceFreezeGraph(freezeSource.Id, out _, out string freezeError);
+            bool frozen = false;
+            try
+            {
+                frozen = freezeBounce != null && freezeBounce.Render(freezeOutput, out freezeError);
+            }
+            finally
+            {
+                freezeBounce?.Dispose();
+            }
+
+            float freezePeak = 0;
+            using (var reader = new AudioFileReader(freezeOutput))
+            {
+                var readBuffer = new float[4096];
+                int read;
+                while ((read = reader.Read(readBuffer.AsSpan())) > 0)
+                {
+                    for (int sample = 0; sample < read; sample++)
+                    {
+                        freezePeak = Math.Max(freezePeak, Math.Abs(readBuffer[sample]));
+                    }
+                }
+            }
+
+            Check("source freeze gain", freezePeak is > 0.12f and < 0.18f);
+            Check("source freeze render", frozen &&
+                File.Exists(freezeOutput) &&
+                new FileInfo(freezeOutput).Length > 1000);
+
+            var freezeSecondTarget = RegisterOutput(OutputNode.CreateForTest(static (_, _) => { }), 300, 1100);
+            freezeSecondOutputId = freezeSecondTarget.Id;
+            ConnectEntries(freezeModifierEntry, freezeSecondTarget, publish: false);
+            var sharedFreeze = BuildSourceFreezeGraph(freezeSource.Id, out _, out _);
+            sharedFreeze?.Dispose();
+            Check("source freeze dedicated route", sharedFreeze == null);
+        }
+        finally
+        {
+            if (_nodes.ContainsKey(freezeSourceId)) RemoveEntryInternal(freezeSourceId);
+            if (_nodes.ContainsKey(freezeModifierId)) RemoveEntryInternal(freezeModifierId);
+            if (_nodes.ContainsKey(freezeOutputId)) RemoveEntryInternal(freezeOutputId);
+            if (_nodes.ContainsKey(freezeSecondOutputId)) RemoveEntryInternal(freezeSecondOutputId);
+            _graph.AutoRun = freezeAutoRun;
+            try { if (File.Exists(freezeInput)) File.Delete(freezeInput); } catch { }
+            try { if (File.Exists(freezeOutput)) File.Delete(freezeOutput); } catch { }
+        }
+
+        string cleanupFrozenPath = Path.Combine(Path.GetTempPath(), $"ruse-frozen-cleanup-{Guid.NewGuid():N}.wav");
+        string cleanupFrozenSourceId = "";
+        try
+        {
+            File.WriteAllBytes(cleanupFrozenPath, new byte[4096]);
+            FrozenProxyStore.Track(cleanupFrozenPath);
+            var cleanupFrozenSource = RegisterSource(new SourceNode("Frozen cleanup", SourceKind.File), 40, 1200);
+            cleanupFrozenSourceId = cleanupFrozenSource.Id;
+            cleanupFrozenSource.Source!.SetFile(cleanupFrozenPath, false);
+            var cleanupFrozenSnapshot = CaptureNode(cleanupFrozenSource);
+            RemoveEntryInternal(cleanupFrozenSource.Id);
+            bool moved = !File.Exists(cleanupFrozenPath);
+            var restoredFrozenSource = RestoreNodeSnapshot(cleanupFrozenSnapshot);
+            bool restored = restoredFrozenSource != null && File.Exists(cleanupFrozenPath);
+            if (restoredFrozenSource != null) RemoveEntryInternal(restoredFrozenSource.Id);
+            Check("frozen proxy cleanup", moved && restored);
+        }
+        finally
+        {
+            if (_nodes.ContainsKey(cleanupFrozenSourceId)) RemoveEntryInternal(cleanupFrozenSourceId);
+            FrozenProxyStore.Forget(cleanupFrozenPath);
+            try { if (File.Exists(cleanupFrozenPath)) File.Delete(cleanupFrozenPath); } catch { }
+        }
+
+        bool nativeAutoRun = _graph.AutoRun;
+        _graph.AutoRun = false;
+        string nativeSourceId = "";
+        string nativeOutputId = "";
+        string nativeSecondSourceId = "";
+        try
+        {
+            var nativeSource = RegisterSource(new SourceNode("Native toggle", SourceKind.Tone), 40, 1400);
+            nativeSourceId = nativeSource.Id;
+            nativeSource.Source!.Start();
+            var nativeOutput = RegisterOutput(OutputNode.CreateForTest(static (_, _) => { }), 300, 1400);
+            nativeOutputId = nativeOutput.Id;
+            var nativeLink = ConnectEntries(nativeSource, nativeOutput, publish: false);
+            SetLinkNative(nativeLink.Id, true);
+
+            var nativeSecondSource = RegisterSource(new SourceNode("Native toggle 2", SourceKind.Tone), 40, 1500);
+            nativeSecondSourceId = nativeSecondSource.Id;
+            nativeSecondSource.Source!.Start();
+            ConnectEntries(nativeSecondSource, nativeOutput, publish: false);
+            bool nativeEnabled = nativeLink.Native && nativeOutput.Output!.IsNativePassthrough &&
+                nativeOutput.Output.NativeSource != null;
+            SetLinkNative(nativeLink.Id, false);
+            bool nativeDisabled = !nativeLink.Native && !nativeOutput.Output!.IsNativePassthrough &&
+                nativeOutput.Output.NativeSource == null;
+            Check("native passthrough toggle", nativeEnabled && nativeDisabled);
+        }
+        finally
+        {
+            if (_nodes.ContainsKey(nativeSourceId)) RemoveEntryInternal(nativeSourceId);
+            if (_nodes.ContainsKey(nativeSecondSourceId)) RemoveEntryInternal(nativeSecondSourceId);
+            if (_nodes.ContainsKey(nativeOutputId)) RemoveEntryInternal(nativeOutputId);
+            _graph.AutoRun = nativeAutoRun;
         }
 
         void Check(string name, bool condition)

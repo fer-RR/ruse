@@ -255,6 +255,7 @@ internal sealed partial class WebShellController
             try
             {
                 var kind = Enum.TryParse<SourceKind>(saved.Kind, out var parsed) ? parsed : SourceKind.Application;
+                RestoreFrozenProxyPath(saved.FilePath);
                 var source = new SourceNode(saved.Title, kind, saved.ProcessId, saved.DeviceId,
                     processName: saved.ProcessName, filePath: saved.FilePath, fileLoop: saved.FileLoop);
                 if (kind == SourceKind.Tone)
@@ -492,6 +493,8 @@ internal sealed partial class WebShellController
         {
             AppLog.Warning($"Disarmed {disarmedRecorders} recorder(s) imported from a preset.");
         }
+
+        CleanupUnreferencedFrozenProxies();
 
         if (insert)
         {

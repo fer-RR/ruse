@@ -10,6 +10,7 @@ import { useI18n } from '../i18n';
 import { formatGainDb, nextVolumeValue } from '../gain';
 import { withShortcut } from '../shortcuts';
 import { ConfirmDialog } from './Dialogs';
+import WelcomeTimelineAnimation from './WelcomeTimelineAnimation';
 
 const BASE_PIXELS_PER_SECOND = 80;
 const MAX_CANVAS_WIDTH = 16000;
@@ -154,6 +155,8 @@ function TrackGainSlider({ track, onChange }: { track: TimelineTrackModel; onCha
 export default function TimelinePanel({
   state,
   automationTargets,
+  showIntro,
+  onDismissIntro,
   nodeIds,
   onPlay,
   onStop,
@@ -184,6 +187,8 @@ export default function TimelinePanel({
 }: {
   state: TimelineState;
   automationTargets: TimelineAutomationTarget[];
+  showIntro: boolean;
+  onDismissIntro: () => void;
   nodeIds: Set<string>;
   onPlay: () => void;
   onStop: () => void;
@@ -213,6 +218,19 @@ export default function TimelinePanel({
   onClose: () => void;
 }) {
   const { t } = useI18n();
+
+  useEffect(() => {
+    if (!showIntro) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      onDismissIntro();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showIntro, onDismissIntro]);
+
 
   useEffect(() => {
     onReady?.();
@@ -891,6 +909,17 @@ export default function TimelinePanel({
           <button className="icon-button compact" onClick={onClose} aria-label={t('Close timeline')}>×</button>
         </div>
       </header>
+      {showIntro && (
+        <div className="timeline-intro" role="dialog" aria-modal="true" aria-label={t('Build with the timeline')}>
+          <WelcomeTimelineAnimation className="timeline-intro-animation" />
+          <div className="timeline-intro-copy">
+            <strong>{t('Build with the timeline')}</strong>
+            <p>{t('Open the Timeline, add a track, drop samples or recordings, then press Space to play. Drag an effect onto a cable to build an effect chain.')}</p>
+            <button className="primary-button" autoFocus onClick={onDismissIntro}>{t('Got it')}</button>
+          </div>
+        </div>
+      )}
+
       {tracks.length > 0 && (
         <div className="timeline-track-strip">
           {tracks.map(track => {

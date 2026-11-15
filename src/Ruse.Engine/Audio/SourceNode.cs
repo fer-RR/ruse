@@ -139,6 +139,16 @@ public sealed class SourceNode : IDisposable
 
     /// <summary>Software generators need a small lead so their wall-clock pump cannot starve the mixer.</summary>
     public double PrebufferMs => Kind is SourceKind.Tone or SourceKind.Synth or SourceKind.File or SourceKind.Tts ? 30.0 : 0.0;
+
+    public double CaptureLatencyMs => Kind switch
+    {
+        SourceKind.Device => 10.0,
+        SourceKind.Application or SourceKind.SystemLoopback => 10.0,
+        SourceKind.Network => NetworkPcm.DefaultBufferMs,
+        SourceKind.Tone or SourceKind.Synth or SourceKind.File or SourceKind.Tts => PrebufferMs,
+        _ => 0.0,
+    };
+
     public SynthSettings Synth { get; private set; } = SynthSettings.Default;
 
     /// <summary>Updates the procedural generator. Takes effect immediately when running.</summary>

@@ -61,6 +61,8 @@ export function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefi
     a.noteHz === b.noteHz &&
     a.noteConfidence === b.noteConfidence &&
     a.noteActive === b.noteActive &&
+    a.inputLatencyMs === b.inputLatencyMs &&
+    a.outputLatencyMs === b.outputLatencyMs &&
     sameArray(a.spectrum, b.spectrum) &&
     a.spectrumPeakHz === b.spectrumPeakHz &&
     sameArray(a.spectrogram, b.spectrogram) &&

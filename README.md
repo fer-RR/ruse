@@ -42,6 +42,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 - **60 built-in effects**, including EQ, filters, dynamics, gates, saturation, pitch, auto-tune, vocoder, delays, reverbs, convolution and character effects.
 - VST3 hosting in an isolated child process.
 - Effect chains, saved chains, frame templates, per-effect bypass and mixer groups with independent gain/mute/solo.
+- Freeze a file or sample source through its routed effects into a rendered proxy, then bypass the original route. Generated proxies are removed when their source node is deleted or its file is replaced.
 - Timeline tracks, clips, fades, gain, automation and offline bounce/freeze.
 
 ### Output and recording
@@ -56,7 +57,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 
 - Optional local Whisper transcription, translation and text-to-speech.
 - Local control API for scripts and automation, off by default.
-- Ten UI themes, including a Windows light/dark follow mode.
+- Six UI themes: Dark, Light, Midnight, Blueprint, Deep Dive and Studio '74.
 - Keyboard shortcuts, reduced-motion support and screen-reader labels.
 - English, German, Spanish, French, Italian, Japanese, Korean, Portuguese (Brazil) and Chinese (Simplified) UI.
 

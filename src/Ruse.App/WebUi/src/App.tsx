@@ -6,7 +6,7 @@ import {
 import type { Connection, Edge, EdgeChange, NodeChange } from '@xyflow/react';
 import {
   AlertTriangle, ArrowUpDown, AudioLines, ChevronLeft, ChevronRight, Copy, Info, LayoutGrid, Maximize2,
-  LayoutTemplate, Minus, Pencil, Plus, Trash2, Unplug, Volume2, VolumeX, X, Zap,
+  LayoutTemplate, Minus, Pencil, Plus, Snowflake, Trash2, Unplug, Volume2, VolumeX, X, Zap,
 } from 'lucide-react';
 import { isHosted, send, subscribe } from './bridge';
 import { createDemoTelemetry, demoCatalog, demoGraph, demoSettings } from './demo';
@@ -134,6 +134,8 @@ export default function App() {
   const [explainer, setExplainer] = useState<ExplainerId | null>(null);
   const explainerUsage = useRef({ mixer: false, sidechain: false, vst3: false, native: false });
   const [timelineOpen, setTimelineOpen] = useState(false);
+  const [timelineIntroVisible, setTimelineIntroVisible] = useState(false);
+  const dismissTimelineIntro = useCallback(() => setTimelineIntroVisible(false), []);
   const [timelineReady, setTimelineReady] = useState(false);
   const [timeline, setTimeline] = useState<TimelineState>({
     project: { version: 1, sampleRate: 48000, tempo: 120, loopStartSample: -1, loopEndSample: -1, tracks: [] },
@@ -242,6 +244,17 @@ export default function App() {
   useEffect(() => { sidebarCollapsedRef.current = sidebarCollapsed; }, [sidebarCollapsed]);
   useEffect(() => { localStorage.setItem('ruse.sidebarWidth', String(sidebarWidth)); }, [sidebarWidth]);
   useEffect(() => { localStorage.setItem('ruse.sidebarCollapsed', sidebarCollapsed ? '1' : '0'); }, [sidebarCollapsed]);
+  useEffect(() => {
+    if (!timelineOpen) {
+      setTimelineIntroVisible(false);
+      return;
+    }
+
+    if (localStorage.getItem('ruse.timelineIntroSeen') === '1') return;
+    localStorage.setItem('ruse.timelineIntroSeen', '1');
+    setTimelineIntroVisible(true);
+  }, [timelineOpen]);
+
   useEffect(() => { localStorage.setItem('ruse.mixerOpen', mixerOpen ? '1' : '0'); }, [mixerOpen]);
   useEffect(() => {
     localStorage.setItem('ruse.mixerWidth', String(mixerWidth));
@@ -1523,6 +1536,8 @@ export default function App() {
             <TimelinePanel
               state={timeline}
               automationTargets={timelineAutomationTargets}
+              showIntro={timelineIntroVisible}
+              onDismissIntro={dismissTimelineIntro}
               nodeIds={timelineNodeIds}
               onPlay={() => send('timeline-play')}
               onStop={() => send('timeline-stop')}
@@ -1570,7 +1585,7 @@ export default function App() {
           </Suspense>
         )}
       </div>
-      <StatusBar status={status} />
+      <StatusBar status={status} showDiagnostics={settings.showDiagnostics} />
       {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} virtualInputs={catalog.inputs.filter(item => item.virtual)} virtualOutputs={catalog.virtuals} vstPlugins={catalog.vst3Plugins} onFirstRoute={openFirstRoute} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
       {trayPrompt && <TrayPromptDialog
         onKeep={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: true }); }}
@@ -1667,6 +1682,7 @@ export default function App() {
           {canvasMenu.kind === 'node' && menuNode && <>
             <button role="menuitem" tabIndex={-1} onClick={() => { setRenamePrompt({ id: menuNode.id, title: menuNode.data.title }); setCanvasMenu(null); } }><Pencil size={14} /> {t('Rename')}</button>
             <button role="menuitem" tabIndex={-1} onClick={() => { send('duplicate', { id: menuNode.id }); setCanvasMenu(null); } }><Copy size={14} /> {t('Duplicate')} <kbd>{SHORTCUTS.duplicate}</kbd></button>
+            {menuNode.data.canFreezeEffects && <button role="menuitem" tabIndex={-1} onClick={() => { send('freeze-effects', { id: menuNode.id }); setCanvasMenu(null); } }><Snowflake size={14} /> {t('Freeze effects')}</button>}
             <button role="menuitem" tabIndex={-1} onClick={() => { send('mute', { id: menuNode.id, value: !menuNode.data.muted }); setCanvasMenu(null); } }>{menuNode.data.muted ? <Volume2 size={14} /> : <VolumeX size={14} />} {menuNode.data.muted ? t('Unmute node') : t('Mute node')} <kbd>{SHORTCUTS.muteSelected}</kbd></button>
             {menuNode.data.isDbMeter && <button role="menuitem" tabIndex={-1} onClick={() => { send('db-meter-orientation', { id: menuNode.id, vertical: !menuDbVertical }); setCanvasMenu(null); } }><ArrowUpDown size={14} /> {menuDbVertical ? t('Make horizontal') : t('Make vertical')}</button>}
             <button role="menuitem" tabIndex={-1} onClick={() => { send('disconnect-node', { id: menuNode.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect routes')}</button>

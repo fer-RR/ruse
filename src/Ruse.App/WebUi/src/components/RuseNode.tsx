@@ -738,6 +738,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const spectrogramPalette = Math.round(data.parameters.find(parameter => parameter.name === 'Palette')?.value ?? 0);
   const formatRateValue = data.sampleRate && data.sampleRate > 0 ? data.sampleRate : 48000;
   const formatBits = data.bitsPerSample ?? 32;
+  const latency = data.kind === 'source' ? telemetry?.inputLatencyMs : data.kind === 'output' ? telemetry?.outputLatencyMs : undefined;
   const flowing = enabled && active;
   const hasBadges = !enabled || recording || data.duplicateRisk || telemetry?.clipping ||
     telemetry?.clipGuardActive || (data.isTts && data.ttsUsesGpu !== true) ||
@@ -805,6 +806,9 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
           >
             {formatRate(formatRateValue)} · {formatBits}-bit
           </span>
+        ) : null}
+        {data.showDiagnostics && (data.kind === 'source' || data.kind === 'output') && typeof latency === 'number' && Number.isFinite(latency) ? (
+          <span className="node-badge latency-badge" title={t('Latency')}>{data.kind === 'source' ? 'IN' : 'OUT'} {latency.toFixed(1)} ms</span>
         ) : null}
         {data.supportsSidechain && <button className="node-help nodrag" title={`${t('Help')}: ${t('Sidechain ducker')}`} aria-label={`${t('Help')}: ${t('Sidechain ducker')}`} onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-explainer', { detail: 'sidechain' }))}>?</button>}
         {isModifier && <button className={`node-power nodrag ${enabled ? '' : 'off'}`} title={withShortcut(enabled ? t('Bypass effect') : t('Enable effect'), 'bypass')} aria-label={enabled ? t('Bypass effect') : t('Enable effect')} onClick={() => send('effect-enabled', { id: data.id, value: !enabled })}>

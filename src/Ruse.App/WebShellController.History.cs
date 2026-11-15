@@ -237,6 +237,7 @@ internal sealed partial class WebShellController
         {
             if (snapshot.Kind == "source")
             {
+                RestoreFrozenProxyPath(snapshot.FilePath);
                 var source = new SourceNode(
                     snapshot.Title,
                     snapshot.SourceKind,

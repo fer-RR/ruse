@@ -46,6 +46,7 @@ export const ptBR: Record<string, string> = {
   // Sidebar
   'System audio': 'Áudio do sistema',
   'Windows loopback': 'Loopback do Windows',
+  'Window size': 'Tamanho da janela',
   'Capture everything playing through the default output': 'Captura tudo o que toca na saída padrão',
   'Record to file': 'Gravar em arquivo',
   'WAV, MP3 or FLAC': 'WAV, MP3 ou FLAC',
@@ -821,6 +822,7 @@ export const ptBR: Record<string, string> = {
   "Snap bar": "Encaixe no compasso",
   "Bounce mix": "Bounce da mixagem",
   "Freeze": "Congelar",
+  'Freeze effects': 'Congelar efeitos',
   "Record": "Gravar",
   "Stop record": "Parar gravação",
   "Timeline zoom": "Zoom da linha do tempo",

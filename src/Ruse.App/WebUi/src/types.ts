@@ -109,6 +109,7 @@ export interface NodeModel {
   isParallel?: boolean;
   send?: number;
   isFilePlayer?: boolean;
+  canFreezeEffects?: boolean;
   filePath?: string;
   fileOutputId?: string;
   fileOutputs?: Array<{ id: string; name: string }>;
@@ -305,6 +306,8 @@ export interface NodeTelemetry {
   noteHz?: number;
   noteConfidence?: number;
   noteActive?: boolean;
+  inputLatencyMs?: number;
+  outputLatencyMs?: number;
 }
 
 export interface DiagnosticInfo {

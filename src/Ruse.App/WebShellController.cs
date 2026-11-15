@@ -71,6 +71,7 @@ internal sealed partial class WebShellController : IDisposable
     {
         _window = window;
         _settings = AppSettings.Load();
+        FrozenProxyStore.Initialize();
         _graph.AutoRun = false;
         _settings.Theme = _settings.Theme switch
         {
@@ -463,6 +464,7 @@ internal sealed partial class WebShellController : IDisposable
             case "vst3-editor": SetVst3Editor(String(message, "id"), Bool(message, "open")); break;
             case "vst3-rescan": RescanVst3Plugins(); break;
             case "rename": RenameNode(String(message, "id"), String(message, "title")); break;
+            case "freeze-effects": FreezeSourceEffects(String(message, "id")); break;
             case "transport":
                 if (Bool(message, "running")) StartRouting(); else StopRouting();
                 break;
@@ -481,6 +483,7 @@ internal sealed partial class WebShellController : IDisposable
                 ClearGraph();
                 ClearHistory();
                 DeleteSession();
+                CleanupUnreferencedFrozenProxies();
                 SetStatus("Graph cleared.");
                 PublishGraph();
                 break;
@@ -1065,6 +1068,10 @@ internal sealed partial class WebShellController : IDisposable
                 meter.FilePaused = entry.Source.Kind == SourceKind.File && entry.Source.FilePaused;
                 meter.FilePositionSeconds = entry.Source.Kind == SourceKind.File ? entry.Source.FilePositionSeconds : 0;
                 meter.FileDurationSeconds = entry.Source.Kind == SourceKind.File ? entry.Source.FileDurationSeconds : 0;
+                if (_settings.ShowDiagnostics)
+                {
+                    meter.InputLatencyMs = Finite(entry.Source.CaptureLatencyMs + entry.Source.BufferedMs);
+                }
             }
             else if (entry.Output != null)
             {
@@ -1080,6 +1087,10 @@ internal sealed partial class WebShellController : IDisposable
                     meter.RecordingStatus = RecorderStatus(entry.Output);
                     meter.RecordingSeconds = Finite(entry.Output.RecordedSeconds);
                     meter.RecordingError = entry.Output.RecordingError;
+                }
+                if (_settings.ShowDiagnostics)
+                {
+                    meter.OutputLatencyMs = Finite(entry.Output.EstimatedLatencyMs);
                 }
             }
             else
@@ -1536,6 +1547,7 @@ internal sealed partial class WebShellController : IDisposable
         SetAudioPriorityBoost(false);
         StopControlServer();
         DisposeInactiveOutputs();
+        FrozenProxyStore.CleanupTrash();
         _timeline?.Dispose();
         _graph.Dispose();
     }
