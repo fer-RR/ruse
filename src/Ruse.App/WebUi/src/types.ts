@@ -1,6 +1,6 @@
 export type NodeKind = 'source' | 'output' | 'modifier';
 export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output' | 'sidechain';
-export type CatalogKind = 'app' | 'system' | 'tone' | 'synth' | 'tts' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'sample' | 'recorder' | 'vst3' | 'template';
+export type CatalogKind = 'app' | 'system' | 'metronome' | 'tone' | 'synth' | 'tts' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'sample' | 'recorder' | 'vst3' | 'template';
 
 export interface ChainElement {
   typeId: string;
@@ -74,6 +74,8 @@ export interface NodeModel {
   accent: string;
   x: number;
   y: number;
+  width?: number;
+  height?: number;
   volume: number;
   muted: boolean;
   solo?: boolean;
@@ -115,6 +117,9 @@ export interface NodeModel {
   fileOutputs?: Array<{ id: string; name: string }>;
   fileLoop?: boolean;
   fileSpeed?: number;
+  isMetronome?: boolean;
+  metronomeBpm?: number;
+  metronomeBeatsPerBar?: number;
   isToneGenerator?: boolean;
   toneFrequency?: number;
   toneWaveform?: string;

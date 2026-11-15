@@ -47,6 +47,9 @@ internal sealed partial class WebShellController
                     ToneFrequency = entry.Source.ToneFrequency,
                     ToneWaveform = entry.Source.ToneWave.ToString(),
                     ToneLevelDb = entry.Source.ToneLevelDb,
+                    IsMetronome = entry.Source.IsMetronome,
+                    MetronomeBpm = entry.Source.MetronomeBpm,
+                    MetronomeBeatsPerBar = entry.Source.MetronomeBeatsPerBar,
                     SynthFrequency = entry.Source.Synth.Frequency,
                     SynthWaveform = entry.Source.Synth.Waveform.ToString(),
                     SynthLevelDb = entry.Source.Synth.LevelDb,
@@ -258,6 +261,11 @@ internal sealed partial class WebShellController
                 RestoreFrozenProxyPath(saved.FilePath);
                 var source = new SourceNode(saved.Title, kind, saved.ProcessId, saved.DeviceId,
                     processName: saved.ProcessName, filePath: saved.FilePath, fileLoop: saved.FileLoop);
+                if (saved.IsMetronome)
+                {
+                    source.SetMetronome(saved.MetronomeBpm, saved.MetronomeBeatsPerBar);
+                }
+
                 if (kind == SourceKind.Tone)
                 {
                     var wave = Enum.TryParse<ToneWaveform>(saved.ToneWaveform, ignoreCase: true, out var toneWave)

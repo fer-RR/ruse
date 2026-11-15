@@ -787,6 +787,14 @@ internal sealed partial class WebShellController
             bool nativeDisabled = !nativeLink.Native && !nativeOutput.Output!.IsNativePassthrough &&
                 nativeOutput.Output.NativeSource == null;
             Check("native passthrough toggle", nativeEnabled && nativeDisabled);
+
+        var metronomeSource = new SourceNode("Metronome self test", SourceKind.Tone);
+        metronomeSource.SetMetronome(120f, 4);
+        metronomeSource.Start();
+        bool metronomeRunning = metronomeSource.IsRunning;
+        metronomeSource.Stop();
+        metronomeSource.Dispose();
+        Check("timeline metronome source", metronomeRunning);
         }
         finally
         {
@@ -795,6 +803,18 @@ internal sealed partial class WebShellController
             if (_nodes.ContainsKey(nativeOutputId)) RemoveEntryInternal(nativeOutputId);
             _graph.AutoRun = nativeAutoRun;
         }
+
+        var generatorLoop = new SourceNode("Generator loop test", SourceKind.Tone);
+        generatorLoop.SetTone(440f, ToneWaveform.Sine, -18f);
+        var generatorSamples = GeneratorLoopRenderer.Render(generatorLoop, 4800);
+        Check("generator loop render", generatorSamples.Length == 9600 &&
+            generatorSamples.Any(sample => Math.Abs(sample) > 0.001f));
+
+        var sourceAutomation = SourceAutomationParameters(generatorLoop);
+        sourceAutomation[0].Set(440f);
+        Check("source automation parameters", sourceAutomation.Count >= 3 &&
+            Math.Abs(generatorLoop.ToneFrequency - 440f) < 1f);
+        generatorLoop.Dispose();
 
         void Check(string name, bool condition)
         {
@@ -843,6 +863,46 @@ internal sealed partial class WebShellController
             Check("timeline fade limits",
                 timelineClip.FadeInSamples == 1000 && timelineClip.FadeOutSamples == 1200 &&
                 timelineClip.LengthSamples == 6000);
+
+            {
+                var splitTimeline = new TimelineService();
+                var splitTrack = splitTimeline.AddTrack("Split test");
+                bool addSplit = splitTimeline.AddClip(splitTrack.Id, timelineWave, out _);
+                var splitClip = splitTimeline.Project.Tracks[0].Clips[0];
+                bool splitOk = splitTimeline.SplitClip(splitTrack.Id, splitClip.Id, 6000);
+                var splitClips = splitTimeline.Project.Tracks[0].Clips;
+                bool duplicateOk = splitTimeline.DuplicateClip(splitTrack.Id, splitClips[0].Id);
+                Check("timeline split and duplicate", addSplit && splitOk && duplicateOk &&
+                    splitClips.Count == 3 && splitClips[0].LengthSamples == 6000 &&
+                    splitClips[1].SourceOffsetSamples == 6000 && splitClips[1].LengthSamples == 6000);
+                bool crossfadeOk = splitTimeline.CrossfadeClip(splitTrack.Id, splitClips[2].Id);
+                Check("timeline crossfade", crossfadeOk && splitClips[2].FadeOutSamples == 6000 &&
+                    splitClips[1].FadeInSamples == 6000);
+
+                var loopTimeline = new TimelineService();
+                var loopTrack = loopTimeline.AddTrack("Loop test");
+                bool loopAdd = loopTimeline.AddClip(loopTrack.Id, timelineWave, out _);
+                var loopClip = loopTimeline.Project.Tracks[0].Clips[0];
+                bool loopSet = loopTimeline.SetClipLoop(loopTrack.Id, loopClip.Id, true);
+                bool loopLength = loopTimeline.UpdateClip(loopTrack.Id, loopClip.Id, null, 24000, null, null, null, null);
+                Check("timeline generator loop length", loopAdd && loopSet && loopLength &&
+                    loopClip.Loop && loopClip.LengthSamples == 24000);
+                loopTimeline.Dispose();
+
+                var gateTimeline = new TimelineService();
+                var gateTrack = gateTimeline.AddGeneratorTrack("generator-test", "Generator");
+                bool gateAdded = gateTimeline.AddGeneratorClip(gateTrack.Id, 0, 4800, "Generator", out _);
+                float gateGain = -1;
+                gateTimeline.ApplyGeneratorGate = (_, gain) => gateGain = gain;
+                gateTimeline.Play();
+                gateTimeline.RenderBlock(480);
+                Check("timeline generator gate", gateAdded && gateGain > 0f);
+                gateTimeline.Dispose();
+
+
+                splitTimeline.Dispose();
+            }
+
 
             timeline.SetLoop(1000, 5000);
             timeline.Seek(6000);

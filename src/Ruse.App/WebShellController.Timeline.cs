@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows;
+using NAudio.Wave;
 using Ruse.App.Audio;
 
 namespace Ruse.App;
@@ -19,6 +20,14 @@ internal sealed partial class WebShellController
     private int _timelineRecordingLatencyFrames;
     private volatile bool _timelineRecordingActive;
     private bool _timelineBounceActive;
+    private CancellationTokenSource? _timelineBounceCancel;
+    private SourceNode? _timelineMetronomeSource;
+    private bool _timelineMetronome;
+    private bool _timelineCountInActive;
+    private bool _timelineCountInWasMetronome;
+    private int _timelineCountInBeats = 4;
+    private long _lastSourceStatePublish;
+    private CancellationTokenSource? _timelineCountInCancel;
 
     private void EnsureTimeline()
     {
@@ -29,7 +38,16 @@ internal sealed partial class WebShellController
 
         _timeline = new TimelineService();
         _timeline.ApplyAutomation = ApplyTimelineAutomation;
+        _timeline.ApplyGeneratorGate = ApplyGeneratorGate;
         _graph.Timeline = _timeline;
+    }
+
+    private void ApplyGeneratorGate(string nodeId, float gain)
+    {
+        if (_nodes.TryGetValue(nodeId, out var entry) && entry.Source != null)
+        {
+            entry.Source.TimelineGate = Math.Clamp(gain, 0f, 1f);
+        }
     }
 
     private void ApplyTimelineAutomation(string nodeId, int processorIndex, int parameterIndex, float value)
@@ -42,6 +60,11 @@ internal sealed partial class WebShellController
         try
         {
             parameter.Set(Math.Clamp(value, parameter.Min, parameter.Max));
+            if (processorIndex == -1 && Environment.TickCount64 - _lastSourceStatePublish >= 100)
+            {
+                _lastSourceStatePublish = Environment.TickCount64;
+                PublishSourceState(nodeId);
+            }
             lock (_timelineParameterLock)
             {
                 _timelineParameterChanges.Add((nodeId, processorIndex, parameterIndex));
@@ -50,6 +73,35 @@ internal sealed partial class WebShellController
         catch
         {
         }
+    }
+
+    private void PublishSourceState(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { } source)
+        {
+            return;
+        }
+
+        Post("source-state", new SourceStateDto
+        {
+            Id = id,
+            ToneFrequency = source.ToneFrequency,
+            ToneWaveform = source.ToneWave.ToString(),
+            ToneLevelDb = source.ToneLevelDb,
+            MetronomeBpm = source.MetronomeBpm,
+            MetronomeBeatsPerBar = source.MetronomeBeatsPerBar,
+            SynthFrequency = source.Synth.Frequency,
+            SynthWaveform = source.Synth.Waveform.ToString(),
+            SynthLevelDb = source.Synth.LevelDb,
+            SynthHarmonics = source.Synth.Harmonics,
+            SynthDetuneCents = source.Synth.DetuneCents,
+            SynthNoise = source.Synth.Noise,
+            SynthCutoffHz = source.Synth.CutoffHz,
+            SynthResonance = source.Synth.Resonance,
+            SynthMovement = source.Synth.Movement,
+            SynthLfoRateHz = source.Synth.LfoRateHz,
+            SynthStereoWidth = source.Synth.StereoWidth,
+        });
     }
 
     private void FlushTimelineParameterChanges()
@@ -306,6 +358,34 @@ internal sealed partial class WebShellController
         }
     }
 
+    private void SplitTimelineClip(string trackId, string clipId, long sample)
+    {
+        if (_timeline?.SplitClip(trackId, clipId, sample) == true)
+        {
+            PublishTimeline(false);
+        }
+        else
+        {
+            SetStatus("Place the playhead inside the clip before splitting.", isError: true);
+        }
+    }
+
+    private void DuplicateTimelineClip(string trackId, string clipId)
+    {
+        if (_timeline?.DuplicateClip(trackId, clipId) == true)
+        {
+            PublishTimeline(false);
+        }
+    }
+
+    private void CrossfadeTimelineClip(string trackId, string clipId)
+    {
+        if (_timeline?.CrossfadeClip(trackId, clipId) == true)
+        {
+            PublishTimeline(false);
+        }
+    }
+
     private void MoveTimelineClip(string trackId, string clipId, long startSample)
     {
         if (_timeline == null)
@@ -331,6 +411,46 @@ internal sealed partial class WebShellController
         {
             PublishTimeline(false);
         }
+    }
+
+    private void AddTimelineGenerator(string nodeId, string trackId, long startSample)
+    {
+        if (!_nodes.TryGetValue(nodeId, out var entry) || entry.Source is not { } source ||
+            (!source.IsMetronome && source.Kind is not (SourceKind.Tone or SourceKind.Synth)))
+        {
+            SetStatus("Drag a tone, synth, or metronome node to the timeline.", isError: true);
+            return;
+        }
+
+        EnsureTimeline();
+        if (_timeline == null) return;
+        var track = _timeline.Project.Tracks.FirstOrDefault(item => item.GeneratorNodeId == nodeId);
+        if (track == null)
+        {
+            track = _timeline.AddGeneratorTrack(nodeId, source.Title);
+        }
+
+        if (!_timeline.AddGeneratorClip(track.Id, startSample, AudioEngineConfig.SampleRate * 4, source.Title, out string error))
+        {
+            SetStatus(error, isError: true);
+            return;
+        }
+
+        source.TimelineGate = 0f;
+        if (!_links.Any(link => link.From == nodeId && link.Enabled))
+        {
+            var output = _nodes.Values.FirstOrDefault(item =>
+                item.Output is { IsFileRecorder: false, IsNetworkOutput: false });
+            if (output != null)
+            {
+                ConnectEntries(entry, output, publish: false);
+            }
+        }
+
+        if (!source.IsRunning) source.Start();
+        PublishTimeline(true);
+        PublishGraph();
+        SetStatus($"Added {source.Title} to the timeline. Drag the right edge or edit Length (ms) to set its duration.");
     }
 
     private void TimelinePlay()
@@ -371,6 +491,15 @@ internal sealed partial class WebShellController
             }
         }
 
+        foreach (var track in _timeline!.Project.Tracks.Where(track => !string.IsNullOrWhiteSpace(track.GeneratorNodeId)))
+        {
+            if (_nodes.TryGetValue(track.GeneratorNodeId!, out var generator) &&
+                generator.Source != null && !generator.Source.IsRunning)
+            {
+                generator.Source.Start();
+            }
+        }
+
         Ruse.App.Diagnostics.AppLog.Info($"Timeline sources={timelineSources.Length}, running={timelineSources.Count(source => source.IsRunning)}.");
         _timeline!.Play();
         PublishTimeline(false);
@@ -378,9 +507,165 @@ internal sealed partial class WebShellController
 
     private void TimelineStop()
     {
+        CancelTimelineCountIn();
         StopTimelineRecording();
+        if (_timeline != null)
+        {
+            foreach (var track in _timeline.Project.Tracks.Where(track => !string.IsNullOrWhiteSpace(track.GeneratorNodeId)))
+            {
+                ApplyGeneratorGate(track.GeneratorNodeId!, 0f);
+            }
+        }
+
         _timeline?.Stop();
         PublishTimeline(false);
+    }
+
+    private void SetTimelineMetronome(bool enabled)
+    {
+        if (enabled == _timelineMetronome)
+        {
+            PublishTimeline(false);
+            return;
+        }
+
+        if (!enabled)
+        {
+            StopTimelineMetronome();
+            PublishTimeline(false);
+            return;
+        }
+
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        var outputs = _graph.Outputs
+            .Where(output => !output.IsFileRecorder && !output.IsNetworkOutput)
+            .ToArray();
+        if (outputs.Length == 0)
+        {
+            SetStatus("Add an output before enabling the metronome.", isError: true);
+            return;
+        }
+
+        var source = new SourceNode("Metronome", SourceKind.Tone);
+        source.SetMetronome((float)(_timeline.Project.Tempo > 0 ? _timeline.Project.Tempo : 120), 4);
+        _graph.AddSource(source);
+        foreach (var output in outputs)
+        {
+            _graph.Connect(source, output, 1f);
+        }
+
+        source.Start();
+        _timelineMetronomeSource = source;
+        _timelineMetronome = true;
+        PublishTimeline(false);
+    }
+
+    private void StopTimelineMetronome()
+    {
+        var source = _timelineMetronomeSource;
+        _timelineMetronomeSource = null;
+        _timelineMetronome = false;
+        if (source == null)
+        {
+            return;
+        }
+
+        foreach (var output in _graph.Outputs)
+        {
+            _graph.Disconnect(source, output);
+        }
+
+        source.Stop();
+        source.Dispose();
+        _graph.RemoveSource(source, invalidateEngine: true);
+    }
+
+    private void CancelTimelineCountIn()
+    {
+        if (!_timelineCountInActive)
+        {
+            return;
+        }
+
+        _timelineCountInCancel?.Cancel();
+        _timelineCountInActive = false;
+        if (!_timelineCountInWasMetronome)
+        {
+            StopTimelineMetronome();
+        }
+    }
+
+    private void SetTimelineCountInBeats(int beats)
+    {
+        _timelineCountInBeats = Math.Clamp(beats, 1, 16);
+        PublishTimeline(false);
+    }
+
+    private async void TimelineCountIn()
+    {
+        EnsureTimeline();
+        if (_timeline == null || _timeline.IsPlaying || _timelineCountInActive)
+        {
+            return;
+        }
+
+        bool wasMetronome = _timelineMetronome;
+        if (!wasMetronome)
+        {
+            SetTimelineMetronome(true);
+            if (!_timelineMetronome)
+            {
+                return;
+            }
+        }
+
+        _timelineCountInActive = true;
+        _timelineCountInWasMetronome = wasMetronome;
+        var cancel = new CancellationTokenSource();
+        _timelineCountInCancel = cancel;
+        double bpm = _timeline.Project.Tempo > 0 ? _timeline.Project.Tempo : 120;
+        int beats = Math.Clamp(_timelineCountInBeats, 1, 16);
+        SetStatus($"Count-in: {beats} beats...");
+        PublishTimeline(false);
+        try
+        {
+            await Task.Delay((int)Math.Round(beats * 60_000.0 / bpm), cancel.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        finally
+        {
+            if (ReferenceEquals(_timelineCountInCancel, cancel))
+            {
+                _timelineCountInCancel = null;
+            }
+
+            cancel.Dispose();
+        }
+
+        if (!_timelineCountInActive)
+        {
+            return;
+        }
+
+        _timelineCountInActive = false;
+        if (!_timelineMetronome)
+        {
+            return;
+        }
+
+        TimelinePlay();
+        if (!wasMetronome)
+        {
+            StopTimelineMetronome();
+            PublishTimeline(false);
+        }
     }
 
     private void ToggleTimelineRecording()
@@ -576,7 +861,26 @@ internal sealed partial class WebShellController
         SetStatus($"Recorded {Path.GetFileName(path)} into a new timeline track.");
     }
 
-    private async void BounceTimeline()
+    private void EndTimelineBounce()
+    {
+        _timelineBounceActive = false;
+        _timelineBounceCancel?.Dispose();
+        _timelineBounceCancel = null;
+        Post("timeline-bounce-progress", new { active = false, progress = 1.0 });
+    }
+
+    private void CancelTimelineBounce()
+    {
+        if (!_timelineBounceActive) return;
+        _timelineBounceCancel?.Cancel();
+        SetStatus("Canceling timeline render...");
+    }
+
+    private async void BounceTimeline() => await BounceTimelineCore(rangeOnly: false);
+
+    private async void BounceTimelineRange() => await BounceTimelineCore(rangeOnly: true);
+
+    private async Task BounceTimelineCore(bool rangeOnly)
     {
         EnsureTimeline();
         if (_timeline == null)
@@ -602,15 +906,28 @@ internal sealed partial class WebShellController
             return;
         }
 
+        long rangeStart = 0;
+        long rangeEnd = -1;
+        if (rangeOnly)
+        {
+            rangeStart = _timeline.Project.LoopStartSample;
+            rangeEnd = _timeline.Project.LoopEndSample;
+            if (rangeStart < 0 || rangeEnd <= rangeStart)
+            {
+                SetStatus("Set a loop range before bouncing the timeline.", isError: true);
+                return;
+            }
+        }
+
         string recordingDirectory = RecordingDirectory();
         Directory.CreateDirectory(recordingDirectory);
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
-            Title = "Bounce timeline mix",
+            Title = rangeOnly ? "Bounce timeline range" : "Bounce timeline mix",
             Filter = "WAV audio (*.wav)|*.wav",
             DefaultExt = "wav",
             AddExtension = true,
-            FileName = "ruse-timeline-bounce.wav",
+            FileName = rangeOnly ? "ruse-timeline-range.wav" : "ruse-timeline-bounce.wav",
             InitialDirectory = recordingDirectory,
         };
         if (dialog.ShowDialog() != true)
@@ -620,7 +937,7 @@ internal sealed partial class WebShellController
 
         string path = dialog.FileName;
         _timelineBounceActive = true;
-        SetStatus("Bouncing timeline...");
+        SetStatus(rangeOnly ? "Bouncing timeline range..." : "Bouncing timeline...");
         bool ok;
         string error;
         OfflineTimelineBounce? bounce;
@@ -630,18 +947,26 @@ internal sealed partial class WebShellController
         }
         catch (Exception ex)
         {
-            _timelineBounceActive = false;
+        EndTimelineBounce();
             SetStatus("Could not prepare the timeline bounce: " + ex.Message, isError: true);
             return;
         }
 
         if (bounce == null)
         {
-            _timelineBounceActive = false;
+        EndTimelineBounce();
             SetStatus("Add an output device before bouncing the timeline.", isError: true);
             return;
         }
 
+        bounce.StartSample = rangeStart;
+        var bounceCancel = new CancellationTokenSource();
+        _timelineBounceCancel = bounceCancel;
+        bounce.Progress = progress => Post("timeline-bounce-progress", new { active = true, progress });
+        bounce.CancelToken = bounceCancel.Token;
+        Post("timeline-bounce-progress", new { active = true, progress = 0.0 });
+
+        bounce.EndSample = rangeEnd;
         using (bounce)
         {
             try
@@ -659,8 +984,7 @@ internal sealed partial class WebShellController
             }
         }
 
-        _timelineBounceActive = false;
-        if (_disposed)
+        EndTimelineBounce();
         if (_disposed)
         {
             return;
@@ -668,7 +992,7 @@ internal sealed partial class WebShellController
 
         if (ok)
         {
-            string message = $"Timeline bounced to {path}." +
+            string message = $"{(rangeOnly ? "Timeline range" : "Timeline")} bounced to {path}." +
                 (bounce.SkippedVst3 ? " VST3 effects were skipped in the offline bounce." : "") +
                 (bounce.SkippedProcessor ? " Some effects could not be cloned and were skipped." : "");
             SetStatus(message);
@@ -714,17 +1038,23 @@ internal sealed partial class WebShellController
         }
         catch (Exception ex)
         {
-            _timelineBounceActive = false;
+        EndTimelineBounce();
             SetStatus("Could not prepare the timeline freeze: " + ex.Message, isError: true);
             return;
         }
 
         if (bounce == null)
         {
-            _timelineBounceActive = false;
+        EndTimelineBounce();
             SetStatus("Add an output device before freezing the timeline.", isError: true);
             return;
         }
+
+        var freezeCancel = new CancellationTokenSource();
+        _timelineBounceCancel = freezeCancel;
+        bounce.Progress = progress => Post("timeline-bounce-progress", new { active = true, progress });
+        bounce.CancelToken = freezeCancel.Token;
+        Post("timeline-bounce-progress", new { active = true, progress = 0.0 });
 
         using (bounce)
         {
@@ -745,7 +1075,7 @@ internal sealed partial class WebShellController
 
         if (!ok)
         {
-            _timelineBounceActive = false;
+        EndTimelineBounce();
             SetStatus(error, isError: true);
             return;
         }
@@ -753,7 +1083,7 @@ internal sealed partial class WebShellController
         if (_disposed)
         if (_disposed)
         {
-            _timelineBounceActive = false;
+        EndTimelineBounce();
             return;
         }
 
@@ -764,14 +1094,14 @@ internal sealed partial class WebShellController
         }
         catch (Exception ex)
         {
-            _timelineBounceActive = false;
+        EndTimelineBounce();
             SetStatus("Could not create the freeze track: " + ex.Message, isError: true);
             return;
         }
 
         if (!_timeline.AddClip(track.Id, path, out string importError))
         {
-            _timelineBounceActive = false;
+        EndTimelineBounce();
             SetStatus(importError, isError: true);
             return;
         }
@@ -779,7 +1109,7 @@ internal sealed partial class WebShellController
         _timeline.SetTrackSolo(track.Id, true);
         PublishTimeline(true);
         PublishGraph();
-        _timelineBounceActive = false;
+        EndTimelineBounce();
         string frozen = $"Timeline frozen to {Path.GetFileName(path)}. Original tracks are preserved but muted by solo." +
             (bounce.SkippedVst3 ? " VST3 effects were skipped in the offline freeze." : "") +
             (bounce.SkippedProcessor ? " Some effects could not be cloned and were skipped." : "");
@@ -791,6 +1121,7 @@ internal sealed partial class WebShellController
     {
         if (_timeline != null && _timeline.SetTempo(tempo))
         {
+            _timelineMetronomeSource?.SetMetronome((float)tempo, 4);
             PublishTimeline(false);
         }
     }
@@ -815,6 +1146,8 @@ internal sealed partial class WebShellController
                 canUndo = false,
                 canRedo = false,
                 recording = false,
+                metronome = false,
+                countInBeats = _timelineCountInBeats,
             });
             return;
         }
@@ -828,6 +1161,8 @@ internal sealed partial class WebShellController
             canUndo = _timeline.CanUndo,
             canRedo = _timeline.CanRedo,
             recording = _timelineRecordingActive,
+            metronome = _timelineMetronome,
+            countInBeats = _timelineCountInBeats,
         });
     }
 

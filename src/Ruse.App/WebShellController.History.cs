@@ -67,7 +67,10 @@ internal sealed partial class WebShellController
         int TtsVoice = 0,
         bool SaveToSamples = false,
         SynthSettings? Synth = null,
-        string? ControlId = null);
+        string? ControlId = null,
+        bool IsMetronome = false,
+        float MetronomeBpm = 120f,
+        int MetronomeBeatsPerBar = 4);
 
     private void PushAction(
         string label, Action undo, Action redo,
@@ -180,6 +183,9 @@ internal sealed partial class WebShellController
                 ToneFrequency = entry.Source.ToneFrequency,
                 ToneWave = entry.Source.ToneWave,
                 ToneLevelDb = entry.Source.ToneLevelDb,
+                IsMetronome = entry.Source.IsMetronome,
+                MetronomeBpm = entry.Source.MetronomeBpm,
+                MetronomeBeatsPerBar = entry.Source.MetronomeBeatsPerBar,
                 Synth = entry.Source.Kind == SourceKind.Synth ? entry.Source.Synth : null,
                 TtsText = entry.TtsText,
                 TtsSourceNodeId = entry.TtsSourceNodeId,
@@ -247,6 +253,11 @@ internal sealed partial class WebShellController
                     filePath: snapshot.FilePath,
                     fileLoop: snapshot.FileLoop);
                 source.SetFileSpeed(snapshot.FileSpeed);
+                if (snapshot.IsMetronome)
+                {
+                    source.SetMetronome(snapshot.MetronomeBpm, snapshot.MetronomeBeatsPerBar);
+                }
+
                 if (snapshot.SourceKind == SourceKind.Tone)
                 {
                     source.SetTone(snapshot.ToneFrequency, snapshot.ToneWave, snapshot.ToneLevelDb);

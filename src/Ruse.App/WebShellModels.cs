@@ -89,6 +89,8 @@ internal sealed class NodeDto
     public string Accent { get; set; } = "";
     public double X { get; set; }
     public double Y { get; set; }
+    public double? Width { get; set; }
+    public double? Height { get; set; }
     public float Volume { get; set; } = 1;
     public float GroupGain { get; set; } = 1;
     public bool GroupMuted { get; set; }
@@ -136,6 +138,9 @@ internal sealed class NodeDto
     public string? FileOutputId { get; set; }
     public bool FileLoop { get; set; }
     public float FileSpeed { get; set; } = 1f;
+    public bool IsMetronome { get; set; }
+    public float MetronomeBpm { get; set; } = 120f;
+    public int MetronomeBeatsPerBar { get; set; } = 4;
     public bool IsToneGenerator { get; set; }
     public bool IsSynthGenerator { get; set; }
     public float SynthFrequency { get; set; } = 110f;
@@ -196,6 +201,27 @@ internal sealed class NodeDto
     public bool DuplicateRisk { get; set; }
     public string? DuplicateWarning { get; set; }
     public string? WarningSeverity { get; set; }
+}
+
+internal sealed class SourceStateDto
+{
+    public string Id { get; set; } = "";
+    public float? ToneFrequency { get; set; }
+    public string? ToneWaveform { get; set; }
+    public float? ToneLevelDb { get; set; }
+    public float? MetronomeBpm { get; set; }
+    public int? MetronomeBeatsPerBar { get; set; }
+    public float? SynthFrequency { get; set; }
+    public string? SynthWaveform { get; set; }
+    public float? SynthLevelDb { get; set; }
+    public float? SynthHarmonics { get; set; }
+    public float? SynthDetuneCents { get; set; }
+    public float? SynthNoise { get; set; }
+    public float? SynthCutoffHz { get; set; }
+    public float? SynthResonance { get; set; }
+    public float? SynthMovement { get; set; }
+    public float? SynthLfoRateHz { get; set; }
+    public float? SynthStereoWidth { get; set; }
 }
 
 internal sealed class LinkDto

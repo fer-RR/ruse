@@ -17,8 +17,21 @@ internal sealed partial class WebShellController
         {
             foreach (var lane in track.Automation)
             {
-                if (_nodes.TryGetValue(lane.TargetNodeId, out var entry) &&
-                    entry.Modifier != null &&
+                if (!_nodes.TryGetValue(lane.TargetNodeId, out var entry))
+                {
+                    continue;
+                }
+
+                if (lane.ProcessorIndex == -1 && entry.Source != null)
+                {
+                    var sourceParameters = SourceAutomationParameters(entry.Source);
+                    if (lane.ParameterIndex >= 0 && lane.ParameterIndex < sourceParameters.Count)
+                    {
+                        _timelineAutomationTargets[(lane.TargetNodeId, -1, lane.ParameterIndex)] =
+                            sourceParameters[lane.ParameterIndex];
+                    }
+                }
+                else if (entry.Modifier != null &&
                     lane.ProcessorIndex >= 0 &&
                     lane.ProcessorIndex < entry.Modifier.Processors.Count &&
                     entry.Modifier.Processors[lane.ProcessorIndex] is IParameterizedProcessor parameterized &&
@@ -119,6 +132,15 @@ internal sealed partial class WebShellController
         }
 
         string? sourceId = track.SourceNodeId;
+        if (!string.IsNullOrWhiteSpace(track.GeneratorNodeId))
+        {
+            ApplyGeneratorGate(track.GeneratorNodeId, 0f);
+            if (_nodes.TryGetValue(track.GeneratorNodeId, out var generator) && generator.Source != null)
+            {
+                generator.Source.TimelineGate = 1f;
+            }
+        }
+
         if (_timeline.RemoveTrack(trackId))
         {
             if (!string.IsNullOrWhiteSpace(sourceId) && _nodes.ContainsKey(sourceId))
@@ -143,6 +165,14 @@ internal sealed partial class WebShellController
         var track = _timeline.Project.Tracks.FirstOrDefault(item => item.Id == trackId);
         if (track == null)
         {
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(track.GeneratorNodeId) &&
+            _nodes.ContainsKey(track.GeneratorNodeId))
+        {
+            PublishGraph();
+            SetStatus($"Generator node for '{track.Name}' is already on the canvas.");
             return;
         }
 

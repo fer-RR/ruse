@@ -3,8 +3,8 @@ import type { CSSProperties } from 'react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, ChevronUp, Copy, FileAudio, Languages, Layers3, Mic, MonitorSpeaker,
-  Play, Power, Puzzle, Radio, Settings, SlidersHorizontal, Square, Volume2, VolumeX, X,
+  AppWindow, AudioLines, Check, ChevronDown, ChevronUp, Copy, FileAudio, GripVertical, Languages, Layers3, Mic, MonitorSpeaker,
+  Play, Power, Puzzle, Radio, Settings, SlidersHorizontal, Square, Timer, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
 import { formatGainDb, nextVolumeValue } from '../gain';
@@ -22,6 +22,7 @@ import LoudnessView from './LoudnessView';
 import ParameterControl from './ParameterControl';
 import ParametricEqView from './ParametricEqView';
 import ToneControls from './ToneControls';
+import MetronomeControls from './MetronomeControls';
 import SynthControls from './SynthControls';
 import TranscriptionView from './TranscriptionView';
 import TranslationView from './TranslationView';
@@ -48,6 +49,7 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'output': return <MonitorSpeaker {...props} />;
     case 'virtual': return <Radio {...props} />;
     case 'file': return <FileAudio {...props} />;
+    case 'metronome': return <Timer {...props} />;
     case 'tone': return <AudioLines {...props} />;
     case 'synth': return <SlidersHorizontal {...props} />;
     case 'tts': return <AudioLines {...props} />;
@@ -761,6 +763,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isTranslator ? 'translator-node' : '',
     data.isVst3 ? 'vst3-node' : '',
     data.isFilePlayer ? 'file-player-node' : '',
+    data.isMetronome ? 'metronome-node' : '',
     data.isToneGenerator ? 'tone-node' : '',
     data.isSynthGenerator ? 'synth-node' : '',
     data.isNoteDetector ? 'note-detector-node' : '',
@@ -778,7 +781,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   ].filter(Boolean).join(' ');
 
   return (
-    <div className={classes} style={{ '--accent': data.accent } as CSSProperties} role="group" aria-label={`${data.title}. ${t(data.subtitle)}`}>
+    <div className={classes} style={{ '--accent': data.accent, ...(data.width ? { width: `${data.width}px`, minWidth: `${data.width}px`, maxWidth: `${data.width}px` } : {}) } as CSSProperties} role="group" aria-label={`${data.title}. ${t(data.subtitle)}`}>
       {data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
       {data.supportsSidechain && <Handle id="sidechain" type="target" position={Position.Left} className="ruse-handle sidechain-handle" style={{ top: '72%' }} />}
       <header className="node-header">
@@ -809,6 +812,18 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         ) : null}
         {data.showDiagnostics && (data.kind === 'source' || data.kind === 'output') && typeof latency === 'number' && Number.isFinite(latency) ? (
           <span className="node-badge latency-badge" title={t('Latency')}>{data.kind === 'source' ? 'IN' : 'OUT'} {latency.toFixed(1)} ms</span>
+        ) : null}
+        {data.isMetronome || data.isToneGenerator || data.isSynthGenerator ? (
+          <span
+            className="node-timeline-drag nodrag"
+            draggable
+            title={t('Drag to timeline')}
+            onDragStart={event => {
+              event.stopPropagation();
+              event.dataTransfer.setData('application/ruse-generator', JSON.stringify({ id: data.id, title: data.title }));
+              event.dataTransfer.effectAllowed = 'copy';
+            }}
+          ><GripVertical size={13} /></span>
         ) : null}
         {data.supportsSidechain && <button className="node-help nodrag" title={`${t('Help')}: ${t('Sidechain ducker')}`} aria-label={`${t('Help')}: ${t('Sidechain ducker')}`} onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-explainer', { detail: 'sidechain' }))}>?</button>}
         {isModifier && <button className={`node-power nodrag ${enabled ? '' : 'off'}`} title={withShortcut(enabled ? t('Bypass effect') : t('Enable effect'), 'bypass')} aria-label={enabled ? t('Bypass effect') : t('Enable effect')} onClick={() => send('effect-enabled', { id: data.id, value: !enabled })}>
@@ -978,6 +993,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
           {data.isNetworkInput && <NetworkInputControls node={data} />}
           {data.isTts && <TtsControls node={data} />}
           {data.isFilePlayer && <FilePlayerControls node={data} telemetry={telemetry} />}
+          {data.isMetronome && <MetronomeControls node={data} telemetry={telemetry} />}
           {data.isToneGenerator && <ToneControls node={data} />}
           {data.isSynthGenerator && <SynthControls node={data} />}
           <VolumeControl id={data.id} value={data.volume} muted={data.muted} />

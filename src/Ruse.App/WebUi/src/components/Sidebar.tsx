@@ -2,7 +2,7 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } fro
 import type { DragEvent, ReactNode, RefObject } from 'react';
 import {
   AppWindow, AudioLines, Check, ChevronDown, Eye, EyeOff, FileAudio, FolderOpen, GripVertical, Headphones, MessageSquare,
-  Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, RefreshCw, Search, SlidersHorizontal, Speaker, Trash2, Upload, X,
+  Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, RefreshCw, Search, SlidersHorizontal, Speaker, Timer, Trash2, Upload, X,
 } from 'lucide-react';
 import {
   DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors,
@@ -26,6 +26,11 @@ const systemItem: CatalogItem = {
 const toneItem: CatalogItem = {
   id: 'tone', kind: 'tone', name: 'Test tone', subtitle: 'Sine, square, saw, noise',
   details: 'Generate a test signal for routing and level checks',
+};
+
+const metronomeItem: CatalogItem = {
+  id: 'metronome', kind: 'metronome', name: 'Metronome', subtitle: 'Tempo and beat click',
+  details: 'Generate a click track at a chosen tempo and beats per bar',
 };
 
 const synthItem: CatalogItem = {
@@ -62,6 +67,7 @@ const ItemIcon = memo(function ItemIcon({ item }: { item: CatalogItem }) {
   switch (item.kind) {
     case 'app': return <AppWindow {...props} />;
     case 'system': return <AudioLines {...props} />;
+    case 'metronome': return <Timer {...props} />;
     case 'tone': return <AudioLines {...props} />;
     case 'synth': return <SlidersHorizontal {...props} />;
     case 'tts': return <MessageSquare {...props} />;
@@ -364,7 +370,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
       applications: { id: 'applications', label: 'Applications', items: [systemItem, ...catalog.apps] },
       network: { id: 'network', label: 'Network', items: [networkInputItem, networkOutputItem] },
       physicalOutputs: { id: 'physicalOutputs', label: 'Speakers & headphones', items: physicalOutputs },
-      generators: { id: 'generators', label: 'Generators', items: [toneItem, synthItem] },
+      generators: { id: 'generators', label: 'Generators', items: [metronomeItem, toneItem, synthItem] },
       physicalInputs: { id: 'physicalInputs', label: 'Microphones & inputs', items: [ttsItem, ...physicalInputs] },
       recording: { id: 'recording', label: 'Record & Play', items: [recorderItem, filePlayerItem] },
       samples: { id: 'samples', label: 'Samples', items: catalog.samples ?? [] },

@@ -66,6 +66,9 @@ public sealed class PresetSource
     public float ToneFrequency { get; set; } = 1000f;
     public string ToneWaveform { get; set; } = "Sine";
     public float ToneLevelDb { get; set; } = -18f;
+    public bool IsMetronome { get; set; }
+    public float MetronomeBpm { get; set; } = 120f;
+    public int MetronomeBeatsPerBar { get; set; } = 4;
     public float SynthFrequency { get; set; } = 110f;
     public string SynthWaveform { get; set; } = "Saw";
     public float SynthLevelDb { get; set; } = -18f;

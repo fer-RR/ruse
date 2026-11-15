@@ -346,6 +346,7 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-add-track": AddTimelineTrack(); break;
             case "timeline-add-clip": AddTimelineClip(String(message, "trackId")); break;
             case "timeline-add-clip-path": AddTimelineClipPath(String(message, "trackId"), String(message, "path"), (long)Number(message, "startSample")); break;
+            case "timeline-add-generator": AddTimelineGenerator(String(message, "nodeId"), String(message, "trackId"), (long)Number(message, "startSample", 0)); break;
             case "timeline-remove-track": RemoveTimelineTrack(String(message, "trackId")); break;
             case "timeline-show-node": ShowTimelineTrackNode(String(message, "trackId")); break;
             case "timeline-track-update": UpdateTimelineTrack(String(message, "trackId"), (float)Number(message, "gain", 1), Bool(message, "muted", false), Bool(message, "solo", false)); break;
@@ -354,11 +355,17 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-move-clip-track": MoveTimelineClipToTrack(String(message, "fromTrackId"), String(message, "toTrackId"), String(message, "clipId"), (long)Number(message, "startSample")); break;
             case "timeline-update-clip": UpdateTimelineClip(message); break;
             case "timeline-stretch-clip": StretchTimelineClip(message); break;
+            case "timeline-split-clip": SplitTimelineClip(String(message, "trackId"), String(message, "clipId"), (long)Number(message, "sample", 0)); break;
+            case "timeline-duplicate-clip": DuplicateTimelineClip(String(message, "trackId"), String(message, "clipId")); break;
+            case "timeline-crossfade-clip": CrossfadeTimelineClip(String(message, "trackId"), String(message, "clipId")); break;
             case "timeline-automation-add": AddTimelineAutomationLane(message); break;
             case "timeline-automation-points": SetTimelineAutomationPoints(message); break;
             case "timeline-automation-remove": RemoveTimelineAutomationLane(String(message, "trackId"), String(message, "laneId")); break;
             case "timeline-undo": TimelineUndo(); break;
             case "timeline-redo": TimelineRedo(); break;
+            case "timeline-metronome": SetTimelineMetronome(Bool(message, "value")); break;
+            case "timeline-count-in": TimelineCountIn(); break;
+            case "timeline-count-in-beats": SetTimelineCountInBeats((int)Number(message, "value", 4)); break;
             case "timeline-play": TimelinePlay(); break;
             case "timeline-stop": TimelineStop(); break;
             case "timeline-record": ToggleTimelineRecording(); break;
@@ -366,6 +373,8 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-loop": TimelineSetLoop((long?)Number(message, "startSample", -1), (long?)Number(message, "endSample", -1)); break;
             case "timeline-tempo": TimelineSetTempo(Number(message, "tempo", 120)); break;
             case "timeline-bounce": BounceTimeline(); break;
+            case "timeline-bounce-range": BounceTimelineRange(); break;
+            case "timeline-bounce-cancel": CancelTimelineBounce(); break;
             case "timeline-freeze": FreezeTimeline(); break;
             case "audio-optimizer-run": StartAudioOptimizer(); break;
             case "add": AddFromMessage(message); break;
@@ -418,6 +427,8 @@ internal sealed partial class WebShellController : IDisposable
             case "parallel": SetModifierParallel(String(message, "id"), Bool(message, "value")); break;
             case "send": SetModifierSend(String(message, "id"), (float)Number(message, "value", 0.5)); break;
             case "tone": SetTone(String(message, "id"), (float)Number(message, "frequency", 1000), String(message, "waveform"), (float)Number(message, "level", -18)); break;
+            case "metronome": SetNodeMetronome(String(message, "id"), (float)Number(message, "bpm", 120), (int)Number(message, "beats", 4)); break;
+            case "node-size": SetNodeWidth(String(message, "id"), Number(message, "width", 268)); break;
             case "synth": SetSynth(message); break;
             case "ir-file": ChooseImpulseResponse(String(message, "id")); break;
             case "ir-clear": ClearImpulseResponse(String(message, "id")); break;
@@ -1547,6 +1558,7 @@ internal sealed partial class WebShellController : IDisposable
         SetAudioPriorityBoost(false);
         StopControlServer();
         DisposeInactiveOutputs();
+        StopTimelineMetronome();
         FrozenProxyStore.CleanupTrash();
         _timeline?.Dispose();
         _graph.Dispose();

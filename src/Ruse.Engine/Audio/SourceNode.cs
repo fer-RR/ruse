@@ -61,6 +61,11 @@ public sealed class SourceNode : IDisposable
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
     public SourceKind Kind { get; }
+    public bool IsMetronome { get; private set; }
+    private float _metronomeBpm = 120f;
+    private int _metronomeBeatsPerBar = 4;
+    public float MetronomeBpm => _metronomeBpm;
+    public int MetronomeBeatsPerBar => _metronomeBeatsPerBar;
     public string Title { get; set; }
     public uint? ProcessId { get; private set; }
     public string? ProcessName { get; set; }
@@ -83,6 +88,7 @@ public sealed class SourceNode : IDisposable
     private volatile bool _stopRequested;
 
     public float Gain { get; set; } = 1.0f;
+    public float TimelineGate { get; set; } = 1f;
     public string? GroupKey { get; set; }
     public bool Muted { get; set; }
     public bool Solo { get; set; }
@@ -170,6 +176,17 @@ public sealed class SourceNode : IDisposable
         if (_capture is ToneGeneratorCapture tone)
         {
             tone.Set(ToneFrequency, ToneWave, ToneLevelDb);
+        }
+    }
+
+    public void SetMetronome(float bpm, int beatsPerBar)
+    {
+        IsMetronome = true;
+        _metronomeBpm = Math.Clamp(bpm, 20f, 300f);
+        _metronomeBeatsPerBar = Math.Clamp(beatsPerBar, 1, 16);
+        if (_capture is MetronomeCapture metronome)
+        {
+            metronome.Set(_metronomeBpm, _metronomeBeatsPerBar);
         }
     }
 
@@ -599,7 +616,8 @@ public sealed class SourceNode : IDisposable
                 StartTtsCapture();
                 break;
             case SourceKind.Tone:
-                StartToneCapture();
+                if (IsMetronome) StartMetronomeCapture();
+                else StartToneCapture();
                 break;
             case SourceKind.Synth:
                 StartSynthCapture();
@@ -758,6 +776,25 @@ public sealed class SourceNode : IDisposable
         }
     }
     
+    private void StartMetronomeCapture()
+    {
+        var capture = new MetronomeCapture(_metronomeBpm, _metronomeBeatsPerBar);
+        SetSourceFormat(FormatConverter.TargetChannels, FormatConverter.TargetSampleRate);
+        capture.DataAvailable += OnDataAvailable;
+        _capture = capture;
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            _capture = null;
+            capture.DataAvailable -= OnDataAvailable;
+            capture.Dispose();
+            throw;
+        }
+    }
+
     private void StartToneCapture()
     {
         var capture = new ToneGeneratorCapture(ToneFrequency, ToneWave, ToneLevelDb);
@@ -1075,6 +1112,15 @@ public sealed class SourceNode : IDisposable
             return;
         }
 
+        float timelineGate = TimelineGate;
+        if (timelineGate != 1f)
+        {
+            for (int index = 0; index < _convertScratch.Count; index++)
+            {
+                _convertScratch[index] *= timelineGate;
+            }
+        }
+
         Publish(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_convertScratch));
 
         // Interleaved stereo -> frames.
@@ -1250,6 +1296,10 @@ public sealed class SourceNode : IDisposable
             case AudioFileCapture file:
                 file.DataAvailable -= OnDataAvailable;
                 file.Dispose();
+                break;
+            case MetronomeCapture metronome:
+                metronome.DataAvailable -= OnDataAvailable;
+                metronome.Dispose();
                 break;
             case ToneGeneratorCapture tone:
                 tone.DataAvailable -= OnDataAvailable;

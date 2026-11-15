@@ -37,6 +37,14 @@ internal sealed partial class WebShellController
                 entry = RegisterSource(new SourceNode("System audio", SourceKind.SystemLoopback), x, y);
                 SetStatus("Added system audio.");
                 break;
+            case "metronome":
+            {
+                var metronome = new SourceNode("Metronome", SourceKind.Tone);
+                metronome.SetMetronome(120f, 4);
+                entry = RegisterSource(metronome, x, y);
+                SetStatus("Added a metronome.");
+                break;
+            }
             case "tone":
             {
                 var tone = new SourceNode("Test tone", SourceKind.Tone);
@@ -275,6 +283,28 @@ internal sealed partial class WebShellController
             PublishGraph();
             PublishTelemetry(force: true);
         }
+    }
+
+    private void SetNodeWidth(string id, double width)
+    {
+        if (!_nodes.TryGetValue(id, out var entry))
+        {
+            return;
+        }
+
+        entry.Width = Math.Clamp(width, 200, 600);
+        PublishGraph();
+    }
+
+    private void SetNodeMetronome(string id, float bpm, int beatsPerBar)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { IsMetronome: true } source)
+        {
+            return;
+        }
+
+        source.SetMetronome(bpm, beatsPerBar);
+        PublishGraph();
     }
 
     private void SetTone(string id, float frequency, string waveform, float levelDb)
@@ -945,6 +975,7 @@ internal sealed partial class WebShellController
                 SourceKind.Application => "app",
                 SourceKind.Device => "mic",
                 SourceKind.File => "file",
+                SourceKind.Tone when source.IsMetronome => "metronome",
                 SourceKind.Tone => "tone",
                 SourceKind.Synth => "synth",
                 SourceKind.Tts => "tts",
@@ -958,6 +989,7 @@ internal sealed partial class WebShellController
                 SourceKind.Application => SourceNode.SupportsApplicationCapture ? "Application" : "Capture unavailable",
                 SourceKind.Device => "Input device",
                 SourceKind.File => "Audio file",
+                SourceKind.Tone when source.IsMetronome => "Metronome",
                 SourceKind.Tone => "Test tone",
                 SourceKind.Synth => "Procedural synth",
                 SourceKind.Tts => "Text to speech",
@@ -970,6 +1002,7 @@ internal sealed partial class WebShellController
                 SourceKind.Application => "#5B8DEF",
                 SourceKind.SystemLoopback => "#65D6D0",
                 SourceKind.File => "#F08CB8",
+                SourceKind.Tone when source.IsMetronome => "#F0DC5A",
                 SourceKind.Tone => "#F0DC5A",
                 SourceKind.Synth => "#A78BFA",
                 SourceKind.Tts => "#C7A6FF",
@@ -1012,6 +1045,11 @@ internal sealed partial class WebShellController
             Output = output,
         };
         _nodes.Add(entry.Id, entry);
+        if (_timelineMetronomeSource != null && !output.IsFileRecorder && !output.IsNetworkOutput)
+        {
+            _graph.Connect(_timelineMetronomeSource, output, 1f);
+        }
+
         entry.ControlId = MakeUniqueControlId(entry, controlId);
         output.Faulted += (node, reason) => _window.Dispatcher.BeginInvoke(new Action(() =>
             OnNodeFault(entry.Id, $"Output '{node.Title}' stopped: {reason}")));
@@ -1340,6 +1378,8 @@ internal sealed partial class WebShellController
             Color = entry.Color,
             X = entry.X,
             Y = entry.Y,
+            Width = entry.Width,
+            Height = entry.Height,
             MicHint = entry.MicHint,
         };
 
@@ -1365,7 +1405,10 @@ internal sealed partial class WebShellController
             dto.FileOutputId = entry.Source.SelectedOutputId;
             dto.FileLoop = entry.Source.FileLoop;
             dto.FileSpeed = entry.Source.FileSpeed;
-            dto.IsToneGenerator = entry.Source.Kind == SourceKind.Tone;
+            dto.IsMetronome = entry.Source.IsMetronome;
+            dto.MetronomeBpm = entry.Source.MetronomeBpm;
+            dto.MetronomeBeatsPerBar = entry.Source.MetronomeBeatsPerBar;
+            dto.IsToneGenerator = entry.Source.Kind == SourceKind.Tone && !entry.Source.IsMetronome;
             dto.ToneFrequency = entry.Source.ToneFrequency;
             dto.ToneWaveform = entry.Source.ToneWave.ToString();
             dto.ToneLevelDb = entry.Source.ToneLevelDb;
@@ -1381,6 +1424,11 @@ internal sealed partial class WebShellController
             dto.SynthMovement = entry.Source.Synth.Movement;
             dto.SynthLfoRateHz = entry.Source.Synth.LfoRateHz;
             dto.SynthStereoWidth = entry.Source.Synth.StereoWidth;
+            if (entry.Source.IsMetronome || entry.Source.Kind is SourceKind.Tone or SourceKind.Synth)
+            {
+                dto.Parameters = SourceParameterDtos(entry.Source);
+            }
+
             dto.IsTts = entry.Source.Kind == SourceKind.Tts;
             dto.IsNetworkInput = entry.Source.Kind == SourceKind.Network;
             dto.NetworkLocalIp = entry.Source.Kind == SourceKind.Network ? NetworkPcm.GetLocalAddress() : null;

@@ -29,6 +29,7 @@ export interface TimelineTrackModel {
   id: string;
   name: string;
   sourceNodeId?: string;
+  generatorNodeId?: string;
   gain: number;
   muted: boolean;
   solo: boolean;
@@ -53,6 +54,10 @@ export interface TimelineState {
   canUndo?: boolean;
   canRedo?: boolean;
   recording?: boolean;
+  metronome?: boolean;
+  countInBeats?: number;
+  bouncing?: boolean;
+  bounceProgress?: number;
 }
 
 export interface TimelineAutomationTarget {

@@ -17,6 +17,7 @@ public sealed class TimelineTrack
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "Track";
     public string? SourceNodeId { get; set; }
+    public string? GeneratorNodeId { get; set; }
     public float Gain { get; set; } = 1f;
     public bool Muted { get; set; }
     public bool Solo { get; set; }
@@ -58,6 +59,7 @@ public sealed class TimelineClip
     public float Gain { get; set; } = 1f;
     public int FadeInSamples { get; set; }
     public int FadeOutSamples { get; set; }
+    public bool Loop { get; set; }
 
     public float[] Peaks { get; set; } = Array.Empty<float>();
 

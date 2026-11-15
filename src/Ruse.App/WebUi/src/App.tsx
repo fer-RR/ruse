@@ -145,6 +145,8 @@ export default function App() {
     canUndo: false,
     canRedo: false,
     recording: false,
+    metronome: false,
+    countInBeats: 4,
   });
   const [mixerWidth, setMixerWidth] = useState(() => {
     const saved = Number(localStorage.getItem('ruse.mixerWidth'));
@@ -495,6 +497,26 @@ export default function App() {
               : parameter);
           return { ...node, data: { ...node.data, parameters } };
         }));
+        break;
+      }
+      case 'source-state': {
+        const update = payload as {
+          id: string;
+          toneFrequency?: number; toneWaveform?: string; toneLevelDb?: number;
+          metronomeBpm?: number; metronomeBeatsPerBar?: number;
+          synthFrequency?: number; synthWaveform?: string; synthLevelDb?: number;
+          synthHarmonics?: number; synthDetuneCents?: number; synthNoise?: number;
+          synthCutoffHz?: number; synthResonance?: number; synthMovement?: number;
+          synthLfoRateHz?: number; synthStereoWidth?: number;
+        };
+        setNodes(current => current.map(node => node.id === update.id
+          ? { ...node, data: { ...node.data, ...update } }
+          : node));
+        break;
+      }
+      case 'timeline-bounce-progress': {
+        const update = payload as { active?: boolean; progress?: number };
+        setTimeline(current => ({ ...current, bouncing: update.active === true, bounceProgress: update.progress ?? 0 }));
         break;
       }
       case 'telemetry':
@@ -1247,7 +1269,7 @@ export default function App() {
   const mixerModifiers = useMemo(() => graph.nodes.filter(node => node.kind === 'modifier'), [graph.nodes]);
   const timelineNodeIds = useMemo(() => new Set(graph.nodes.map(node => node.id)), [graph.nodes]);
   const timelineAutomationTargets = useMemo<TimelineAutomationTarget[]>(() =>
-    graph.nodes.filter(node => node.kind === 'modifier').flatMap(node => node.parameters.map(parameter => ({
+    graph.nodes.filter(node => node.kind === 'modifier' || node.isMetronome || node.isToneGenerator || node.isSynthGenerator).flatMap(node => node.parameters.map(parameter => ({
       nodeId: node.id,
       label: `${node.title} · ${parameter.name}`,
       processorIndex: parameter.processorIndex,
@@ -1546,14 +1568,23 @@ export default function App() {
               onImport={() => send('timeline-add-clip', { trackId: timeline.project.tracks[0]?.id ?? '' })}
               onSeek={sample => send('timeline-seek', { sample })}
               onAddClipPath={(trackId, path, startSample) => send('timeline-add-clip-path', { trackId, path, startSample })}
+              onAddGenerator={(trackId, nodeId, startSample) => send('timeline-add-generator', { trackId, nodeId, startSample })}
               onMoveClip={(trackId, clipId, startSample) => send('timeline-move-clip', { trackId, clipId, startSample })}
               onMoveClipToTrack={(fromTrackId, toTrackId, clipId, startSample) => send('timeline-move-clip-track', { fromTrackId, toTrackId, clipId, startSample })}
               onUpdateClip={(trackId, clipId, update) => send('timeline-update-clip', { trackId, clipId, ...update })}
               onStretchClip={(trackId, clipId, lengthSamples) => send('timeline-stretch-clip', { trackId, clipId, lengthSamples })}
+              onSplitClip={(trackId, clipId, sample) => send('timeline-split-clip', { trackId, clipId, sample })}
+              onDuplicateClip={(trackId, clipId) => send('timeline-duplicate-clip', { trackId, clipId })}
+              onCrossfadeClip={(trackId, clipId) => send('timeline-crossfade-clip', { trackId, clipId })}
               onRemoveClip={(trackId, clipId) => send('timeline-remove-clip', { trackId, clipId })}
               onSetLoop={(startSample, endSample) => startSample == null ? send('timeline-loop', {}) : send('timeline-loop', { startSample, endSample })}
               onSetTempo={tempo => send('timeline-tempo', { tempo })}
               onBounce={() => send('timeline-bounce')}
+              onBounceRange={() => send('timeline-bounce-range')}
+              onCancelBounce={() => send('timeline-bounce-cancel')}
+              onToggleMetronome={() => send('timeline-metronome', { value: !timeline.metronome })}
+              onCountIn={() => send('timeline-count-in')}
+              onSetCountIn={value => send('timeline-count-in-beats', { value })}
               onFreeze={() => send('timeline-freeze')}
               onTrackUpdate={(trackId, gain, muted, solo) => send('timeline-track-update', { trackId, gain, muted, solo })}
               onAddAutomation={(trackId, target) => send('timeline-automation-add', {

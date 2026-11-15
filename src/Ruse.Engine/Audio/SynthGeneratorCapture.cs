@@ -95,6 +95,20 @@ public sealed class SynthGeneratorCapture : IDisposable
 
     public void Set(SynthSettings settings) => _settings = settings.Clamped();
 
+    public float[] RenderOffline(int frames)
+    {
+        var result = new float[Math.Max(0, frames) * Channels];
+        int offset = 0;
+        while (offset < frames)
+        {
+            int block = Math.Min(FramesPerBlock, frames - offset);
+            Generate(block);
+            Array.Copy(_samples, 0, result, offset * Channels, block * Channels);
+            offset += block;
+        }
+        return result;
+    }
+
     public void Start()
     {
         if (_thread != null)

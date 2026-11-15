@@ -30,6 +30,7 @@ public sealed class TimelineService : IDisposable
     public bool CanUndo { get { lock (_gate) return _undo.Count > 0; } }
     public bool CanRedo { get { lock (_gate) return _redo.Count > 0; } }
     public Action<string, int, int, float>? ApplyAutomation { get; set; }
+    public Action<string, float>? ApplyGeneratorGate { get; set; }
 
     /// <summary>
     /// Optional offline processors used by BounceToWave. The renderer receives
@@ -156,6 +157,23 @@ public sealed class TimelineService : IDisposable
         }
     }
 
+    public TimelineTrack AddGeneratorTrack(string generatorNodeId, string? name = null)
+    {
+        lock (_gate)
+        {
+            var track = new TimelineTrack
+            {
+                Name = string.IsNullOrWhiteSpace(name) ? $"Track {_tracks.Count + 1}" : name!,
+                GeneratorNodeId = generatorNodeId,
+            };
+            _project.Tracks.Add(track);
+            _tracks[track.Id] = new TrackPlayback(track);
+            _trackSnapshot = _tracks.Values.ToArray();
+            _redo.Clear();
+            return track;
+        }
+    }
+
     public void AttachSource(string trackId, SourceNode source)
     {
         lock (_gate)
@@ -165,6 +183,35 @@ public sealed class TimelineService : IDisposable
                 playback.Source = source;
                 playback.Track.SourceNodeId = source.Id;
             }
+        }
+    }
+
+    public bool AddGeneratorClip(string trackId, long startSample, long lengthSamples, string? name, out string error)
+    {
+        error = "";
+        lock (_gate)
+        {
+            if (!_tracks.TryGetValue(trackId, out var playback))
+            {
+                error = "Timeline track not found.";
+                return false;
+            }
+
+            if (lengthSamples <= 0)
+            {
+                error = "The generator clip needs a duration.";
+                return false;
+            }
+
+            Remember();
+            playback.Track.Clips.Add(new TimelineClip
+            {
+                Name = string.IsNullOrWhiteSpace(name) ? "Generator" : name,
+                StartSample = Math.Max(0, startSample),
+                LengthSamples = lengthSamples,
+            });
+            playback.RefreshClips();
+            return true;
         }
     }
 
@@ -492,7 +539,9 @@ public sealed class TimelineService : IDisposable
             if (lengthSamples.HasValue)
             {
                 int available = clip.Audio == null ? int.MaxValue : Math.Max(1, (clip.Audio.Length / 2) - (int)clip.SourceOffsetSamples);
-                clip.LengthSamples = Math.Clamp(lengthSamples.Value, 1, available);
+                clip.LengthSamples = clip.Loop
+                    ? Math.Max(1, lengthSamples.Value)
+                    : Math.Clamp(lengthSamples.Value, 1, available);
             }
 
             if (gain.HasValue) clip.Gain = Math.Clamp(gain.Value, 0f, 4f);
@@ -596,6 +645,152 @@ public sealed class TimelineService : IDisposable
         }
     }
 
+    public bool SplitClip(string trackId, string clipId, long sample)
+    {
+        lock (_gate)
+        {
+            if (!_tracks.TryGetValue(trackId, out var playback))
+            {
+                return false;
+            }
+
+            var clip = playback.Track.Clips.FirstOrDefault(item =>
+                string.Equals(item.Id, clipId, StringComparison.Ordinal));
+            if (clip == null)
+            {
+                return false;
+            }
+
+            long leftLength = sample - clip.StartSample;
+            if (leftLength <= 0 || leftLength >= clip.LengthSamples)
+            {
+                return false;
+            }
+
+            Remember();
+            long rightLength = clip.LengthSamples - leftLength;
+            var right = new TimelineClip
+            {
+                Name = clip.Name,
+                SourcePath = clip.SourcePath,
+                StartSample = sample,
+                LengthSamples = rightLength,
+                SourceOffsetSamples = clip.SourceOffsetSamples + leftLength,
+                Gain = clip.Gain,
+                FadeInSamples = 0,
+                FadeOutSamples = (int)Math.Min(clip.FadeOutSamples, rightLength),
+                Peaks = clip.Peaks,
+                Audio = clip.Audio,
+            };
+
+            clip.LengthSamples = leftLength;
+            clip.FadeInSamples = (int)Math.Min(clip.FadeInSamples, leftLength);
+            clip.FadeOutSamples = 0;
+            playback.Track.Clips.Add(right);
+            playback.RefreshClips();
+            return true;
+        }
+    }
+
+    public bool DuplicateClip(string trackId, string clipId)
+    {
+        lock (_gate)
+        {
+            if (!_tracks.TryGetValue(trackId, out var playback))
+            {
+                return false;
+            }
+
+            var clip = playback.Track.Clips.FirstOrDefault(item =>
+                string.Equals(item.Id, clipId, StringComparison.Ordinal));
+            if (clip == null)
+            {
+                return false;
+            }
+
+            Remember();
+            playback.Track.Clips.Add(new TimelineClip
+            {
+                Name = clip.Name,
+                SourcePath = clip.SourcePath,
+                StartSample = clip.StartSample + clip.LengthSamples,
+                LengthSamples = clip.LengthSamples,
+                SourceOffsetSamples = clip.SourceOffsetSamples,
+                Gain = clip.Gain,
+                FadeInSamples = clip.FadeInSamples,
+                FadeOutSamples = clip.FadeOutSamples,
+                Peaks = clip.Peaks,
+                Audio = clip.Audio,
+            });
+            playback.RefreshClips();
+            return true;
+        }
+    }
+
+    public bool CrossfadeClip(string trackId, string clipId)
+    {
+        lock (_gate)
+        {
+            if (!_tracks.TryGetValue(trackId, out var playback))
+            {
+                return false;
+            }
+
+            var clip = playback.Track.Clips.FirstOrDefault(item =>
+                string.Equals(item.Id, clipId, StringComparison.Ordinal));
+            if (clip == null)
+            {
+                return false;
+            }
+
+            var other = playback.Track.Clips
+                .Where(item => !string.Equals(item.Id, clip.Id, StringComparison.Ordinal))
+                .Where(item => item.StartSample < clip.StartSample + clip.LengthSamples &&
+                               item.StartSample + item.LengthSamples > clip.StartSample)
+                .OrderBy(item => Math.Abs(item.StartSample - clip.StartSample))
+                .FirstOrDefault();
+            if (other == null)
+            {
+                return false;
+            }
+
+            long overlapStart = Math.Max(clip.StartSample, other.StartSample);
+            long overlapEnd = Math.Min(clip.StartSample + clip.LengthSamples,
+                other.StartSample + other.LengthSamples);
+            long overlap = overlapEnd - overlapStart;
+            if (overlap <= 0)
+            {
+                return false;
+            }
+
+            Remember();
+            var left = clip.StartSample <= other.StartSample ? clip : other;
+            var right = ReferenceEquals(left, clip) ? other : clip;
+            left.FadeOutSamples = (int)Math.Min(overlap, left.LengthSamples);
+            right.FadeInSamples = (int)Math.Min(overlap, right.LengthSamples);
+            playback.RefreshClips();
+            return true;
+        }
+    }
+
+    public bool SetClipLoop(string trackId, string clipId, bool loop)
+    {
+        lock (_gate)
+        {
+            if (!_tracks.TryGetValue(trackId, out var playback))
+            {
+                return false;
+            }
+
+            var clip = playback.Track.Clips.FirstOrDefault(item =>
+                string.Equals(item.Id, clipId, StringComparison.Ordinal));
+            if (clip == null) return false;
+            Remember();
+            clip.Loop = loop;
+            return true;
+        }
+    }
+
     public bool RemoveClip(string trackId, string clipId)
     {
         lock (_gate)
@@ -612,6 +807,7 @@ public sealed class TimelineService : IDisposable
             return true;
         }
     }
+
 
     public bool MoveClip(string trackId, string clipId, long startSample)
     {
@@ -660,6 +856,15 @@ public sealed class TimelineService : IDisposable
             var clip = from.Track.Clips.FirstOrDefault(item =>
                 string.Equals(item.Id, clipId, StringComparison.Ordinal));
             if (clip == null)
+            {
+                return false;
+            }
+
+            bool fromGenerator = !string.IsNullOrWhiteSpace(from.Track.GeneratorNodeId);
+            bool toGenerator = !string.IsNullOrWhiteSpace(to.Track.GeneratorNodeId);
+            if (fromGenerator != toGenerator ||
+                (fromGenerator && !string.Equals(from.Track.GeneratorNodeId,
+                    to.Track.GeneratorNodeId, StringComparison.Ordinal)))
             {
                 return false;
             }
@@ -803,7 +1008,19 @@ public sealed class TimelineService : IDisposable
             return;
         }
 
-        writeFrames = Math.Min(writeFrames, (clip.Audio.Length / 2) - (int)sourceFrame);
+        int audioFrames = clip.Audio.Length / 2;
+        if (clip.Loop)
+        {
+            long relative = sourceFrame - clip.SourceOffsetSamples;
+            relative %= audioFrames;
+            if (relative < 0) relative += audioFrames;
+            sourceFrame = clip.SourceOffsetSamples + relative;
+        }
+        else
+        {
+            writeFrames = Math.Min(writeFrames, audioFrames - (int)sourceFrame);
+        }
+
         int sourceIndex = (int)sourceFrame * 2;
         int targetIndex = (blockOffset + writeOffset) * 2;
         int fadeIn = Math.Max(0, clip.FadeInSamples);
@@ -826,6 +1043,7 @@ public sealed class TimelineService : IDisposable
             block[targetIndex] += clip.Audio[sourceIndex] * gain;
             block[targetIndex + 1] += clip.Audio[sourceIndex + 1] * gain;
             sourceIndex += 2;
+            if (clip.Loop && sourceIndex >= clip.Audio.Length) sourceIndex = (int)clip.SourceOffsetSamples * 2;
             targetIndex += 2;
         }
     }
@@ -1079,6 +1297,13 @@ public sealed class TimelineService : IDisposable
             }
 
             track.Source?.PublishTimelineBlock(track.Block);
+            if (track.Track.GeneratorNodeId is { } generatorNodeId)
+            {
+                bool generatorActive = playing && audible && targetGain > 0.0001f &&
+                    track.Clips.Any(clip => position >= clip.StartSample &&
+                        position < clip.StartSample + clip.LengthSamples);
+                ApplyGeneratorGate?.Invoke(generatorNodeId, generatorActive ? track.Track.Gain : 0f);
+            }
         }
 
         if (playing)
