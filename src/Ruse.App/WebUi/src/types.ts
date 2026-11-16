@@ -209,6 +209,15 @@ export interface NodeStateUpdate {
   accent?: string;
 }
 
+export interface MixerStateUpdate {
+  id: string;
+  graphVersion?: number;
+  width: number;
+  autoGain: boolean;
+  crossfade: number;
+  inputs: MixerInputModel[];
+}
+
 export interface MixerInputModel {
   linkId: string;
   title: string;
@@ -470,7 +479,7 @@ export interface SettingsModel {
   timelineBounceTailSeconds: number;
   followOutputId: string;
   uiLanguage: string;
-  theme: 'dark' | 'light' | 'midnight' | 'blueprint' | 'deepdive' | 'studio74';
+  theme: 'dark' | 'light' | 'midnight' | 'blueprint' | 'studio74';
   startRoutingOnLaunch: boolean;
   highlightMutedNodes: boolean;
   signalGlow: boolean;

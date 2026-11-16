@@ -19,7 +19,6 @@ const THEME_OPTIONS = [
   { id: 'light', label: 'Light' },
   { id: 'midnight', label: 'Midnight' },
   { id: 'blueprint', label: 'Blueprint' },
-  { id: 'deepdive', label: 'Deep Dive' },
   { id: 'studio74', label: "Studio '74" },
 ] as const;
 

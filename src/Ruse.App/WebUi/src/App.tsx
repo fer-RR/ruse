@@ -31,7 +31,7 @@ import TimelineBoundary from './components/TimelineBoundary';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
   CatalogItem, CatalogSnapshot, ChainEditorRequest, FirstRouteResult, FrameModel, GraphSnapshot, HistorySnapshot,
-  LinkStateUpdate, NodeStateUpdate, SettingsModel, StatusMessage, TelemetrySnapshot,
+  LinkStateUpdate, MixerStateUpdate, NodeStateUpdate, SettingsModel, StatusMessage, TelemetrySnapshot,
 } from './types';
 import type { TimelineAutomationTarget, TimelineState } from './timeline';
 
@@ -477,6 +477,32 @@ export default function App() {
                 isParallel: update.parallel ?? node.data.isParallel,
                 color: update.color !== undefined ? (update.color || undefined) : node.data.color,
                 accent: update.accent ?? node.data.accent,
+              },
+            }
+          : node));
+        break;
+      }
+      case 'mixer-state': {
+        const update = payload as MixerStateUpdate;
+        const apply = <T extends { id: string }>(node: T) => node.id === update.id
+          ? {
+              ...node,
+              mixerWidth: update.width,
+              mixerAutoGain: update.autoGain,
+              mixerCrossfade: update.crossfade,
+              mixerInputs: update.inputs,
+            }
+          : node;
+        setGraph(current => ({ ...current, nodes: current.nodes.map(apply) }));
+        setNodes(current => current.map(node => node.id === update.id
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                mixerWidth: update.width,
+                mixerAutoGain: update.autoGain,
+                mixerCrossfade: update.crossfade,
+                mixerInputs: update.inputs,
               },
             }
           : node));
@@ -1568,7 +1594,6 @@ export default function App() {
               theme === 'light' ? '#C5CFDD'
                 : theme === 'midnight' ? '#22304A'
                 : theme === 'blueprint' ? '#2B6BA8'
-                : theme === 'deepdive' ? '#4C2C7A'
                 : theme === 'studio74' ? '#4A5D4E'
                 : '#34465A'
             } />
@@ -1681,6 +1706,10 @@ export default function App() {
               onUpdateMarker={(id, name) => send('timeline-marker-update', { id, name })}
               onRemoveMarker={id => send('timeline-marker-remove', { id })}
               onPasteClips={clips => send('timeline-copy-clips', { clips })}
+              onNormalizeClip={(trackId, clipId) => send('timeline-normalize-clip', { trackId, clipId })}
+              onReverseClip={(trackId, clipId) => send('timeline-reverse-clip', { trackId, clipId })}
+              onConsolidateClips={clips => send('timeline-consolidate', { clips })}
+              onConsolidateRange={(startSample, endSample) => send('timeline-consolidate', { startSample, endSample })}
               onBounce={() => send('timeline-bounce')}
               onBounceRange={() => send('timeline-bounce-range')}
               onCancelBounce={() => send('timeline-bounce-cancel')}

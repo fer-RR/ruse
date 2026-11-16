@@ -7,6 +7,8 @@ namespace Ruse.App;
 internal sealed partial class WebShellController
 {
     private const double RecorderSilenceThresholdDb = -60;
+    private static readonly object RecordingPathGate = new();
+    private static readonly HashSet<string> IssuedRecordingPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _recorderSilenceStarted = new();
 
     internal bool HasActiveRecording =>
@@ -34,13 +36,17 @@ internal sealed partial class WebShellController
         Directory.CreateDirectory(directory);
         string extension = AudioFileFormats.Get(format).Extension;
         string stem = (saveToSamples ? "sample-" : "ruse-") + DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-        string path = Path.Combine(directory, stem + "." + extension);
-        for (int suffix = 2; File.Exists(path); suffix++)
+        lock (RecordingPathGate)
         {
-            path = Path.Combine(directory, $"{stem}-{suffix}.{extension}");
-        }
+            string path = Path.Combine(directory, stem + "." + extension);
+            for (int suffix = 2; File.Exists(path) || IssuedRecordingPaths.Contains(path); suffix++)
+            {
+                path = Path.Combine(directory, $"{stem}-{suffix}.{extension}");
+            }
 
-        return path;
+            IssuedRecordingPaths.Add(path);
+            return path;
+        }
     }
 
     private void OpenRecorderFolder(string id)

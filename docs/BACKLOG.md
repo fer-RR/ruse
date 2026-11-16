@@ -4,6 +4,11 @@ Keep this short. Nothing is started unless noted.
 
 ## Before next feature work
 
+- Commit and release the post-0.9.10 work as **0.9.11**: Deep Dive removal,
+  mixer-state deltas, and timeline normalize/reverse/consolidate.
+- Manually review mixer slider updates on a live routed session.
+- Test timeline consolidation on real multi-track clips; the new track starts
+  muted to avoid doubled playback.
 - Run live translation/OPUS-MT tests, review `--demo` screenshots, and test
   translator/VST3 nodes with real microphones, noisy routes and the installed
   `ring-out`, `rnnoise` and `DirtyFilterPlus` plugins.

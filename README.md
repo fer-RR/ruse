@@ -35,7 +35,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 - Existing virtual cables and virtual buses.
 - File playback, test-tone generator, network input and network output.
 - Direct source-to-device routes and **native passthrough** without sample-rate conversion.
-- Sidechain inputs, per-send gain, mute/solo and a full mixer.
+- Sidechain inputs, per-send gain, mute/solo and an advanced mixer with per-input level/pan/polarity/delay, A/B crossfade, width, auto-gain and bus metering.
 
 ### Processing
 
@@ -43,7 +43,8 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 - VST3 hosting in an isolated child process.
 - Effect chains, saved chains, frame templates, per-effect bypass and mixer groups with independent gain/mute/solo.
 - Freeze a file or sample source through its routed effects into a rendered proxy, then bypass the original route. Generated proxies are removed when their source node is deleted or its file is replaced.
-- Timeline tracks, clips, fades, gain, automation and offline bounce/freeze.
+- Timeline tracks, clips, fades, gain, pitch, stretch, automation, markers, regions, time signatures, multi-select clipboard editing, normalize/reverse/consolidate and offline bounce/freeze.
+- Consolidate renders raw track audio (clip gain, fades and pitch) without insert effects; use bounce or freeze for full graph rendering.
 
 ### Output and recording
 
@@ -57,7 +58,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 
 - Optional local Whisper transcription, translation and text-to-speech.
 - Local control API for scripts and automation, off by default.
-- Six UI themes: Dark, Light, Midnight, Blueprint, Deep Dive and Studio '74.
+- Five UI themes: Dark, Light, Midnight, Blueprint and Studio '74.
 - Keyboard shortcuts, reduced-motion support and screen-reader labels.
 - English, German, Spanish, French, Italian, Japanese, Korean, Portuguese (Brazil) and Chinese (Simplified) UI.
 

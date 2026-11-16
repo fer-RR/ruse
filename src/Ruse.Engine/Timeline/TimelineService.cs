@@ -235,7 +235,7 @@ public sealed partial class TimelineService : IDisposable
     public bool AddClip(string trackId, string path, out string error, long? startSample = null)
     {
         error = "";
-        float[]? audio;
+        float[] audio;
         try
         {
             audio = LoadClip(path);
@@ -246,9 +246,26 @@ public sealed partial class TimelineService : IDisposable
             return false;
         }
 
+        return AddClipFromAudio(trackId, path, audio, out error, startSample);
+    }
+
+    /// <summary>
+    /// Adds a clip whose audio is already decoded. Offline renders use this to
+    /// avoid reading the file they just wrote back from disk.
+    /// </summary>
+    public bool AddClipFromAudio(
+        string trackId, string path, float[] audio, out string error, long? startSample = null)
+    {
+        error = "";
         if (audio.Length == 0)
         {
             error = "The clip contains no audio.";
+            return false;
+        }
+
+        if (audio.Length / 2 > MaxClipSamples)
+        {
+            error = "The clip is longer than the 10 minute MVP limit.";
             return false;
         }
 
@@ -488,6 +505,390 @@ public sealed partial class TimelineService : IDisposable
         }
     }
 
+    public bool NormalizeClip(string trackId, string clipId, out float gain, out string error)
+    {
+        gain = 1f;
+        error = "";
+        float[] audio;
+        long sourceOffset;
+        long lengthSamples;
+        lock (_gate)
+        {
+            if (!_tracks.TryGetValue(trackId, out var playback))
+            {
+                error = "Timeline track not found.";
+                return false;
+            }
+
+            var clip = playback.Track.Clips.FirstOrDefault(item =>
+                string.Equals(item.Id, clipId, StringComparison.Ordinal));
+            if (clip?.Audio == null || clip.LengthSamples <= 0)
+            {
+                error = "The clip has no source audio.";
+                return false;
+            }
+
+            audio = clip.Audio;
+            sourceOffset = clip.SourceOffsetSamples;
+            lengthSamples = clip.LengthSamples;
+        }
+
+        int audioFrames = audio.Length / 2;
+        int start = (int)Math.Clamp(sourceOffset, 0, Math.Max(0, audioFrames - 1));
+        int frames = (int)Math.Min(lengthSamples, audioFrames - start);
+        float peak = 0;
+        for (int frame = 0; frame < frames; frame++)
+        {
+            int index = (start + frame) * 2;
+            peak = Math.Max(peak, Math.Max(Math.Abs(audio[index]), Math.Abs(audio[index + 1])));
+        }
+
+        if (peak < 1e-6f)
+        {
+            error = "The clip is silent.";
+            return false;
+        }
+
+        float nextGain = Math.Clamp(0.987f / peak, 0.0001f, 4f);
+        lock (_gate)
+        {
+            if (!_tracks.TryGetValue(trackId, out var playback))
+            {
+                error = "Timeline track not found.";
+                return false;
+            }
+
+            var clip = playback.Track.Clips.FirstOrDefault(item =>
+                string.Equals(item.Id, clipId, StringComparison.Ordinal));
+            if (clip == null ||
+                !ReferenceEquals(clip.Audio, audio) ||
+                clip.SourceOffsetSamples != sourceOffset ||
+                clip.LengthSamples != lengthSamples)
+            {
+                error = "The clip changed while normalizing.";
+                return false;
+            }
+
+            Remember();
+            clip.Gain = nextGain;
+            gain = nextGain;
+            return true;
+        }
+    }
+
+    public bool ReverseClip(string trackId, string clipId, string outputPath, out string error)
+    {
+        error = "";
+        if (string.IsNullOrWhiteSpace(outputPath))
+        {
+            error = "No reverse destination was provided.";
+            return false;
+        }
+
+        float[] sourceAudio;
+        int sourceStart;
+        int sourceFrames;
+        int originalLength;
+        bool loop;
+        int fadeIn;
+        int fadeOut;
+        lock (_gate)
+        {
+            if (!_tracks.TryGetValue(trackId, out var playback))
+            {
+                error = "Timeline track not found.";
+                return false;
+            }
+
+            var clip = playback.Track.Clips.FirstOrDefault(item =>
+                string.Equals(item.Id, clipId, StringComparison.Ordinal));
+            if (clip?.Audio == null || clip.LengthSamples <= 0)
+            {
+                error = "The clip has no source audio.";
+                return false;
+            }
+
+            sourceAudio = clip.Audio;
+            sourceStart = (int)Math.Clamp(clip.SourceOffsetSamples, 0, Math.Max(0, (sourceAudio.Length / 2) - 1));
+            sourceFrames = Math.Min((int)Math.Min(int.MaxValue, clip.LengthSamples), (sourceAudio.Length / 2) - sourceStart);
+            originalLength = (int)Math.Min(int.MaxValue, clip.LengthSamples);
+            loop = clip.Loop;
+            fadeIn = clip.FadeInSamples;
+            fadeOut = clip.FadeOutSamples;
+        }
+
+        if (sourceFrames <= 0)
+        {
+            error = "The clip has no source audio.";
+            return false;
+        }
+
+        var reversed = new float[sourceFrames * 2];
+        for (int frame = 0; frame < sourceFrames; frame++)
+        {
+            int from = (sourceStart + sourceFrames - 1 - frame) * 2;
+            reversed[frame * 2] = sourceAudio[from];
+            reversed[frame * 2 + 1] = sourceAudio[from + 1];
+        }
+
+        try
+        {
+            using (var writer = new WaveFileWriter(outputPath, new WaveFormat(SampleRate, 24, 2)))
+            {
+                writer.WriteSamples(reversed, 0, reversed.Length);
+            }
+
+            lock (_gate)
+            {
+                if (!_tracks.TryGetValue(trackId, out var playback))
+                {
+                    DeletePath(outputPath);
+                    error = "Timeline track not found.";
+                    return false;
+                }
+
+                var clip = playback.Track.Clips.FirstOrDefault(item =>
+                    string.Equals(item.Id, clipId, StringComparison.Ordinal));
+                if (clip == null || !ReferenceEquals(clip.Audio, sourceAudio))
+                {
+                    DeletePath(outputPath);
+                    error = "The clip changed while reversing.";
+                    return false;
+                }
+
+                Remember();
+                clip.Audio = reversed;
+                clip.SourcePath = outputPath;
+                clip.SourceOffsetSamples = 0;
+                clip.LengthSamples = loop ? originalLength : sourceFrames;
+                clip.FadeInSamples = Math.Min((int)clip.LengthSamples, fadeOut);
+                clip.FadeOutSamples = Math.Min((int)clip.LengthSamples, fadeIn);
+                clip.Peaks = ComputePeaks(reversed);
+            }
+
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DeletePath(outputPath);
+            error = "Could not reverse the clip: " + ex.Message;
+            return false;
+        }
+    }
+
+    public bool ConsolidateClips(
+        IReadOnlyList<(string TrackId, string ClipId)> selections,
+        string outputPath,
+        out long startSample,
+        out long lengthSamples,
+        out float[] audio,
+        out string error)
+    {
+        startSample = 0;
+        lengthSamples = 0;
+        audio = Array.Empty<float>();
+        error = "";
+        if (selections.Count == 0)
+        {
+            error = "Select at least one clip to consolidate.";
+            return false;
+        }
+
+        var selected = new List<(TimelineClip Clip, float Gain)>();
+        lock (_gate)
+        {
+            var snapshot = CloneProject(_project);
+            var tracks = snapshot.Tracks.ToDictionary(track => track.Id, StringComparer.Ordinal);
+            foreach (var selection in selections)
+            {
+                if (!tracks.TryGetValue(selection.TrackId, out var track))
+                {
+                    continue;
+                }
+
+                var clip = track.Clips.FirstOrDefault(item =>
+                    string.Equals(item.Id, selection.ClipId, StringComparison.Ordinal));
+                if (clip?.Audio != null)
+                {
+                    selected.Add((clip, track.Gain));
+                }
+            }
+
+            if (selected.Count == 0)
+            {
+                error = "The selected clips have no audio to consolidate.";
+                return false;
+            }
+
+            startSample = selected.Min(item => item.Clip.StartSample);
+            lengthSamples = selected.Max(item => item.Clip.StartSample + item.Clip.LengthSamples) - startSample;
+        }
+
+        if (lengthSamples > MaxClipSamples)
+        {
+            error = "The selected clips are longer than the 10 minute clip limit.";
+            return false;
+        }
+
+        return RenderConsolidated(selected, startSample, lengthSamples, outputPath, out audio, out error);
+    }
+
+    public bool ConsolidateRange(
+        long startSample, long endSample, string outputPath, out float[] audio, out string error)
+    {
+        audio = Array.Empty<float>();
+        error = "";
+        if (startSample < 0 || endSample <= startSample)
+        {
+            error = "Select a valid time range to consolidate.";
+            return false;
+        }
+
+        List<(TimelineTrack Track, bool Audible)> tracks;
+        bool anySolo;
+        lock (_gate)
+        {
+            var snapshot = CloneProject(_project);
+            long projectEnd = 0;
+            foreach (var track in snapshot.Tracks)
+            {
+                foreach (var clip in track.Clips)
+                {
+                    projectEnd = Math.Max(projectEnd, clip.StartSample + clip.LengthSamples);
+                }
+            }
+
+            if (startSample >= projectEnd)
+            {
+                error = "The selected range is outside the timeline.";
+                return false;
+            }
+
+            endSample = Math.Min(endSample, projectEnd);
+            if (endSample <= startSample)
+            {
+                error = "The selected range has no audio.";
+                return false;
+            }
+
+            if (endSample - startSample > MaxClipSamples)
+            {
+                error = "The selected range is longer than the 10 minute clip limit.";
+                return false;
+            }
+
+            anySolo = snapshot.Tracks.Any(track => track.Solo);
+            tracks = snapshot.Tracks
+                .Select(track => (track, !track.Muted && (!anySolo || track.Solo)))
+                .ToList();
+        }
+
+        try
+        {
+            const int blockFrames = 2048;
+            var block = new float[blockFrames * 2];
+            var trackBlock = new float[blockFrames * 2];
+            var playback = new Dictionary<string, ClipPlayback>(StringComparer.Ordinal);
+            var rendered = new float[(int)(endSample - startSample) * 2];
+            int writeOffset = 0;
+            using var writer = new WaveFileWriter(outputPath, new WaveFormat(SampleRate, 24, 2));
+            long position = startSample;
+            while (position < endSample)
+            {
+                int frames = (int)Math.Min(blockFrames, endSample - position);
+                Array.Clear(block, 0, frames * 2);
+                foreach (var (track, audible) in tracks)
+                {
+                    if (!audible)
+                    {
+                        continue;
+                    }
+
+                    Array.Clear(trackBlock, 0, frames * 2);
+                    MixTrack(track, playback, position, frames, trackBlock);
+                    for (int i = 0; i < frames * 2; i++)
+                    {
+                        block[i] += trackBlock[i];
+                    }
+                }
+
+                Array.Copy(block, 0, rendered, writeOffset, frames * 2);
+                writeOffset += frames * 2;
+                writer.WriteSamples(block, 0, frames * 2);
+                position += frames;
+            }
+
+            audio = rendered;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DeletePath(outputPath);
+            audio = Array.Empty<float>();
+            error = "Could not consolidate the range: " + ex.Message;
+            return false;
+        }
+    }
+
+    private static bool RenderConsolidated(
+        IReadOnlyList<(TimelineClip Clip, float Gain)> clips,
+        long startSample,
+        long lengthSamples,
+        string outputPath,
+        out float[] audio,
+        out string error)
+    {
+        audio = Array.Empty<float>();
+        error = "";
+        if (lengthSamples <= 0 || lengthSamples > MaxClipSamples)
+        {
+            error = "The consolidated selection is longer than the 10 minute clip limit.";
+            return false;
+        }
+
+        try
+        {
+            const int blockFrames = 2048;
+            var block = new float[blockFrames * 2];
+            var playback = new Dictionary<string, ClipPlayback>(StringComparer.Ordinal);
+            var rendered = new float[(int)lengthSamples * 2];
+            int writeOffset = 0;
+            using var writer = new WaveFileWriter(outputPath,
+                new WaveFormat(AudioEngineConfig.SampleRate, 24, 2));
+            long position = startSample;
+            long end = startSample + lengthSamples;
+            while (position < end)
+            {
+                int frames = (int)Math.Min(blockFrames, end - position);
+                Array.Clear(block, 0, frames * 2);
+                foreach (var (clip, gain) in clips)
+                {
+                    if (!playback.TryGetValue(clip.Id, out var state))
+                    {
+                        state = new ClipPlayback();
+                        playback[clip.Id] = state;
+                    }
+
+                    MixClipInto(clip, state, gain, position, frames, block, 0);
+                }
+
+                Array.Copy(block, 0, rendered, writeOffset, frames * 2);
+                writeOffset += frames * 2;
+                writer.WriteSamples(block, 0, frames * 2);
+                position += frames;
+            }
+
+            audio = rendered;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            DeletePath(outputPath);
+            audio = Array.Empty<float>();
+            error = "Could not consolidate the clips: " + ex.Message;
+            return false;
+        }
+    }
     private static void DeletePath(string path)
     {
         try
@@ -955,6 +1356,58 @@ public sealed partial class TimelineService : IDisposable
             }
 
             return end;
+        }
+    }
+
+    /// <summary>
+    /// Full paths referenced by the live project and both undo stacks. Offline
+    /// renders use this to keep files that a history step can still restore.
+    /// </summary>
+    public HashSet<string> ReferencedSourcePaths(bool includeHistory = true)
+    {
+        lock (_gate)
+        {
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            AddReferencedSourcePaths(_project, paths);
+            if (!includeHistory)
+            {
+                return paths;
+            }
+
+            foreach (var project in _undo)
+            {
+                AddReferencedSourcePaths(project, paths);
+            }
+
+            foreach (var project in _redo)
+            {
+                AddReferencedSourcePaths(project, paths);
+            }
+
+            return paths;
+        }
+    }
+
+    private static void AddReferencedSourcePaths(TimelineProject project, HashSet<string> paths)
+    {
+        foreach (var track in project.Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                if (string.IsNullOrWhiteSpace(clip.SourcePath))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    paths.Add(Path.GetFullPath(clip.SourcePath));
+                }
+                catch
+                {
+                    paths.Add(clip.SourcePath);
+                }
+            }
         }
     }
 

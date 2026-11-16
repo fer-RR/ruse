@@ -950,4 +950,8 @@ export const es: Record<string, string> = {
   "Rename marker": "Renombrar marcador",
   "Remove marker": "Eliminar marcador",
   "Marker name": "Nombre del marcador",
+  "Normalize": "Normalizar",
+  "Reverse": "Invertir",
+  "Consolidate selection": "Consolidar selección",
+  "Consolidate loop range": "Consolidar rango de bucle",
 };

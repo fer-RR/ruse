@@ -380,6 +380,9 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-marker-update": UpdateTimelineMarker(message); break;
             case "timeline-marker-remove": RemoveTimelineMarker(String(message, "id")); break;
             case "timeline-copy-clips": PasteTimelineClips(message); break;
+            case "timeline-normalize-clip": NormalizeTimelineClip(String(message, "trackId"), String(message, "clipId")); break;
+            case "timeline-reverse-clip": ReverseTimelineClip(String(message, "trackId"), String(message, "clipId")); break;
+            case "timeline-consolidate": ConsolidateTimeline(message); break;
             case "timeline-bounce": BounceTimeline(); break;
             case "timeline-bounce-range": BounceTimelineRange(); break;
             case "timeline-bounce-cancel": CancelTimelineBounce(); break;
@@ -1457,7 +1460,6 @@ internal sealed partial class WebShellController : IDisposable
             "light" => Color.FromRgb(0xEE, 0xF1, 0xF6),
             "midnight" => Color.FromRgb(0x08, 0x0B, 0x11),
             "blueprint" => Color.FromRgb(0x08, 0x3B, 0x78),
-            "deepdive" => Color.FromRgb(0x14, 0x0A, 0x24),
             "studio74" => Color.FromRgb(0x1E, 0x1D, 0x1B),
             _ => Color.FromRgb(0x17, 0x1E, 0x29),
         };
@@ -1555,6 +1557,8 @@ internal sealed partial class WebShellController : IDisposable
                 {
                     SaveSession();
                 }
+
+                PruneGeneratedTimelineFiles(includeHistory: false);
             }
         }
         catch (Exception ex)

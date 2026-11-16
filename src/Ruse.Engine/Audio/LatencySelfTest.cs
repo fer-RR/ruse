@@ -1877,6 +1877,119 @@ public static class LatencySelfTest
                Math.Abs(copies[1].Gain - source.Gain) < 1e-6;
     }
 
+    public static bool TestTimelineClipProcessing()
+    {
+        string input = Path.Combine(Path.GetTempPath(), $"ruse-normalize-input-{Guid.NewGuid():N}.wav");
+        string reversed = Path.Combine(Path.GetTempPath(), $"ruse-reversed-{Guid.NewGuid():N}.wav");
+        string consolidated = Path.Combine(Path.GetTempPath(), $"ruse-consolidated-{Guid.NewGuid():N}.wav");
+        string range = Path.Combine(Path.GetTempPath(), $"ruse-range-{Guid.NewGuid():N}.wav");
+        var timeline = new TimelineService();
+        try
+        {
+            const int frames = 48000;
+            var samples = new float[frames * 2];
+            float peak = 0;
+            for (int frame = 0; frame < frames; frame++)
+            {
+                float value = (float)(frame / (double)frames * 0.5 - 0.25);
+                samples[frame * 2] = value;
+                samples[frame * 2 + 1] = value;
+                peak = Math.Max(peak, Math.Abs(value));
+            }
+
+            using (var writer = new WaveFileWriter(input, new WaveFormat(48000, 16, 2)))
+            {
+                writer.WriteSamples(samples, 0, samples.Length);
+            }
+
+            timeline.LoadProject(new TimelineProject());
+            var track = timeline.AddTrack("Processing");
+            if (!timeline.AddClip(track.Id, input, out string addError))
+            {
+                Console.WriteLine("timeline processing add clip: " + addError);
+                return false;
+            }
+
+            var clip = timeline.Project.Tracks[0].Clips[0];
+            if (!timeline.NormalizeClip(track.Id, clip.Id, out float gain, out string normalizeError) ||
+                Math.Abs(gain - 0.987f / peak) > 1e-3f ||
+                Math.Abs(clip.Gain - gain) > 1e-6f)
+            {
+                Console.WriteLine(
+                    $"timeline processing normalize: gain={gain:0.######} want={0.987f / peak:0.######} " +
+                    $"clip={clip.Gain:0.######} error={normalizeError}");
+                return false;
+            }
+
+            if (clip.Audio == null || clip.Audio.Length < 2)
+            {
+                Console.WriteLine("timeline processing reverse: clip audio is missing");
+                return false;
+            }
+
+            float originalLast = clip.Audio[clip.Audio.Length - 2];
+            if (!timeline.ReverseClip(track.Id, clip.Id, reversed, out string reverseError) ||
+                clip.Audio == null ||
+                Math.Abs(clip.Audio[0] - originalLast) > 1e-5f)
+            {
+                Console.WriteLine(
+                    $"timeline processing reverse: first={(clip.Audio != null ? clip.Audio[0] : 0f):0.######} " +
+                    $"last={originalLast:0.######} error={reverseError}");
+                return false;
+            }
+
+            timeline.LoadProject(timeline.SnapshotProject());
+            var reloaded = timeline.Project.Tracks[0].Clips[0];
+            if (reloaded.Audio == null || Math.Abs(reloaded.Audio[0] - originalLast) > 1e-5f)
+            {
+                Console.WriteLine(
+                    $"timeline processing reverse reload: first={(reloaded.Audio != null ? reloaded.Audio[0] : 0f):0.######} " +
+                    $"last={originalLast:0.######}");
+                return false;
+            }
+
+            if (!timeline.ConsolidateClips(
+                    new[] { (track.Id, reloaded.Id) }, consolidated,
+                    out long start, out long length, out float[] consolidatedAudio,
+                    out string consolidateError) ||
+                start != 0 || length != frames || consolidatedAudio.Length != frames * 2 ||
+                !File.Exists(consolidated) || new FileInfo(consolidated).Length <= 44)
+            {
+                Console.WriteLine(
+                    $"timeline processing consolidate: start={start} length={length} frames={frames} " +
+                    $"audio={consolidatedAudio.Length} exists={File.Exists(consolidated)} error={consolidateError}");
+                return false;
+            }
+
+            if (!timeline.ConsolidateRange(
+                    0, frames, range, out float[] rangeAudio, out string rangeError) ||
+                rangeAudio.Length != frames * 2)
+            {
+                Console.WriteLine(
+                    $"timeline processing range: audio={rangeAudio.Length} error={rangeError}");
+                return false;
+            }
+
+            bool rangeOk = File.Exists(range) && new FileInfo(range).Length > 44;
+            if (!rangeOk)
+            {
+                Console.WriteLine(
+                    $"timeline processing range file: exists={File.Exists(range)} " +
+                    $"size={(File.Exists(range) ? new FileInfo(range).Length : 0)}");
+            }
+
+            return rangeOk;
+        }
+        finally
+        {
+            timeline.Dispose();
+            foreach (string path in new[] { input, reversed, consolidated, range })
+            {
+                try { if (File.Exists(path)) File.Delete(path); } catch { }
+            }
+        }
+    }
+
     public static bool TestMixerPresetRoundTrip()
     {
         var preset = new Preset { Name = "mixer-round-trip" };

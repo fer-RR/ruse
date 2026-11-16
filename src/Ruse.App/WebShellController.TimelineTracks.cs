@@ -204,6 +204,7 @@ internal sealed partial class WebShellController
 
             PublishTimeline();
             PublishGraph();
+            PruneGeneratedTimelineFiles();
             SetStatus($"Removed timeline track '{track.Name}'.");
         }
     }

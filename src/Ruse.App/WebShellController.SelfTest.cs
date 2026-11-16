@@ -27,6 +27,7 @@ internal sealed partial class WebShellController
         Check("variable delay line", LatencySelfTest.TestVariableDelayLine());
         Check("mixer preset round-trip", LatencySelfTest.TestMixerPresetRoundTrip());
         Check("timeline markers, time signature and clip copy", LatencySelfTest.TestTimelineMarkersAndCopy());
+        Check("timeline normalize, reverse and consolidate", LatencySelfTest.TestTimelineClipProcessing());
         var mixerSnapshotSource = RegisterModifier(
             new ModifierNode("Mixer snapshot")
             {

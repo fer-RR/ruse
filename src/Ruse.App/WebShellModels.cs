@@ -208,6 +208,16 @@ internal sealed class NodeDto
     public string? WarningSeverity { get; set; }
 }
 
+internal sealed class MixerStateDto
+{
+    public string Id { get; set; } = "";
+    public int GraphVersion { get; set; }
+    public float Width { get; set; } = 1f;
+    public bool AutoGain { get; set; }
+    public float Crossfade { get; set; }
+    public List<MixerInputDto> Inputs { get; set; } = new();
+}
+
 internal sealed class MixerInputDto
 {
     public string LinkId { get; set; } = "";

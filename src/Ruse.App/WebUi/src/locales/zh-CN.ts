@@ -950,4 +950,8 @@ export const zhCN: Record<string, string> = {
   "Rename marker": "重命名标记",
   "Remove marker": "删除标记",
   "Marker name": "标记名称",
+  "Normalize": "标准化",
+  "Reverse": "反转",
+  "Consolidate selection": "合并所选片段",
+  "Consolidate loop range": "合并循环范围",
 };

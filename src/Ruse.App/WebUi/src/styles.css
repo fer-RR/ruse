@@ -112,29 +112,6 @@
   --danger: #ffa0a0;
 }
 
-:root[data-theme="deepdive"] {
-  color-scheme: dark;
-  --canvas: #140a24;
-  --surface-0: #1d0f33;
-  --surface-1: #241342;
-  --surface-2: #2d1852;
-  --surface-3: #382060;
-  --inset: #170b2b;
-  --line: rgba(76, 201, 240, 0.24);
-  --line-strong: rgba(76, 201, 240, 0.45);
-  --text: #f4ecff;
-  --text-2: #cbb8ea;
-  --text-3: #9f86c9;
-  --signal: #80ed99;
-  --cyan: #4cc9f0;
-  --blue: #b57bff;
-  --amber: #ff9e00;
-  --yellow: #ffd166;
-  --violet: #d0a9ff;
-  --record: #ff8fa3;
-  --danger: #ff6b8a;
-}
-
 :root[data-theme="studio74"] {
   color-scheme: dark;
   --canvas: #1e1d1b;
@@ -239,22 +216,6 @@
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35), 0 8px 24px rgba(0, 18, 44, 0.28);
 }
 :root[data-theme="blueprint"] .ruse-node .node-icon { color: #174b80; }
-
-/* Deep Dive: translucent atomic-purple/ice-blue shells over a PCB. */
-:root[data-theme="deepdive"] .graph-area { background-image: radial-gradient(circle at 18% 22%, rgba(123, 44, 191, 0.18), transparent 45%), radial-gradient(circle at 82% 78%, rgba(76, 201, 240, 0.12), transparent 42%); }
-:root[data-theme="deepdive"] .ruse-node {
-  border-color: rgba(76, 201, 240, 0.45);
-  background-color: #1a0e2e;
-  background-image: radial-gradient(circle at 10px 10px, rgba(255, 215, 0, 0.22) 1.2px, transparent 1.5px), linear-gradient(110deg, rgba(123, 44, 191, 0.42), rgba(18, 26, 22, 0.88));
-  background-size: 22px 22px, auto;
-  box-shadow: 0 0 0 1px rgba(76, 201, 240, 0.12), 0 10px 26px rgba(6, 0, 20, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(0, 0, 0, 0.4);
-}
-:root[data-theme="deepdive"] .node-header { background: linear-gradient(180deg, rgba(123, 44, 191, 0.55), rgba(18, 26, 22, 0.78)); border-bottom-color: rgba(76, 201, 240, 0.3); }
-:root[data-theme="deepdive"] .node-header strong { font-family: Consolas, monospace; letter-spacing: 0.4px; }
-:root[data-theme="deepdive"] .node-subtitle, :root[data-theme="deepdive"] .node-hint { color: #b9f5e2; }
-:root[data-theme="deepdive"] .ruse-handle { border-color: #4cc9f0 !important; box-shadow: 0 0 0 3px rgba(20, 10, 36, 0.85), 0 0 12px rgba(76, 201, 240, 0.6); }
-:root[data-theme="deepdive"] .react-flow__edge-path { filter: drop-shadow(0 0 3px rgba(76, 201, 240, 0.5)); }
-:root[data-theme="deepdive"] .timeline-dock { background: linear-gradient(180deg, #241342, #140a24); }
 
 /* Studio '74: cream faceplates, walnut cheeks and tungsten lamps. */
 :root[data-theme="studio74"] body { font-family: "Arial Narrow", "Segoe UI", sans-serif; }
@@ -1249,7 +1210,6 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .theme-chip-light { background: #f7f8fb; }
 .theme-chip-midnight { background: #111827; }
 .theme-chip-blueprint { background: #083b78; }
-.theme-chip-deepdive { background: linear-gradient(135deg, #7b2cbf 0 40%, #4cc9f0 40% 70%, #80ed99 70%); }
 .theme-chip-studio74 { background: linear-gradient(135deg, #5c3a21 0 40%, #f2ead3 40% 70%, #4a5d4e 70%); }
 .setting-row input.settings-text-field { width: 220px; max-width: 40vw; height: 30px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--inset); color: var(--text-2); font: 10px Consolas, monospace; }
 .secret-field { display: flex; align-items: center; gap: 5px; min-width: 0; }

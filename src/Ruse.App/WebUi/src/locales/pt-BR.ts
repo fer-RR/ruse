@@ -972,4 +972,8 @@ export const ptBR: Record<string, string> = {
   "Rename marker": "Renomear marcador",
   "Remove marker": "Remover marcador",
   "Marker name": "Nome do marcador",
+  "Normalize": "Normalizar",
+  "Reverse": "Inverter",
+  "Consolidate selection": "Consolidar seleção",
+  "Consolidate loop range": "Consolidar intervalo de loop",
 };

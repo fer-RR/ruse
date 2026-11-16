@@ -256,6 +256,7 @@ internal sealed partial class WebShellController
 
         if (ok)
         {
+            RegisterGeneratedTimelineFile(path);
             string stretched = $"Stretched clip to {lengthSamples / (double)AudioEngineConfig.SampleRate:0.00}s.";
             SetStatus(stretched);
             ShowToast(stretched);
@@ -319,6 +320,7 @@ internal sealed partial class WebShellController
             SyncTimelineTrackNames();
             PublishTimeline(true);
             PublishGraph();
+            PruneGeneratedTimelineFiles();
         }
     }
 
@@ -330,6 +332,7 @@ internal sealed partial class WebShellController
             SyncTimelineTrackNames();
             PublishTimeline(true);
             PublishGraph();
+            PruneGeneratedTimelineFiles();
         }
     }
 
@@ -364,6 +367,7 @@ internal sealed partial class WebShellController
         if (_timeline.RemoveClip(trackId, clipId))
         {
             PublishTimeline(false);
+            PruneGeneratedTimelineFiles();
         }
     }
 
@@ -1147,10 +1151,12 @@ internal sealed partial class WebShellController
         if (!_timeline.AddClip(track.Id, path, out string importError))
         {
         EndTimelineBounce();
+            TryDeleteTimelineFile(path);
             SetStatus(importError, isError: true);
             return;
         }
 
+        RegisterGeneratedTimelineFile(path);
         _timeline.SetTrackSolo(track.Id, true);
         PublishTimeline(true);
         PublishGraph();
@@ -1289,6 +1295,176 @@ internal sealed partial class WebShellController
         if (_timeline.CopyClips(copies))
         {
             PublishTimeline(false);
+        }
+    }
+
+    private async void NormalizeTimelineClip(string trackId, string clipId)
+    {
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        TimelineService timeline = _timeline;
+        bool ok;
+        float gain;
+        string error;
+        try
+        {
+            (ok, gain, error) = await Task.Run(() =>
+                timeline.NormalizeClip(trackId, clipId, out float value, out string message)
+                    ? (true, value, "")
+                    : (false, 1f, message));
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            gain = 1f;
+            error = ex.Message;
+        }
+
+        if (ok)
+        {
+            PublishTimeline(false);
+            string message = $"Normalized clip to {20.0 * Math.Log10(Math.Max(0.0001f, gain)):0.0} dB gain.";
+            SetStatus(message);
+            ShowToast(message);
+        }
+        else
+        {
+            SetStatus(error, isError: true);
+        }
+    }
+
+    private async void ReverseTimelineClip(string trackId, string clipId)
+    {
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        string path = NextRecordingPath(AudioFileFormat.Wav24);
+        SetStatus("Reversing timeline clip...");
+        bool ok;
+        string error;
+        try
+        {
+            TimelineService timeline = _timeline;
+            (ok, error) = await Task.Run(() => timeline.ReverseClip(trackId, clipId, path, out string message)
+                ? (true, "")
+                : (false, message));
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            error = ex.Message;
+        }
+
+        if (ok)
+        {
+            RegisterGeneratedTimelineFile(path);
+            PublishTimeline(false);
+            SetStatus($"Reversed clip to {Path.GetFileName(path)}.");
+            ShowToast("Clip reversed.");
+        }
+        else
+        {
+            SetStatus(error, isError: true);
+        }
+    }
+
+    private async void ConsolidateTimeline(BridgeMessage message)
+    {
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        var selections = new List<(string TrackId, string ClipId)>();
+        if (message.Payload.TryGetProperty("clips", out var clips) &&
+            clips.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var item in clips.EnumerateArray())
+            {
+                if (item.TryGetProperty("trackId", out var trackValue) &&
+                    item.TryGetProperty("clipId", out var clipValue) &&
+                    trackValue.GetString() is { } trackId &&
+                    clipValue.GetString() is { } clipId)
+                {
+                    selections.Add((trackId, clipId));
+                }
+            }
+        }
+
+        long startSample = 0;
+        long rangeStart = (long)Number(message, "startSample", -1);
+        long rangeEnd = (long)Number(message, "endSample", -1);
+        string path = NextRecordingPath(AudioFileFormat.Wav24);
+        SetStatus("Consolidating timeline selection...");
+        bool ok;
+        float[] audio;
+        string error;
+        try
+        {
+            TimelineService timeline = _timeline;
+            (ok, audio, startSample, _, error) = await Task.Run(() =>
+            {
+                if (selections.Count > 0)
+                {
+                    bool success = timeline.ConsolidateClips(
+                        selections, path, out long start, out long length,
+                        out float[] rendered, out string message);
+                    return (success, rendered, start, length, success ? "" : message);
+                }
+
+                bool rangeSuccess = timeline.ConsolidateRange(
+                    rangeStart, rangeEnd, path, out float[] rangeAudio, out string rangeError);
+                return (rangeSuccess, rangeAudio, rangeStart, rangeEnd - rangeStart,
+                    rangeSuccess ? "" : rangeError);
+            });
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            audio = Array.Empty<float>();
+            error = ex.Message;
+        }
+
+        if (!ok)
+        {
+            SetStatus(error, isError: true);
+            return;
+        }
+
+        bool clipAdded = false;
+        try
+        {
+            var track = AddTimelineTrack("Consolidated");
+            _timeline.SetTrackMuted(track.Id, true);
+            if (!_timeline.AddClipFromAudio(track.Id, path, audio, out string importError,
+                    Math.Max(0, startSample)))
+            {
+                RemoveTimelineTrack(track.Id);
+                TryDeleteTimelineFile(path);
+                SetStatus(importError, isError: true);
+                return;
+            }
+
+            clipAdded = true;
+            RegisterGeneratedTimelineFile(path);
+            PublishTimeline(true);
+            PublishGraph();
+            SetStatus("Consolidated clip created on a muted track. Unmute it to use the render.");
+            ShowToast("Consolidated clip created on a muted track.");
+        }
+        catch (Exception ex)
+        {
+            if (!clipAdded)
+            {
+                TryDeleteTimelineFile(path);
+            }
+
+            SetStatus("Could not add the consolidated clip: " + ex.Message, isError: true);
         }
     }
 

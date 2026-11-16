@@ -950,4 +950,8 @@ export const ko: Record<string, string> = {
   "Rename marker": "마커 이름 변경",
   "Remove marker": "마커 제거",
   "Marker name": "마커 이름",
+  "Normalize": "노멀라이즈",
+  "Reverse": "반전",
+  "Consolidate selection": "선택 항목 통합",
+  "Consolidate loop range": "루프 범위 통합",
 };

@@ -1505,22 +1505,7 @@ internal sealed partial class WebShellController
                 dto.MixerWidth = entry.Modifier.MixerWidth;
                 dto.MixerAutoGain = entry.Modifier.MixerAutoGain;
                 dto.MixerCrossfade = entry.Modifier.MixerCrossfade;
-                dto.MixerInputs = _links
-                    .Where(link => link.To == entry.Id && link.Kind != "sidechain" &&
-                        _nodes.ContainsKey(link.From))
-                    .Select(link => new MixerInputDto
-                    {
-                        LinkId = link.Id,
-                        Title = _nodes[link.From].Title,
-                        Gain = link.Gain,
-                        Pan = link.Pan,
-                        DelayMs = link.DelayMs,
-                        Muted = !link.Enabled,
-                        Solo = link.Solo,
-                        BusB = link.BusB,
-                        Inverted = link.Inverted,
-                    })
-                    .ToList();
+                dto.MixerInputs = BuildMixerInputs(entry.Id);
             }
 
             dto.IsSpectrum = entry.Modifier.Processors.OfType<SpectrumProcessor>().Any();
@@ -1615,6 +1600,49 @@ internal sealed partial class WebShellController
         return dto;
     }
 
+    private List<MixerInputDto> BuildMixerInputs(string mixerId) =>
+        _links
+            .Where(link => link.To == mixerId && link.Kind != "sidechain" &&
+                _nodes.ContainsKey(link.From))
+            .Select(link => new MixerInputDto
+            {
+                LinkId = link.Id,
+                Title = _nodes[link.From].Title,
+                Gain = link.Gain,
+                Pan = link.Pan,
+                DelayMs = link.DelayMs,
+                Muted = !link.Enabled,
+                Solo = link.Solo,
+                BusB = link.BusB,
+                Inverted = link.Inverted,
+            })
+            .ToList();
+
+    private void PublishMixerState(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier is not { IsMixer: true } mixer)
+        {
+            return;
+        }
+
+        Post("mixer-state", new MixerStateDto
+        {
+            Id = entry.Id,
+            GraphVersion = _graphVersion,
+            Width = mixer.MixerWidth,
+            AutoGain = mixer.MixerAutoGain,
+            Crossfade = mixer.MixerCrossfade,
+            Inputs = BuildMixerInputs(entry.Id),
+        });
+    }
+
+    private void PublishMixerInputChange(LinkEntry link)
+    {
+        if (_nodes.TryGetValue(link.To, out var entry) && entry.Modifier is { IsMixer: true })
+        {
+            PublishMixerState(entry.Id);
+        }
+    }
     private void MoveNode(string id, double x, double y)
     {
         if (!_nodes.TryGetValue(id, out var entry)) return;
@@ -2117,7 +2145,7 @@ internal sealed partial class WebShellController
         float next = float.IsFinite(value) ? Math.Clamp(value, -1f, 1f) : 0f;
         link.Pan = next;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
         PushAction("Change input pan",
             undo: () => SetLinkPanValue(id, old),
@@ -2132,7 +2160,7 @@ internal sealed partial class WebShellController
         if (link == null) return;
         link.Pan = float.IsFinite(value) ? Math.Clamp(value, -1f, 1f) : 0f;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
     }
 
@@ -2143,7 +2171,7 @@ internal sealed partial class WebShellController
         bool old = link.Inverted;
         link.Inverted = inverted;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
         PushAction(inverted ? "Invert input polarity" : "Restore input polarity",
             undo: () => SetLinkPolarityValue(id, old),
@@ -2157,7 +2185,7 @@ internal sealed partial class WebShellController
         if (link == null) return;
         link.Inverted = inverted;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
     }
 
@@ -2171,7 +2199,7 @@ internal sealed partial class WebShellController
             : 0f;
         link.DelayMs = next;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
         _graph.RefreshEngine();
         PushAction("Change input delay",
@@ -2189,7 +2217,7 @@ internal sealed partial class WebShellController
             ? Math.Clamp(delayMs, 0f, ModifierNode.MixerMaxDelayMs)
             : 0f;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
         _graph.RefreshEngine();
     }
@@ -2212,7 +2240,7 @@ internal sealed partial class WebShellController
         bool old = link.Solo;
         link.Solo = solo;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
         PushAction(solo ? "Solo mixer input" : "Unsolo mixer input",
             undo: () => SetLinkSoloValue(id, old),
@@ -2226,7 +2254,7 @@ internal sealed partial class WebShellController
         if (link == null) return;
         link.Solo = solo;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
     }
 
@@ -2237,7 +2265,7 @@ internal sealed partial class WebShellController
         bool old = link.BusB;
         link.BusB = busB;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
         PushAction(busB ? "Assign mixer input to B" : "Assign mixer input to A",
             undo: () => SetLinkBusValue(id, old),
@@ -2251,7 +2279,7 @@ internal sealed partial class WebShellController
         if (link == null) return;
         link.BusB = busB;
         SyncMixerInput(link);
-        PublishGraph();
+        PublishMixerInputChange(link);
         PublishLinkState(id);
     }
 
@@ -2285,7 +2313,7 @@ internal sealed partial class WebShellController
         mixer.MixerWidth = float.IsFinite(width) ? Math.Clamp(width, 0f, 2f) : 1f;
         mixer.MixerAutoGain = autoGain;
         mixer.MixerCrossfade = float.IsFinite(crossfade) ? Math.Clamp(crossfade, 0f, 1f) : 0f;
-        PublishGraph();
+        PublishMixerState(id);
         PublishTelemetry(force: true);
     }
 
@@ -2315,6 +2343,7 @@ internal sealed partial class WebShellController
         link.Enabled = enabled;
         ApplyLinkRouting(link, publish);
         SyncMixerInput(link);
+        PublishMixerInputChange(link);
     }
 
     private void ApplyLinkRouting(LinkEntry link, bool publish)

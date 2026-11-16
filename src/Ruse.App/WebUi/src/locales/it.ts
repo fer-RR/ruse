@@ -950,4 +950,8 @@ export const it: Record<string, string> = {
   "Rename marker": "Rinomina marcatore",
   "Remove marker": "Rimuovi marcatore",
   "Marker name": "Nome marcatore",
+  "Normalize": "Normalizza",
+  "Reverse": "Inverti",
+  "Consolidate selection": "Consolida selezione",
+  "Consolidate loop range": "Consolida intervallo loop",
 };

@@ -206,6 +206,10 @@ export default function TimelinePanel({
   onUpdateMarker,
   onRemoveMarker,
   onPasteClips,
+  onNormalizeClip,
+  onReverseClip,
+  onConsolidateClips,
+  onConsolidateRange,
   onBounce,
   onBounceRange,
   onToggleMetronome,
@@ -254,6 +258,10 @@ export default function TimelinePanel({
   onUpdateMarker: (id: string, name: string) => void;
   onRemoveMarker: (id: string) => void;
   onPasteClips: (clips: { trackId: string; clipId: string; startSample: number }[]) => void;
+  onNormalizeClip: (trackId: string, clipId: string) => void;
+  onReverseClip: (trackId: string, clipId: string) => void;
+  onConsolidateClips: (clips: { trackId: string; clipId: string }[]) => void;
+  onConsolidateRange: (startSample: number, endSample: number) => void;
   onBounce: () => void;
   onBounceRange: () => void;
   onToggleMetronome: () => void;
@@ -390,6 +398,7 @@ export default function TimelinePanel({
   const canPitchMenu = menuClipModel != null &&
     !menuClipModel.track.generatorNodeId &&
     Boolean(menuClipModel.clip.sourcePath);
+  const canProcessMenu = menuClipModel != null && Boolean(menuClipModel.clip.sourcePath);
   const clipKey = (trackId: string, clipId: string) => `${trackId}:${clipId}`;
   const selectedClipEntries = useMemo(() => selectedClipKeys.flatMap(key => {
     const separator = key.indexOf(':');
@@ -399,6 +408,22 @@ export default function TimelinePanel({
     const clip = track?.clips.find(item => item.id === clipId);
     return track && clip ? [{ trackId, clipId, track, clip }] : [];
   }), [selectedClipKeys, tracks]);
+  const consolidateClipEntries = (() => {
+    if (!menuClipModel) {
+      return selectedClipEntries;
+    }
+
+    const clickedSelected = selectedClipEntries.some(entry =>
+      entry.trackId === menuClipModel.track.id && entry.clipId === menuClipModel.clip.id);
+    return clickedSelected
+      ? selectedClipEntries
+      : [{
+          trackId: menuClipModel.track.id,
+          clipId: menuClipModel.clip.id,
+          track: menuClipModel.track,
+          clip: menuClipModel.clip,
+        }];
+  })();
 
   const selectClip = (trackId: string, clipId: string, additive: boolean) => {
     const key = clipKey(trackId, clipId);
@@ -1251,7 +1276,7 @@ export default function TimelinePanel({
                 <input
                   type="range"
                   min={0}
-                  max={1.5}
+                  max={4}
                   step={0.01}
                   value={clipGain}
                   aria-label={t('Clip gain')}
@@ -1848,6 +1873,27 @@ export default function TimelinePanel({
               onClick: () => onCrossfadeClip(menuClipModel.track.id, menuClipModel.clip.id),
             },
             {
+              id: 'normalize',
+              label: t('Normalize'),
+              disabled: !canProcessMenu,
+              onClick: () => onNormalizeClip(menuClipModel.track.id, menuClipModel.clip.id),
+            },
+            {
+              id: 'reverse',
+              label: t('Reverse'),
+              disabled: !canProcessMenu,
+              onClick: () => onReverseClip(menuClipModel.track.id, menuClipModel.clip.id),
+            },
+            {
+              id: 'consolidate',
+              label: t('Consolidate selection'),
+              disabled: consolidateClipEntries.length === 0,
+              onClick: () => onConsolidateClips(consolidateClipEntries.map(entry => ({
+                trackId: entry.trackId,
+                clipId: entry.clipId,
+              }))),
+            },
+            {
               id: 'copy',
               label: t('Copy clips'),
               onClick: copySelection,
@@ -1903,6 +1949,12 @@ export default function TimelinePanel({
               label: t('Add region from loop range'),
               disabled: !loopActive,
               onClick: () => onAddMarker(Math.min(displayLoopStart, displayLoopEnd), Math.max(displayLoopStart, displayLoopEnd)),
+            },
+            {
+              id: 'consolidate-range',
+              label: t('Consolidate loop range'),
+              disabled: !loopActive,
+              onClick: () => onConsolidateRange(Math.min(displayLoopStart, displayLoopEnd), Math.max(displayLoopStart, displayLoopEnd)),
             },
             {
               id: 'paste',

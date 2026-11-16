@@ -585,6 +585,7 @@ internal sealed partial class WebShellController
         {
             EnsureTimeline();
             _timeline!.LoadProject(preset.Timeline);
+            PruneGeneratedTimelineFiles();
             var claimedSources = new HashSet<string>(StringComparer.Ordinal);
             foreach (var track in _timeline.Project.Tracks)
             {
@@ -688,6 +689,7 @@ internal sealed partial class WebShellController
 
         Directory.CreateDirectory(AppSettings.Directory);
         File.WriteAllText(AppSettings.SessionPath, BuildPreset().ToJson());
+        MarkGeneratedTimelineFilesSaved();
     }
 
     private void TryLoadSession()
@@ -741,6 +743,7 @@ internal sealed partial class WebShellController
         if (dialog.ShowDialog(_window) != true) return;
 
         File.WriteAllText(dialog.FileName, BuildPreset().ToJson());
+        MarkGeneratedTimelineFilesSaved();
         SetStatus($"Preset saved: {Path.GetFileName(dialog.FileName)}");
     }
 
@@ -779,7 +782,8 @@ internal sealed partial class WebShellController
             "ocean" => "blueprint",
             "ember" => "studio74",
             "midnightstudy" => "midnight",
-            "light" or "midnight" or "blueprint" or "deepdive" or "studio74" => settings.Theme,
+            "deepdive" or "glass" => "midnight",
+            "light" or "midnight" or "blueprint" or "studio74" => settings.Theme,
             _ => "dark",
         };
         ApplyWindowTheme();

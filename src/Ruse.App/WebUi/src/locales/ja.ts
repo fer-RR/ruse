@@ -950,4 +950,8 @@ export const ja: Record<string, string> = {
   "Rename marker": "マーカー名を変更",
   "Remove marker": "マーカーを削除",
   "Marker name": "マーカー名",
+  "Normalize": "ノーマライズ",
+  "Reverse": "反転",
+  "Consolidate selection": "選択範囲を統合",
+  "Consolidate loop range": "ループ範囲を統合",
 };
