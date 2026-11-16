@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, ChevronUp, Copy, FileAudio, GripVertical, Languages, Layers3, Mic, MonitorSpeaker,
+  AppWindow, AudioLines, Check, ChevronDown, ChevronUp, Combine, Copy, FileAudio, GripVertical, Languages, Layers3, Mic, MonitorSpeaker,
   Play, Power, Puzzle, Radio, Settings, SlidersHorizontal, Square, Timer, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
@@ -30,6 +30,7 @@ import SpectrumView from './SpectrumView';
 import SpectrogramView from './SpectrogramView';
 import WaveformView from './WaveformView';
 import GraphicEqualizerView from './GraphicEqualizerView';
+import MixerControls from './MixerControls';
 
 const RECORD_FORMATS = [
   ['Wav24', 'WAV \u00B7 24-bit'],
@@ -59,6 +60,7 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'translator': return <Languages {...props} />;
     case 'vst3': return <Puzzle {...props} />;
     case 'analysis': return <AudioLines {...props} />;
+    case 'mixer': return <Combine {...props} />;
     default: return <SlidersHorizontal {...props} />;
   }
 }
@@ -726,7 +728,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const isWaveform = data.isWaveform === true;
   const isParametricEq = data.isParametricEq === true;
   const canParallel = isModifier && !isDbMeter && !isLoudness && !isSpectrum && !isSpectrogram && !isWaveform &&
-    !data.isTranscriber && !data.isTranslator && !data.isVst3 && !data.isGraphicEq;
+    !data.isTranscriber && !data.isTranslator && !data.isVst3 && !data.isGraphicEq && !data.isMixer;
   const dbVertical = isDbMeter && (telemetry?.dbMeterVertical ?? true);
   const enabled = data.enabled !== false;
   const recording = telemetry?.recordingStatus === 'REC';
@@ -774,6 +776,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     isWaveform ? 'waveform-node' : '',
     data.isGraphicEq ? 'graphic-eq-node' : '',
     isParametricEq ? 'parametric-eq-node' : '',
+    data.isMixer ? 'mixer-node' : '',
     data.isConvolutionReverb ? 'convolution-node' : '',
     isDbMeter ? (dbVertical ? 'db-meter-node db-meter-vertical' : 'db-meter-node db-meter-horizontal') : '',
     isLoudness ? 'loudness-node' : '',
@@ -892,6 +895,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             peak={telemetry?.waveformPeak}
             color={data.accent}
           />}
+          {data.isMixer && <MixerControls node={data} telemetry={telemetry} />}
           {data.isGraphicEq && <GraphicEqualizerView
             nodeId={data.id}
             parameters={data.parameters}
@@ -968,7 +972,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             </div>
           )}
           {data.isParametricEq && <ParametricEqView node={data} />}
-          {!data.isGraphicEq && !data.isParametricEq && data.parameters
+          {!data.isMixer && !data.isGraphicEq && !data.isParametricEq && data.parameters
             .map(parameter => (
             <ParameterControl
               key={`${parameter.processorIndex}-${parameter.parameterIndex}`}

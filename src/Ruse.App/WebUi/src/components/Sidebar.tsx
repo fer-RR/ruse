@@ -1,7 +1,7 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import type { DragEvent, ReactNode, RefObject } from 'react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, Eye, EyeOff, FileAudio, FolderOpen, GripVertical, Headphones, MessageSquare,
+  AppWindow, AudioLines, Check, ChevronDown, Combine, Eye, EyeOff, FileAudio, FolderOpen, GripVertical, Headphones, MessageSquare,
   Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, RefreshCw, Search, SlidersHorizontal, Speaker, Timer, Trash2, Upload, X,
 } from 'lucide-react';
 import {
@@ -82,6 +82,7 @@ const ItemIcon = memo(function ItemIcon({ item }: { item: CatalogItem }) {
     }
     case 'virtual': return <Radio {...props} />;
     case 'effect': return <SlidersHorizontal {...props} />;
+    case 'mixer': return <Combine {...props} />;
     case 'chain': return <Layers3 {...props} />;
     case 'vst3': return <Puzzle {...props} />;
     case 'file-player': return <FileAudio {...props} />;

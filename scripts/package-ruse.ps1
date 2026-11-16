@@ -39,6 +39,37 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Publish failed."
     }
+
+    $vstNative = Join-Path $repo "src\Ruse.App\bin\$Configuration\net10.0-windows\$Runtime\ownvst3.dll"
+    if (-not (Test-Path -LiteralPath $vstNative)) {
+        $vstNative = Join-Path $repo "src\Ruse.App\bin\$Configuration\net10.0-windows\runtimes\$Runtime\native\ownvst3.dll"
+    }
+
+    if (-not (Test-Path -LiteralPath $vstNative)) {
+        throw "ownvst3.dll was not found in the publish output."
+    }
+
+    Copy-Item -LiteralPath $vstNative -Destination (Join-Path $appDir "ownvst3.dll") -Force
+    $linuxVulkan = Join-Path $appDir "runtimes\vulkan\linux-x64"
+    if (Test-Path -LiteralPath $linuxVulkan) {
+        Remove-Item -LiteralPath $linuxVulkan -Recurse -Force
+    }
+
+    $runtimes = Join-Path $appDir "runtimes"
+    if (Test-Path -LiteralPath $runtimes) {
+        Get-ChildItem -LiteralPath $runtimes -Directory -Recurse |
+            Sort-Object { $_.FullName.Length } -Descending |
+            ForEach-Object {
+                if (-not (Get-ChildItem -LiteralPath $_.FullName -Force)) {
+                    Remove-Item -LiteralPath $_.FullName -Force
+                }
+            }
+
+        if (-not (Get-ChildItem -LiteralPath $runtimes -Force)) {
+            Remove-Item -LiteralPath $runtimes -Force
+        }
+    }
+
     $ttsProject = Join-Path $repo "src\Ruse.TtsHost\Ruse.TtsHost.csproj"
     if (Test-Path -LiteralPath $ttsProject) {
         $ttsDir = Join-Path $appDir "tts-host"

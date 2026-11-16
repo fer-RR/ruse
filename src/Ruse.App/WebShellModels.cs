@@ -109,6 +109,11 @@ internal sealed class NodeDto
     public bool Enabled { get; set; } = true;
     public bool IsParallel { get; set; }
     public float Send { get; set; } = 0.5f;
+    public bool IsMixer { get; set; }
+    public float MixerWidth { get; set; } = 1f;
+    public bool MixerAutoGain { get; set; }
+    public float MixerCrossfade { get; set; }
+    public List<MixerInputDto> MixerInputs { get; set; } = new();
     public bool IsRecorder { get; set; }
     public string RecordingPath { get; set; } = "";
     public string RecordingFormat { get; set; } = "Wav24";
@@ -203,6 +208,19 @@ internal sealed class NodeDto
     public string? WarningSeverity { get; set; }
 }
 
+internal sealed class MixerInputDto
+{
+    public string LinkId { get; set; } = "";
+    public string Title { get; set; } = "";
+    public float Gain { get; set; } = 1f;
+    public float Pan { get; set; }
+    public float DelayMs { get; set; }
+    public bool Muted { get; set; }
+    public bool Solo { get; set; }
+    public bool BusB { get; set; }
+    public bool Inverted { get; set; }
+}
+
 internal sealed class SourceStateDto
 {
     public string Id { get; set; } = "";
@@ -231,8 +249,14 @@ internal sealed class LinkDto
     public string To { get; set; } = "";
     public string Kind { get; set; } = "";
     public float Gain { get; set; } = 1;
+    public float Pan { get; set; }
+    public float DelayMs { get; set; }
     public bool Enabled { get; set; } = true;
+    public bool Solo { get; set; }
+    public bool BusB { get; set; }
+    public bool Inverted { get; set; }
     public bool Native { get; set; }
+    public bool NativeFallback { get; set; }
     public int NativeRate { get; set; }
 }
 
@@ -268,8 +292,14 @@ internal sealed class LinkStateDto
 {
     public string Id { get; set; } = "";
     public float Gain { get; set; } = 1;
+    public float Pan { get; set; }
+    public float DelayMs { get; set; }
     public bool Enabled { get; set; } = true;
+    public bool Solo { get; set; }
+    public bool BusB { get; set; }
+    public bool Inverted { get; set; }
     public bool Native { get; set; }
+    public bool NativeFallback { get; set; }
     public int NativeRate { get; set; }
 }
 

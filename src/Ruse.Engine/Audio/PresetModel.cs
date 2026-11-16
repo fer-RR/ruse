@@ -19,6 +19,9 @@ public sealed class Preset
     /// <summary>Effect-chain nodes placed on the canvas.</summary>
     public List<PresetModifier> Modifiers { get; set; } = new();
 
+    /// <summary>Per-input settings for mixer modifiers.</summary>
+    public List<PresetMixerInput> MixerInputs { get; set; } = new();
+
     /// <summary>Background group frames used to organize the canvas.</summary>
     public List<PresetFrame> Frames { get; set; } = new();
 
@@ -128,7 +131,12 @@ public sealed class PresetRoute
     public int SourceIndex { get; set; }
     public int OutputIndex { get; set; }
     public float Gain { get; set; } = 1.0f;
+    public float Pan { get; set; }
+    public float DelayMs { get; set; }
     public bool Enabled { get; set; } = true;
+    public bool Solo { get; set; }
+    public bool BusB { get; set; }
+    public bool Inverted { get; set; }
     public bool Native { get; set; }
 }
 
@@ -140,6 +148,10 @@ public sealed class PresetModifier
     public bool Enabled { get; set; } = true;
     public bool Parallel { get; set; }
     public float Send { get; set; } = 0.5f;
+    public bool IsMixer { get; set; }
+    public float MixerWidth { get; set; } = 1f;
+    public bool MixerAutoGain { get; set; }
+    public float MixerCrossfade { get; set; }
     public string? TranscriberModel { get; set; }
     public string? Color { get; set; }
     public string? TranslatorTarget { get; set; }
@@ -149,6 +161,21 @@ public sealed class PresetModifier
     public double? Width { get; set; }
     public double? Height { get; set; }
     public List<PresetProcessor> Processors { get; set; } = new();
+}
+
+/// <summary>Per-input settings for a mixer modifier.</summary>
+public sealed class PresetMixerInput
+{
+    public int ModifierIndex { get; set; }
+    public int SourceIndex { get; set; } = -1;
+    public int InputModifierIndex { get; set; } = -1;
+    public float Gain { get; set; } = 1f;
+    public float Pan { get; set; }
+    public float DelayMs { get; set; }
+    public bool Enabled { get; set; } = true;
+    public bool Solo { get; set; }
+    public bool BusB { get; set; }
+    public bool Inverted { get; set; }
 }
 
 /// <summary>A named background frame used to group canvas nodes.</summary>

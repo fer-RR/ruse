@@ -315,6 +315,7 @@ internal sealed partial class WebShellController
     {
         if (_timeline != null && _timeline.Undo())
         {
+            SyncTimelineMetronome();
             SyncTimelineTrackNames();
             PublishTimeline(true);
             PublishGraph();
@@ -325,6 +326,7 @@ internal sealed partial class WebShellController
     {
         if (_timeline != null && _timeline.Redo())
         {
+            SyncTimelineMetronome();
             SyncTimelineTrackNames();
             PublishTimeline(true);
             PublishGraph();
@@ -592,7 +594,9 @@ internal sealed partial class WebShellController
         }
 
         var source = new SourceNode("Metronome", SourceKind.Tone);
-        source.SetMetronome((float)(_timeline.Project.Tempo > 0 ? _timeline.Project.Tempo : 120), 4);
+        source.SetMetronome(
+            TimelineMetronomeTempo(),
+            _timeline.Project.TimeSignatureNumerator);
         _graph.AddSource(source);
         foreach (var output in outputs)
         {
@@ -668,7 +672,7 @@ internal sealed partial class WebShellController
         _timelineCountInWasMetronome = wasMetronome;
         var cancel = new CancellationTokenSource();
         _timelineCountInCancel = cancel;
-        double bpm = _timeline.Project.Tempo > 0 ? _timeline.Project.Tempo : 120;
+        double bpm = TimelineMetronomeTempo();
         int beats = Math.Clamp(_timelineCountInBeats, 1, 16);
         SetStatus($"Count-in: {beats} beats...");
         PublishTimeline(false);
@@ -1158,11 +1162,132 @@ internal sealed partial class WebShellController
         ShowToast(frozen);
     }
 
+    private float TimelineMetronomeTempo()
+    {
+        if (_timeline == null)
+        {
+            return 120f;
+        }
+
+        double tempo = _timeline.Project.Tempo > 0 ? _timeline.Project.Tempo : 120;
+        int denominator = _timeline.Project.TimeSignatureDenominator is 1 or 2 or 4 or 8 or 16
+            ? _timeline.Project.TimeSignatureDenominator
+            : 4;
+        return (float)(tempo * denominator / 4.0);
+    }
+
+    private void SyncTimelineMetronome()
+    {
+        if (_timeline == null || _timelineMetronomeSource == null)
+        {
+            return;
+        }
+
+        _timelineMetronomeSource.SetMetronome(
+            TimelineMetronomeTempo(),
+            _timeline.Project.TimeSignatureNumerator);
+    }
+
     private void TimelineSetTempo(double tempo)
     {
         if (_timeline != null && _timeline.SetTempo(tempo))
         {
-            _timelineMetronomeSource?.SetMetronome((float)tempo, 4);
+            _timelineMetronomeSource?.SetMetronome(
+                TimelineMetronomeTempo(),
+                _timeline.Project.TimeSignatureNumerator);
+            PublishTimeline(false);
+        }
+    }
+
+    private void TimelineSetTimeSignature(int numerator, int denominator)
+    {
+        if (_timeline == null || !_timeline.SetTimeSignature(numerator, denominator))
+        {
+            return;
+        }
+
+        _timelineMetronomeSource?.SetMetronome(
+            TimelineMetronomeTempo(),
+            _timeline.Project.TimeSignatureNumerator);
+        PublishTimeline(false);
+    }
+
+    private void AddTimelineMarker(BridgeMessage message)
+    {
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        long start = (long)Number(message, "startSample", _timeline.PlayheadSample);
+        long? end = OptionalLong(message, "endSample");
+        if (end.HasValue && end.Value <= start)
+        {
+            end = null;
+        }
+
+        _timeline.AddMarker(start, end, String(message, "name", ""));
+        PublishTimeline(false);
+    }
+
+    private void UpdateTimelineMarker(BridgeMessage message)
+    {
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        string id = String(message, "id");
+        long? start = message.Payload.TryGetProperty("startSample", out var startValue) && startValue.TryGetDouble(out double startNumber)
+            ? (long)startNumber
+            : null;
+        long? end = message.Payload.TryGetProperty("endSample", out var endValue) && endValue.TryGetDouble(out double endNumber)
+            ? (long)endNumber
+            : null;
+        string? name = message.Payload.TryGetProperty("name", out var nameValue) && nameValue.ValueKind == System.Text.Json.JsonValueKind.String
+            ? nameValue.GetString()
+            : null;
+        if (_timeline.UpdateMarker(id, start, end, name))
+        {
+            PublishTimeline(false);
+        }
+    }
+
+    private void RemoveTimelineMarker(string id)
+    {
+        if (_timeline?.RemoveMarker(id) == true)
+        {
+            PublishTimeline(false);
+        }
+    }
+
+    private void PasteTimelineClips(BridgeMessage message)
+    {
+        if (_timeline == null ||
+            !message.Payload.TryGetProperty("clips", out var clips) ||
+            clips.ValueKind != System.Text.Json.JsonValueKind.Array)
+        {
+            return;
+        }
+
+        var copies = new List<(string TrackId, string ClipId, long StartSample)>();
+        foreach (var item in clips.EnumerateArray())
+        {
+            if (!item.TryGetProperty("trackId", out var trackValue) ||
+                !item.TryGetProperty("clipId", out var clipValue) ||
+                !item.TryGetProperty("startSample", out var startValue) ||
+                trackValue.GetString() is not { } trackId ||
+                clipValue.GetString() is not { } clipId ||
+                !startValue.TryGetDouble(out double start))
+            {
+                continue;
+            }
+
+            copies.Add((trackId, clipId, (long)start));
+        }
+
+        if (_timeline.CopyClips(copies))
+        {
             PublishTimeline(false);
         }
     }

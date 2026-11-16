@@ -1587,6 +1587,337 @@ public static class LatencySelfTest
     }
 
 
+    public static bool TestMixerNode()
+    {
+        var graph = new AudioGraph { AutoRun = false };
+        var sourceA = new SourceNode("Mixer A", SourceKind.Application);
+        var sourceB = new SourceNode("Mixer B", SourceKind.Application);
+        var mixer = new ModifierNode("Mixer") { IsMixer = true };
+        var output = OutputNode.CreateForTest(static (_, _) => { });
+        output.EnableGraphEngine();
+        graph.AddSource(sourceA);
+        graph.AddSource(sourceB);
+        graph.AddModifier(mixer);
+        graph.AddOutputNode(output);
+        graph.ConnectSourceToModifier(sourceA, mixer);
+        graph.ConnectSourceToModifier(sourceB, mixer);
+        graph.ConnectModifierToOutput(mixer, output);
+        output.Volume = 1f;
+        float oldMaster = OutputNode.MasterGain;
+        var result = new float[240 * 2];
+        var read = new float[240 * 2];
+
+        void Render(float leftA, float rightA, float leftB, float rightB)
+        {
+            output.ClearEngineAudio();
+            var blockA = new float[240 * 2];
+            var blockB = new float[240 * 2];
+            for (int i = 0; i < 240; i++)
+            {
+                blockA[i * 2] = leftA;
+                blockA[i * 2 + 1] = rightA;
+                blockB[i * 2] = leftB;
+                blockB[i * 2 + 1] = rightB;
+            }
+
+            sourceA.WriteTestSamples(blockA);
+            sourceB.WriteTestSamples(blockB);
+            graph.RenderEngineOnceForTest();
+            int count = output.ReadOfflineBlock(read);
+            Array.Clear(result);
+            Array.Copy(read, result, Math.Min(count, result.Length));
+        }
+
+        bool Near(float value, float expected) => Math.Abs(value - expected) < 1e-3f;
+        bool Check(string name, float actual, float expected)
+        {
+            if (Near(actual, expected))
+            {
+                return true;
+            }
+
+            Console.WriteLine($"mixer test {name}: got {actual:0.####}, want {expected:0.####}");
+            return false;
+        }
+
+        try
+        {
+            OutputNode.MasterGain = 1f;
+            mixer.MixerWidth = 1f;
+            mixer.MixerAutoGain = false;
+            mixer.MixerCrossfade = 0f;
+            mixer.MixerSourceInputs[sourceA] = new ModifierNode.MixerInputSettings();
+            mixer.MixerSourceInputs[sourceB] = new ModifierNode.MixerInputSettings();
+            Render(0f, 0f, 0f, 0f);
+            Render(0.2f, 0.2f, 0.3f, 0.3f);
+            if (!Check("sum", result[result.Length - 2], 0.5f)) return false;
+            if (!Check("meter", mixer.MixerMeterDbLeft, -6.0206f)) return false;
+            if (!Check("peak hold", mixer.MixerMeterPeakDbLeft, -6.0206f)) return false;
+
+            var pan = new ModifierNode.MixerInputSettings { Pan = -1f };
+            mixer.MixerSourceInputs[sourceA] = pan;
+            graph.UpdateMixerInput(mixer, sourceA, null, pan);
+            var muteB = new ModifierNode.MixerInputSettings { Muted = true };
+            mixer.MixerSourceInputs[sourceB] = muteB;
+            graph.UpdateMixerInput(mixer, sourceB, null, muteB);
+            Render(0.2f, 0.2f, 0.3f, 0.3f);
+            if (!Check("pan left", result[result.Length - 2], 0.2f) || !Check("pan right", result[result.Length - 1], 0f)) return false;
+
+            var soloA = new ModifierNode.MixerInputSettings { Solo = true };
+            var plainB = new ModifierNode.MixerInputSettings();
+            mixer.MixerSourceInputs[sourceA] = soloA;
+            mixer.MixerSourceInputs[sourceB] = plainB;
+            graph.UpdateMixerInput(mixer, sourceA, null, soloA);
+            graph.UpdateMixerInput(mixer, sourceB, null, plainB);
+            Render(0.2f, 0.2f, 0.3f, 0.3f);
+            if (!Check("solo", result[result.Length - 2], 0.2f)) return false;
+
+            var busA = new ModifierNode.MixerInputSettings();
+            var busB = new ModifierNode.MixerInputSettings { BusB = true };
+            mixer.MixerSourceInputs[sourceA] = busA;
+            mixer.MixerSourceInputs[sourceB] = busB;
+            graph.UpdateMixerInput(mixer, sourceA, null, busA);
+            graph.UpdateMixerInput(mixer, sourceB, null, busB);
+            mixer.MixerCrossfade = 0f;
+            Render(0.2f, 0.2f, 0.3f, 0.3f);
+            if (!Check("crossfade A", result[result.Length - 2], 0.2f)) return false;
+            mixer.MixerCrossfade = 1f;
+            Render(0.2f, 0.2f, 0.3f, 0.3f);
+            if (!Check("crossfade B", result[result.Length - 2], 0.3f)) return false;
+            mixer.MixerCrossfade = 0.5f;
+            Render(0.2f, 0.2f, 0.3f, 0.3f);
+            if (!Check("constant-power center", result[result.Length - 2], 0.5f / MathF.Sqrt(2f))) return false;
+
+            var invertedB = new ModifierNode.MixerInputSettings { Inverted = true };
+            mixer.MixerCrossfade = 0f;
+            mixer.MixerSourceInputs[sourceA] = plainB;
+            mixer.MixerSourceInputs[sourceB] = invertedB;
+            graph.UpdateMixerInput(mixer, sourceA, null, plainB);
+            graph.UpdateMixerInput(mixer, sourceB, null, invertedB);
+            Render(0.2f, 0.2f, 0.2f, 0.2f);
+            if (!Check("phase cancel", result[result.Length - 2], 0f)) return false;
+
+            mixer.MixerSourceInputs[sourceA] = plainB;
+            mixer.MixerSourceInputs[sourceB] = plainB;
+            graph.UpdateMixerInput(mixer, sourceA, null, plainB);
+            graph.UpdateMixerInput(mixer, sourceB, null, plainB);
+            mixer.MixerAutoGain = true;
+            Render(0.2f, 0.2f, 0.3f, 0.3f);
+            if (!Check("auto gain", result[result.Length - 2], 0.5f / MathF.Sqrt(2f))) return false;
+
+            mixer.MixerAutoGain = false;
+            mixer.MixerSourceInputs[sourceB] = muteB;
+            graph.UpdateMixerInput(mixer, sourceB, null, muteB);
+            mixer.MixerWidth = 0f;
+            Render(0.5f, 0.25f, 0f, 0f);
+            if (!Check("width 0 left", result[result.Length - 2], 0.375f) || !Check("width 0 right", result[result.Length - 1], 0.375f)) return false;
+            mixer.MixerWidth = 2f;
+            Render(0.5f, 0.25f, 0f, 0f);
+            if (!Check("width 2 left", result[result.Length - 2], 0.625f) ||
+                !Check("width 2 right", result[result.Length - 1], 0.125f))
+            {
+                return false;
+            }
+
+            mixer.MixerWidth = 1f;
+            mixer.MixerSourceInputs[sourceA] = plainB;
+            mixer.MixerSourceInputs[sourceB] = plainB;
+            graph.UpdateMixerInput(mixer, sourceA, null, plainB);
+            graph.UpdateMixerInput(mixer, sourceB, null, plainB);
+            Render(0.8f, 0.8f, 0.8f, 0.8f);
+            if (!mixer.MixerMeterClipping) return false;
+            mixer.ResetMixerMeter();
+            return !mixer.MixerMeterClipping;
+        }
+        finally
+        {
+            OutputNode.MasterGain = oldMaster;
+            graph.Dispose();
+            output.Dispose();
+            sourceA.Dispose();
+            sourceB.Dispose();
+        }
+    }
+
+    public static bool TestVariableDelayLine()
+    {
+        var delay = new VariableDelayLine(8, 2);
+        delay.SetDelayFrames(2);
+        var data = new float[8 * 2];
+        for (int frame = 0; frame < 8; frame++)
+        {
+            data[frame * 2] = frame + 1;
+            data[frame * 2 + 1] = frame + 1;
+        }
+
+        delay.Process(data, 2);
+        for (int frame = 0; frame < 2; frame++)
+        {
+            if (data[frame * 2] != 0f || data[frame * 2 + 1] != 0f)
+            {
+                return false;
+            }
+        }
+
+        for (int frame = 2; frame < 8; frame++)
+        {
+            float expected = frame - 1;
+            if (Math.Abs(data[frame * 2] - expected) > 1e-6 ||
+                Math.Abs(data[frame * 2 + 1] - expected) > 1e-6)
+            {
+                return false;
+            }
+        }
+
+        delay.SetDelayFrames(0);
+        var passThrough = new[] { 1f, 1f, 2f, 2f };
+        delay.Process(passThrough, 2);
+        return Math.Abs(passThrough[0] - 1f) < 1e-6 && Math.Abs(passThrough[2] - 2f) < 1e-6;
+    }
+
+    public static bool TestMixerInputDelay()
+    {
+        var graph = new AudioGraph { AutoRun = false };
+        var sourceA = new SourceNode("Delay A", SourceKind.Application);
+        var sourceB = new SourceNode("Delay B", SourceKind.Application);
+        var mixer = new ModifierNode("Delay mixer") { IsMixer = true };
+        var output = OutputNode.CreateForTest(static (_, _) => { });
+        output.EnableGraphEngine();
+        output.Volume = 1f;
+        graph.AddSource(sourceA);
+        graph.AddSource(sourceB);
+        graph.AddModifier(mixer);
+        graph.AddOutputNode(output);
+        graph.ConnectSourceToModifier(sourceA, mixer);
+        graph.ConnectSourceToModifier(sourceB, mixer);
+        graph.ConnectModifierToOutput(mixer, output);
+        mixer.MixerSourceInputs[sourceA] = new ModifierNode.MixerInputSettings();
+        mixer.MixerSourceInputs[sourceB] = new ModifierNode.MixerInputSettings { DelayMs = 2f };
+        float oldMaster = OutputNode.MasterGain;
+        var silence = new float[240 * 2];
+        var impulse = new float[240 * 2];
+        impulse[100 * 2] = 1f;
+        impulse[100 * 2 + 1] = 1f;
+        var result = new float[240 * 2];
+        try
+        {
+            OutputNode.MasterGain = 1f;
+            sourceA.WriteTestSamples(silence);
+            sourceB.WriteTestSamples(silence);
+            graph.RenderEngineOnceForTest();
+            output.ClearEngineAudio();
+            sourceA.WriteTestSamples(impulse);
+            sourceB.WriteTestSamples(impulse);
+            graph.RenderEngineOnceForTest();
+            int count = output.ReadOfflineBlock(result);
+            if (count < result.Length)
+            {
+                return false;
+            }
+
+            return Math.Abs(result[100 * 2] - 1f) < 1e-3f &&
+                   Math.Abs(result[196 * 2] - 1f) < 1e-3f;
+        }
+        finally
+        {
+            OutputNode.MasterGain = oldMaster;
+            graph.Dispose();
+            output.Dispose();
+            sourceA.Dispose();
+            sourceB.Dispose();
+        }
+    }
+
+    public static bool TestTimelineMarkersAndCopy()
+    {
+        var timeline = new TimelineService();
+        timeline.LoadProject(new TimelineProject());
+        if (!timeline.SetTimeSignature(6, 8) ||
+            timeline.Project.TimeSignatureNumerator != 6 ||
+            timeline.Project.TimeSignatureDenominator != 8)
+        {
+            return false;
+        }
+
+        var marker = timeline.AddMarker(1000, 5000, "Verse");
+        if (!timeline.UpdateMarker(marker.Id, null, 6000, "Chorus") ||
+            timeline.Project.Markers.Count != 1 ||
+            timeline.Project.Markers[0].EndSample != 6000 ||
+            timeline.Project.Markers[0].Name != "Chorus")
+        {
+            return false;
+        }
+
+        if (!timeline.RemoveMarker(marker.Id) || timeline.Project.Markers.Count != 0)
+        {
+            return false;
+        }
+
+        if (!timeline.Undo() || timeline.Project.Markers.Count != 1)
+        {
+            return false;
+        }
+
+        var track = timeline.AddTrack("Clips");
+        if (!timeline.AddGeneratorClip(track.Id, 0, 48000, "Loop", out _))
+        {
+            return false;
+        }
+
+        var source = timeline.Project.Tracks[0].Clips[0];
+        if (!timeline.CopyClips(new[] { (track.Id, source.Id, 96000L) }))
+        {
+            return false;
+        }
+
+        var copies = timeline.Project.Tracks[0].Clips;
+        return copies.Count == 2 &&
+               copies[1].StartSample == 96000 &&
+               copies[1].LengthSamples == source.LengthSamples &&
+               Math.Abs(copies[1].Gain - source.Gain) < 1e-6;
+    }
+
+    public static bool TestMixerPresetRoundTrip()
+    {
+        var preset = new Preset { Name = "mixer-round-trip" };
+        preset.Modifiers.Add(new PresetModifier
+        {
+            Title = "Mixer",
+            IsMixer = true,
+            MixerWidth = 0.5f,
+            MixerAutoGain = true,
+            MixerCrossfade = 0.75f,
+        });
+        preset.MixerInputs.Add(new PresetMixerInput
+        {
+            ModifierIndex = 0,
+            SourceIndex = 3,
+            Gain = 0.6f,
+            Pan = -0.25f,
+            DelayMs = 12f,
+            Enabled = false,
+            Solo = true,
+            BusB = true,
+            Inverted = true,
+        });
+
+        var back = Preset.FromJson(preset.ToJson());
+        return back.Modifiers.Count == 1 &&
+               back.Modifiers[0].IsMixer &&
+               Math.Abs(back.Modifiers[0].MixerWidth - 0.5f) < 1e-6 &&
+               back.Modifiers[0].MixerAutoGain &&
+               Math.Abs(back.Modifiers[0].MixerCrossfade - 0.75f) < 1e-6 &&
+               back.MixerInputs.Count == 1 &&
+               back.MixerInputs[0].SourceIndex == 3 &&
+               Math.Abs(back.MixerInputs[0].Gain - 0.6f) < 1e-6 &&
+               Math.Abs(back.MixerInputs[0].Pan + 0.25f) < 1e-6 &&
+               Math.Abs(back.MixerInputs[0].DelayMs - 12f) < 1e-6 &&
+               !back.MixerInputs[0].Enabled &&
+               back.MixerInputs[0].Solo &&
+               back.MixerInputs[0].BusB &&
+               back.MixerInputs[0].Inverted;
+    }
+
     public static bool TestMixerOutputGroupSolo()
     {
         const string soloGroup = "output:#selftest-out-a";

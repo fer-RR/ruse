@@ -70,7 +70,11 @@ internal sealed partial class WebShellController
         string? ControlId = null,
         bool IsMetronome = false,
         float MetronomeBpm = 120f,
-        int MetronomeBeatsPerBar = 4);
+        int MetronomeBeatsPerBar = 4,
+        bool IsMixer = false,
+        float MixerWidth = 1f,
+        bool MixerAutoGain = false,
+        float MixerCrossfade = 0f);
 
     private void PushAction(
         string label, Action undo, Action redo,
@@ -231,6 +235,10 @@ internal sealed partial class WebShellController
                 TranscriberModel = entry.TranscriberModel,
                 TranslatorTarget = entry.TranslatorTarget,
                 TranslatorModel = entry.TranslatorModel,
+                IsMixer = entry.Modifier.IsMixer,
+                MixerWidth = entry.Modifier.MixerWidth,
+                MixerAutoGain = entry.Modifier.MixerAutoGain,
+                MixerCrossfade = entry.Modifier.MixerCrossfade,
             };
         }
 
@@ -348,6 +356,10 @@ internal sealed partial class WebShellController
                 modifier.Enabled = snapshot.Enabled;
                 modifier.Parallel = snapshot.Parallel;
                 modifier.Send = snapshot.Send;
+                modifier.IsMixer = snapshot.IsMixer;
+                modifier.MixerWidth = snapshot.MixerWidth;
+                modifier.MixerAutoGain = snapshot.MixerAutoGain;
+                modifier.MixerCrossfade = snapshot.MixerCrossfade;
                 var modifierEntry = RegisterModifier(modifier, snapshot.X, snapshot.Y,
                     snapshot.Flavor, snapshot.Subtitle, snapshot.Id, snapshot.TranscriberModel,
                     snapshot.TranslatorTarget, snapshot.TranslatorModel, snapshot.ControlId);
@@ -372,7 +384,12 @@ internal sealed partial class WebShellController
         To = link.To,
         Kind = link.Kind,
         Gain = link.Gain,
+        Pan = link.Pan,
+        DelayMs = link.DelayMs,
         Enabled = link.Enabled,
+        Solo = link.Solo,
+        BusB = link.BusB,
+        Inverted = link.Inverted,
         Native = link.Native,
     };
 
@@ -386,8 +403,18 @@ internal sealed partial class WebShellController
         }
 
         var created = ConnectEntries(from, to, link.Gain, publish: false, linkId: link.Id, kind: link.Kind);
+        created.Pan = link.Pan;
+        created.DelayMs = link.DelayMs;
         created.Enabled = link.Enabled;
+        created.Solo = link.Solo;
+        created.BusB = link.BusB;
+        created.Inverted = link.Inverted;
         ApplyLinkRouting(created, publish: false);
+        SyncMixerInput(created);
+        if (created.DelayMs > 0)
+        {
+            _graph.RefreshEngine();
+        }
     }
 
     private void RestoreLinks(IEnumerable<LinkEntry> links)

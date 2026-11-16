@@ -1,5 +1,5 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
-import { Pause, Play, Square } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Circle, ClipboardPaste, Copy, Flag, Pause, Play, Plus, Redo2, Scissors, Square, Undo2 } from 'lucide-react';
 import type {
   TimelineAutomationLaneModel,
   TimelineAutomationTarget,
@@ -12,7 +12,9 @@ import { readTimelinePalette } from '../timelinePalette';
 import { formatGainDb, nextVolumeValue } from '../gain';
 import { withShortcut } from '../shortcuts';
 import { useNodeTelemetry } from '../telemetry';
-import { ConfirmDialog } from './Dialogs';
+import { ConfirmDialog, PromptDialog } from './Dialogs';
+import TimelineContextMenu from './TimelineContextMenu';
+import TimelineLabelOverlay, { type TimelineStickyLabel } from './TimelineLabelOverlay';
 import WelcomeTimelineAnimation from './WelcomeTimelineAnimation';
 
 const BASE_PIXELS_PER_SECOND = 80;
@@ -199,6 +201,11 @@ export default function TimelinePanel({
   onRemoveClip,
   onSetLoop,
   onSetTempo,
+  onSetTimeSignature,
+  onAddMarker,
+  onUpdateMarker,
+  onRemoveMarker,
+  onPasteClips,
   onBounce,
   onBounceRange,
   onToggleMetronome,
@@ -242,6 +249,11 @@ export default function TimelinePanel({
   onRemoveClip: (trackId: string, clipId: string) => void;
   onSetLoop: (startSample: number | null, endSample: number | null) => void;
   onSetTempo: (tempo: number) => void;
+  onSetTimeSignature: (numerator: number, denominator: number) => void;
+  onAddMarker: (startSample: number, endSample?: number | null) => void;
+  onUpdateMarker: (id: string, name: string) => void;
+  onRemoveMarker: (id: string) => void;
+  onPasteClips: (clips: { trackId: string; clipId: string; startSample: number }[]) => void;
   onBounce: () => void;
   onBounceRange: () => void;
   onToggleMetronome: () => void;
@@ -296,18 +308,51 @@ export default function TimelinePanel({
   const [seeking, setSeeking] = useState(false);
   const [dropActive, setDropActive] = useState(false);
   const [selectedClip, setSelectedClip] = useState<{ trackId: string; clipId: string } | null>(null);
+  const [selectedClipKeys, setSelectedClipKeys] = useState<string[]>([]);
+  const [clipboard, setClipboard] = useState<{ items: { trackId: string; clipId: string; offset: number }[] } | null>(null);
+  const [markerMenu, setMarkerMenu] = useState<{ x: number; y: number; markerId: string } | null>(null);
+  const [markerRename, setMarkerRename] = useState<{ id: string; name: string } | null>(null);
   const [snap, setSnap] = useState('0.1');
   const [tempoDraft, setTempoDraft] = useState('120');
   const [drag, setDrag] = useState<DragState | null>(null);
   const [automationDrag, setAutomationDrag] = useState<AutomationDrag | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
   const [clipMenu, setClipMenu] = useState<{ x: number; y: number; trackId: string; clipId: string } | null>(null);
+  const [timelineMenu, setTimelineMenu] = useState<{ x: number; y: number; sample: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(() => localStorage.getItem('ruse.timelineFollow') !== '0');
   const [dockHeight, setDockHeight] = useState(() => {
     const saved = Number(localStorage.getItem('ruse.timelineHeight'));
     return Number.isFinite(saved) && saved >= 180 ? Math.min(saved, Math.max(220, window.innerHeight - 160)) : 340;
   });
   const [loopDrag, setLoopDrag] = useState<{ startSample: number; currentSample: number } | null>(null);
+
+  useEffect(() => {
+    if (!clipMenu && !timelineMenu && !markerMenu) return;
+    const closeMenus = () => {
+      setClipMenu(null);
+      setTimelineMenu(null);
+      setMarkerMenu(null);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenus();
+      } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? []);
+        if (items.length === 0) return;
+        event.preventDefault();
+        const current = items.indexOf(document.activeElement as HTMLButtonElement);
+        const delta = event.key === 'ArrowDown' ? 1 : -1;
+        const next = current < 0 ? 0 : (current + delta + items.length) % items.length;
+        items[next].focus();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    const first = menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)');
+    first?.focus();
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [clipMenu, timelineMenu, markerMenu]);
 
   const tracks = state.project.tracks;
   const sampleRate = state.sampleRate;
@@ -345,6 +390,73 @@ export default function TimelinePanel({
   const canPitchMenu = menuClipModel != null &&
     !menuClipModel.track.generatorNodeId &&
     Boolean(menuClipModel.clip.sourcePath);
+  const clipKey = (trackId: string, clipId: string) => `${trackId}:${clipId}`;
+  const selectedClipEntries = useMemo(() => selectedClipKeys.flatMap(key => {
+    const separator = key.indexOf(':');
+    const trackId = key.slice(0, separator);
+    const clipId = key.slice(separator + 1);
+    const track = tracks.find(item => item.id === trackId);
+    const clip = track?.clips.find(item => item.id === clipId);
+    return track && clip ? [{ trackId, clipId, track, clip }] : [];
+  }), [selectedClipKeys, tracks]);
+
+  const selectClip = (trackId: string, clipId: string, additive: boolean) => {
+    const key = clipKey(trackId, clipId);
+    if (additive) {
+      setSelectedClipKeys(current => current.includes(key)
+        ? current.filter(item => item !== key)
+        : [...current, key]);
+      setSelectedClip(current => current && current.trackId === trackId && current.clipId === clipId
+        ? null
+        : { trackId, clipId });
+      return;
+    }
+
+    setSelectedClipKeys([key]);
+    setSelectedClip({ trackId, clipId });
+  };
+
+  const copySelection = () => {
+    const entries = selectedClipEntries.length > 0
+      ? selectedClipEntries
+      : selectedClipModel ? [{ ...selectedClipModel, trackId: selectedClipModel.track.id, clipId: selectedClipModel.clip.id }] : [];
+    if (entries.length === 0) return;
+    const anchor = Math.min(...entries.map(entry => entry.clip.startSample));
+    setClipboard({
+      items: entries.map(entry => ({
+        trackId: entry.trackId,
+        clipId: entry.clipId,
+        offset: entry.clip.startSample - anchor,
+      })),
+    });
+  };
+
+  const removeSelection = () => {
+    for (const entry of selectedClipEntries) {
+      onRemoveClip(entry.trackId, entry.clipId);
+    }
+    setSelectedClipKeys([]);
+    setSelectedClip(null);
+  };
+
+  const cutSelection = () => {
+    copySelection();
+    removeSelection();
+  };
+
+  const pasteClipboard = () => {
+    if (!clipboard || clipboard.items.length === 0) return;
+    const trackIds = new Set(tracks.map(track => track.id));
+    const fallbackTrack = selectedClip?.trackId ?? tracks[0]?.id;
+    const clips = clipboard.items.flatMap(item => {
+      const trackId = trackIds.has(item.trackId) ? item.trackId : fallbackTrack;
+      return trackId
+        ? [{ trackId, clipId: item.clipId, startSample: Math.max(0, state.playheadSample + item.offset) }]
+        : [];
+    });
+    if (clips.length > 0) onPasteClips(clips);
+  };
+
   const [clipGain, setClipGain] = useState(1);
   const clipGainTimer = useRef<number | null>(null);
   const clipGainPending = useRef<number | null>(null);
@@ -449,6 +561,13 @@ export default function TimelinePanel({
   const displayLoopEnd = loopDrag ? Math.max(loopDrag.startSample, loopDrag.currentSample) : state.project.loopEndSample;
   const displayLoopActive = displayLoopEnd > displayLoopStart;
   const tempo = state.project.tempo > 0 ? state.project.tempo : 120;
+  const beatsPerBar = Math.max(1, Math.round(state.project.timeSignatureNumerator || 4));
+  const timeSignatureDenominator = Math.max(1, Math.round(state.project.timeSignatureDenominator || 4));
+  const beatSeconds = (60 / tempo) * (4 / timeSignatureDenominator);
+  const playheadBeats = state.playheadSample / sampleRate / beatSeconds;
+  const positionBar = Math.floor(playheadBeats / beatsPerBar) + 1;
+  const positionBeat = Math.floor(playheadBeats % beatsPerBar) + 1;
+  const positionTick = Math.floor((playheadBeats % 1) * 1000);
   const snapSamples = snap === 'off'
     ? 0
     : snap === 'beat'
@@ -628,35 +747,32 @@ export default function TimelinePanel({
     ctx.lineTo(width, RULER_HEIGHT + 0.5);
     ctx.stroke();
 
-    const gridStep = Math.max(1, Math.ceil(50 / pixelsPerSecond));
-    const labelStep = gridStep * 5;
-    for (let second = 0; second <= seconds; second += gridStep) {
-      const x = second * pixelsPerSecond;
-      const major = second % labelStep === 0;
-      ctx.strokeStyle = major ? palette.gridMajor : palette.grid;
+    const barSeconds = beatSeconds * beatsPerBar;
+    const barCount = Math.ceil(seconds / barSeconds) + 1;
+    for (let bar = 0; bar < barCount; bar++) {
+      const x = bar * barSeconds * pixelsPerSecond;
+      ctx.strokeStyle = palette.gridMajor;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, height);
       ctx.stroke();
-      if (major) {
-        ctx.fillStyle = palette.rulerText;
-        ctx.font = '9px Consolas, monospace';
-        ctx.fillText(`${second}s`, x + 3, 14);
-      }
+      ctx.fillStyle = palette.rulerText;
+      ctx.font = '9px Consolas, monospace';
+      ctx.fillText(`${bar + 1}`, x + 3, 13);
     }
 
-    const beatSeconds = 60 / tempo;
-    if (beatSeconds * pixelsPerSecond >= 8) {
-      for (let beat = 0; beat * beatSeconds <= seconds; beat++) {
+    const beatPixels = beatSeconds * pixelsPerSecond;
+    if (beatPixels >= 8) {
+      for (let beat = 1; beat * beatSeconds <= seconds; beat++) {
+        if (beat % beatsPerBar === 0) continue;
         const x = beat * beatSeconds * pixelsPerSecond;
-        ctx.strokeStyle = beat % 4 === 0 ? palette.beatMajor : palette.beatMinor;
+        ctx.strokeStyle = palette.beatMinor;
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, height);
         ctx.stroke();
       }
     }
-
     if (displayLoopActive) {
       const startX = (displayLoopStart / sampleRate) * pixelsPerSecond;
       const endX = (displayLoopEnd / sampleRate) * pixelsPerSecond;
@@ -686,7 +802,7 @@ export default function TimelinePanel({
           const generatorClip = Boolean(row.track.generatorNodeId);
           ctx.fillStyle = generatorClip ? palette.generatorClip : palette.clip;
           ctx.fillRect(x, clipY, w, clipH);
-          const isSelected = selectedClip?.trackId === row.track.id && selectedClip.clipId === clip.id;
+          const isSelected = selectedClipKeys.includes(clipKey(row.track.id, clip.id));
           ctx.strokeStyle = isSelected ? palette.fade : generatorClip ? palette.generatorStroke : palette.clipStroke;
           ctx.lineWidth = isSelected ? 2 : 1;
           ctx.strokeRect(x + 0.5, clipY + 0.5, Math.max(1, w - 1), clipH - 1);
@@ -855,6 +971,35 @@ export default function TimelinePanel({
       }
     }
 
+    for (const marker of state.project.markers ?? []) {
+      const startX = (marker.startSample / sampleRate) * pixelsPerSecond;
+      const endX = marker.endSample > marker.startSample ? (marker.endSample / sampleRate) * pixelsPerSecond : startX;
+      if (marker.endSample > marker.startSample) {
+        ctx.fillStyle = palette.regionFill;
+        ctx.fillRect(startX, RULER_HEIGHT, Math.max(1, endX - startX), Math.max(1, height - RULER_HEIGHT));
+        ctx.strokeStyle = palette.regionStroke;
+        ctx.beginPath();
+        ctx.moveTo(endX, 0);
+        ctx.lineTo(endX, height);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = palette.marker;
+      ctx.beginPath();
+      ctx.moveTo(startX, 0);
+      ctx.lineTo(startX, height);
+      ctx.stroke();
+      ctx.fillStyle = palette.marker;
+      ctx.beginPath();
+      ctx.moveTo(startX, 0);
+      ctx.lineTo(startX + 7, 0);
+      ctx.lineTo(startX, 8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = palette.markerText;
+      ctx.font = '9px Consolas, monospace';
+      ctx.fillText(marker.name, startX + 8, 12);
+    }
     ctx.fillStyle = palette.playhead;
     ctx.beginPath();
     ctx.moveTo(playheadX - 5, 0);
@@ -868,7 +1013,7 @@ export default function TimelinePanel({
     ctx.lineTo(playheadX, height);
     ctx.stroke();
 
-  }, [automationDrag, automationTargets, drag, displayLoopActive, displayLoopEnd, displayLoopStart, height, loopDrag, palette, pixelsPerSecond, rows, sampleRate, seconds, selectedClip, selectedClipModel, state.playheadSample, t, tempo, width]);
+  }, [automationDrag, automationTargets, beatsPerBar, beatSeconds, drag, displayLoopActive, displayLoopEnd, displayLoopStart, height, loopDrag, palette, pixelsPerSecond, rows, sampleRate, seconds, selectedClip, selectedClipKeys, selectedClipModel, state.playheadSample, state.project.markers, t, tempo, width]);
 
   const locate = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -887,6 +1032,15 @@ export default function TimelinePanel({
     if (!canvas) return 0;
     const rect = canvas.getBoundingClientRect();
     return Math.max(0, ((clientX - rect.left) / pixelsPerSecond) * sampleRate);
+  };
+
+  const markerAtX = (clientX: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = clientX - rect.left;
+    return (state.project.markers ?? []).find(marker =>
+      Math.abs((marker.startSample / sampleRate) * pixelsPerSecond - x) <= 7) ?? null;
   };
 
   const clipHit = (row: TimelineRow, x: number, y: number, sample: number) => {
@@ -1027,8 +1181,9 @@ export default function TimelinePanel({
 
       <header className="timeline-header">
         <strong>{t('Timeline')}</strong>
-        <span className="timeline-position">
-          {(state.playheadSample / sampleRate).toFixed(2)}s
+        <span className="timeline-position" title={t('Bar, beat and time')}>
+          {positionBar}.{positionBeat}.{String(positionTick).padStart(3, '0')}
+          <small>{(state.playheadSample / sampleRate).toFixed(2)}s</small>
         </span>
         <div className="timeline-actions">
           <button className="icon-button compact" onClick={onPlay} disabled={state.playing} title={withShortcut(t('Play'), 'timelinePlay')} aria-label={t('Play')}>
@@ -1041,8 +1196,7 @@ export default function TimelinePanel({
             <Square size={12} fill="currentColor" />
           </button>
           <div className="timeline-zoom" role="group" aria-label={t('Timeline zoom')}>
-            <button className="icon-button compact" onClick={() => zoomBy(0.5)} title={t('Zoom out')} aria-label={t('Zoom out')}>−</button>
-            <span>{Math.round((pixelsPerSecond / BASE_PIXELS_PER_SECOND) * 100)}%</span>
+            <button className="icon-button compact" onClick={() => zoomBy(0.5)} title={t('Zoom out')} aria-label={t('Zoom out')}>-</button>
             <button className="icon-button compact" onClick={() => zoomBy(2)} title={t('Zoom in')} aria-label={t('Zoom in')}>+</button>
             <button className="tool-button" onClick={fitTimeline} title={t('Fit timeline')}>{t('Fit')}</button>
             <button className={`tool-button ${follow ? 'active' : ''}`} aria-pressed={follow} title={t('Follow playhead')} onClick={() => setFollow(value => !value)}>{t('Follow')}</button>
@@ -1071,6 +1225,25 @@ export default function TimelinePanel({
             />
             <span>BPM</span>
           </label>
+          <label className="timeline-time-signature" title={t('Time signature')}>
+            <select
+              value={state.project.timeSignatureNumerator ?? 4}
+              onChange={event => onSetTimeSignature(Number(event.target.value), state.project.timeSignatureDenominator ?? 4)}
+              aria-label={t('Time signature numerator')}
+            >
+              {[2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16].map(value => <option key={value} value={value}>{value}</option>)}
+            </select>
+            <span>/</span>
+            <select
+              value={state.project.timeSignatureDenominator ?? 4}
+              onChange={event => onSetTimeSignature(state.project.timeSignatureNumerator ?? 4, Number(event.target.value))}
+              aria-label={t('Time signature denominator')}
+            >
+              {[1, 2, 4, 8, 16].map(value => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
+          <button className="icon-button compact" onClick={() => onAddMarker(state.playheadSample)} title={t('Add marker at playhead')} aria-label={t('Marker')}><Flag size={13} /></button>
+          <button className="icon-button compact" disabled={!loopActive} onClick={() => onAddMarker(Math.min(displayLoopStart, displayLoopEnd), Math.max(displayLoopStart, displayLoopEnd))} title={loopActive ? t('Add region from loop range') : t('Set a loop range first')} aria-label={t('Region')}><Square size={13} /></button>
           {selectedClipModel && (
             <label className="timeline-clip-gain">
               <span>{t('Clip gain')}</span>
@@ -1140,10 +1313,25 @@ export default function TimelinePanel({
             </label>}
 
           </>}
-          <button className="tool-button" onClick={onUndo} disabled={!state.canUndo}>{t('Undo')}</button>
-          <button className="tool-button" onClick={onRedo} disabled={!state.canRedo}>{t('Redo')}</button>
-          <button className={`tool-button ${state.recording ? 'danger' : ''}`} aria-pressed={state.recording === true} onClick={onToggleRecord}>
-            {state.recording ? t('Stop record') : t('Record')}
+          {selectedClipEntries.length > 0 && <>
+            <button className="icon-button compact" title={t('Copy clips')} aria-label={t('Copy clips')} onClick={copySelection}><Copy size={13} /></button>
+            <button className="icon-button compact" title={t('Cut clips')} aria-label={t('Cut clips')} onClick={cutSelection}><Scissors size={13} /></button>
+          </>}
+          {clipboard && <button className="icon-button compact" title={t('Paste clips')} aria-label={t('Paste clips')} onClick={pasteClipboard}><ClipboardPaste size={13} /></button>}
+          <button className="icon-button compact" onClick={onUndo} disabled={!state.canUndo} title={withShortcut(t('Undo'), 'undo')} aria-label={t('Undo')}>
+            <Undo2 size={13} />
+          </button>
+          <button className="icon-button compact" onClick={onRedo} disabled={!state.canRedo} title={withShortcut(t('Redo'), 'redo')} aria-label={t('Redo')}>
+            <Redo2 size={13} />
+          </button>
+          <button
+            className={`icon-button compact timeline-record-button ${state.recording ? 'recording' : ''}`}
+            aria-pressed={state.recording === true}
+            aria-label={state.recording ? t('Stop record') : t('Record')}
+            title={state.recording ? t('Stop record') : t('Record')}
+            onClick={onToggleRecord}
+          >
+            <Circle size={12} fill="currentColor" />
           </button>
           <button className={`tool-button ${loopActive ? 'active' : ''}`} onClick={() => loopActive ? onSetLoop(null, null) : onSetLoop(0, maxEnd)}>{t('Loop')}</button>
           <select className="timeline-snap" value={snap} onChange={event => setSnap(event.target.value)} aria-label={t('Snap')}>
@@ -1154,13 +1342,12 @@ export default function TimelinePanel({
             <option value="beat">{t('Snap beat')}</option>
             <option value="bar">{t('Snap bar')}</option>
           </select>
-          <button className="tool-button" onClick={onAddTrack}>{t('Add track')}</button>
           <button className="tool-button" onClick={onImport}>{t('Import clip')}</button>
           {state.bouncing && <span className="timeline-bounce-progress">{Math.round((state.bounceProgress ?? 0) * 100)}% <button className="tool-button danger" onClick={onCancelBounce}>{t('Cancel')}</button></span>}
           <button className="tool-button" onClick={onBounce}>{t('Bounce mix')}</button>
           <button className="tool-button" disabled={!loopActive} title={loopActive ? t('Bounce range') : t('Shift+drag the ruler to set a loop range')} onClick={onBounceRange}>{t('Bounce range')}</button>
           <button className="tool-button" onClick={onFreeze}>{t('Freeze')}</button>
-          <button className="icon-button compact" onClick={onClose} aria-label={t('Close timeline')}>×</button>
+          <button className="icon-button compact" onClick={onClose} aria-label={t('Close timeline')}>�</button>
         </div>
       </header>
       {showIntro && (
@@ -1181,6 +1368,8 @@ export default function TimelinePanel({
             const hasNode = Boolean(trackNodeId && nodeIds.has(trackNodeId));
             const trackTargets = automationTargets.filter(target =>
               !target.trackId || target.trackId === track.id);
+            const ownTargets = trackTargets.filter(target => target.section !== 'shared');
+            const sharedTargets = trackTargets.filter(target => target.section === 'shared');
             return (
             <div className="timeline-track-control" key={track.id}>
               <div className="timeline-track-heading">
@@ -1196,13 +1385,13 @@ export default function TimelinePanel({
                     title={hasNode ? t('Show track node') : t('Restore track node')}
                     aria-label={hasNode ? t('Show track node') : t('Restore track node')}
                     onClick={() => onShowTrackNode(track.id, trackNodeId)}
-                  >{hasNode ? '↗' : '+'}</button>
+                  >{hasNode ? '?' : '+'}</button>
                   <button
                     className="icon-button compact danger-text"
                     title={t('Remove track')}
                     aria-label={t('Remove track')}
                     onClick={() => setPendingRemoval({ kind: 'track', trackId: track.id })}
-                  >×</button>
+                  >�</button>
                 </span>
               </div>
               <div className="timeline-track-mix">
@@ -1236,16 +1425,29 @@ export default function TimelinePanel({
                   }}
                 >
                   <option value="">+ A</option>
-                  {trackTargets.map((target, index) => (
-                    <option value={index} key={`${target.nodeId}-${target.processorIndex}-${target.parameterIndex}`}>
-                      {target.label}
-                    </option>
-                  ))}
+                  {ownTargets.length > 0 && <optgroup label={t('Track')}>
+                    {ownTargets.map(target => (
+                      <option value={trackTargets.indexOf(target)} key={`${target.nodeId}-${target.processorIndex}-${target.parameterIndex}`}>
+                        {target.label}
+                      </option>
+                    ))}
+                  </optgroup>}
+                  {sharedTargets.length > 0 && <optgroup label={t('Shared buses')}>
+                    {sharedTargets.map(target => (
+                      <option value={trackTargets.indexOf(target)} key={`${target.nodeId}-${target.processorIndex}-${target.parameterIndex}`}>
+                        {target.label}
+                      </option>
+                    ))}
+                  </optgroup>}
                 </select>
               </div>
             </div>
           );
           })}
+          <button className="timeline-add-track-card" onClick={onAddTrack} title={t('Add track')} aria-label={t('Add track')}>
+            <Plus size={22} />
+            <small>{t('Add track')}</small>
+          </button>
         </div>
       )}
       <div
@@ -1314,59 +1516,70 @@ export default function TimelinePanel({
           </div>
         ) : (
           <>
-          <div className="timeline-sticky-labels" aria-hidden="true">
-            {rows.map(row => {
-              if (row.kind === 'track') {
-                return (
-                  <div
-                    key={`label-${row.track.id}`}
-                    className={`timeline-sticky-track-name ${row.track.muted ? 'muted' : ''}`}
-                    style={{ top: row.y + 3 }}
-                  >
-                    <span className="timeline-sticky-track-text">{row.track.name}</span>
-                    {row.track.solo && <em>SOLO</em>}
-                  </div>
-                );
-              }
+          <TimelineLabelOverlay labels={rows.flatMap((row): TimelineStickyLabel[] => {
+            if (row.kind === 'track') {
+              return [{
+                id: `label-${row.track.id}`,
+                top: row.y + 3,
+                text: row.track.name,
+                kind: 'track' as const,
+                muted: row.track.muted,
+                solo: row.track.solo,
+              }];
+            }
 
-              if (row.lane) {
-                const target = targetFor(row.lane);
-                const min = target?.min ?? 0;
-                const max = target?.max ?? 1;
-                return (
-                  <div
-                    key={`label-${row.lane.id}`}
-                    className="timeline-sticky-automation-name"
-                    style={{ top: row.y + 3 }}
-                  >
-                    {targetLabel(row.lane)}  {min.toFixed(2)}..{max.toFixed(2)}
-                  </div>
-                );
-              }
+            if (row.lane) {
+              const target = targetFor(row.lane);
+              const min = target?.min ?? 0;
+              const max = target?.max ?? 1;
+              return [{
+                id: `label-${row.lane.id}`,
+                top: row.y + 3,
+                text: `${targetLabel(row.lane)}  ${min.toFixed(2)}..${max.toFixed(2)}`,
+                kind: 'automation' as const,
+              }];
+            }
 
-              return null;
-            })}
-          </div>
+            return [];
+          })} />
           <canvas
             ref={canvasRef}
             tabIndex={0}
             role="application"
             aria-label={t('Timeline')}
-            aria-keyshortcuts="Delete Backspace ArrowLeft ArrowRight Home End"
-            title={`${t('Shift+drag a clip edge to time-stretch')} · ${t('Shift+drag the ruler to set a loop range')}`}
+            aria-keyshortcuts="Control+C Control+X Control+V Control+A Delete Backspace ArrowLeft ArrowRight Home End"
+            title={`${t('Shift+drag a clip edge to time-stretch')} � ${t('Shift+drag the ruler to set a loop range')}`}
             onKeyDown={event => {
+              const mod = event.ctrlKey || event.metaKey;
               const selectedTrack = selectedClip
                 ? tracks.find(track => track.id === selectedClip.trackId)
                 : undefined;
               const selected = selectedClip
                 ? selectedTrack?.clips.find(clip => clip.id === selectedClip.clipId)
                 : undefined;
-              if ((event.key === 'Delete' || event.key === 'Backspace') && selectedClip) {
+              if (mod && event.key.toLowerCase() === 'a') {
                 event.preventDefault();
-                onRemoveClip(selectedClip.trackId, selectedClip.clipId);
-                setSelectedClip(null);
+                const keys = tracks.flatMap(track => track.clips.map(clip => clipKey(track.id, clip.id)));
+                setSelectedClipKeys(keys);
+                const first = keys[0];
+                setSelectedClip(first
+                  ? { trackId: first.slice(0, first.indexOf(':')), clipId: first.slice(first.indexOf(':') + 1) }
+                  : null);
+              } else if (mod && event.key.toLowerCase() === 'c') {
+                event.preventDefault();
+                copySelection();
+              } else if (mod && event.key.toLowerCase() === 'x') {
+                event.preventDefault();
+                cutSelection();
+              } else if (mod && event.key.toLowerCase() === 'v') {
+                event.preventDefault();
+                pasteClipboard();
+              } else if ((event.key === 'Delete' || event.key === 'Backspace') && (selectedClipKeys.length > 0 || selectedClip)) {
+                event.preventDefault();
+                removeSelection();
               } else if (event.key === 'Escape') {
                 setSelectedClip(null);
+                setSelectedClipKeys([]);
               } else if (event.shiftKey && selectedClip && selected && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
                 event.preventDefault();
                 const delta = snapSamples > 0 ? snapSamples : 1;
@@ -1442,12 +1655,14 @@ export default function TimelinePanel({
               const clip = clipHit(hit.row, hit.x, hit.y, hit.sample);
               if (!clip) {
                 setSelectedClip(null);
+                setSelectedClipKeys([]);
                 onSeek(snapSample(hit.sample));
                 return;
               }
 
-              setSelectedClip({ trackId: hit.row.track.id, clipId: clip.clip.id });
+              selectClip(hit.row.track.id, clip.clip.id, event.ctrlKey || event.metaKey);
               event.currentTarget.focus();
+              if (event.ctrlKey || event.metaKey) return;
 
               const original: ClipPreview = {
                 startSample: clip.view.startSample,
@@ -1542,9 +1757,27 @@ export default function TimelinePanel({
               onSetAutomationPoints(hit.row.track.id, lane.id, points);
             }}
             onContextMenu={event => {
-              const hit = locate(event.clientX, event.clientY);
-              if (!hit) return;
               event.preventDefault();
+              setClipMenu(null);
+              setTimelineMenu(null);
+              setMarkerMenu(null);
+              const canvasRect = event.currentTarget.getBoundingClientRect();
+              if (event.clientY - canvasRect.top <= RULER_HEIGHT) {
+                const marker = markerAtX(event.clientX);
+                if (marker) {
+                  setMarkerMenu({ x: event.clientX, y: event.clientY, markerId: marker.id });
+                } else {
+                  setTimelineMenu({ x: event.clientX, y: event.clientY, sample: sampleAtX(event.clientX) });
+                }
+                return;
+              }
+
+              const hit = locate(event.clientX, event.clientY);
+              if (!hit) {
+                setTimelineMenu({ x: event.clientX, y: event.clientY, sample: sampleAtX(event.clientX) });
+                return;
+              }
+
               if (hit.row.kind === 'automation' && hit.row.lane) {
                 const lane = hit.row.lane;
                 let closest: { sample: number; value: number; curve: number } | null = null;
@@ -1570,6 +1803,10 @@ export default function TimelinePanel({
 
               const clip = clipHit(hit.row, hit.x, hit.y, hit.sample);
               if (clip) {
+                const key = clipKey(hit.row.track.id, clip.clip.id);
+                if (!selectedClipKeys.includes(key)) {
+                  setSelectedClipKeys([key]);
+                }
                 setSelectedClip({ trackId: hit.row.track.id, clipId: clip.clip.id });
                 setClipMenu({
                   x: event.clientX,
@@ -1577,6 +1814,8 @@ export default function TimelinePanel({
                   trackId: hit.row.track.id,
                   clipId: clip.clip.id,
                 });
+              } else {
+                setTimelineMenu({ x: event.clientX, y: event.clientY, sample: sampleAtX(event.clientX) });
               }
             }}
           />
@@ -1584,67 +1823,132 @@ export default function TimelinePanel({
         )}
       </div>
       {clipMenu && menuClipModel && (
-        <div
-          className="context-layer"
-          onPointerDown={event => {
-            if (event.target === event.currentTarget) setClipMenu(null);
+        <TimelineContextMenu
+          x={clipMenu.x}
+          y={clipMenu.y}
+          ariaLabel={menuClipModel.clip.name || t('Audio clip')}
+          onClose={() => setClipMenu(null)}
+          menuRef={menuRef}
+          items={[
+            {
+              id: 'split',
+              label: t('Split'),
+              disabled: !canSplitMenu,
+              onClick: () => onSplitClip(menuClipModel.track.id, menuClipModel.clip.id, state.playheadSample),
+            },
+            {
+              id: 'duplicate',
+              label: t('Duplicate'),
+              onClick: () => onDuplicateClip(menuClipModel.track.id, menuClipModel.clip.id),
+            },
+            {
+              id: 'crossfade',
+              label: t('Crossfade'),
+              disabled: !canCrossfadeMenu,
+              onClick: () => onCrossfadeClip(menuClipModel.track.id, menuClipModel.clip.id),
+            },
+            {
+              id: 'copy',
+              label: t('Copy clips'),
+              onClick: copySelection,
+            },
+            {
+              id: 'cut',
+              label: t('Cut clips'),
+              onClick: cutSelection,
+            },
+            {
+              id: 'delete',
+              label: t('Delete clips'),
+              onClick: removeSelection,
+            },
+            ...(canPitchMenu ? [{
+              id: 'pitch',
+              label: `+ ${t('Clip pitch')}`,
+              onClick: () => onAddAutomation(menuClipModel.track.id, {
+                nodeId: `clip:${menuClipModel.clip.id}`,
+                trackId: menuClipModel.track.id,
+                label: `${menuClipModel.track.name} � ${menuClipModel.clip.name || t('Audio clip')} � ${t('Clip pitch')}`,
+                processorIndex: -1,
+                parameterIndex: 0,
+                min: -24,
+                max: 24,
+                value: menuClipModel.clip.pitchSemitones ?? 0,
+              }),
+            }] : []),
+          ]}
+        />
+      )}
+      {timelineMenu && (
+        <TimelineContextMenu
+          x={timelineMenu.x}
+          y={timelineMenu.y}
+          ariaLabel={t('Timeline')}
+          onClose={() => setTimelineMenu(null)}
+          menuRef={menuRef}
+          items={[
+            {
+              id: 'add-track',
+              label: t('Add track'),
+              icon: <Plus size={14} />,
+              onClick: onAddTrack,
+            },
+            {
+              id: 'add-marker',
+              label: t('Add marker here'),
+              onClick: () => onAddMarker(timelineMenu.sample),
+            },
+            {
+              id: 'add-region',
+              label: t('Add region from loop range'),
+              disabled: !loopActive,
+              onClick: () => onAddMarker(Math.min(displayLoopStart, displayLoopEnd), Math.max(displayLoopStart, displayLoopEnd)),
+            },
+            {
+              id: 'paste',
+              label: t('Paste clips'),
+              disabled: !clipboard,
+              onClick: pasteClipboard,
+            },
+          ]}
+        />
+      )}
+      {markerMenu && (() => {
+        const marker = (state.project.markers ?? []).find(item => item.id === markerMenu.markerId);
+        if (!marker) return null;
+        return (
+          <TimelineContextMenu
+            x={markerMenu.x}
+            y={markerMenu.y}
+            ariaLabel={marker.name}
+            onClose={() => setMarkerMenu(null)}
+            menuRef={menuRef}
+            items={[
+              {
+                id: 'rename-marker',
+                label: t('Rename marker'),
+                onClick: () => setMarkerRename({ id: marker.id, name: marker.name }),
+              },
+              {
+                id: 'remove-marker',
+                label: t('Remove marker'),
+                onClick: () => onRemoveMarker(marker.id),
+              },
+            ]}
+          />
+        );
+      })()}
+      {markerRename && (
+        <PromptDialog
+          title={t('Rename marker')}
+          label={t('Marker name')}
+          value={markerRename.name}
+          onSubmit={name => {
+            onUpdateMarker(markerRename.id, name);
+            setMarkerRename(null);
           }}
-        >
-          <div
-            className="context-menu"
-            role="menu"
-            aria-label={menuClipModel.clip.name || t('Audio clip')}
-            style={{
-              left: Math.min(clipMenu.x, window.innerWidth - 232),
-              top: Math.min(clipMenu.y, window.innerHeight - 220),
-            }}
-            onPointerDown={event => event.stopPropagation()}
-          >
-            <button
-              role="menuitem"
-              tabIndex={-1}
-              disabled={!canSplitMenu}
-              onClick={() => {
-                onSplitClip(menuClipModel.track.id, menuClipModel.clip.id, state.playheadSample);
-                setClipMenu(null);
-              }}
-            >{t('Split')}</button>
-            <button
-              role="menuitem"
-              tabIndex={-1}
-              onClick={() => {
-                onDuplicateClip(menuClipModel.track.id, menuClipModel.clip.id);
-                setClipMenu(null);
-              }}
-            >{t('Duplicate')}</button>
-            <button
-              role="menuitem"
-              tabIndex={-1}
-              disabled={!canCrossfadeMenu}
-              onClick={() => {
-                onCrossfadeClip(menuClipModel.track.id, menuClipModel.clip.id);
-                setClipMenu(null);
-              }}
-            >{t('Crossfade')}</button>
-            {canPitchMenu && <button
-              role="menuitem"
-              tabIndex={-1}
-              onClick={() => {
-                onAddAutomation(menuClipModel.track.id, {
-                  nodeId: `clip:${menuClipModel.clip.id}`,
-                  trackId: menuClipModel.track.id,
-                  label: `${menuClipModel.track.name} · ${menuClipModel.clip.name || t('Audio clip')} · ${t('Clip pitch')}`,
-                  processorIndex: -1,
-                  parameterIndex: 0,
-                  min: -24,
-                  max: 24,
-                  value: menuClipModel.clip.pitchSemitones ?? 0,
-                });
-                setClipMenu(null);
-              }}
-            >+ {t('Clip pitch')}</button>}
-          </div>
-        </div>
+          onClose={() => setMarkerRename(null)}
+        />
       )}
       {pendingRemoval && (
         <ConfirmDialog

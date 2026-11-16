@@ -134,11 +134,24 @@ export default function App() {
   const [explainer, setExplainer] = useState<ExplainerId | null>(null);
   const explainerUsage = useRef({ mixer: false, sidechain: false, vst3: false, native: false });
   const [timelineOpen, setTimelineOpen] = useState(false);
+  useEffect(() => {
+    activeSurfaceRef.current = timelineOpen ? 'timeline' : 'graph';
+  }, [timelineOpen]);
   const [timelineIntroVisible, setTimelineIntroVisible] = useState(false);
   const dismissTimelineIntro = useCallback(() => setTimelineIntroVisible(false), []);
   const [timelineReady, setTimelineReady] = useState(false);
   const [timeline, setTimeline] = useState<TimelineState>({
-    project: { version: 1, sampleRate: 48000, tempo: 120, loopStartSample: -1, loopEndSample: -1, tracks: [] },
+    project: {
+      version: 1,
+      sampleRate: 48000,
+      tempo: 120,
+      timeSignatureNumerator: 4,
+      timeSignatureDenominator: 4,
+      loopStartSample: -1,
+      loopEndSample: -1,
+      markers: [],
+      tracks: [],
+    },
     playheadSample: 0,
     playing: false,
     sampleRate: 48000,
@@ -183,6 +196,7 @@ export default function App() {
   const [frameRemoval, setFrameRemoval] = useState<FrameRemoval | null>(null);
   const [recorderRemoval, setRecorderRemoval] = useState<RecorderRemoval | null>(null);
   const appShellRef = useRef<HTMLDivElement>(null);
+  const activeSurfaceRef = useRef<'graph' | 'timeline'>('graph');
   const connectingRef = useRef(false);
   const draggingRef = useRef(false);
   const pendingTelemetry = useRef<TelemetrySnapshot | null>(null);
@@ -1060,12 +1074,15 @@ export default function App() {
       }
       if (editing) return;
       const modifier = event.ctrlKey || event.metaKey;
+      const timelineHistory = timelineOpen && activeSurfaceRef.current === 'timeline';
       if (modifier && event.key.toLowerCase() === 'z') {
         event.preventDefault();
-        send(event.shiftKey ? 'redo' : 'undo');
+        send(timelineHistory
+          ? (event.shiftKey ? 'timeline-redo' : 'timeline-undo')
+          : (event.shiftKey ? 'redo' : 'undo'));
       } else if (modifier && event.key.toLowerCase() === 'y') {
         event.preventDefault();
-        send('redo');
+        send(timelineHistory ? 'timeline-redo' : 'redo');
       } else if (modifier && event.shiftKey && event.key.toLowerCase() === 'd') {
         event.preventDefault();
         toggleDiagnostics();
@@ -1119,12 +1136,10 @@ export default function App() {
         event.preventDefault();
         setSettingsTab('diagnostics');
         setShowSettings(true);
-      } else if (event.key === ' ' &&
-                 !(target instanceof HTMLButtonElement) &&
-                 !(target instanceof HTMLInputElement) &&
-                 !(target instanceof HTMLSelectElement) &&
-                 !(target instanceof HTMLTextAreaElement)) {
+      } else if (event.key === ' ') {
         event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
         if (!timelineOpen) {
           setTimelineOpen(true);
           send('timeline-open');
@@ -1279,7 +1294,8 @@ export default function App() {
       else downstream.set(link.from, [link.to]);
     }
 
-    const targets: TimelineAutomationTarget[] = [];
+    const reachableByTrack = new Map<string, Set<string>>();
+    const reachCount = new Map<string, number>();
     for (const track of timeline.project.tracks) {
       const start = track.sourceNodeId ?? track.generatorNodeId;
       const reachable = new Set<string>();
@@ -1295,17 +1311,27 @@ export default function App() {
         }
       }
 
+      reachableByTrack.set(track.id, reachable);
       for (const id of reachable) {
+        reachCount.set(id, (reachCount.get(id) ?? 0) + 1);
+      }
+    }
+
+    const targets: TimelineAutomationTarget[] = [];
+    for (const track of timeline.project.tracks) {
+      for (const id of reachableByTrack.get(track.id) ?? []) {
         const node = nodesById.get(id);
         if (!node || !(node.kind === 'modifier' ||
           node.isMetronome || node.isToneGenerator || node.isSynthGenerator)) {
           continue;
         }
 
+        const section = (reachCount.get(id) ?? 0) > 1 ? 'shared' : 'track';
         for (const parameter of node.parameters) {
           targets.push({
             nodeId: node.id,
             trackId: track.id,
+            section,
             label: `${node.title} · ${parameter.name}`,
             processorIndex: parameter.processorIndex,
             parameterIndex: parameter.parameterIndex,
@@ -1321,6 +1347,7 @@ export default function App() {
           targets.push({
             nodeId: `clip:${clip.id}`,
             trackId: track.id,
+            section: 'track',
             label: `${track.name} · ${clip.name || t('Audio clip')} · ${t('Clip pitch')}`,
             processorIndex: -1,
             parameterIndex: 0,
@@ -1344,7 +1371,20 @@ export default function App() {
 
   return (
     <I18nProvider language={language }>
-    <div ref={appShellRef} className={`app-shell ${settings.signalGlow ? 'signal-glow' : ''} ${settings.connectorAnimation ? 'connector-animation' : ''} ${settings.highlightCableOnHover ? 'cable-hover' : ''} ${settings.cableAnimation ? 'cable-animation' : ''} ${altPressed ? 'alt' : ''}`}>
+    <div
+      ref={appShellRef}
+      className={`app-shell ${settings.signalGlow ? 'signal-glow' : ''} ${settings.connectorAnimation ? 'connector-animation' : ''} ${settings.highlightCableOnHover ? 'cable-hover' : ''} ${settings.cableAnimation ? 'cable-animation' : ''} ${altPressed ? 'alt' : ''}`}
+      onPointerDownCapture={event => {
+        const target = event.target as Element | null;
+        if (target?.closest('.timeline-dock')) activeSurfaceRef.current = 'timeline';
+        else if (target?.closest('.react-flow')) activeSurfaceRef.current = 'graph';
+      }}
+      onFocusCapture={event => {
+        const target = event.target as Element | null;
+        if (target?.closest('.timeline-dock')) activeSurfaceRef.current = 'timeline';
+        else if (target?.closest('.react-flow')) activeSurfaceRef.current = 'graph';
+      }}
+    >
       <TitleBar />
       <Toolbar
         running={running}
@@ -1636,6 +1676,11 @@ export default function App() {
               onRemoveClip={(trackId, clipId) => send('timeline-remove-clip', { trackId, clipId })}
               onSetLoop={(startSample, endSample) => startSample == null ? send('timeline-loop', {}) : send('timeline-loop', { startSample, endSample })}
               onSetTempo={tempo => send('timeline-tempo', { tempo })}
+              onSetTimeSignature={(numerator, denominator) => send('timeline-time-signature', { numerator, denominator })}
+              onAddMarker={(startSample, endSample) => send('timeline-marker-add', { startSample, endSample })}
+              onUpdateMarker={(id, name) => send('timeline-marker-update', { id, name })}
+              onRemoveMarker={id => send('timeline-marker-remove', { id })}
+              onPasteClips={clips => send('timeline-copy-clips', { clips })}
               onBounce={() => send('timeline-bounce')}
               onBounceRange={() => send('timeline-bounce-range')}
               onCancelBounce={() => send('timeline-bounce-cancel')}
@@ -1792,6 +1837,7 @@ export default function App() {
           {canvasMenu.kind === 'edge' && menuLink && <>
             {menuLink.kind === 'direct' && <>
               <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.native === true} onClick={() => { send('link-native', { id: menuLink.id, value: menuLink.native !== true }); setCanvasMenu(null); } }><Zap size={14} /> {t('Native passthrough')}{menuLink.native === true ? ' ✓' : ''}</button>
+              {menuLink.nativeFallback && <button role="menuitem" tabIndex={-1} onClick={() => { send('link-native-cancel-restore', { id: menuLink.id }); setCanvasMenu(null); } }><Zap size={14} /> {t('Cancel native restore')}</button>}
               <button role="menuitem" tabIndex={-1} onClick={() => { openExplainer('native'); setCanvasMenu(null); } }><Info size={14} /> {t('About native passthrough')}</button>
             </>}
             <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('disconnect', { id: menuLink.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect cable')}</button>

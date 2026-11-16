@@ -35,6 +35,19 @@ public sealed class AudioGraph : IDisposable
     /// <summary>Stops the graph renderer and releases its subscriptions.</summary>
     public void StopEngine() => _engine?.Stop();
 
+    /// <summary>Rebuilds the renderer snapshot after latency-affecting mixer changes.</summary>
+    public void RefreshEngine() => InvalidateEngine();
+
+    /// <summary>Updates one live mixer input without rebuilding the graph.</summary>
+    public void UpdateMixerInput(ModifierNode mixer, SourceNode? source, ModifierNode? upstream,
+        ModifierNode.MixerInputSettings settings)
+    {
+        if (_engine != null)
+        {
+            _engine.UpdateMixerInput(mixer, source, upstream, settings);
+        }
+    }
+
     internal void RenderEngineOnceForTest()
     {
         _engine ??= new GraphEngine(this);

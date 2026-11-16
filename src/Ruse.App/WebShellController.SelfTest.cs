@@ -22,6 +22,63 @@ internal sealed partial class WebShellController
         Check("output wave buffer", LatencySelfTest.TestOutputWaveBuffer());
         Check("graph swap under load", LatencySelfTest.TestGraphSwapUnderLoad());
         Check("network packet reorder", LatencySelfTest.TestNetworkPacketReorder());
+        Check("mixer node pan/mute/solo/crossfade/auto gain/width", LatencySelfTest.TestMixerNode());
+        Check("mixer input delay", LatencySelfTest.TestMixerInputDelay());
+        Check("variable delay line", LatencySelfTest.TestVariableDelayLine());
+        Check("mixer preset round-trip", LatencySelfTest.TestMixerPresetRoundTrip());
+        Check("timeline markers, time signature and clip copy", LatencySelfTest.TestTimelineMarkersAndCopy());
+        var mixerSnapshotSource = RegisterModifier(
+            new ModifierNode("Mixer snapshot")
+            {
+                IsMixer = true,
+                MixerWidth = 0.25f,
+                MixerAutoGain = true,
+                MixerCrossfade = 0.75f,
+            },
+            0, 0, flavor: "mixer", subtitle: "Mixer");
+        var mixerSnapshot = CaptureNode(mixerSnapshotSource);
+        RemoveEntryInternal(mixerSnapshotSource.Id);
+        var mixerRestored = RestoreNodeSnapshot(mixerSnapshot);
+        Check("mixer node history snapshot",
+            mixerRestored?.Modifier is
+            {
+                IsMixer: true,
+                MixerAutoGain: true,
+            } mixerRestoredModifier &&
+            Math.Abs(mixerRestoredModifier.MixerWidth - 0.25f) < 1e-6f &&
+            Math.Abs(mixerRestoredModifier.MixerCrossfade - 0.75f) < 1e-6f);
+        if (mixerRestored != null)
+        {
+            RemoveEntryInternal(mixerRestored.Id);
+        }
+
+        var mixerSourceEntry = RegisterSource(new SourceNode("Mixer history source", SourceKind.Tone), 0, 0);
+        var mixerEntry = AddMixer(0, 0);
+        var mixerLink = ConnectEntries(mixerSourceEntry, mixerEntry);
+        mixerLink.Gain = 0.6f;
+        mixerLink.Pan = 0.4f;
+        mixerLink.DelayMs = 12f;
+        mixerLink.Solo = true;
+        mixerLink.BusB = true;
+        mixerLink.Inverted = true;
+        SyncMixerInput(mixerLink);
+        var mixerLinkSnapshot = CloneLink(mixerLink);
+        RemoveLinkInternal(mixerLink);
+        RestoreLink(mixerLinkSnapshot);
+        var restoredMixerLink = _links.FirstOrDefault(link => link.Id == mixerLinkSnapshot.Id);
+        Check("mixer link undo restores input settings",
+            restoredMixerLink is { Pan: 0.4f, DelayMs: 12f, Solo: true, BusB: true, Inverted: true } &&
+            mixerEntry.Modifier?.MixerSourceInputs.TryGetValue(mixerSourceEntry.Source!, out var restoredSettings) == true &&
+            Math.Abs(restoredSettings.Pan - 0.4f) < 1e-6f &&
+            Math.Abs(restoredSettings.DelayMs - 12f) < 1e-6f &&
+            restoredSettings.Solo && restoredSettings.BusB && restoredSettings.Inverted);
+        if (restoredMixerLink != null)
+        {
+            RemoveLinkInternal(restoredMixerLink);
+        }
+
+        RemoveEntryInternal(mixerSourceEntry.Id);
+        RemoveEntryInternal(mixerEntry.Id);
         Check("mixer group solo audio", LatencySelfTest.TestMixerGroupSolo());
         Check("mixer output group solo", LatencySelfTest.TestMixerOutputGroupSolo());
         Check("mixer group bus",
@@ -259,6 +316,18 @@ internal sealed partial class WebShellController
             vadCut &&
             vadChunk.Length >= 16000 * 2 &&
             Math.Abs(vadStart) < 0.001);
+
+        var quietChunker = new SpeechChunker();
+        var quietSamples = new float[16000 * 7];
+        for (int i = 0; i < quietSamples.Length; i++)
+        {
+            quietSamples[i] = 0.00015f * MathF.Sin(2f * MathF.PI * 180f * i / 16000f);
+        }
+
+        bool quietCut = quietChunker.Add(quietSamples, out var quietChunk, out _);
+        SpeechAudio.Normalize(quietChunk);
+        Check("quiet speech chunking",
+            quietCut && quietChunk.Length >= 16000 * 6 && quietChunk.Max(MathF.Abs) > 0.01f);
 
         string fileTestPath = Path.Combine(Path.GetTempPath(), $"ruse-file-test-{Guid.NewGuid():N}.wav");
         bool fileTransportOk = false;

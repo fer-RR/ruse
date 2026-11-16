@@ -746,6 +746,15 @@ internal sealed partial class WebShellController
                 return item;
             }).ToList();
 
+        _catalog.Effects.Insert(0, new CatalogItemDto
+        {
+            Id = "mixer",
+            Kind = "mixer",
+            Name = "Mixer",
+            Subtitle = "Mix with pan, polarity, delay, mute, solo and A/B crossfade.",
+            Details = "A summing mixer with per-input alignment delay and polarity, bus peak metering, width and auto gain.",
+        });
+
         _catalog.Chains = SubgraphLibrary.Chains
             .Select(chain => new CatalogItemDto
             {

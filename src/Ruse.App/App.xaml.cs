@@ -228,6 +228,24 @@ public partial class App : Application
             }
         }
 
+        int transcriptionTestIndex = Array.FindIndex(e.Args, a => a.Equals("--transcription-test", StringComparison.OrdinalIgnoreCase));
+        if (transcriptionTestIndex >= 0 && transcriptionTestIndex + 3 < e.Args.Length)
+        {
+            try
+            {
+                string line = TranscriptionPipelineTest.Run(
+                    e.Args[transcriptionTestIndex + 1],
+                    e.Args[transcriptionTestIndex + 2]);
+                File.WriteAllText(e.Args[transcriptionTestIndex + 3], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[transcriptionTestIndex + 3], "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
         int vst3TestIndex = Array.FindIndex(e.Args, a => a.Equals("--vst3-test", StringComparison.OrdinalIgnoreCase));
         if (vst3TestIndex >= 0 && vst3TestIndex + 2 < e.Args.Length)
         {

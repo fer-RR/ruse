@@ -41,6 +41,129 @@ public sealed class ModifierNode : IDisposable
     /// <summary>Sources feeding this modifier.</summary>
     public List<SourceNode> Inputs { get; } = new();
 
+    /// <summary>True for the timeline-style mixer node.</summary>
+    public bool IsMixer { get; set; }
+
+    /// <summary>Stereo width of the summed mixer bus (0 collapsed, 1 normal, 2 wide).</summary>
+    public float MixerWidth
+    {
+        get => _mixerWidth;
+        set => _mixerWidth = Math.Clamp(value, 0f, 2f);
+    }
+
+    private volatile float _mixerWidth = 1f;
+
+    /// <summary>Equal-power normalizes the summed mixer bus by the audible input count.</summary>
+    public bool MixerAutoGain
+    {
+        get => _mixerAutoGain;
+        set => _mixerAutoGain = value;
+    }
+
+    private volatile bool _mixerAutoGain;
+
+    /// <summary>0 = A only, 0.5 = equal A/B, 1 = B only.</summary>
+    public float MixerCrossfade
+    {
+        get => _mixerCrossfade;
+        set => _mixerCrossfade = Math.Clamp(value, 0f, 1f);
+    }
+
+    private volatile float _mixerCrossfade;
+
+    public const int MixerMaxDelayMs = 500;
+
+    private volatile float _mixerMeterDbLeft = -60f;
+    private volatile float _mixerMeterDbRight = -60f;
+    private volatile float _mixerMeterPeakDbLeft = -60f;
+    private volatile float _mixerMeterPeakDbRight = -60f;
+    private volatile bool _mixerMeterClipping;
+    private long _mixerPeakHoldUntilLeft;
+    private long _mixerPeakHoldUntilRight;
+
+    public float MixerMeterDbLeft => _mixerMeterDbLeft;
+    public float MixerMeterDbRight => _mixerMeterDbRight;
+    public float MixerMeterPeakDbLeft => _mixerMeterPeakDbLeft;
+    public float MixerMeterPeakDbRight => _mixerMeterPeakDbRight;
+    public bool MixerMeterClipping => _mixerMeterClipping;
+
+    internal void UpdateMixerMeter(ReadOnlySpan<float> block, int frames)
+    {
+        if (!IsMixer || frames <= 0)
+        {
+            return;
+        }
+
+        int measuredFrames = Math.Min(frames, block.Length / 2);
+        if (measuredFrames < 1)
+        {
+            return;
+        }
+
+        double sumLeft = 0;
+        double sumRight = 0;
+        float peakLeft = 0;
+        float peakRight = 0;
+        for (int frame = 0; frame < measuredFrames; frame++)
+        {
+            int index = frame * 2;
+            float left = block[index];
+            float right = block[index + 1];
+            sumLeft += left * left;
+            sumRight += right * right;
+            peakLeft = Math.Max(peakLeft, Math.Abs(left));
+            peakRight = Math.Max(peakRight, Math.Abs(right));
+        }
+
+        float dbLeft = (float)(20.0 * Math.Log10(Math.Max(1e-6, Math.Sqrt(sumLeft / measuredFrames))));
+        float dbRight = (float)(20.0 * Math.Log10(Math.Max(1e-6, Math.Sqrt(sumRight / measuredFrames))));
+        float peakDbLeft = (float)(20.0 * Math.Log10(Math.Max(1e-6, peakLeft)));
+        float peakDbRight = (float)(20.0 * Math.Log10(Math.Max(1e-6, peakRight)));
+        long now = Environment.TickCount64;
+
+        _mixerMeterDbLeft = Math.Max(-60f, dbLeft);
+        _mixerMeterDbRight = Math.Max(-60f, dbRight);
+        if (peakDbLeft >= _mixerMeterPeakDbLeft)
+        {
+            _mixerMeterPeakDbLeft = peakDbLeft;
+            _mixerPeakHoldUntilLeft = now + 1500;
+        }
+        else if (now >= _mixerPeakHoldUntilLeft)
+        {
+            _mixerMeterPeakDbLeft = Math.Max(-60f, peakDbLeft);
+        }
+
+        if (peakDbRight >= _mixerMeterPeakDbRight)
+        {
+            _mixerMeterPeakDbRight = peakDbRight;
+            _mixerPeakHoldUntilRight = now + 1500;
+        }
+        else if (now >= _mixerPeakHoldUntilRight)
+        {
+            _mixerMeterPeakDbRight = Math.Max(-60f, peakDbRight);
+        }
+
+        if (peakLeft > 1f || peakRight > 1f)
+        {
+            _mixerMeterClipping = true;
+        }
+    }
+
+    public void ResetMixerMeter()
+    {
+        _mixerMeterDbLeft = -60f;
+        _mixerMeterDbRight = -60f;
+        _mixerMeterPeakDbLeft = -60f;
+        _mixerMeterPeakDbRight = -60f;
+        _mixerMeterClipping = false;
+        _mixerPeakHoldUntilLeft = 0;
+        _mixerPeakHoldUntilRight = 0;
+    }
+
+    public Dictionary<SourceNode, MixerInputSettings> MixerSourceInputs { get; } = new();
+
+    public Dictionary<ModifierNode, MixerInputSettings> MixerModifierInputs { get; } = new();
+
     /// <summary>Sources that drive a sidechain/key input without being mixed audibly.</summary>
     public List<SourceNode> SidechainInputs { get; } = new();
 
@@ -107,5 +230,16 @@ public sealed class ModifierNode : IDisposable
         }
 
         _processors.Clear();
+    }
+
+    public sealed class MixerInputSettings
+    {
+        public float Gain { get; set; } = 1f;
+        public float Pan { get; set; }
+        public float DelayMs { get; set; }
+        public bool Muted { get; set; }
+        public bool Solo { get; set; }
+        public bool BusB { get; set; }
+        public bool Inverted { get; set; }
     }
 }

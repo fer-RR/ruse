@@ -88,6 +88,7 @@ internal sealed partial class WebShellController
             case "output": entry = AddDeviceOutput(id, x, y); break;
             case "virtual": entry = AddVirtualOutput(id, x, y); break;
             case "effect": entry = AddEffect(id, x, y); break;
+            case "mixer": entry = AddMixer(x, y); break;
             case "chain": entry = AddChain(id, x, y); break;
             case "vst3":
                 entry = AddVst3Plugin(id, x, y);
@@ -761,6 +762,19 @@ internal sealed partial class WebShellController
         RemoveLinkInternal(link, releaseNative: !wasNative);
         var left = ConnectEntries(from, modifier);
         var right = ConnectEntries(modifier, to);
+        if (to.Modifier is { IsMixer: true })
+        {
+            right.Gain = oldLink.Gain;
+            right.Pan = oldLink.Pan;
+            right.DelayMs = oldLink.DelayMs;
+            right.Enabled = oldLink.Enabled;
+            right.Solo = oldLink.Solo;
+            right.BusB = oldLink.BusB;
+            right.Inverted = oldLink.Inverted;
+            ApplyLinkRouting(right, publish: false);
+            SyncMixerInput(right);
+        }
+
         if (wasNative)
         {
             left.Native = true;
@@ -893,6 +907,15 @@ internal sealed partial class WebShellController
             translatorTarget: processor is TranslatorProcessor ? _settings.TranslatorTarget : null,
             translatorModel: processor is TranslatorProcessor ? _settings.TranslatorModel : null);
         SetStatus($"Added effect: {descriptor.DisplayName}");
+        return entry;
+    }
+
+    private NodeEntry AddMixer(double x, double y)
+    {
+        var modifier = new ModifierNode("Mixer") { IsMixer = true };
+        modifier.Add(new GainProcessor());
+        var entry = RegisterModifier(modifier, x, y, flavor: "mixer", subtitle: "Sum multiple sources");
+        SetStatus("Added a Mixer. Connect two or more sources and balance them per input.");
         return entry;
     }
 
@@ -1476,6 +1499,30 @@ internal sealed partial class WebShellController
             dto.Enabled = entry.Modifier.Enabled;
             dto.IsParallel = entry.Modifier.Parallel;
             dto.Send = entry.Modifier.Send;
+            if (entry.Modifier.IsMixer)
+            {
+                dto.IsMixer = true;
+                dto.MixerWidth = entry.Modifier.MixerWidth;
+                dto.MixerAutoGain = entry.Modifier.MixerAutoGain;
+                dto.MixerCrossfade = entry.Modifier.MixerCrossfade;
+                dto.MixerInputs = _links
+                    .Where(link => link.To == entry.Id && link.Kind != "sidechain" &&
+                        _nodes.ContainsKey(link.From))
+                    .Select(link => new MixerInputDto
+                    {
+                        LinkId = link.Id,
+                        Title = _nodes[link.From].Title,
+                        Gain = link.Gain,
+                        Pan = link.Pan,
+                        DelayMs = link.DelayMs,
+                        Muted = !link.Enabled,
+                        Solo = link.Solo,
+                        BusB = link.BusB,
+                        Inverted = link.Inverted,
+                    })
+                    .ToList();
+            }
+
             dto.IsSpectrum = entry.Modifier.Processors.OfType<SpectrumProcessor>().Any();
             dto.IsSpectrogram = entry.Modifier.Processors.OfType<SpectrogramProcessor>().Any();
             dto.IsWaveform = entry.Modifier.Processors.OfType<WaveformProcessor>().Any();
@@ -2062,6 +2109,186 @@ internal sealed partial class WebShellController
             structural: false);
     }
 
+    private void SetLinkPan(string id, float value)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        float old = link.Pan;
+        float next = float.IsFinite(value) ? Math.Clamp(value, -1f, 1f) : 0f;
+        link.Pan = next;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+        PushAction("Change input pan",
+            undo: () => SetLinkPanValue(id, old),
+            redo: () => SetLinkPanValue(id, next),
+            coalesceKey: $"link-pan:{id}",
+            structural: false);
+    }
+
+    private void SetLinkPanValue(string id, float value)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        link.Pan = float.IsFinite(value) ? Math.Clamp(value, -1f, 1f) : 0f;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+    }
+
+    private void SetLinkPolarity(string id, bool inverted)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        bool old = link.Inverted;
+        link.Inverted = inverted;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+        PushAction(inverted ? "Invert input polarity" : "Restore input polarity",
+            undo: () => SetLinkPolarityValue(id, old),
+            redo: () => SetLinkPolarityValue(id, inverted),
+            structural: false);
+    }
+
+    private void SetLinkPolarityValue(string id, bool inverted)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        link.Inverted = inverted;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+    }
+
+    private void SetLinkDelay(string id, float delayMs)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        float old = link.DelayMs;
+        float next = float.IsFinite(delayMs)
+            ? Math.Clamp(delayMs, 0f, ModifierNode.MixerMaxDelayMs)
+            : 0f;
+        link.DelayMs = next;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+        _graph.RefreshEngine();
+        PushAction("Change input delay",
+            undo: () => SetLinkDelayValue(id, old),
+            redo: () => SetLinkDelayValue(id, next),
+            coalesceKey: $"link-delay:{id}",
+            structural: false);
+    }
+
+    private void SetLinkDelayValue(string id, float delayMs)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        link.DelayMs = float.IsFinite(delayMs)
+            ? Math.Clamp(delayMs, 0f, ModifierNode.MixerMaxDelayMs)
+            : 0f;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+        _graph.RefreshEngine();
+    }
+
+    private void ResetMixerMeter(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier is not { IsMixer: true } mixer)
+        {
+            return;
+        }
+
+        mixer.ResetMixerMeter();
+        PublishTelemetry(force: true);
+    }
+
+    private void SetLinkSolo(string id, bool solo)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        bool old = link.Solo;
+        link.Solo = solo;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+        PushAction(solo ? "Solo mixer input" : "Unsolo mixer input",
+            undo: () => SetLinkSoloValue(id, old),
+            redo: () => SetLinkSoloValue(id, solo),
+            structural: false);
+    }
+
+    private void SetLinkSoloValue(string id, bool solo)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        link.Solo = solo;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+    }
+
+    private void SetLinkBus(string id, bool busB)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        bool old = link.BusB;
+        link.BusB = busB;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+        PushAction(busB ? "Assign mixer input to B" : "Assign mixer input to A",
+            undo: () => SetLinkBusValue(id, old),
+            redo: () => SetLinkBusValue(id, busB),
+            structural: false);
+    }
+
+    private void SetLinkBusValue(string id, bool busB)
+    {
+        var link = _links.FirstOrDefault(item => item.Id == id);
+        if (link == null) return;
+        link.BusB = busB;
+        SyncMixerInput(link);
+        PublishGraph();
+        PublishLinkState(id);
+    }
+
+    private void SetMixerSettings(string id, float width, bool autoGain, float crossfade)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier is not { IsMixer: true } mixer)
+        {
+            return;
+        }
+
+        float oldWidth = mixer.MixerWidth;
+        bool oldAutoGain = mixer.MixerAutoGain;
+        float oldCrossfade = mixer.MixerCrossfade;
+        float nextWidth = float.IsFinite(width) ? Math.Clamp(width, 0f, 2f) : 1f;
+        float nextCrossfade = float.IsFinite(crossfade) ? Math.Clamp(crossfade, 0f, 1f) : 0f;
+        ApplyMixerSettings(id, nextWidth, autoGain, nextCrossfade);
+        PushAction("Change mixer",
+            undo: () => ApplyMixerSettings(id, oldWidth, oldAutoGain, oldCrossfade),
+            redo: () => ApplyMixerSettings(id, nextWidth, autoGain, nextCrossfade),
+            coalesceKey: $"mixer-settings:{id}",
+            structural: false);
+    }
+
+    private void ApplyMixerSettings(string id, float width, bool autoGain, float crossfade)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier is not { IsMixer: true } mixer)
+        {
+            return;
+        }
+
+        mixer.MixerWidth = float.IsFinite(width) ? Math.Clamp(width, 0f, 2f) : 1f;
+        mixer.MixerAutoGain = autoGain;
+        mixer.MixerCrossfade = float.IsFinite(crossfade) ? Math.Clamp(crossfade, 0f, 1f) : 0f;
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
     private void SetLinkEnabled(string id, bool enabled)
     {
         var link = _links.FirstOrDefault(item => item.Id == id);
@@ -2080,390 +2307,6 @@ internal sealed partial class WebShellController
             structural: false);
     }
 
-    private void SetLinkNative(string id, bool enabled)
-    {
-        var link = _links.FirstOrDefault(item => item.Id == id);
-        if (link == null)
-        {
-            return;
-        }
-
-        if (!enabled)
-        {
-            DisableNativeChainForLink(link);
-            return;
-        }
-
-        if (link.Native)
-        {
-            return;
-        }
-
-        if (link.Kind != "direct" ||
-            !_nodes.TryGetValue(link.From, out var from) || from.Source == null ||
-            !_nodes.TryGetValue(link.To, out var to) || to.Output == null)
-        {
-            SetStatus("Native passthrough needs a direct source-to-device cable.", isError: true);
-            return;
-        }
-
-        if (enabled && _links.Any(other => other.Id != link.Id && other.To == link.To))
-        {
-            SetStatus("Native passthrough needs to be the only route to that output.", isError: true);
-            return;
-        }
-
-        if (to.Output.IsRecording)
-        {
-            SetStatus("Stop recording before changing native passthrough.", isError: true);
-            return;
-        }
-
-        if (enabled && (!link.Enabled || Math.Abs(link.Gain - 1f) > 1e-4f))
-        {
-            SetStatus("Set the cable to 100% and enabled before enabling native passthrough.", isError: true);
-            return;
-        }
-
-        string? error;
-        if (enabled)
-        {
-            error = _graph.SetNativePassthrough(to.Output, from.Source, true);
-        }
-        else
-        {
-            error = _graph.SetNativePassthrough(to.Output, from.Source, false);
-            if (error == null)
-            {
-                link.Native = false;
-            }
-        }
-
-        if (error != null)
-        {
-            SetStatus(error, isError: true);
-            return;
-        }
-
-        if (enabled)
-        {
-            link.Native = true;
-        }
-
-        PushAction(enabled ? "Enable native passthrough" : "Disable native passthrough",
-            undo: () => ApplyLinkNative(id, !enabled, publish: true),
-            redo: () => ApplyLinkNative(id, enabled, publish: true),
-            structural: false);
-        PublishLinkState(id);
-        PublishTelemetry(force: true);
-        SetStatus(enabled
-            ? $"Native passthrough: {from.Title} → {to.Title}."
-            : $"Normal routing restored for {to.Title}.");
-    }
-
-    private bool TryBuildNativeChain(
-        OutputNode output,
-        out SourceNode? source,
-        out IAudioProcessor[] processors,
-        out List<LinkEntry> links,
-        out string reason)
-    {
-        source = null;
-        processors = Array.Empty<IAudioProcessor>();
-        links = new List<LinkEntry>();
-        reason = "";
-
-        var outputEntry = _nodes.Values.FirstOrDefault(entry => ReferenceEquals(entry.Output, output));
-        if (outputEntry == null)
-        {
-            reason = "The output is no longer in the graph.";
-            return false;
-        }
-
-        if (_links.Count(link => link.To == outputEntry.Id) != 1)
-        {
-            reason = "Native passthrough needs a single route to the output.";
-            return false;
-        }
-
-        var modifiers = new List<ModifierNode>();
-        string currentId = outputEntry.Id;
-        for (int depth = 0; depth < 64; depth++)
-        {
-            var incoming = _links.Where(link => link.To == currentId && link.Native).ToList();
-            if (incoming.Count != 1)
-            {
-                reason = "Every cable in a native chain must be native.";
-                return false;
-            }
-
-            var link = incoming[0];
-            if (_links.Count(candidate => candidate.To == currentId) != 1)
-            {
-                reason = "A native node cannot have another incoming route.";
-                return false;
-            }
-
-            links.Add(link);
-            if (!_nodes.TryGetValue(link.From, out var from))
-            {
-                reason = "A native chain node is missing.";
-                return false;
-            }
-
-            if (from.Source != null)
-            {
-                source = from.Source;
-                break;
-            }
-
-            if (from.Modifier == null)
-            {
-                reason = "A native chain must start at one source.";
-                return false;
-            }
-
-            var modifier = from.Modifier;
-            if (modifier.Parallel ||
-                modifier.SidechainInputs.Count > 0 ||
-                modifier.SidechainModifiers.Count > 0 ||
-                modifier.Next.Count > 1 ||
-                modifier.Outputs.Any(item => !ReferenceEquals(item, output)))
-            {
-                reason = "Parallel, sidechain or shared-route nodes cannot run in native passthrough.";
-                return false;
-            }
-
-            modifiers.Add(modifier);
-            currentId = from.Id;
-        }
-
-        if (source == null)
-        {
-            reason = "Native passthrough needs a source.";
-            return false;
-        }
-
-        var chain = new List<IAudioProcessor>();
-        for (int i = modifiers.Count - 1; i >= 0; i--)
-        {
-            var modifier = modifiers[i];
-            if (!modifier.Enabled)
-            {
-                continue;
-            }
-
-            foreach (var processor in modifier.Processors)
-            {
-                if (processor is not INativeProcessor)
-                {
-                    reason = $"'{processor.DisplayName}' does not support native-rate processing.";
-                    return false;
-                }
-
-                chain.Add(processor);
-            }
-        }
-
-        processors = chain.ToArray();
-        return true;
-    }
-
-    private bool RefreshNativeChain(OutputNode output)
-    {
-        if (!TryBuildNativeChain(output, out var source, out var processors,
-                out _, out string reason))
-        {
-            SetStatus(reason, isError: true);
-            return false;
-        }
-
-        string? error = _graph.SetNativePassthrough(output, source!, true, processors);
-        if (error != null)
-        {
-            SetStatus(error, isError: true);
-            return false;
-        }
-
-        return true;
-    }
-
-    private bool TryFindNativeOutput(LinkEntry link, out OutputNode? output)
-    {
-        output = null;
-        string currentId = link.To;
-        for (int depth = 0; depth < 64; depth++)
-        {
-            if (!_nodes.TryGetValue(currentId, out var entry))
-            {
-                return false;
-            }
-
-            if (entry.Output != null)
-            {
-                output = entry.Output;
-                return true;
-            }
-
-            var next = _links.FirstOrDefault(candidate =>
-                candidate.From == currentId && candidate.Native);
-            if (next == null)
-            {
-                return false;
-            }
-
-            currentId = next.To;
-        }
-
-        return false;
-    }
-
-    private bool TryFindOutputForLink(LinkEntry link, out OutputNode? output)
-    {
-        output = null;
-        var pending = new Queue<string>();
-        var visited = new HashSet<string>(StringComparer.Ordinal);
-        pending.Enqueue(link.To);
-        while (pending.Count > 0)
-        {
-            string current = pending.Dequeue();
-            if (!visited.Add(current) || !_nodes.TryGetValue(current, out var entry))
-            {
-                continue;
-            }
-
-            if (entry.Output != null)
-            {
-                output = entry.Output;
-                return true;
-            }
-
-            foreach (var next in _links.Where(item => item.From == current && item.Kind != "sidechain"))
-            {
-                pending.Enqueue(next.To);
-            }
-        }
-
-        return false;
-    }
-
-    private void ClearNativeFlagsIntoOutput(OutputNode output)
-    {
-        var outputEntry = _nodes.Values.FirstOrDefault(entry => ReferenceEquals(entry.Output, output));
-        if (outputEntry == null) return;
-
-        var pending = new Queue<string>();
-        var visited = new HashSet<string>(StringComparer.Ordinal);
-        pending.Enqueue(outputEntry.Id);
-        while (pending.Count > 0)
-        {
-            string current = pending.Dequeue();
-            if (!visited.Add(current)) continue;
-            foreach (var link in _links.Where(item => item.To == current))
-            {
-                link.Native = false;
-                pending.Enqueue(link.From);
-            }
-        }
-    }
-
-    private bool DisableNativeOnSharedOutput(OutputNode output)
-    {
-        if (output.NativeSource == null)
-        {
-            return false;
-        }
-
-        var entry = _nodes.Values.FirstOrDefault(item => ReferenceEquals(item.Output, output));
-        if (entry == null || _links.Count(link => link.To == entry.Id) <= 1)
-        {
-            return false;
-        }
-
-        ClearNativeFlagsIntoOutput(output);
-        string? error = _graph.SetNativePassthrough(output, output.NativeSource, false);
-        PublishGraph();
-        PublishTelemetry(force: true);
-        SetStatus(error ?? $"{entry.Title}: native passthrough disabled because another route was connected.",
-            error != null);
-        return error == null;
-    }
-
-    private void DisableNativeChainForLink(LinkEntry link)
-    {
-        bool found = TryFindOutputForLink(link, out var output);
-        link.Native = false;
-        if (found && output != null)
-        {
-            ClearNativeFlagsIntoOutput(output);
-        }
-
-        string? error = null;
-        if (found && output?.NativeSource != null)
-        {
-            error = _graph.SetNativePassthrough(output, output.NativeSource, false);
-        }
-
-        PublishGraph();
-        PublishTelemetry(force: true);
-        SetStatus(error ?? "Native passthrough disabled.", error != null);
-    }
-
-    private void ApplyLinkNative(string id, bool enabled, bool publish)
-    {
-        var link = _links.FirstOrDefault(item => item.Id == id);
-        if (link == null || link.Native == enabled)
-        {
-            return;
-        }
-
-        if (!enabled)
-        {
-            DisableNativeChainForLink(link);
-            return;
-        }
-
-        if (!_nodes.TryGetValue(link.From, out var from) || from.Source == null ||
-            !_nodes.TryGetValue(link.To, out var to) || to.Output == null)
-        {
-            return;
-        }
-
-        string? error = _graph.SetNativePassthrough(to.Output, from.Source, enabled);
-        if (error != null)
-        {
-            SetStatus(error, isError: true);
-            return;
-        }
-
-        link.Native = enabled;
-        if (publish)
-        {
-            PublishLinkState(id);
-            PublishTelemetry(force: true);
-        }
-    }
-
-    private void ActivateNativeRoutes()
-    {
-        foreach (var link in _links.Where(item => item.Native && item.Kind == "direct").ToList())
-        {
-            if (!_nodes.TryGetValue(link.From, out var from) || from.Source == null ||
-                !_nodes.TryGetValue(link.To, out var to) || to.Output == null)
-            {
-                link.Native = false;
-                continue;
-            }
-
-            string? error = _graph.SetNativePassthrough(to.Output, from.Source, true);
-            if (error != null)
-            {
-                link.Native = false;
-                SetStatus($"Native passthrough unavailable for {to.Title}: {error}", isError: true);
-            }
-        }
-    }
-
     private void ApplyLinkSettings(string id, float gain, bool enabled, bool publish)
     {
         var link = _links.FirstOrDefault(item => item.Id == id);
@@ -2471,6 +2314,7 @@ internal sealed partial class WebShellController
         link.Gain = Math.Clamp(gain, 0f, 1.5f);
         link.Enabled = enabled;
         ApplyLinkRouting(link, publish);
+        SyncMixerInput(link);
     }
 
     private void ApplyLinkRouting(LinkEntry link, bool publish)
@@ -2518,6 +2362,59 @@ internal sealed partial class WebShellController
         foreach (var tune in to.Modifier.Processors.OfType<AutoTuneExperimentalProcessor>())
         {
             tune.SetKeyTapId(tapId);
+        }
+    }
+
+    private void SyncMixerInput(LinkEntry link)
+    {
+        if (link.Kind == "sidechain" ||
+            !_nodes.TryGetValue(link.To, out var to) ||
+            to.Modifier is not { IsMixer: true } mixer ||
+            !_nodes.TryGetValue(link.From, out var from))
+        {
+            return;
+        }
+
+        var settings = new ModifierNode.MixerInputSettings
+        {
+            Gain = link.Gain,
+            Pan = link.Pan,
+            DelayMs = link.DelayMs,
+            Muted = !link.Enabled,
+            Solo = link.Solo,
+            BusB = link.BusB,
+            Inverted = link.Inverted,
+        };
+
+        if (from.Source != null)
+        {
+            mixer.MixerSourceInputs[from.Source] = settings;
+        }
+        else if (from.Modifier != null)
+        {
+            mixer.MixerModifierInputs[from.Modifier] = settings;
+        }
+
+        _graph.UpdateMixerInput(mixer, from.Source, from.Modifier, settings);
+    }
+
+    private void RemoveMixerInput(LinkEntry link)
+    {
+        if (link.Kind == "sidechain" ||
+            !_nodes.TryGetValue(link.To, out var to) ||
+            to.Modifier is not { IsMixer: true } mixer ||
+            !_nodes.TryGetValue(link.From, out var from))
+        {
+            return;
+        }
+
+        if (from.Source != null)
+        {
+            mixer.MixerSourceInputs.Remove(from.Source);
+        }
+        else if (from.Modifier != null)
+        {
+            mixer.MixerModifierInputs.Remove(from.Modifier);
         }
     }
 
@@ -2586,6 +2483,7 @@ internal sealed partial class WebShellController
             Gain = gain,
         };
         _links.Add(link);
+        SyncMixerInput(link);
         if (to.Output != null)
         {
             DisableNativeOnSharedOutput(to.Output);
@@ -2614,6 +2512,7 @@ internal sealed partial class WebShellController
             return;
         }
 
+        RemoveMixerInput(current);
         if (releaseNative && current.Native)
         {
             DisableNativeChainForLink(current);
@@ -2651,6 +2550,10 @@ internal sealed partial class WebShellController
         }
 
         _links.Remove(current);
+        if (_nodes.TryGetValue(current.To, out var removedTarget) && removedTarget.Output != null)
+        {
+            TryRestoreNativeFallback(removedTarget.Output);
+        }
     }
 
     private void DisconnectNode(string id)
@@ -2854,7 +2757,21 @@ internal sealed partial class WebShellController
 
                 try
                 {
-                    bridges.Add(ConnectEntries(from, to, incoming.Gain));
+                    var bridge = ConnectEntries(from, to, incoming.Gain);
+                    if (to.Modifier is { IsMixer: true })
+                    {
+                        bridge.Gain = outgoing.Gain;
+                        bridge.Pan = outgoing.Pan;
+                        bridge.DelayMs = outgoing.DelayMs;
+                        bridge.Enabled = outgoing.Enabled;
+                        bridge.Solo = outgoing.Solo;
+                        bridge.BusB = outgoing.BusB;
+                        bridge.Inverted = outgoing.Inverted;
+                        ApplyLinkRouting(bridge, publish: false);
+                        SyncMixerInput(bridge);
+                    }
+
+                    bridges.Add(bridge);
                 }
                 catch
                 {
@@ -2971,6 +2888,7 @@ internal sealed partial class WebShellController
         _links.Clear();
         _frames.Clear();
         _spectrogramCursors.Clear();
+        _nativeFallbackSources.Clear();
         ClearMidiBindings();
         _running = false;
         PublishTelemetry();

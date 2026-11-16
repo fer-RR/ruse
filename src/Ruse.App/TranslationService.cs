@@ -333,10 +333,11 @@ internal sealed class TranslationSession : IDisposable
         lock (_textLock)
         {
             _processing = true;
-            _sourcePartial = "…";
+            _sourcePartial = "\u2026";
             _baseStatus = "Transcribing";
         }
 
+        SpeechAudio.Normalize(chunk);
         var source = new StringBuilder();
         var sourceCues = new List<SubtitleCue>();
         string? detected = null;

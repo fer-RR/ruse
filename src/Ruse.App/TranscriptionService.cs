@@ -203,10 +203,11 @@ internal sealed class TranscriptionSession : IDisposable
         lock (_textLock)
         {
             _processing = true;
-            _partial = "…";
+            _partial = "\u2026";
             _baseStatus = "Transcribing";
         }
 
+        SpeechAudio.Normalize(chunk);
         var text = new StringBuilder();
         var cues = new List<SubtitleCue>();
         string? detected = null;

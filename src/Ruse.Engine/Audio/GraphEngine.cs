@@ -231,6 +231,15 @@ internal sealed class GraphEngine : IDisposable
         }
     }
 
+    internal void UpdateMixerInput(ModifierNode mixer, SourceNode? source, ModifierNode? upstream,
+        ModifierNode.MixerInputSettings settings)
+    {
+        lock (_sync)
+        {
+            _compiled?.UpdateMixerInput(mixer, source, upstream, settings);
+        }
+    }
+
     private void CompileLocked(Action? afterDrain = null)
     {
         try
@@ -387,6 +396,11 @@ internal sealed class GraphEngine : IDisposable
         private const int SampleRate = 48000;
         private const int Channels = 2;
         private readonly AudioGraph _audioGraph;
+
+        private static int UserDelayFrames(float delayMs) =>
+            float.IsFinite(delayMs)
+                ? (int)MathF.Round(Math.Clamp(delayMs, 0f, ModifierNode.MixerMaxDelayMs) * SampleRate / 1000f)
+                : 0;
         private readonly int _blockFrames;
 
         public List<SourceState> Sources { get; } = new();
@@ -490,6 +504,47 @@ internal sealed class GraphEngine : IDisposable
                         contribution.Gain = gain;
                     }
                 }
+            }
+        }
+
+        public void UpdateMixerInput(ModifierNode mixer, SourceNode? source, ModifierNode? upstream,
+            ModifierNode.MixerInputSettings settings)
+        {
+            NodeState? node = null;
+            for (int i = 0; i < Nodes.Count; i++)
+            {
+                if (ReferenceEquals(Nodes[i].Modifier, mixer))
+                {
+                    node = Nodes[i];
+                    break;
+                }
+            }
+
+            if (node == null)
+            {
+                return;
+            }
+
+            for (int i = 0; i < node.Inputs.Count; i++)
+            {
+                var input = node.Inputs[i];
+                bool matches = source != null
+                    ? input.Source?.IsFor(source) == true
+                    : input.Upstream != null && ReferenceEquals(input.Upstream.Modifier, upstream);
+                if (!matches)
+                {
+                    continue;
+                }
+
+                input.LinkGain = settings.Gain;
+                input.Pan = settings.Pan;
+                input.DelayMs = settings.DelayMs;
+                input.Muted = settings.Muted;
+                input.Solo = settings.Solo;
+                input.BusB = settings.BusB;
+                input.Inverted = settings.Inverted;
+                input.MixerDelay?.SetDelayFrames(UserDelayFrames(settings.DelayMs));
+                return;
             }
         }
 
@@ -667,9 +722,29 @@ internal sealed class GraphEngine : IDisposable
             foreach (var modifier in order)
             {
                 var node = new NodeState(modifier, _blockFrames);
+                int maxUserDelayFrames = 0;
+                int maxUserDelayCapacity = ModifierNode.MixerMaxDelayMs * SampleRate / 1000;
                 foreach (var source in modifier.Inputs)
                 {
-                    node.Inputs.Add(new NodeInput { Source = sourceStates[source] });
+                    modifier.MixerSourceInputs.TryGetValue(source, out var settings);
+                    int userDelayFrames = UserDelayFrames(settings?.DelayMs ?? 0f);
+                    maxUserDelayFrames = Math.Max(maxUserDelayFrames, userDelayFrames);
+                    var userDelay = modifier.IsMixer
+                        ? new VariableDelayLine(maxUserDelayCapacity, Channels)
+                        : null;
+                    userDelay?.SetDelayFrames(userDelayFrames);
+                    node.Inputs.Add(new NodeInput
+                    {
+                        Source = sourceStates[source],
+                        LinkGain = settings?.Gain ?? 1f,
+                        Pan = settings?.Pan ?? 0f,
+                        DelayMs = settings?.DelayMs ?? 0f,
+                        Muted = settings?.Muted ?? false,
+                        Solo = settings?.Solo ?? false,
+                        BusB = settings?.BusB ?? false,
+                        Inverted = settings?.Inverted ?? false,
+                        MixerDelay = userDelay,
+                    });
                 }
 
                 foreach (var upstream in graph.Modifiers)
@@ -677,7 +752,25 @@ internal sealed class GraphEngine : IDisposable
                     if (seeds.Contains(upstream) && upstream.Next.Contains(modifier) &&
                         nodeStates.TryGetValue(upstream, out var upstreamState))
                     {
-                        node.Inputs.Add(new NodeInput { Upstream = upstreamState });
+                        modifier.MixerModifierInputs.TryGetValue(upstream, out var settings);
+                        int userDelayFrames = UserDelayFrames(settings?.DelayMs ?? 0f);
+                        maxUserDelayFrames = Math.Max(maxUserDelayFrames, userDelayFrames);
+                        var userDelay = modifier.IsMixer
+                            ? new VariableDelayLine(maxUserDelayCapacity, Channels)
+                            : null;
+                        userDelay?.SetDelayFrames(userDelayFrames);
+                        node.Inputs.Add(new NodeInput
+                        {
+                            Upstream = upstreamState,
+                            LinkGain = settings?.Gain ?? 1f,
+                            Pan = settings?.Pan ?? 0f,
+                            DelayMs = settings?.DelayMs ?? 0f,
+                            Muted = settings?.Muted ?? false,
+                            Solo = settings?.Solo ?? false,
+                            BusB = settings?.BusB ?? false,
+                            Inverted = settings?.Inverted ?? false,
+                            MixerDelay = userDelay,
+                        });
                     }
                 }
 
@@ -778,7 +871,7 @@ internal sealed class GraphEngine : IDisposable
 
                 node.ChainLatency = chainLatency;
                 node.BypassDelay = chainLatency > 0 ? new DelayLine(chainLatency, Channels) : null;
-                node.Latency = maxInputLatency + chainLatency;
+                node.Latency = maxInputLatency + maxUserDelayFrames + chainLatency;
                 nodeStates[modifier] = node;
                 Nodes.Add(node);
 
@@ -1005,6 +1098,14 @@ internal sealed class GraphEngine : IDisposable
             public SourceState? Source { get; init; }
             public NodeState? Upstream { get; init; }
             public DelayLine? Delay { get; set; }
+            public float LinkGain { get; set; } = 1f;
+            public float Pan { get; set; }
+            public float DelayMs { get; set; }
+            public bool Muted { get; set; }
+            public bool Solo { get; set; }
+            public bool BusB { get; set; }
+            public bool Inverted { get; set; }
+            public VariableDelayLine? MixerDelay { get; init; }
             public float AppliedGain { get; set; } = float.NaN;
 
             public int Latency => Source != null ? 0 : Upstream?.Latency ?? 0;
@@ -1022,6 +1123,8 @@ internal sealed class GraphEngine : IDisposable
             private float _wet;
             private bool _chainFaulted;
             private bool _nonFiniteLogged;
+
+            public ModifierNode Modifier => _modifier;
 
             public NodeState(ModifierNode modifier, int blockFrames)
             {
@@ -1050,6 +1153,25 @@ internal sealed class GraphEngine : IDisposable
             public void Process()
             {
                 bool firstInput = true;
+                bool mixer = _modifier.IsMixer;
+                bool anySolo = false;
+                if (mixer)
+                {
+                    for (int i = 0; i < Inputs.Count; i++)
+                    {
+                        if (Inputs[i].Solo)
+                        {
+                            anySolo = true;
+                            break;
+                        }
+                    }
+                }
+
+                float crossfade = mixer ? Math.Clamp(_modifier.MixerCrossfade, 0f, 1f) : 0f;
+                float crossfadeAngle = crossfade * MathF.PI * 0.5f;
+                float busAGain = MathF.Cos(crossfadeAngle);
+                float busBGain = MathF.Sin(crossfadeAngle);
+                int audibleInputs = 0;
                 for (int i = 0; i < Inputs.Count; i++)
                 {
                     var input = Inputs[i];
@@ -1060,6 +1182,34 @@ internal sealed class GraphEngine : IDisposable
                         float targetGain = source.Source.Muted || MixerGroupBus.Muted(source.Source.GroupKey)
                             ? 0f
                             : source.Source.Gain * MixerGroupBus.Gain(source.Source.GroupKey);
+                        if (mixer)
+                        {
+                            targetGain *= input.LinkGain * (input.BusB ? busBGain : busAGain);
+                            if (input.Muted || (anySolo && !input.Solo))
+                            {
+                                targetGain = 0f;
+                            }
+
+                            if (targetGain > 0.0001f)
+                            {
+                                audibleInputs++;
+                            }
+
+                            if (input.Inverted)
+                            {
+                                targetGain = -targetGain;
+                            }
+                        }
+
+                        float panL = 1f;
+                        float panR = 1f;
+                        if (mixer && !input.Muted)
+                        {
+                            float pan = Math.Clamp(input.Pan, -1f, 1f);
+                            if (pan > 0f) panL = 1f - pan;
+                            else if (pan < 0f) panR = 1f + pan;
+                        }
+
                         float applied = float.IsNaN(input.AppliedGain) ? targetGain : input.AppliedGain;
                         if (input.Delay != null)
                         {
@@ -1072,19 +1222,71 @@ internal sealed class GraphEngine : IDisposable
                             block = source.Block;
                         }
 
-                        if (applied == targetGain)
+                        if (mixer && input.MixerDelay != null)
                         {
-                            if (targetGain == 1f)
+                            if (input.Delay == null)
                             {
-                                if (firstInput) block.CopyTo(_block);
-                                else Add(block);
+                                block.CopyTo(_temp);
+                            }
+
+                            input.MixerDelay.Process(_temp, Channels);
+                            block = _temp;
+                        }
+
+                        if (!mixer)
+                        {
+                            if (applied == targetGain)
+                            {
+                                if (targetGain == 1f)
+                                {
+                                    if (firstInput) block.CopyTo(_block);
+                                    else Add(block);
+                                }
+                                else
+                                {
+                                    for (int s = 0; s < block.Length; s++)
+                                    {
+                                        if (firstInput) _block[s] = block[s] * targetGain;
+                                        else _block[s] += block[s] * targetGain;
+                                    }
+                                }
                             }
                             else
                             {
-                                for (int s = 0; s < block.Length; s++)
+                                float step = (targetGain - applied) / _blockFrames;
+                                for (int frame = 0; frame < _blockFrames; frame++)
                                 {
-                                    if (firstInput) _block[s] = block[s] * targetGain;
-                                    else _block[s] += block[s] * targetGain;
+                                    applied += step;
+                                    int index = frame * Channels;
+                                    if (firstInput)
+                                    {
+                                        _block[index] = block[index] * applied;
+                                        _block[index + 1] = block[index + 1] * applied;
+                                    }
+                                    else
+                                    {
+                                        _block[index] += block[index] * applied;
+                                        _block[index + 1] += block[index + 1] * applied;
+                                    }
+                                }
+                            }
+                        }
+                        else if (applied == targetGain)
+                        {
+                            for (int frame = 0; frame < _blockFrames; frame++)
+                            {
+                                int index = frame * Channels;
+                                float left = block[index] * targetGain * panL;
+                                float right = block[index + 1] * targetGain * panR;
+                                if (firstInput)
+                                {
+                                    _block[index] = left;
+                                    _block[index + 1] = right;
+                                }
+                                else
+                                {
+                                    _block[index] += left;
+                                    _block[index + 1] += right;
                                 }
                             }
                         }
@@ -1095,15 +1297,17 @@ internal sealed class GraphEngine : IDisposable
                             {
                                 applied += step;
                                 int index = frame * Channels;
+                                float left = block[index] * applied * panL;
+                                float right = block[index + 1] * applied * panR;
                                 if (firstInput)
                                 {
-                                    _block[index] = block[index] * applied;
-                                    _block[index + 1] = block[index + 1] * applied;
+                                    _block[index] = left;
+                                    _block[index + 1] = right;
                                 }
                                 else
                                 {
-                                    _block[index] += block[index] * applied;
-                                    _block[index + 1] += block[index + 1] * applied;
+                                    _block[index] += left;
+                                    _block[index + 1] += right;
                                 }
                             }
                         }
@@ -1124,8 +1328,63 @@ internal sealed class GraphEngine : IDisposable
                             block = upstream.Block;
                         }
 
-                        if (firstInput) block.CopyTo(_block);
-                        else Add(block);
+                        if (mixer && input.MixerDelay != null)
+                        {
+                            if (input.Delay == null)
+                            {
+                                block.CopyTo(_temp);
+                            }
+
+                            input.MixerDelay.Process(_temp, Channels);
+                            block = _temp;
+                        }
+
+                        if (!mixer)
+                        {
+                            if (firstInput) block.CopyTo(_block);
+                            else Add(block);
+                        }
+                        else
+                        {
+                            float targetGain = input.LinkGain * (input.BusB ? busBGain : busAGain);
+                            if (input.Muted || (anySolo && !input.Solo))
+                            {
+                                targetGain = 0f;
+                            }
+
+                            if (targetGain > 0.0001f)
+                            {
+                                audibleInputs++;
+                            }
+
+                            if (input.Inverted)
+                            {
+                                targetGain = -targetGain;
+                            }
+
+                            float panL = 1f;
+                            float panR = 1f;
+                            float pan = Math.Clamp(input.Pan, -1f, 1f);
+                            if (pan > 0f) panL = 1f - pan;
+                            else if (pan < 0f) panR = 1f + pan;
+                            for (int frame = 0; frame < _blockFrames; frame++)
+                            {
+                                int index = frame * Channels;
+                                float left = block[index] * targetGain * panL;
+                                float right = block[index + 1] * targetGain * panR;
+                                if (firstInput)
+                                {
+                                    _block[index] = left;
+                                    _block[index + 1] = right;
+                                }
+                                else
+                                {
+                                    _block[index] += left;
+                                    _block[index + 1] += right;
+                                }
+                            }
+                        }
+
                         firstInput = false;
                     }
                 }
@@ -1149,6 +1408,11 @@ internal sealed class GraphEngine : IDisposable
                     if (hasChainLatency)
                     {
                         Array.Copy(_dry, _block, _block.Length);
+                    }
+
+                    if (mixer)
+                    {
+                        _modifier.UpdateMixerMeter(_block, _blockFrames);
                     }
 
                     return;
@@ -1225,6 +1489,31 @@ internal sealed class GraphEngine : IDisposable
                     }
                 }
 
+                if (mixer)
+                {
+                    if (_modifier.MixerAutoGain && audibleInputs > 1)
+                    {
+                        float norm = 1f / MathF.Sqrt(audibleInputs);
+                        for (int s = 0; s < _block.Length; s++)
+                        {
+                            _block[s] *= norm;
+                        }
+                    }
+
+                    float width = Math.Clamp(_modifier.MixerWidth, 0f, 2f);
+                    if (Math.Abs(width - 1f) > 1e-4f)
+                    {
+                        for (int frame = 0; frame < _blockFrames; frame++)
+                        {
+                            int index = frame * Channels;
+                            float mid = (_block[index] + _block[index + 1]) * 0.5f;
+                            float side = (_block[index] - _block[index + 1]) * 0.5f * width;
+                            _block[index] = mid + side;
+                            _block[index + 1] = mid - side;
+                        }
+                    }
+                }
+
                 bool finite = true;
                 for (int s = 0; s < _block.Length; s++)
                 {
@@ -1264,6 +1553,11 @@ internal sealed class GraphEngine : IDisposable
                     }
 
                     _wet = targetWet;
+                }
+
+                if (mixer)
+                {
+                    _modifier.UpdateMixerMeter(_block, _blockFrames);
                 }
 
                 TapWorker?.Feed(_block);

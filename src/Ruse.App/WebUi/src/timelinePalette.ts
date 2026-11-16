@@ -33,6 +33,10 @@ export interface TimelinePalette {
   labelText: string;
   loopFill: string;
   loopStroke: string;
+  marker: string;
+  markerText: string;
+  regionFill: string;
+  regionStroke: string;
   playhead: string;
 }
 
@@ -134,6 +138,10 @@ export function readTimelinePalette(): TimelinePalette {
     labelText: rgba(mix(text2, white, 0.16)),
     loopFill: rgba(cyan, 0.1),
     loopStroke: rgba(mix(cyan, white, 0.12)),
+    marker: rgba(amber, 0.92),
+    markerText: rgba(mix(amber, white, 0.35)),
+    regionFill: rgba(blue, 0.08),
+    regionStroke: rgba(blue, 0.45),
     playhead: rgba(record),
   };
 }

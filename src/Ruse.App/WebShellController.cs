@@ -30,6 +30,7 @@ internal sealed partial class WebShellController : IDisposable
     private readonly List<LinkEntry> _links = new();
     private readonly Dictionary<string, long> _nodeClipHoldUntil = new();
     private readonly Dictionary<string, long> _spectrogramCursors = new();
+    private readonly Dictionary<string, string> _nativeFallbackSources = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _telemetryTimer;
     private readonly DispatcherTimer _appsTimer;
     private readonly DispatcherTimer _devicesTimer;
@@ -374,6 +375,11 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-seek": TimelineSeek((long)Number(message, "sample")); break;
             case "timeline-loop": TimelineSetLoop((long?)Number(message, "startSample", -1), (long?)Number(message, "endSample", -1)); break;
             case "timeline-tempo": TimelineSetTempo(Number(message, "tempo", 120)); break;
+            case "timeline-time-signature": TimelineSetTimeSignature((int)Number(message, "numerator", 4), (int)Number(message, "denominator", 4)); break;
+            case "timeline-marker-add": AddTimelineMarker(message); break;
+            case "timeline-marker-update": UpdateTimelineMarker(message); break;
+            case "timeline-marker-remove": RemoveTimelineMarker(String(message, "id")); break;
+            case "timeline-copy-clips": PasteTimelineClips(message); break;
             case "timeline-bounce": BounceTimeline(); break;
             case "timeline-bounce-range": BounceTimelineRange(); break;
             case "timeline-bounce-cancel": CancelTimelineBounce(); break;
@@ -406,8 +412,16 @@ internal sealed partial class WebShellController : IDisposable
             case "connect": ConnectNodes(String(message, "from"), String(message, "to"), String(message, "kind"), (float)Number(message, "gain", 1), Bool(message, "enabled", true)); break;
             case "disconnect": DisconnectLink(String(message, "id")); break;
             case "link-gain": SetLinkGain(String(message, "id"), (float)Number(message, "value", 1)); break;
+            case "link-pan": SetLinkPan(String(message, "id"), (float)Number(message, "value", 0)); break;
+            case "link-solo": SetLinkSolo(String(message, "id"), Bool(message, "value")); break;
+            case "link-bus": SetLinkBus(String(message, "id"), Bool(message, "value")); break;
+            case "mixer-settings": SetMixerSettings(String(message, "id"), (float)Number(message, "width", 1), Bool(message, "autoGain"), (float)Number(message, "crossfade", 0)); break;
+            case "mixer-meter-reset": ResetMixerMeter(String(message, "id")); break;
+            case "link-polarity": SetLinkPolarity(String(message, "id"), Bool(message, "value")); break;
+            case "link-delay": SetLinkDelay(String(message, "id"), (float)Number(message, "value", 0)); break;
             case "link-enabled": SetLinkEnabled(String(message, "id"), Bool(message, "value")); break;
             case "link-native": SetLinkNative(String(message, "id"), Bool(message, "value")); break;
+            case "link-native-cancel-restore": CancelNativeRestore(String(message, "id")); break;
             case "disconnect-node": DisconnectNode(String(message, "id")); break;
             case "frames": SetFrames(Payload<FramesPayload>(message)); break;
             case "save-frame-template": SaveFrameTemplate(Payload<FrameRefPayload>(message)); break;
@@ -641,8 +655,14 @@ internal sealed partial class WebShellController : IDisposable
                 To = link.To,
                 Kind = link.Kind,
                 Gain = link.Gain,
+                Pan = link.Pan,
+                DelayMs = link.DelayMs,
                 Enabled = link.Enabled,
+                Solo = link.Solo,
+                BusB = link.BusB,
+                Inverted = link.Inverted,
                 Native = link.Native,
+                NativeFallback = IsNativeFallback(link),
                 NativeRate = link.Native && _nodes.TryGetValue(link.From, out var nativeFrom)
                     ? nativeFrom.Source?.SampleRate ?? 0
                     : 0,
@@ -716,8 +736,14 @@ internal sealed partial class WebShellController : IDisposable
         {
             Id = link.Id,
             Gain = link.Gain,
+            Pan = link.Pan,
+            DelayMs = link.DelayMs,
             Enabled = link.Enabled,
+            Solo = link.Solo,
+            BusB = link.BusB,
+            Inverted = link.Inverted,
             Native = link.Native,
+            NativeFallback = IsNativeFallback(link),
             NativeRate = link.Native && _nodes.TryGetValue(link.From, out var nativeFrom)
                 ? nativeFrom.Source?.SampleRate ?? 0
                 : 0,
@@ -1113,6 +1139,22 @@ internal sealed partial class WebShellController : IDisposable
                 meter.LevelRight = meter.Level;
                 meter.Clipping = ModifierClipping(entry.Id, sourceClipping, outputClipping,
                     new HashSet<string>(), new HashSet<string>());
+                if (entry.Modifier is { IsMixer: true } mixerMeter)
+                {
+                    float dbLeft = Finite(mixerMeter.MixerMeterDbLeft);
+                    float dbRight = Finite(mixerMeter.MixerMeterDbRight);
+                    meter.DbLeft = dbLeft;
+                    meter.DbRight = dbRight;
+                    meter.Db = Math.Max(dbLeft, dbRight);
+                    meter.PeakDbLeft = Finite(mixerMeter.MixerMeterPeakDbLeft);
+                    meter.PeakDbRight = Finite(mixerMeter.MixerMeterPeakDbRight);
+                    meter.PeakDb = Math.Max(meter.PeakDbLeft.Value, meter.PeakDbRight.Value);
+                    meter.LevelLeft = Math.Clamp(MathF.Pow(10f, dbLeft / 20f), 0f, 1f);
+                    meter.LevelRight = Math.Clamp(MathF.Pow(10f, dbRight / 20f), 0f, 1f);
+                    meter.Level = Math.Max(meter.LevelLeft, meter.LevelRight);
+                    meter.Clipping = mixerMeter.MixerMeterClipping;
+                }
+
                 if (entry.Modifier is { } modifier)
                 {
                     DbMeterProcessor? dbMeter = null;
@@ -1612,7 +1654,12 @@ internal sealed partial class WebShellController : IDisposable
         public required string To { get; init; }
         public required string Kind { get; init; }
         public float Gain { get; set; } = 1;
+        public float Pan { get; set; }
+        public float DelayMs { get; set; }
         public bool Enabled { get; set; } = true;
+        public bool Solo { get; set; }
+        public bool BusB { get; set; }
+        public bool Inverted { get; set; }
         public bool Native { get; set; }
     }
 }

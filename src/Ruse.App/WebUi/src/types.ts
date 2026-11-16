@@ -1,6 +1,6 @@
 export type NodeKind = 'source' | 'output' | 'modifier';
 export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output' | 'sidechain';
-export type CatalogKind = 'app' | 'system' | 'metronome' | 'tone' | 'synth' | 'tts' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'chain' | 'file-player' | 'sample' | 'recorder' | 'vst3' | 'template';
+export type CatalogKind = 'app' | 'system' | 'metronome' | 'tone' | 'synth' | 'tts' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'mixer' | 'chain' | 'file-player' | 'sample' | 'recorder' | 'vst3' | 'template';
 
 export interface ChainElement {
   typeId: string;
@@ -99,6 +99,11 @@ export interface NodeModel {
   isWaveform?: boolean;
   isGraphicEq?: boolean;
   isParametricEq?: boolean;
+  isMixer?: boolean;
+  mixerWidth?: number;
+  mixerAutoGain?: boolean;
+  mixerCrossfade?: number;
+  mixerInputs?: MixerInputModel[];
   eqBandTypes?: string[];
   isConvolutionReverb?: boolean;
   irPath?: string;
@@ -204,10 +209,27 @@ export interface NodeStateUpdate {
   accent?: string;
 }
 
+export interface MixerInputModel {
+  linkId: string;
+  title: string;
+  gain: number;
+  pan: number;
+  delayMs: number;
+  muted: boolean;
+  solo: boolean;
+  busB: boolean;
+  inverted: boolean;
+}
+
 export interface LinkStateUpdate {
   id: string;
   gain: number;
+  pan?: number;
+  delayMs?: number;
   enabled: boolean;
+  solo?: boolean;
+  busB?: boolean;
+  inverted?: boolean;
   native: boolean;
   nativeRate: number;
 }
@@ -218,8 +240,14 @@ export interface LinkModel {
   to: string;
   kind: LinkKind;
   gain: number;
+  pan?: number;
+  delayMs?: number;
   enabled?: boolean;
+  solo?: boolean;
+  busB?: boolean;
+  inverted?: boolean;
   native?: boolean;
+  nativeFallback?: boolean;
   nativeRate?: number;
 }
 

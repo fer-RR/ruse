@@ -15,13 +15,16 @@ internal sealed class SpeechChunker
     private const int MaxSamples = SampleRate * 6;
     private const int HangoverFrames = 100;        // 1 s of silence ends a sentence
     private const int MinVoiceFrames = 20;         // require 200 ms of voice
+    private const float MinVoiceRms = 0.0002f;
+    private const float MinChunkRms = 0.00008f;
 
     private readonly List<float> _samples = new(MaxSamples + 8192);
     private int _silentFrames;
     private int _voicedFrames;
     private int _frameCount;
     private float _frameEnergy;
-    private float _noiseFloor = 0.0005f;
+    private double _chunkEnergy;
+    private float _noiseFloor = 0.0001f;
     private long _chunkStartSample;
     private long _totalSamples;
 
@@ -39,7 +42,8 @@ internal sealed class SpeechChunker
         _voicedFrames = 0;
         _frameCount = 0;
         _frameEnergy = 0;
-        _noiseFloor = 0.0005f;
+        _chunkEnergy = 0;
+        _noiseFloor = 0.0001f;
         _chunkStartSample = _totalSamples;
     }
 
@@ -62,6 +66,7 @@ internal sealed class SpeechChunker
         {
             _samples.Add(sample);
             _frameEnergy += sample * sample;
+            _chunkEnergy += sample * sample;
             _frameCount++;
             if (_frameCount < FrameSamples)
             {
@@ -69,7 +74,7 @@ internal sealed class SpeechChunker
             }
 
             float rms = MathF.Sqrt(_frameEnergy / FrameSamples);
-            float threshold = MathF.Max(0.001f, _noiseFloor * 2.5f);
+            float threshold = MathF.Max(MinVoiceRms, _noiseFloor * 2.5f);
             if (rms > threshold)
             {
                 _silentFrames = 0;
@@ -78,9 +83,9 @@ internal sealed class SpeechChunker
             else
             {
                 _silentFrames++;
+                _noiseFloor = Math.Clamp(_noiseFloor * 0.995f + rms * 0.005f, 0.00002f, 0.02f);
             }
 
-            _noiseFloor = Math.Clamp(_noiseFloor * 0.995f + rms * 0.005f, 0.0005f, 0.02f);
             _frameCount = 0;
             _frameEnergy = 0;
         }
@@ -95,15 +100,41 @@ internal sealed class SpeechChunker
 
         if (!enough)
         {
-            // A long silent or noisy-only stretch should not become a Whisper job.
-            ResetChunk();
-            return false;
+            double chunkRms = Math.Sqrt(_chunkEnergy / Math.Max(1, _samples.Count));
+            if (!atLimit || chunkRms < MinChunkRms)
+            {
+                // A long silent or noisy-only stretch should not become a Whisper job.
+                ResetChunk();
+                return false;
+            }
         }
 
         chunk = _samples.ToArray();
         startSeconds = _chunkStartSample / (double)SampleRate;
         ResetChunk();
         return true;
+    }
+}
+
+internal static class SpeechAudio
+{
+    /// <summary>Raises a quiet speech chunk to a level Whisper recognizes reliably.</summary>
+    public static void Normalize(float[] samples)
+    {
+        if (samples.Length == 0) return;
+        float peak = 0;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            peak = MathF.Max(peak, MathF.Abs(samples[i]));
+        }
+
+        if (peak <= 1e-6f) return;
+        float gain = MathF.Min(100f, 0.8f / peak);
+        if (gain <= 1.01f) return;
+        for (int i = 0; i < samples.Length; i++)
+        {
+            samples[i] = Math.Clamp(samples[i] * gain, -1f, 1f);
+        }
     }
 }
 

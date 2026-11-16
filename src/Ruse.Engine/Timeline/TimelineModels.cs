@@ -7,9 +7,21 @@ public sealed class TimelineProject
     public int Version { get; set; } = 1;
     public int SampleRate { get; set; } = AudioEngineConfig.SampleRate;
     public double Tempo { get; set; } = 120.0;
+    public int TimeSignatureNumerator { get; set; } = 4;
+    public int TimeSignatureDenominator { get; set; } = 4;
     public long LoopStartSample { get; set; } = -1;
     public long LoopEndSample { get; set; } = -1;
+    public List<TimelineMarker> Markers { get; set; } = new();
     public List<TimelineTrack> Tracks { get; set; } = new();
+}
+
+public sealed class TimelineMarker
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "Marker";
+    public long StartSample { get; set; }
+    public long EndSample { get; set; } = -1;
+    public string? Color { get; set; }
 }
 
 public sealed class TimelineTrack

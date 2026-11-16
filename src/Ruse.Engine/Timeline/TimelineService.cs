@@ -9,15 +9,12 @@ namespace Ruse.App.Audio;
 /// exactly the frames for that block, so clip starts and seeks are sample
 /// accurate relative to the engine clock.
 /// </summary>
-public sealed class TimelineService : IDisposable
+public sealed partial class TimelineService : IDisposable
 {
     public const string ClipPitchAutomationPrefix = "clip:";
     public const float MaxClipPitchSemitones = 24f;
 
     private const int MaxClipSamples = 48_000 * 60 * 10;
-    private const int GrainSize = 2048;
-    private const int GrainHop = GrainSize / 2;
-    private static readonly float[] GrainWindow = BuildGrainWindow();
 
     private readonly object _gate = new();
     private readonly Dictionary<string, TrackPlayback> _tracks = new();
@@ -76,6 +73,19 @@ public sealed class TimelineService : IDisposable
         if (!double.IsFinite(project.Tempo) || project.Tempo < 20.0 || project.Tempo > 300.0)
         {
             project.Tempo = 120.0;
+        }
+
+        project.TimeSignatureNumerator = Math.Clamp(project.TimeSignatureNumerator, 1, 16);
+        project.TimeSignatureDenominator = project.TimeSignatureDenominator is 1 or 2 or 4 or 8 or 16
+            ? project.TimeSignatureDenominator
+            : 4;
+        project.Markers ??= new();
+        project.Markers.RemoveAll(marker => marker == null);
+        foreach (var marker in project.Markers)
+        {
+            marker.Id = string.IsNullOrWhiteSpace(marker.Id) ? Guid.NewGuid().ToString("N") : marker.Id;
+            marker.StartSample = Math.Max(0, marker.StartSample);
+            marker.EndSample = marker.EndSample > marker.StartSample ? marker.EndSample : -1;
         }
 
         if (project.LoopStartSample < 0 || project.LoopEndSample <= project.LoopStartSample)
@@ -1031,218 +1041,6 @@ public sealed class TimelineService : IDisposable
         return true;
     }
 
-    private static void MixTrack(TimelineTrack track, Dictionary<string, ClipPlayback> clipPlayback,
-        long position, int frames, float[] block)
-    {
-        foreach (var clip in track.Clips)
-        {
-            if (!clipPlayback.TryGetValue(clip.Id, out var state))
-            {
-                state = new ClipPlayback();
-                clipPlayback[clip.Id] = state;
-            }
-
-            MixClipInto(clip, state, track.Gain, position, frames, block, 0);
-        }
-    }
-
-    private static void MixClipInto(TimelineClip clip, ClipPlayback state, float trackGain,
-        long position, int frames, float[] block, int blockOffset)
-    {
-        if (clip.Audio == null || clip.LengthSamples <= 0 || frames <= 0)
-        {
-            return;
-        }
-
-        long clipEnd = clip.StartSample + clip.LengthSamples;
-        long blockEnd = position + frames;
-        long mixStart = Math.Max(position, clip.StartSample);
-        long mixEnd = Math.Min(blockEnd, clipEnd);
-        if (mixEnd <= mixStart)
-        {
-            return;
-        }
-
-        int audioFrames = clip.Audio.Length / 2;
-        if (audioFrames <= 0)
-        {
-            return;
-        }
-
-        int writeOffset = (int)(mixStart - position);
-        int writeFrames = (int)(mixEnd - mixStart);
-        bool pitched = clip.PitchAutomationSemitones.HasValue ||
-            Math.Abs(clip.PitchSemitones) > 0.0001f;
-        bool reset = !state.Initialized ||
-            state.LastEndSample != mixStart ||
-            state.LastStartSample != clip.StartSample ||
-            state.LastSourceOffset != clip.SourceOffsetSamples ||
-            state.LastAudioLength != clip.Audio.Length ||
-            state.GranularMode != pitched;
-        if (reset)
-        {
-            double sourceStart = clip.SourceOffsetSamples + (mixStart - clip.StartSample);
-            state.SourceCursor = sourceStart;
-            state.CurrentRatio = PitchRatio(EffectivePitch(clip));
-            state.GrainA = new GrainState { Age = 0, ReadPos = sourceStart };
-            state.GrainB = new GrainState { Age = GrainHop, ReadPos = sourceStart };
-        }
-
-        state.Initialized = true;
-        state.GranularMode = pitched;
-        state.LastStartSample = clip.StartSample;
-        state.LastSourceOffset = clip.SourceOffsetSamples;
-        state.LastAudioLength = clip.Audio.Length;
-
-        double loopStart = Math.Clamp(clip.SourceOffsetSamples, 0, audioFrames - 1);
-        double loopLength = Math.Max(1, audioFrames - loopStart);
-        float targetRatio = PitchRatio(EffectivePitch(clip));
-        int targetIndex = (blockOffset + writeOffset) * 2;
-        int fadeIn = Math.Max(0, clip.FadeInSamples);
-        int fadeOut = Math.Max(0, clip.FadeOutSamples);
-        long clipFrame = mixStart - clip.StartSample;
-        int played = 0;
-        for (int frame = 0; frame < writeFrames; frame++)
-        {
-            long localFrame = clipFrame + frame;
-            float left;
-            float right;
-            if (pitched)
-            {
-                state.CurrentRatio = ParameterSmoothing.Approach(
-                    state.CurrentRatio, targetRatio, ParameterSmoothing.FastAlpha);
-                double anchor = clip.SourceOffsetSamples + mixStart - clip.StartSample + frame;
-                if (clip.Loop)
-                {
-                    if (anchor >= audioFrames)
-                    {
-                        anchor = loopStart + ((anchor - loopStart) % loopLength);
-                    }
-                }
-
-                var grainA = ReadGrain(ref state.GrainA, anchor, state.CurrentRatio,
-                    clip.Audio, audioFrames, clip.Loop, loopStart, loopLength);
-                var grainB = ReadGrain(ref state.GrainB, anchor, state.CurrentRatio,
-                    clip.Audio, audioFrames, clip.Loop, loopStart, loopLength);
-                left = grainA.Left + grainB.Left;
-                right = grainA.Right + grainB.Right;
-            }
-            else
-            {
-                double cursor = state.SourceCursor;
-                if (clip.Loop)
-                {
-                    if (cursor < loopStart)
-                    {
-                        cursor = loopStart;
-                    }
-                    else if (cursor >= audioFrames)
-                    {
-                        cursor = loopStart + ((cursor - loopStart) % loopLength);
-                    }
-                }
-                else if (cursor >= audioFrames)
-                {
-                    break;
-                }
-
-                int index = Math.Max(0, (int)cursor);
-                int next = index + 1;
-                if (next >= audioFrames)
-                {
-                    next = clip.Loop ? (int)loopStart : index;
-                }
-
-                float blend = (float)(cursor - index);
-                int sourceIndex = index * 2;
-                int nextIndex = next * 2;
-                left = clip.Audio[sourceIndex] * (1f - blend) + clip.Audio[nextIndex] * blend;
-                right = clip.Audio[sourceIndex + 1] * (1f - blend) + clip.Audio[nextIndex + 1] * blend;
-                state.SourceCursor = cursor + 1;
-            }
-
-            float gain = clip.Gain * trackGain;
-            if (fadeIn > 0 && localFrame < fadeIn)
-            {
-                gain *= localFrame / (float)fadeIn;
-            }
-
-            long tail = clip.LengthSamples - localFrame;
-            if (fadeOut > 0 && tail < fadeOut)
-            {
-                gain *= Math.Max(0f, tail / (float)fadeOut);
-            }
-
-            block[targetIndex] += left * gain;
-            block[targetIndex + 1] += right * gain;
-            targetIndex += 2;
-            played++;
-        }
-
-        state.LastEndSample = mixStart + played;
-    }
-
-    private static (float Left, float Right) ReadGrain(ref GrainState grain, double anchor,
-        float ratio, float[] audio, int audioFrames, bool loop, double loopStart, double loopLength)
-    {
-        if (grain.Age >= GrainSize)
-        {
-            grain.Age = 0;
-            grain.ReadPos = anchor;
-        }
-
-        float window = GrainWindow[grain.Age];
-        double pos = grain.ReadPos;
-        grain.ReadPos += ratio;
-        grain.Age++;
-        if (loop)
-        {
-            if (pos < loopStart)
-            {
-                pos = loopStart;
-            }
-            else if (pos >= audioFrames)
-            {
-                pos = loopStart + ((pos - loopStart) % loopLength);
-            }
-        }
-        else if (pos < 0 || pos >= audioFrames)
-        {
-            return (0f, 0f);
-        }
-
-        int index = Math.Max(0, (int)pos);
-        int next = index + 1;
-        if (next >= audioFrames)
-        {
-            next = loop ? (int)loopStart : index;
-        }
-
-        float blend = (float)(pos - index);
-        int sourceIndex = index * 2;
-        int nextIndex = next * 2;
-        float left = audio[sourceIndex] * (1f - blend) + audio[nextIndex] * blend;
-        float right = audio[sourceIndex + 1] * (1f - blend) + audio[nextIndex + 1] * blend;
-        return (left * window, right * window);
-    }
-
-    private static float[] BuildGrainWindow()
-    {
-        var window = new float[GrainSize];
-        for (int i = 0; i < GrainSize; i++)
-        {
-            window[i] = 0.5f - 0.5f * MathF.Cos(2f * MathF.PI * i / GrainSize);
-        }
-
-        return window;
-    }
-
-    private static float EffectivePitch(TimelineClip clip) =>
-        clip.PitchAutomationSemitones ?? clip.PitchSemitones;
-
-    private static float PitchRatio(float semitones) =>
-        MathF.Pow(2f, Math.Clamp(semitones,
-            -MaxClipPitchSemitones, MaxClipPitchSemitones) / 12f);
     public bool Undo()
     {
         lock (_gate)
@@ -1311,13 +1109,24 @@ public sealed class TimelineService : IDisposable
         Version = source.Version,
         SampleRate = source.SampleRate,
         Tempo = source.Tempo,
+        TimeSignatureNumerator = source.TimeSignatureNumerator,
+        TimeSignatureDenominator = source.TimeSignatureDenominator,
         LoopStartSample = source.LoopStartSample,
         LoopEndSample = source.LoopEndSample,
+        Markers = source.Markers.Select(marker => new TimelineMarker
+        {
+            Id = marker.Id,
+            Name = marker.Name,
+            StartSample = marker.StartSample,
+            EndSample = marker.EndSample,
+            Color = marker.Color,
+        }).ToList(),
         Tracks = source.Tracks.Select(track => new TimelineTrack
         {
             Id = track.Id,
             Name = track.Name,
             SourceNodeId = track.SourceNodeId,
+            GeneratorNodeId = track.GeneratorNodeId,
             Gain = track.Gain,
             Muted = track.Muted,
             Solo = track.Solo,
@@ -1333,6 +1142,7 @@ public sealed class TimelineService : IDisposable
                 PitchSemitones = clip.PitchSemitones,
                 FadeInSamples = clip.FadeInSamples,
                 FadeOutSamples = clip.FadeOutSamples,
+                Loop = clip.Loop,
                 Peaks = includePeaks ? clip.Peaks : Array.Empty<float>(),
                 Audio = clip.Audio,
             }).ToList(),
@@ -1377,6 +1187,153 @@ public sealed class TimelineService : IDisposable
 
             Remember();
             _project.Tempo = next;
+            return true;
+        }
+    }
+
+    public bool SetTimeSignature(int numerator, int denominator)
+    {
+        lock (_gate)
+        {
+            int nextNumerator = Math.Clamp(numerator, 1, 16);
+            int nextDenominator = denominator is 1 or 2 or 4 or 8 or 16 ? denominator : 4;
+            if (_project.TimeSignatureNumerator == nextNumerator &&
+                _project.TimeSignatureDenominator == nextDenominator)
+            {
+                return true;
+            }
+
+            Remember();
+            _project.TimeSignatureNumerator = nextNumerator;
+            _project.TimeSignatureDenominator = nextDenominator;
+            return true;
+        }
+    }
+
+    public TimelineMarker AddMarker(long startSample, long? endSample, string? name)
+    {
+        lock (_gate)
+        {
+            Remember();
+            long start = Math.Max(0, startSample);
+            long end = endSample.HasValue && endSample.Value > start ? endSample.Value : -1;
+            var marker = new TimelineMarker
+            {
+                Name = string.IsNullOrWhiteSpace(name)
+                    ? (end > start ? $"Region {_project.Markers.Count + 1}" : $"Marker {_project.Markers.Count + 1}")
+                    : name.Trim(),
+                StartSample = start,
+                EndSample = end,
+            };
+            _project.Markers.Add(marker);
+            return marker;
+        }
+    }
+
+    public bool UpdateMarker(string id, long? startSample, long? endSample, string? name)
+    {
+        lock (_gate)
+        {
+            var marker = _project.Markers.FirstOrDefault(item =>
+                string.Equals(item.Id, id, StringComparison.Ordinal));
+            if (marker == null)
+            {
+                return false;
+            }
+
+            Remember();
+            if (startSample.HasValue)
+            {
+                marker.StartSample = Math.Max(0, startSample.Value);
+            }
+
+            if (endSample.HasValue)
+            {
+                marker.EndSample = endSample.Value > marker.StartSample ? endSample.Value : -1;
+            }
+            else if (marker.EndSample > 0 && marker.EndSample <= marker.StartSample)
+            {
+                marker.EndSample = -1;
+            }
+
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                marker.Name = name.Trim();
+            }
+
+            return true;
+        }
+    }
+
+    public bool RemoveMarker(string id)
+    {
+        lock (_gate)
+        {
+            if (!_project.Markers.Any(item => string.Equals(item.Id, id, StringComparison.Ordinal)))
+            {
+                return false;
+            }
+
+            Remember();
+            _project.Markers.RemoveAll(item =>
+                string.Equals(item.Id, id, StringComparison.Ordinal));
+            return true;
+        }
+    }
+
+    public bool CopyClips(IReadOnlyList<(string TrackId, string ClipId, long StartSample)> copies)
+    {
+        lock (_gate)
+        {
+            var pending = new List<(TimelineTrack Track, TimelineClip Clip)>();
+            foreach (var copy in copies)
+            {
+                if (!_tracks.TryGetValue(copy.TrackId, out var playback))
+                {
+                    continue;
+                }
+
+                var source = playback.Track.Clips.FirstOrDefault(item =>
+                    string.Equals(item.Id, copy.ClipId, StringComparison.Ordinal));
+                if (source == null)
+                {
+                    continue;
+                }
+
+                pending.Add((playback.Track, new TimelineClip
+                {
+                    Name = source.Name,
+                    SourcePath = source.SourcePath,
+                    StartSample = Math.Max(0, copy.StartSample),
+                    LengthSamples = source.LengthSamples,
+                    SourceOffsetSamples = source.SourceOffsetSamples,
+                    Gain = source.Gain,
+                    PitchSemitones = source.PitchSemitones,
+                    FadeInSamples = source.FadeInSamples,
+                    FadeOutSamples = source.FadeOutSamples,
+                    Loop = source.Loop,
+                    Peaks = source.Peaks,
+                    Audio = source.Audio,
+                }));
+            }
+
+            if (pending.Count == 0)
+            {
+                return false;
+            }
+
+            Remember();
+            foreach (var item in pending)
+            {
+                item.Track.Clips.Add(item.Clip);
+            }
+
+            foreach (var track in pending.Select(item => item.Track).Distinct())
+            {
+                _tracks[track.Id].RefreshClips();
+                _tracks[track.Id].RefreshAutomation();
+            }
+
             return true;
         }
     }
@@ -1838,37 +1795,4 @@ public sealed class TimelineService : IDisposable
             new(Array.Empty<TimelineClip>(), Array.Empty<ClipPlayback>());
     }
 
-    private sealed class ClipPlayback
-    {
-        public bool Initialized;
-        public long LastEndSample = long.MinValue;
-        public long LastStartSample = long.MinValue;
-        public long LastSourceOffset = long.MinValue;
-        public int LastAudioLength = -1;
-        public bool GranularMode;
-        public double SourceCursor;
-        public float CurrentRatio = 1f;
-        public GrainState GrainA;
-        public GrainState GrainB;
-
-        public void Reset()
-        {
-            Initialized = false;
-            LastEndSample = long.MinValue;
-            LastStartSample = long.MinValue;
-            LastSourceOffset = long.MinValue;
-            LastAudioLength = -1;
-            GranularMode = false;
-            SourceCursor = 0;
-            CurrentRatio = 1f;
-            GrainA = default;
-            GrainB = default;
-        }
-    }
-
-    private struct GrainState
-    {
-        public int Age;
-        public double ReadPos;
-    }
 }

@@ -23,6 +23,7 @@ export interface TimelineClipModel {
   pitchSemitones: number;
   fadeInSamples: number;
   fadeOutSamples: number;
+  loop: boolean;
   peaks: number[];
 }
 
@@ -38,12 +39,23 @@ export interface TimelineTrackModel {
   automation: TimelineAutomationLaneModel[];
 }
 
+export interface TimelineMarkerModel {
+  id: string;
+  name: string;
+  startSample: number;
+  endSample: number;
+  color?: string;
+}
+
 export interface TimelineProjectModel {
   version: number;
   sampleRate: number;
   tempo: number;
+  timeSignatureNumerator: number;
+  timeSignatureDenominator: number;
   loopStartSample: number;
   loopEndSample: number;
+  markers: TimelineMarkerModel[];
   tracks: TimelineTrackModel[];
 }
 
@@ -64,6 +76,7 @@ export interface TimelineState {
 export interface TimelineAutomationTarget {
   nodeId: string;
   trackId?: string;
+  section?: 'track' | 'shared';
   label: string;
   processorIndex: number;
   parameterIndex: number;

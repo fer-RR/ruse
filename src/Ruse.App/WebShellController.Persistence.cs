@@ -116,6 +116,10 @@ internal sealed partial class WebShellController
                     Enabled = entry.Modifier.Enabled,
                     Parallel = entry.Modifier.Parallel,
                     Send = entry.Modifier.Send,
+                    IsMixer = entry.Modifier.IsMixer,
+                    MixerWidth = entry.Modifier.MixerWidth,
+                    MixerAutoGain = entry.Modifier.MixerAutoGain,
+                    MixerCrossfade = entry.Modifier.MixerCrossfade,
                     Color = entry.Color,
                     TranscriberModel = entry.TranscriberModel,
                     TranslatorTarget = entry.TranslatorTarget,
@@ -140,7 +144,12 @@ internal sealed partial class WebShellController
                     SourceIndex = directSource,
                     OutputIndex = directOutput,
                     Gain = link.Gain,
+                    Pan = link.Pan,
+                    DelayMs = link.DelayMs,
                     Enabled = link.Enabled,
+                    Solo = link.Solo,
+                    BusB = link.BusB,
+                    Inverted = link.Inverted,
                     Native = link.Native,
                 });
             }
@@ -195,6 +204,44 @@ internal sealed partial class WebShellController
                     FromModifierIndex = fromModifier,
                     ToModifierIndex = toModifier,
                 });
+            }
+        }
+
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Modifier is not { IsMixer: true } || !modifierIndex.TryGetValue(entry.Id, out int mixerIndex))
+            {
+                continue;
+            }
+
+            foreach (var link in _links.Where(link => link.To == entry.Id && link.Kind != "sidechain"))
+            {
+                var saved = new PresetMixerInput
+                {
+                    ModifierIndex = mixerIndex,
+                    Gain = link.Gain,
+                    Pan = link.Pan,
+                    DelayMs = link.DelayMs,
+                    Enabled = link.Enabled,
+                    Solo = link.Solo,
+                    BusB = link.BusB,
+                    Inverted = link.Inverted,
+                };
+
+                if (sourceIndex.TryGetValue(link.From, out int inputSource))
+                {
+                    saved.SourceIndex = inputSource;
+                }
+                else if (modifierIndex.TryGetValue(link.From, out int inputModifier))
+                {
+                    saved.InputModifierIndex = inputModifier;
+                }
+                else
+                {
+                    continue;
+                }
+
+                preset.MixerInputs.Add(saved);
             }
         }
 
@@ -406,10 +453,14 @@ internal sealed partial class WebShellController
             modifier.Enabled = saved.Enabled;
             modifier.Parallel = saved.Parallel;
             modifier.Send = float.IsFinite(saved.Send) ? Math.Clamp(saved.Send, 0f, 1f) : 0.5f;
+            modifier.IsMixer = saved.IsMixer;
+            modifier.MixerWidth = float.IsFinite(saved.MixerWidth) ? Math.Clamp(saved.MixerWidth, 0f, 2f) : 1f;
+            modifier.MixerAutoGain = saved.MixerAutoGain;
+            modifier.MixerCrossfade = float.IsFinite(saved.MixerCrossfade) ? Math.Clamp(saved.MixerCrossfade, 0f, 1f) : 0f;
             bool isChain = modifier.Processors.Any(processor => processor is ChainProcessor);
             var modifierEntry = RegisterModifier(modifier, saved.X + offsetX, saved.Y + offsetY,
-                flavor: isChain ? "chain" : "effect",
-                subtitle: isChain ? "Saved chain" : "Processing",
+                flavor: saved.IsMixer ? "mixer" : isChain ? "chain" : "effect",
+                subtitle: saved.IsMixer ? "Mixer" : isChain ? "Saved chain" : "Processing",
                 transcriberModel: saved.TranscriberModel,
                 translatorTarget: saved.TranslatorTarget,
                 translatorModel: saved.TranslatorModel,
@@ -428,6 +479,13 @@ internal sealed partial class WebShellController
                 var link = ConnectEntries(source, output, route.Gain, publish: false);
                 link.Enabled = route.Enabled;
                 link.Native = route.Native;
+                link.Pan = float.IsFinite(route.Pan) ? Math.Clamp(route.Pan, -1f, 1f) : 0f;
+                link.DelayMs = float.IsFinite(route.DelayMs)
+                    ? Math.Clamp(route.DelayMs, 0f, ModifierNode.MixerMaxDelayMs)
+                    : 0f;
+                link.Solo = route.Solo;
+                link.BusB = route.BusB;
+                link.Inverted = route.Inverted;
                 ApplyLinkRouting(link, publish: false);
             }
         }
@@ -474,6 +532,48 @@ internal sealed partial class WebShellController
                 created.Enabled = link.Enabled;
                 ApplyLinkRouting(created, publish: false);
             }
+        }
+
+        foreach (var saved in preset.MixerInputs)
+        {
+            if (Resolve(modifiers, saved.ModifierIndex) is not { } mixer)
+            {
+                continue;
+            }
+
+            NodeEntry? from = saved.SourceIndex >= 0
+                ? Resolve(sources, saved.SourceIndex)
+                : saved.InputModifierIndex >= 0
+                    ? Resolve(modifiers, saved.InputModifierIndex)
+                    : null;
+            if (from == null)
+            {
+                continue;
+            }
+
+            var link = _links.FirstOrDefault(item =>
+                item.From == from.Id && item.To == mixer.Id && item.Kind != "sidechain");
+            if (link == null)
+            {
+                continue;
+            }
+
+            link.Gain = float.IsFinite(saved.Gain) ? Math.Clamp(saved.Gain, 0f, 1.5f) : 1f;
+            link.Pan = float.IsFinite(saved.Pan) ? Math.Clamp(saved.Pan, -1f, 1f) : 0f;
+            link.DelayMs = float.IsFinite(saved.DelayMs)
+                ? Math.Clamp(saved.DelayMs, 0f, ModifierNode.MixerMaxDelayMs)
+                : 0f;
+            link.Enabled = saved.Enabled;
+            link.Solo = saved.Solo;
+            link.BusB = saved.BusB;
+            link.Inverted = saved.Inverted;
+            ApplyLinkRouting(link, publish: false);
+            SyncMixerInput(link);
+        }
+
+        if (preset.MixerInputs.Any(input => input.DelayMs > 0))
+        {
+            _graph.RefreshEngine();
         }
 
         if (!insert)
@@ -525,6 +625,8 @@ internal sealed partial class WebShellController
             PublishTimeline();
         }
 
+        RestoreNativePassthrough(outputs);
+
         if (disarmedRecorders > 0)
         {
             AppLog.Warning($"Disarmed {disarmedRecorders} recorder(s) imported from a preset.");
@@ -544,6 +646,33 @@ internal sealed partial class WebShellController
         {
             _running = false;
             PublishGraph();
+        }
+    }
+
+    private void RestoreNativePassthrough(IEnumerable<NodeEntry?> outputs)
+    {
+        foreach (var entry in outputs.OfType<NodeEntry>())
+        {
+            if (entry.Output == null)
+            {
+                continue;
+            }
+
+            var links = _links.Where(link => link.To == entry.Id).ToList();
+            if (!links.Any(link => link.Native))
+            {
+                continue;
+            }
+
+            if (links.Count == 1 && RefreshNativeChain(entry.Output))
+            {
+                continue;
+            }
+
+            foreach (var link in links)
+            {
+                link.Native = false;
+            }
         }
     }
 
