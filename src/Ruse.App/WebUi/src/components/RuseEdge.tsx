@@ -34,7 +34,17 @@ export default function RuseEdge({
     : active
       ? style
       : { ...style, filter: 'saturate(0.18)', opacity: 0.48 };
-  const lineStyle = sidechain ? { ...baseStyle, strokeDasharray: '5 4' } : baseStyle;
+  const lineStyle = native
+    ? {
+        ...baseStyle,
+        stroke: 'var(--signal)',
+        strokeWidth: 3,
+        strokeDasharray: '2 4',
+        strokeLinecap: 'round' as const,
+        opacity: active ? 1 : 0.78,
+        filter: 'drop-shadow(0 0 5px rgba(67, 227, 154, 0.45))',
+      }
+    : sidechain ? { ...baseStyle, strokeDasharray: '5 4' } : baseStyle;
 
 
   useEffect(() => {

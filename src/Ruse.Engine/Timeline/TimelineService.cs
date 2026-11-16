@@ -11,7 +11,13 @@ namespace Ruse.App.Audio;
 /// </summary>
 public sealed class TimelineService : IDisposable
 {
+    public const string ClipPitchAutomationPrefix = "clip:";
+    public const float MaxClipPitchSemitones = 24f;
+
     private const int MaxClipSamples = 48_000 * 60 * 10;
+    private const int GrainSize = 2048;
+    private const int GrainHop = GrainSize / 2;
+    private static readonly float[] GrainWindow = BuildGrainWindow();
 
     private readonly object _gate = new();
     private readonly Dictionary<string, TrackPlayback> _tracks = new();
@@ -211,6 +217,7 @@ public sealed class TimelineService : IDisposable
                 LengthSamples = lengthSamples,
             });
             playback.RefreshClips();
+            playback.RefreshAutomation();
             return true;
         }
     }
@@ -266,6 +273,7 @@ public sealed class TimelineService : IDisposable
             };
             playback.Track.Clips.Add(clip);
             playback.RefreshClips();
+            playback.RefreshAutomation();
         }
 
         return true;
@@ -290,6 +298,40 @@ public sealed class TimelineService : IDisposable
             playback.Track.Gain = nextGain;
             playback.Track.Muted = muted;
             playback.Track.Solo = solo;
+            return true;
+        }
+    }
+
+    public bool RenameTrack(string trackId, string name, out string error)
+    {
+        error = "";
+        name = (name ?? "").Trim();
+        if (name.Length == 0)
+        {
+            error = "Track name cannot be empty.";
+            return false;
+        }
+
+        if (name.Length > 80)
+        {
+            name = name[..80];
+        }
+
+        lock (_gate)
+        {
+            if (!_tracks.TryGetValue(trackId, out var playback))
+            {
+                error = "Timeline track not found.";
+                return false;
+            }
+
+            if (playback.Track.Name == name)
+            {
+                return true;
+            }
+
+            Remember();
+            playback.Track.Name = name;
             return true;
         }
     }
@@ -512,7 +554,7 @@ public sealed class TimelineService : IDisposable
 
     public bool UpdateClip(string trackId, string clipId,
         long? startSample, long? lengthSamples, long? sourceOffsetSamples,
-        float? gain, int? fadeInSamples, int? fadeOutSamples)
+        float? gain, int? fadeInSamples, int? fadeOutSamples, float? pitchSemitones = null)
     {
         lock (_gate)
         {
@@ -545,6 +587,12 @@ public sealed class TimelineService : IDisposable
             }
 
             if (gain.HasValue) clip.Gain = Math.Clamp(gain.Value, 0f, 4f);
+            if (pitchSemitones.HasValue)
+            {
+                clip.PitchSemitones = Math.Clamp(pitchSemitones.Value,
+                    -MaxClipPitchSemitones, MaxClipPitchSemitones);
+            }
+
             if (fadeInSamples.HasValue) clip.FadeInSamples = Math.Max(0, fadeInSamples.Value);
             if (fadeOutSamples.HasValue) clip.FadeOutSamples = Math.Max(0, fadeOutSamples.Value);
             clip.FadeInSamples = (int)Math.Min(clip.FadeInSamples, clip.LengthSamples);
@@ -677,6 +725,7 @@ public sealed class TimelineService : IDisposable
                 LengthSamples = rightLength,
                 SourceOffsetSamples = clip.SourceOffsetSamples + leftLength,
                 Gain = clip.Gain,
+                PitchSemitones = clip.PitchSemitones,
                 FadeInSamples = 0,
                 FadeOutSamples = (int)Math.Min(clip.FadeOutSamples, rightLength),
                 Peaks = clip.Peaks,
@@ -688,6 +737,7 @@ public sealed class TimelineService : IDisposable
             clip.FadeOutSamples = 0;
             playback.Track.Clips.Add(right);
             playback.RefreshClips();
+            playback.RefreshAutomation();
             return true;
         }
     }
@@ -717,12 +767,14 @@ public sealed class TimelineService : IDisposable
                 LengthSamples = clip.LengthSamples,
                 SourceOffsetSamples = clip.SourceOffsetSamples,
                 Gain = clip.Gain,
+                PitchSemitones = clip.PitchSemitones,
                 FadeInSamples = clip.FadeInSamples,
                 FadeOutSamples = clip.FadeOutSamples,
                 Peaks = clip.Peaks,
                 Audio = clip.Audio,
             });
             playback.RefreshClips();
+            playback.RefreshAutomation();
             return true;
         }
     }
@@ -769,6 +821,7 @@ public sealed class TimelineService : IDisposable
             left.FadeOutSamples = (int)Math.Min(overlap, left.LengthSamples);
             right.FadeInSamples = (int)Math.Min(overlap, right.LengthSamples);
             playback.RefreshClips();
+            playback.RefreshAutomation();
             return true;
         }
     }
@@ -804,6 +857,7 @@ public sealed class TimelineService : IDisposable
             Remember();
             playback.Track.Clips.RemoveAll(clip => string.Equals(clip.Id, clipId, StringComparison.Ordinal));
             playback.RefreshClips();
+            playback.RefreshAutomation();
             return true;
         }
     }
@@ -928,6 +982,7 @@ public sealed class TimelineService : IDisposable
             const int blockFrames = 2048;
             var block = new float[blockFrames * 2];
             var trackBlock = new float[blockFrames * 2];
+            var clipPlayback = new Dictionary<string, ClipPlayback>(StringComparer.Ordinal);
             bool anySolo = snapshot.Tracks.Any(track => track.Solo);
             using var writer = new WaveFileWriter(path, new WaveFormat(SampleRate, 24, 2));
             long position = 0;
@@ -943,7 +998,7 @@ public sealed class TimelineService : IDisposable
                     }
 
                     Array.Clear(trackBlock, 0, frames * 2);
-                    MixTrack(track, position, frames, trackBlock);
+                    MixTrack(track, clipPlayback, position, frames, trackBlock);
                     TrackProcessor?.Invoke(track, trackBlock, frames);
                     for (int i = 0; i < frames * 2; i++)
                     {
@@ -976,77 +1031,218 @@ public sealed class TimelineService : IDisposable
         return true;
     }
 
-    private static void MixTrack(TimelineTrack track, long position, int frames, float[] block)
+    private static void MixTrack(TimelineTrack track, Dictionary<string, ClipPlayback> clipPlayback,
+        long position, int frames, float[] block)
     {
         foreach (var clip in track.Clips)
         {
-            MixClipInto(clip, track.Gain, position, frames, block, 0);
+            if (!clipPlayback.TryGetValue(clip.Id, out var state))
+            {
+                state = new ClipPlayback();
+                clipPlayback[clip.Id] = state;
+            }
+
+            MixClipInto(clip, state, track.Gain, position, frames, block, 0);
         }
     }
 
-    private static void MixClipInto(TimelineClip clip, float trackGain, long position, int frames,
-        float[] block, int blockOffset)
+    private static void MixClipInto(TimelineClip clip, ClipPlayback state, float trackGain,
+        long position, int frames, float[] block, int blockOffset)
     {
-        if (clip.Audio == null || clip.LengthSamples <= 0)
+        if (clip.Audio == null || clip.LengthSamples <= 0 || frames <= 0)
         {
             return;
         }
 
         long clipEnd = clip.StartSample + clip.LengthSamples;
         long blockEnd = position + frames;
-        if (blockEnd <= clip.StartSample || position >= clipEnd)
-        {
-            return;
-        }
-
-        int writeOffset = (int)Math.Max(0, clip.StartSample - position);
-        int writeFrames = (int)Math.Min(frames - writeOffset,
-            Math.Min(clipEnd, blockEnd) - Math.Max(position, clip.StartSample));
-        long sourceFrame = Math.Max(0, clip.SourceOffsetSamples + Math.Max(0, position - clip.StartSample));
-        if (writeFrames <= 0 || sourceFrame * 2 >= clip.Audio.Length)
+        long mixStart = Math.Max(position, clip.StartSample);
+        long mixEnd = Math.Min(blockEnd, clipEnd);
+        if (mixEnd <= mixStart)
         {
             return;
         }
 
         int audioFrames = clip.Audio.Length / 2;
-        if (clip.Loop)
+        if (audioFrames <= 0)
         {
-            long relative = sourceFrame - clip.SourceOffsetSamples;
-            relative %= audioFrames;
-            if (relative < 0) relative += audioFrames;
-            sourceFrame = clip.SourceOffsetSamples + relative;
-        }
-        else
-        {
-            writeFrames = Math.Min(writeFrames, audioFrames - (int)sourceFrame);
+            return;
         }
 
-        int sourceIndex = (int)sourceFrame * 2;
+        int writeOffset = (int)(mixStart - position);
+        int writeFrames = (int)(mixEnd - mixStart);
+        bool pitched = clip.PitchAutomationSemitones.HasValue ||
+            Math.Abs(clip.PitchSemitones) > 0.0001f;
+        bool reset = !state.Initialized ||
+            state.LastEndSample != mixStart ||
+            state.LastStartSample != clip.StartSample ||
+            state.LastSourceOffset != clip.SourceOffsetSamples ||
+            state.LastAudioLength != clip.Audio.Length ||
+            state.GranularMode != pitched;
+        if (reset)
+        {
+            double sourceStart = clip.SourceOffsetSamples + (mixStart - clip.StartSample);
+            state.SourceCursor = sourceStart;
+            state.CurrentRatio = PitchRatio(EffectivePitch(clip));
+            state.GrainA = new GrainState { Age = 0, ReadPos = sourceStart };
+            state.GrainB = new GrainState { Age = GrainHop, ReadPos = sourceStart };
+        }
+
+        state.Initialized = true;
+        state.GranularMode = pitched;
+        state.LastStartSample = clip.StartSample;
+        state.LastSourceOffset = clip.SourceOffsetSamples;
+        state.LastAudioLength = clip.Audio.Length;
+
+        double loopStart = Math.Clamp(clip.SourceOffsetSamples, 0, audioFrames - 1);
+        double loopLength = Math.Max(1, audioFrames - loopStart);
+        float targetRatio = PitchRatio(EffectivePitch(clip));
         int targetIndex = (blockOffset + writeOffset) * 2;
         int fadeIn = Math.Max(0, clip.FadeInSamples);
         int fadeOut = Math.Max(0, clip.FadeOutSamples);
-        long clipFrame = sourceFrame - clip.SourceOffsetSamples;
+        long clipFrame = mixStart - clip.StartSample;
+        int played = 0;
         for (int frame = 0; frame < writeFrames; frame++)
         {
-            float gain = clip.Gain * trackGain;
-            if (fadeIn > 0 && clipFrame + frame < fadeIn)
+            long localFrame = clipFrame + frame;
+            float left;
+            float right;
+            if (pitched)
             {
-                gain *= (clipFrame + frame) / (float)fadeIn;
+                state.CurrentRatio = ParameterSmoothing.Approach(
+                    state.CurrentRatio, targetRatio, ParameterSmoothing.FastAlpha);
+                double anchor = clip.SourceOffsetSamples + mixStart - clip.StartSample + frame;
+                if (clip.Loop)
+                {
+                    if (anchor >= audioFrames)
+                    {
+                        anchor = loopStart + ((anchor - loopStart) % loopLength);
+                    }
+                }
+
+                var grainA = ReadGrain(ref state.GrainA, anchor, state.CurrentRatio,
+                    clip.Audio, audioFrames, clip.Loop, loopStart, loopLength);
+                var grainB = ReadGrain(ref state.GrainB, anchor, state.CurrentRatio,
+                    clip.Audio, audioFrames, clip.Loop, loopStart, loopLength);
+                left = grainA.Left + grainB.Left;
+                right = grainA.Right + grainB.Right;
+            }
+            else
+            {
+                double cursor = state.SourceCursor;
+                if (clip.Loop)
+                {
+                    if (cursor < loopStart)
+                    {
+                        cursor = loopStart;
+                    }
+                    else if (cursor >= audioFrames)
+                    {
+                        cursor = loopStart + ((cursor - loopStart) % loopLength);
+                    }
+                }
+                else if (cursor >= audioFrames)
+                {
+                    break;
+                }
+
+                int index = Math.Max(0, (int)cursor);
+                int next = index + 1;
+                if (next >= audioFrames)
+                {
+                    next = clip.Loop ? (int)loopStart : index;
+                }
+
+                float blend = (float)(cursor - index);
+                int sourceIndex = index * 2;
+                int nextIndex = next * 2;
+                left = clip.Audio[sourceIndex] * (1f - blend) + clip.Audio[nextIndex] * blend;
+                right = clip.Audio[sourceIndex + 1] * (1f - blend) + clip.Audio[nextIndex + 1] * blend;
+                state.SourceCursor = cursor + 1;
             }
 
-            long tail = clip.LengthSamples - (clipFrame + frame);
+            float gain = clip.Gain * trackGain;
+            if (fadeIn > 0 && localFrame < fadeIn)
+            {
+                gain *= localFrame / (float)fadeIn;
+            }
+
+            long tail = clip.LengthSamples - localFrame;
             if (fadeOut > 0 && tail < fadeOut)
             {
                 gain *= Math.Max(0f, tail / (float)fadeOut);
             }
 
-            block[targetIndex] += clip.Audio[sourceIndex] * gain;
-            block[targetIndex + 1] += clip.Audio[sourceIndex + 1] * gain;
-            sourceIndex += 2;
-            if (clip.Loop && sourceIndex >= clip.Audio.Length) sourceIndex = (int)clip.SourceOffsetSamples * 2;
+            block[targetIndex] += left * gain;
+            block[targetIndex + 1] += right * gain;
             targetIndex += 2;
+            played++;
         }
+
+        state.LastEndSample = mixStart + played;
     }
+
+    private static (float Left, float Right) ReadGrain(ref GrainState grain, double anchor,
+        float ratio, float[] audio, int audioFrames, bool loop, double loopStart, double loopLength)
+    {
+        if (grain.Age >= GrainSize)
+        {
+            grain.Age = 0;
+            grain.ReadPos = anchor;
+        }
+
+        float window = GrainWindow[grain.Age];
+        double pos = grain.ReadPos;
+        grain.ReadPos += ratio;
+        grain.Age++;
+        if (loop)
+        {
+            if (pos < loopStart)
+            {
+                pos = loopStart;
+            }
+            else if (pos >= audioFrames)
+            {
+                pos = loopStart + ((pos - loopStart) % loopLength);
+            }
+        }
+        else if (pos < 0 || pos >= audioFrames)
+        {
+            return (0f, 0f);
+        }
+
+        int index = Math.Max(0, (int)pos);
+        int next = index + 1;
+        if (next >= audioFrames)
+        {
+            next = loop ? (int)loopStart : index;
+        }
+
+        float blend = (float)(pos - index);
+        int sourceIndex = index * 2;
+        int nextIndex = next * 2;
+        float left = audio[sourceIndex] * (1f - blend) + audio[nextIndex] * blend;
+        float right = audio[sourceIndex + 1] * (1f - blend) + audio[nextIndex + 1] * blend;
+        return (left * window, right * window);
+    }
+
+    private static float[] BuildGrainWindow()
+    {
+        var window = new float[GrainSize];
+        for (int i = 0; i < GrainSize; i++)
+        {
+            window[i] = 0.5f - 0.5f * MathF.Cos(2f * MathF.PI * i / GrainSize);
+        }
+
+        return window;
+    }
+
+    private static float EffectivePitch(TimelineClip clip) =>
+        clip.PitchAutomationSemitones ?? clip.PitchSemitones;
+
+    private static float PitchRatio(float semitones) =>
+        MathF.Pow(2f, Math.Clamp(semitones,
+            -MaxClipPitchSemitones, MaxClipPitchSemitones) / 12f);
     public bool Undo()
     {
         lock (_gate)
@@ -1134,6 +1330,7 @@ public sealed class TimelineService : IDisposable
                 LengthSamples = clip.LengthSamples,
                 SourceOffsetSamples = clip.SourceOffsetSamples,
                 Gain = clip.Gain,
+                PitchSemitones = clip.PitchSemitones,
                 FadeInSamples = clip.FadeInSamples,
                 FadeOutSamples = clip.FadeOutSamples,
                 Peaks = includePeaks ? clip.Peaks : Array.Empty<float>(),
@@ -1197,6 +1394,10 @@ public sealed class TimelineService : IDisposable
         lock (_gate)
         {
             _playing = false;
+            foreach (var track in _tracks.Values)
+            {
+                track.ResetClipPlayback();
+            }
         }
     }
 
@@ -1205,6 +1406,10 @@ public sealed class TimelineService : IDisposable
         lock (_gate)
         {
             _playheadSample = Math.Max(0, sample);
+            foreach (var track in _tracks.Values)
+            {
+                track.ResetClipPlayback();
+            }
             if (_project.LoopEndSample > _project.LoopStartSample &&
                 _playheadSample >= _project.LoopEndSample)
             {
@@ -1315,17 +1520,26 @@ public sealed class TimelineService : IDisposable
                     continue;
                 }
 
-                foreach (var lane in track.Automation)
+                foreach (var binding in track.Automation)
                 {
+                    var lane = binding.Lane;
                     if (lane.Points.Count == 0)
                     {
+                        continue;
+                    }
+
+                    float value = EvaluateAutomation(lane.Points, position);
+                    if (binding.ClipPitch is { } clip)
+                    {
+                        clip.PitchAutomationSemitones = Math.Clamp(value,
+                            -MaxClipPitchSemitones, MaxClipPitchSemitones);
                         continue;
                     }
 
                     try
                     {
                         ApplyAutomation?.Invoke(lane.TargetNodeId, lane.ProcessorIndex,
-                            lane.ParameterIndex, EvaluateAutomation(lane.Points, position));
+                            lane.ParameterIndex, value);
                     }
                     catch
                     {
@@ -1448,9 +1662,11 @@ public sealed class TimelineService : IDisposable
     private static void FillTrack(TrackPlayback playback, long position, int frames,
         int blockOffset, float targetGain)
     {
-        foreach (var clip in playback.Clips)
+        var snapshot = playback.ClipSnapshot;
+        for (int i = 0; i < snapshot.Clips.Length; i++)
         {
-            MixClipInto(clip, 1f, position, frames, playback.Block, blockOffset);
+            MixClipInto(snapshot.Clips[i], snapshot.Playback[i], 1f,
+                position, frames, playback.Block, blockOffset);
         }
 
         int start = blockOffset * 2;
@@ -1527,8 +1743,8 @@ public sealed class TimelineService : IDisposable
 
     private sealed class TrackPlayback
     {
-        private TimelineClip[] _clips = Array.Empty<TimelineClip>();
-        private TimelineAutomationLane[] _automation = Array.Empty<TimelineAutomationLane>();
+        private ClipSnapshot _clipSnapshot = ClipSnapshot.Empty;
+        private AutomationBinding[] _automation = Array.Empty<AutomationBinding>();
 
         public TrackPlayback(TimelineTrack track)
         {
@@ -1542,10 +1758,117 @@ public sealed class TimelineService : IDisposable
         public SourceNode? Source { get; set; }
         public float[] Block { get; set; } = Array.Empty<float>();
         public float CurrentGain { get; set; } = 1f;
-        public TimelineClip[] Clips => _clips;
-        public TimelineAutomationLane[] Automation => _automation;
+        public ClipSnapshot ClipSnapshot => _clipSnapshot;
+        public TimelineClip[] Clips => _clipSnapshot.Clips;
+        public AutomationBinding[] Automation => _automation;
 
-        public void RefreshClips() => _clips = Track.Clips.ToArray();
-        public void RefreshAutomation() => _automation = Track.Automation.ToArray();
+        public void RefreshClips()
+        {
+            var previous = _clipSnapshot;
+            var existing = new Dictionary<string, ClipPlayback>(StringComparer.Ordinal);
+            for (int i = 0; i < previous.Clips.Length && i < previous.Playback.Length; i++)
+            {
+                existing[previous.Clips[i].Id] = previous.Playback[i];
+            }
+
+            var clips = Track.Clips.ToArray();
+            var playback = new ClipPlayback[clips.Length];
+            for (int i = 0; i < clips.Length; i++)
+            {
+                playback[i] = existing.TryGetValue(clips[i].Id, out var state)
+                    ? state
+                    : new ClipPlayback();
+            }
+
+            _clipSnapshot = new ClipSnapshot(clips, playback);
+        }
+
+        public void ResetClipPlayback()
+        {
+            foreach (var state in _clipSnapshot.Playback)
+            {
+                state.Reset();
+            }
+        }
+
+        public void RefreshAutomation()
+        {
+            var clips = new Dictionary<string, TimelineClip>(StringComparer.Ordinal);
+            foreach (var clip in _clipSnapshot.Clips)
+            {
+                clips[clip.Id] = clip;
+            }
+
+            var automated = new HashSet<string>(StringComparer.Ordinal);
+            var bindings = new AutomationBinding[Track.Automation.Count];
+            for (int i = 0; i < Track.Automation.Count; i++)
+            {
+                var lane = Track.Automation[i];
+                TimelineClip? clip = null;
+                if (lane.TargetNodeId.StartsWith(ClipPitchAutomationPrefix, StringComparison.Ordinal))
+                {
+                    string clipId = lane.TargetNodeId[ClipPitchAutomationPrefix.Length..];
+                    clips.TryGetValue(clipId, out clip);
+                    if (clip != null)
+                    {
+                        automated.Add(clipId);
+                    }
+                }
+
+                bindings[i] = new AutomationBinding(lane, clip);
+            }
+
+            foreach (var clip in _clipSnapshot.Clips)
+            {
+                if (!automated.Contains(clip.Id))
+                {
+                    clip.PitchAutomationSemitones = null;
+                }
+            }
+
+            _automation = bindings;
+        }
+    }
+
+    private sealed record AutomationBinding(TimelineAutomationLane Lane, TimelineClip? ClipPitch);
+
+    private sealed record ClipSnapshot(TimelineClip[] Clips, ClipPlayback[] Playback)
+    {
+        public static readonly ClipSnapshot Empty =
+            new(Array.Empty<TimelineClip>(), Array.Empty<ClipPlayback>());
+    }
+
+    private sealed class ClipPlayback
+    {
+        public bool Initialized;
+        public long LastEndSample = long.MinValue;
+        public long LastStartSample = long.MinValue;
+        public long LastSourceOffset = long.MinValue;
+        public int LastAudioLength = -1;
+        public bool GranularMode;
+        public double SourceCursor;
+        public float CurrentRatio = 1f;
+        public GrainState GrainA;
+        public GrainState GrainB;
+
+        public void Reset()
+        {
+            Initialized = false;
+            LastEndSample = long.MinValue;
+            LastStartSample = long.MinValue;
+            LastSourceOffset = long.MinValue;
+            LastAudioLength = -1;
+            GranularMode = false;
+            SourceCursor = 0;
+            CurrentRatio = 1f;
+            GrainA = default;
+            GrainB = default;
+        }
+    }
+
+    private struct GrainState
+    {
+        public int Age;
+        public double ReadPos;
     }
 }

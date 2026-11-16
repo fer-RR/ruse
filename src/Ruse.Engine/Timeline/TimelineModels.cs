@@ -57,6 +57,9 @@ public sealed class TimelineClip
     public long LengthSamples { get; set; }
     public long SourceOffsetSamples { get; set; }
     public float Gain { get; set; } = 1f;
+    public float PitchSemitones { get; set; }
+    [JsonIgnore]
+    public float? PitchAutomationSemitones { get; set; }
     public int FadeInSamples { get; set; }
     public int FadeOutSamples { get; set; }
     public bool Loop { get; set; }

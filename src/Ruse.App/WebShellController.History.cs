@@ -251,7 +251,8 @@ internal sealed partial class WebShellController
                     snapshot.DeviceId,
                     processName: snapshot.ProcessName,
                     filePath: snapshot.FilePath,
-                    fileLoop: snapshot.FileLoop);
+                    fileLoop: snapshot.FileLoop,
+                    id: snapshot.Id);
                 source.SetFileSpeed(snapshot.FileSpeed);
                 if (snapshot.IsMetronome)
                 {

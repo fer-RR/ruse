@@ -260,7 +260,8 @@ internal sealed partial class WebShellController
                 var kind = Enum.TryParse<SourceKind>(saved.Kind, out var parsed) ? parsed : SourceKind.Application;
                 RestoreFrozenProxyPath(saved.FilePath);
                 var source = new SourceNode(saved.Title, kind, saved.ProcessId, saved.DeviceId,
-                    processName: saved.ProcessName, filePath: saved.FilePath, fileLoop: saved.FileLoop);
+                    processName: saved.ProcessName, filePath: saved.FilePath, fileLoop: saved.FileLoop,
+                    id: saved.Id);
                 if (saved.IsMetronome)
                 {
                     source.SetMetronome(saved.MetronomeBpm, saved.MetronomeBeatsPerBar);
@@ -484,16 +485,43 @@ internal sealed partial class WebShellController
         {
             EnsureTimeline();
             _timeline!.LoadProject(preset.Timeline);
+            var claimedSources = new HashSet<string>(StringComparer.Ordinal);
             foreach (var track in _timeline.Project.Tracks)
             {
-                var sourceId = track.SourceNodeId;
-                if (sourceId != null && _nodes.TryGetValue(sourceId, out var entry) &&
-                    entry.Source is { Kind: SourceKind.Timeline } sourceNode)
+                NodeEntry? match = null;
+                if (string.IsNullOrWhiteSpace(track.GeneratorNodeId) &&
+                    !string.IsNullOrWhiteSpace(track.SourceNodeId) &&
+                    _nodes.TryGetValue(track.SourceNodeId, out var exact) &&
+                    !claimedSources.Contains(exact.Id) &&
+                    exact.Source is { Kind: SourceKind.Timeline })
                 {
-                    _timeline.AttachSource(track.Id, sourceNode);
+                    match = exact;
+                }
+
+                if (string.IsNullOrWhiteSpace(track.GeneratorNodeId))
+                {
+                    match ??= _nodes.Values.FirstOrDefault(entry =>
+                        entry.Source is { Kind: SourceKind.Timeline } &&
+                        !claimedSources.Contains(entry.Id) &&
+                        string.Equals(entry.Title, track.Name, StringComparison.Ordinal));
+                }
+
+                if (match?.Source is not { Kind: SourceKind.Timeline } sourceNode)
+                {
+                    continue;
+                }
+
+                bool repaired = !string.Equals(track.SourceNodeId, match.Id, StringComparison.Ordinal);
+                _timeline.AttachSource(track.Id, sourceNode);
+                track.SourceNodeId = match.Id;
+                claimedSources.Add(match.Id);
+                if (repaired)
+                {
+                    AppLog.Info($"Timeline track '{track.Name}' reattached to source '{match.Title}'.");
                 }
             }
 
+            SyncTimelineTrackNames();
             PublishTimeline();
         }
 

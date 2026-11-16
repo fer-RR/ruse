@@ -44,9 +44,11 @@ internal sealed partial class WebShellController
 
     private void ApplyGeneratorGate(string nodeId, float gain)
     {
-        if (_nodes.TryGetValue(nodeId, out var entry) && entry.Source != null)
+        if (_nodes.TryGetValue(nodeId, out var entry) &&
+            entry.Source is { } source &&
+            (source.IsMetronome || source.Kind is SourceKind.Tone or SourceKind.Synth))
         {
-            entry.Source.TimelineGate = Math.Clamp(gain, 0f, 1f);
+            source.TimelineGate = Math.Clamp(gain, 0f, 1f);
         }
     }
 
@@ -211,7 +213,8 @@ internal sealed partial class WebShellController
             OptionalLong(message, "sourceOffsetSamples"),
             OptionalFloat(message, "gain"),
             OptionalInt(message, "fadeInSamples"),
-            OptionalInt(message, "fadeOutSamples")))
+            OptionalInt(message, "fadeOutSamples"),
+            OptionalFloat(message, "pitchSemitones")))
         {
             PublishTimeline(false);
         }
@@ -312,7 +315,9 @@ internal sealed partial class WebShellController
     {
         if (_timeline != null && _timeline.Undo())
         {
+            SyncTimelineTrackNames();
             PublishTimeline(true);
+            PublishGraph();
         }
     }
 
@@ -320,7 +325,9 @@ internal sealed partial class WebShellController
     {
         if (_timeline != null && _timeline.Redo())
         {
+            SyncTimelineTrackNames();
             PublishTimeline(true);
+            PublishGraph();
         }
     }
 
@@ -456,9 +463,24 @@ internal sealed partial class WebShellController
     private void TimelinePlay()
     {
         EnsureTimeline();
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        foreach (var output in _graph.Outputs)
+        {
+            DisableNativeOnSharedOutput(output);
+        }
+
+        _graph.Timeline = _timeline;
         if (!_graph.Outputs.Any(output => output.IsRunning))
         {
             StartRouting();
+        }
+        else
+        {
+            _graph.StartEngine();
         }
 
         var timelineSources = _graph.Sources.Where(source => source.Kind == SourceKind.Timeline).ToArray();
@@ -500,8 +522,25 @@ internal sealed partial class WebShellController
             }
         }
 
-        Ruse.App.Diagnostics.AppLog.Info($"Timeline sources={timelineSources.Length}, running={timelineSources.Count(source => source.IsRunning)}.");
+        Ruse.App.Diagnostics.AppLog.Info(
+            $"Timeline sources={timelineSources.Length}, running={timelineSources.Count(source => source.IsRunning)}.");
         _timeline!.Play();
+        PublishTimeline(false);
+    }
+
+    private void TimelinePause()
+    {
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        foreach (var track in _timeline.Project.Tracks.Where(track => !string.IsNullOrWhiteSpace(track.GeneratorNodeId)))
+        {
+            ApplyGeneratorGate(track.GeneratorNodeId!, 0f);
+        }
+
+        _timeline.Stop();
         PublishTimeline(false);
     }
 
@@ -515,9 +554,11 @@ internal sealed partial class WebShellController
             {
                 ApplyGeneratorGate(track.GeneratorNodeId!, 0f);
             }
+
+            _timeline.Stop();
+            _timeline.Seek(0);
         }
 
-        _timeline?.Stop();
         PublishTimeline(false);
     }
 

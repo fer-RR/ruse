@@ -39,7 +39,6 @@ export default function MetronomeControls({ node, telemetry }: { node: RuseFlowN
 
   return (
     <div className="metronome-controls nodrag">
-      <div className="metronome-size"><button className="small-button" onClick={() => send('node-size', { id: node.id, width: 240 })}>{t('Compact')}</button><button className="small-button" onClick={() => send('node-size', { id: node.id, width: 320 })}>{t('Wide')}</button></div>
       <div className="metronome-status"><span className={`metronome-beat ${beatActive ? 'active' : ''}`} aria-hidden="true" /><span>{beatActive ? t('Click') : t('Ready')}</span></div>
       <label className="tone-field">
         <span>{t('Tempo')}</span>

@@ -20,6 +20,7 @@ export interface TimelineClipModel {
   lengthSamples: number;
   sourceOffsetSamples: number;
   gain: number;
+  pitchSemitones: number;
   fadeInSamples: number;
   fadeOutSamples: number;
   peaks: number[];
@@ -62,6 +63,7 @@ export interface TimelineState {
 
 export interface TimelineAutomationTarget {
   nodeId: string;
+  trackId?: string;
   label: string;
   processorIndex: number;
   parameterIndex: number;

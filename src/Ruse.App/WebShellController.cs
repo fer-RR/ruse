@@ -350,6 +350,7 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-remove-track": RemoveTimelineTrack(String(message, "trackId")); break;
             case "timeline-show-node": ShowTimelineTrackNode(String(message, "trackId")); break;
             case "timeline-track-update": UpdateTimelineTrack(String(message, "trackId"), (float)Number(message, "gain", 1), Bool(message, "muted", false), Bool(message, "solo", false)); break;
+            case "timeline-track-rename": RenameTimelineTrack(String(message, "trackId"), String(message, "name")); break;
             case "timeline-remove-clip": RemoveTimelineClip(String(message, "trackId"), String(message, "clipId")); break;
             case "timeline-move-clip": MoveTimelineClip(String(message, "trackId"), String(message, "clipId"), (long)Number(message, "startSample")); break;
             case "timeline-move-clip-track": MoveTimelineClipToTrack(String(message, "fromTrackId"), String(message, "toTrackId"), String(message, "clipId"), (long)Number(message, "startSample")); break;
@@ -367,6 +368,7 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-count-in": TimelineCountIn(); break;
             case "timeline-count-in-beats": SetTimelineCountInBeats((int)Number(message, "value", 4)); break;
             case "timeline-play": TimelinePlay(); break;
+            case "timeline-pause": TimelinePause(); break;
             case "timeline-stop": TimelineStop(); break;
             case "timeline-record": ToggleTimelineRecording(); break;
             case "timeline-seek": TimelineSeek((long)Number(message, "sample")); break;

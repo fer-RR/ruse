@@ -216,6 +216,29 @@
 :root[data-theme="blueprint"] .spectrum-view canvas,
 :root[data-theme="blueprint"] .spectrogram-view canvas,
 :root[data-theme="blueprint"] .waveform-view canvas { background: #062a56; }
+:root[data-theme="blueprint"] .ruse-node {
+  --accent: #ffffff !important;
+  --surface-0: #e7f2ff;
+  --surface-1: #b9d9fa;
+  --surface-2: #a9cdf3;
+  --surface-3: #98c1eb;
+  --inset: #d8eaff;
+  --line: rgba(7, 45, 91, 0.2);
+  --line-strong: rgba(7, 45, 91, 0.36);
+  --text: #082b54;
+  --text-2: #174b80;
+  --text-3: #3b6b9d;
+  --cyan: #0b5f8f;
+  --blue: #1d5aa6;
+  --amber: #805600;
+  --signal: #087a52;
+  --record: #a63e29;
+  --danger: #a82828;
+  background: #b9d9fa;
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35), 0 8px 24px rgba(0, 18, 44, 0.28);
+}
+:root[data-theme="blueprint"] .ruse-node .node-icon { color: #174b80; }
 
 /* Deep Dive: translucent atomic-purple/ice-blue shells over a PCB. */
 :root[data-theme="deepdive"] .graph-area { background-image: radial-gradient(circle at 18% 22%, rgba(123, 44, 191, 0.18), transparent 45%), radial-gradient(circle at 82% 78%, rgba(76, 201, 240, 0.12), transparent 42%); }
@@ -1351,8 +1374,6 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .ruse-node.tone-node, .ruse-node.metronome-node { width: max-content; min-width: 268px; max-width: 320px; }
 .ruse-node.synth-node { width: 320px; min-width: 320px; max-width: 320px; }
 .tone-controls, .metronome-controls { display: grid; gap: 6px; padding: 0 9px 8px; }
-.metronome-size { display: flex; gap: 5px; }
-.metronome-size .small-button { flex: 1; justify-content: center; }
 .metronome-status { display: flex; align-items: center; gap: 6px; color: var(--text-3); font: 9px Consolas, monospace; }
 .metronome-beat { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #465265; transition: background 120ms ease, box-shadow 120ms ease; }
 .metronome-beat.active { background: var(--signal); box-shadow: 0 0 8px rgba(67, 227, 154, 0.55); }
@@ -2185,8 +2206,9 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 
 .timeline-dock { position: absolute; left: calc(var(--sidebar-width, 304px) + 8px); right: 0; bottom: 0; z-index: 20; height: var(--timeline-dock-height); display: flex; flex-direction: column; border-top: 1px solid var(--line-strong); background: var(--surface-1); box-shadow: 0 -8px 24px rgba(0,0,0,0.28); }
 .timeline-header { flex-wrap: wrap; min-height: 42px; display: flex; align-items: center; gap: 6px 12px; padding: 5px 10px; border-bottom: 1px solid var(--line); background: var(--surface-0); }
-.timeline-clip-length { display: inline-flex; align-items: center; gap: 4px; color: var(--text-3); font-size: 9px; }
-.timeline-clip-length input { width: 62px; min-height: 24px; padding: 1px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--inset); color: var(--text-2); font: 9px Consolas, monospace; }
+.timeline-clip-length, .timeline-clip-pitch { display: inline-flex; align-items: center; gap: 4px; color: var(--text-3); font-size: 9px; }
+.timeline-clip-length input, .timeline-clip-pitch input { width: 62px; min-height: 24px; padding: 1px 4px; border: 1px solid var(--line); border-radius: 5px; background: var(--inset); color: var(--text-2); font: 9px Consolas, monospace; }
+.timeline-clip-pitch input { width: 54px; }
 .timeline-bounce-progress { display: inline-flex; align-items: center; gap: 5px; color: var(--amber); font: 9px Consolas, monospace; }
 .timeline-count-in-beats { min-height: 24px; width: 46px; padding: 1px 4px; border-radius: 5px; font-size: 9px; }
 .timeline-header > strong { color: var(--text-2); font-size: 11px; letter-spacing: 0.9px; text-transform: uppercase; }
@@ -2210,6 +2232,7 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .timeline-track-heading { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .timeline-track-no-source { flex: 0 0 auto; color: var(--amber); font: 8px Consolas, monospace; }
 .timeline-track-heading strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-size: 10px; }
+.timeline-track-name { cursor: text; }
 .timeline-track-actions { display: flex; gap: 2px; flex: 0 0 auto; }
 .timeline-track-mix { display: flex; align-items: center; gap: 5px; min-width: 0; }
 .timeline-track-meter { position: relative; width: 42px; height: 4px; flex: 0 0 auto; overflow: hidden; border-radius: 3px; background: var(--inset); box-shadow: inset 0 0 0 1px var(--line); }
@@ -2221,6 +2244,12 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .timeline-automation-target { max-width: 98px; min-height: 24px; border: 1px solid var(--line); border-radius: 5px; background: var(--inset); color: var(--text-3); font-size: 9px; }
 .timeline-track-control .icon-button.active { color: var(--cyan); border-color: var(--cyan); }
 .timeline-scroll { flex: 1; min-height: 0; overflow: auto; background: var(--canvas); }
+.timeline-sticky-labels { position: sticky; left: 0; width: 0; height: 0; z-index: 3; line-height: 0; font-size: 0; pointer-events: none; }
+.timeline-sticky-track-name, .timeline-sticky-automation-name { position: absolute; left: 6px; display: flex; align-items: center; gap: 6px; max-width: 240px; padding: 2px 5px; border-radius: 4px; background: color-mix(in srgb, var(--canvas) 42%, #000); color: var(--text-2); font: 10px Consolas, monospace; white-space: nowrap; }
+.timeline-sticky-track-name.muted { color: var(--text-3); }
+.timeline-sticky-track-name em { color: var(--amber); font-style: normal; }
+.timeline-sticky-track-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.timeline-sticky-automation-name { max-width: 320px; color: var(--text-3); font-size: 9px; }
 .timeline-scroll canvas { display: block; cursor: crosshair; touch-action: none; }
 .timeline-scroll canvas:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
 .timeline-empty { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-3); font-size: 11px; }

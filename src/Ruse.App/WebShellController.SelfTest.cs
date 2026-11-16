@@ -776,17 +776,20 @@ internal sealed partial class WebShellController
             nativeOutputId = nativeOutput.Id;
             var nativeLink = ConnectEntries(nativeSource, nativeOutput, publish: false);
             SetLinkNative(nativeLink.Id, true);
+            bool nativeEnabled = nativeLink.Native && nativeOutput.Output!.IsNativePassthrough &&
+                nativeOutput.Output.NativeSource != null;
 
             var nativeSecondSource = RegisterSource(new SourceNode("Native toggle 2", SourceKind.Tone), 40, 1500);
             nativeSecondSourceId = nativeSecondSource.Id;
             nativeSecondSource.Source!.Start();
             ConnectEntries(nativeSecondSource, nativeOutput, publish: false);
-            bool nativeEnabled = nativeLink.Native && nativeOutput.Output!.IsNativePassthrough &&
-                nativeOutput.Output.NativeSource != null;
+            bool nativeAutoDisabled = !nativeLink.Native && !nativeOutput.Output!.IsNativePassthrough &&
+                nativeOutput.Output.NativeSource == null;
             SetLinkNative(nativeLink.Id, false);
             bool nativeDisabled = !nativeLink.Native && !nativeOutput.Output!.IsNativePassthrough &&
                 nativeOutput.Output.NativeSource == null;
-            Check("native passthrough toggle", nativeEnabled && nativeDisabled);
+            Check("native passthrough auto-disables on second route",
+                nativeEnabled && nativeAutoDisabled && nativeDisabled);
 
         var metronomeSource = new SourceNode("Metronome self test", SourceKind.Tone);
         metronomeSource.SetMetronome(120f, 4);
@@ -802,6 +805,33 @@ internal sealed partial class WebShellController
             if (_nodes.ContainsKey(nativeSecondSourceId)) RemoveEntryInternal(nativeSecondSourceId);
             if (_nodes.ContainsKey(nativeOutputId)) RemoveEntryInternal(nativeOutputId);
             _graph.AutoRun = nativeAutoRun;
+        }
+
+        string gateGuardSourceId = "";
+        string gateGuardMetronomeId = "";
+        try
+        {
+            var gateGuardSource = RegisterSource(
+                new SourceNode("Gate guard timeline", SourceKind.Timeline), 40, 1600);
+            gateGuardSourceId = gateGuardSource.Id;
+            gateGuardSource.Source!.TimelineGate = 0.75f;
+            ApplyGeneratorGate(gateGuardSourceId, 0f);
+            Check("generator gate ignores timeline sources",
+                Math.Abs(gateGuardSource.Source.TimelineGate - 0.75f) < 1e-6f);
+
+            var gateGuardMetronome = RegisterSource(
+                new SourceNode("Gate guard metronome", SourceKind.Tone), 40, 1700);
+            gateGuardMetronomeId = gateGuardMetronome.Id;
+            gateGuardMetronome.Source!.SetMetronome(120f, 4);
+            gateGuardMetronome.Source.TimelineGate = 1f;
+            ApplyGeneratorGate(gateGuardMetronomeId, 0.25f);
+            Check("generator gate applies to metronome nodes",
+                Math.Abs(gateGuardMetronome.Source.TimelineGate - 0.25f) < 1e-6f);
+        }
+        finally
+        {
+            if (_nodes.ContainsKey(gateGuardSourceId)) RemoveEntryInternal(gateGuardSourceId);
+            if (_nodes.ContainsKey(gateGuardMetronomeId)) RemoveEntryInternal(gateGuardMetronomeId);
         }
 
         var generatorLoop = new SourceNode("Generator loop test", SourceKind.Tone);
@@ -841,6 +871,12 @@ internal sealed partial class WebShellController
 
             var timelineTrack = timeline.AddTrack("Self test");
             Check("timeline add track", timeline.Project.Tracks.Count == 1);
+            Check("timeline rename track",
+                timeline.RenameTrack(timelineTrack.Id, "Renamed track", out _) &&
+                timeline.Project.Tracks[0].Name == "Renamed track");
+            timeline.Undo();
+            Check("timeline rename undo", timeline.Project.Tracks[0].Name == "Self test");
+            timeline.Redo();
             Check("timeline add clip", timeline.AddClip(timelineTrack.Id, timelineWave, out _));
             var timelineClip = timeline.Project.Tracks[0].Clips[0];
             var timelineSource = new SourceNode("Timeline self test", SourceKind.Timeline);
@@ -1032,6 +1068,82 @@ internal sealed partial class WebShellController
                 multiTimeline.Stop();
                 multiGraph.Dispose();
                 multiTimeline.Dispose();
+            }
+
+            {
+                var pitchTimeline = new TimelineService();
+                var pitchTrack = pitchTimeline.AddTrack("Pitch test");
+                bool pitchClipOk = pitchTimeline.AddClip(pitchTrack.Id, timelineWave, out _);
+                var pitchClip = pitchTimeline.Project.Tracks[0].Clips[0];
+                bool pitchSet = pitchTimeline.UpdateClip(pitchTrack.Id, pitchClip.Id,
+                    null, null, null, null, null, null, 12f);
+                var pitchSource = new SourceNode("Pitch self test", SourceKind.Timeline);
+                var pitchSubscription = pitchSource.Subscribe();
+                pitchTimeline.AttachSource(pitchTrack.Id, pitchSource);
+                pitchSource.Start();
+                pitchTimeline.Play();
+                pitchTimeline.RenderBlock(480);
+                var pitchBlock = new float[480 * 2];
+                int pitchRead = pitchSubscription.Read(pitchBlock);
+                int pitchCrossings = 0;
+                for (int i = 2; i < pitchRead; i += 2)
+                {
+                    if ((pitchBlock[i - 2] <= 0f && pitchBlock[i] > 0f) ||
+                        (pitchBlock[i - 2] >= 0f && pitchBlock[i] < 0f))
+                    {
+                        pitchCrossings++;
+                    }
+                }
+
+                Check("timeline clip pitch", pitchClipOk && pitchSet &&
+                    Math.Abs(pitchClip.PitchSemitones - 12f) < 0.001f && pitchCrossings >= 14);
+
+                pitchTimeline.Seek(0);
+                pitchTimeline.Play();
+                bool pitchAudibleLate = false;
+                for (int block = 0; block < 24; block++)
+                {
+                    pitchTimeline.RenderBlock(480);
+                    int read = pitchSubscription.Read(pitchBlock);
+                    if (block == 23 && read > 0)
+                    {
+                        for (int sample = 0; sample < read; sample++)
+                        {
+                            if (Math.Abs(pitchBlock[sample]) > 0.001f)
+                            {
+                                pitchAudibleLate = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                Check("timeline clip pitch preserves duration", pitchAudibleLate);
+
+                var pitchLane = pitchTimeline.AddAutomationLane(
+                    pitchTrack.Id, $"clip:{pitchClip.Id}", -1, 0, 0f);
+                pitchTimeline.SetAutomationPoints(pitchTrack.Id, pitchLane.Id, new[]
+                {
+                    new TimelineAutomationPoint { Sample = 0, Value = 0f },
+                    new TimelineAutomationPoint { Sample = 480, Value = 12f },
+                });
+                pitchTimeline.Seek(0);
+                pitchTimeline.Play();
+                pitchTimeline.RenderBlock(480);
+                bool pitchAtStart = pitchClip.PitchAutomationSemitones.HasValue &&
+                    Math.Abs(pitchClip.PitchAutomationSemitones.Value) < 0.01f;
+                pitchTimeline.RenderBlock(480);
+                bool pitchAtEnd = pitchClip.PitchAutomationSemitones.HasValue &&
+                    Math.Abs(pitchClip.PitchAutomationSemitones.Value - 12f) < 0.01f;
+                Check("timeline clip pitch automation", pitchAtStart && pitchAtEnd &&
+                    Math.Abs(pitchClip.PitchSemitones - 12f) < 0.001f);
+                pitchTimeline.RemoveAutomationLane(pitchTrack.Id, pitchLane.Id);
+                Check("timeline clip pitch automation clears override",
+                    pitchClip.PitchAutomationSemitones == null &&
+                    Math.Abs(pitchClip.PitchSemitones - 12f) < 0.001f);
+                pitchSubscription.Dispose();
+                pitchSource.Dispose();
+                pitchTimeline.Dispose();
             }
 
             string stretchPath = Path.Combine(Path.GetTempPath(), "ruse-timeline-selftest-stretch.wav");
@@ -1321,6 +1433,47 @@ internal sealed partial class WebShellController
                                  Math.Abs(frame.X - 1200) < 0.5 &&
                                  Math.Abs(frame.Y - 1200) < 0.5));
         FrameTemplateLibrary.Remove(insertTemplate);
+
+        var legacyTimelinePreset = new Preset
+        {
+            Sources =
+            {
+                new PresetSource
+                {
+                    Id = "preset-timeline-source",
+                    Title = "Preset timeline",
+                    Kind = "Timeline",
+                },
+            },
+            Timeline = new TimelineProject
+            {
+                Tracks =
+                {
+                    new TimelineTrack
+                    {
+                        Name = "Preset timeline",
+                        SourceNodeId = "stale-timeline-source",
+                    },
+                },
+            },
+        };
+        ApplyPreset(legacyTimelinePreset, autoRun: false);
+        var restoredTimelineTrack = _timeline?.Project.Tracks
+            .FirstOrDefault(track => track.Name == "Preset timeline");
+        Check("timeline preset reattaches orphaned source",
+            restoredTimelineTrack?.SourceNodeId == "preset-timeline-source" &&
+            _nodes.TryGetValue("preset-timeline-source", out var presetTimelineEntry) &&
+            presetTimelineEntry.Source is { Kind: SourceKind.Timeline } presetSource &&
+            presetSource.Id == "preset-timeline-source");
+
+        RenameTimelineTrack(restoredTimelineTrack!.Id, "Preset renamed");
+        Check("timeline rename syncs node",
+            _timeline?.Project.Tracks.FirstOrDefault()?.Name == "Preset renamed" &&
+            _nodes["preset-timeline-source"].Title == "Preset renamed");
+        TimelineUndo();
+        Check("timeline rename undo syncs node",
+            _timeline?.Project.Tracks.FirstOrDefault()?.Name == "Preset timeline" &&
+            _nodes["preset-timeline-source"].Title == "Preset timeline");
 
         var unsafePreset = new Preset
         {

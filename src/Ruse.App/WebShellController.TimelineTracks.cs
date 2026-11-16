@@ -118,6 +118,60 @@ internal sealed partial class WebShellController
         }
     }
 
+    private void RenameTimelineTrack(string trackId, string name)
+    {
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        var track = _timeline.Project.Tracks.FirstOrDefault(item => item.Id == trackId);
+        if (track == null)
+        {
+            return;
+        }
+
+        if (!_timeline.RenameTrack(trackId, name, out string error))
+        {
+            SetStatus(error, isError: true);
+            return;
+        }
+
+        SyncTimelineTrackNames();
+        PublishTimeline(false);
+        PublishGraph();
+        SetStatus($"Renamed track to '{track.Name}'.");
+    }
+
+    private void SyncTimelineTrackNames()
+    {
+        if (_timeline == null)
+        {
+            return;
+        }
+
+        foreach (var track in _timeline.Project.Tracks)
+        {
+            var nodeId = track.SourceNodeId ?? track.GeneratorNodeId;
+            if (!string.IsNullOrWhiteSpace(nodeId))
+            {
+                ApplyRename(nodeId, track.Name, publish: false);
+            }
+        }
+    }
+
+    private TimelineTrack? FindTimelineTrackForNode(string nodeId)
+    {
+        if (_timeline == null)
+        {
+            return null;
+        }
+
+        return _timeline.Project.Tracks.FirstOrDefault(track =>
+            string.Equals(track.SourceNodeId, nodeId, StringComparison.Ordinal) ||
+            string.Equals(track.GeneratorNodeId, nodeId, StringComparison.Ordinal));
+    }
+
     private void RemoveTimelineTrack(string trackId)
     {
         if (_timeline == null)

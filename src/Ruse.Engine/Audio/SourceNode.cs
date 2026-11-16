@@ -59,7 +59,7 @@ public sealed class SourceNode : IDisposable
     private float[] _pcmScratch = new float[16384];
     private const int MaxDecodeSamples = 1_048_576;
 
-    public string Id { get; } = Guid.NewGuid().ToString("N");
+    public string Id { get; }
     public SourceKind Kind { get; }
     public bool IsMetronome { get; private set; }
     private float _metronomeBpm = 120f;
@@ -121,8 +121,10 @@ public sealed class SourceNode : IDisposable
     public bool CaptureLowLatencyActive => _capture is DeviceCapture capture && capture.LowLatencyActive;
 
     public SourceNode(string title, SourceKind kind, uint? processId = null, string? deviceId = null,
-        string? processName = null, string? filePath = null, bool fileLoop = false, float fileSpeed = 1f)
+        string? processName = null, string? filePath = null, bool fileLoop = false, float fileSpeed = 1f,
+        string? id = null)
     {
+        Id = string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString("N") : id;
         Title = title;
         Kind = kind;
         ProcessId = processId;

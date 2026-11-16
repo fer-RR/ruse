@@ -1984,6 +1984,12 @@ internal sealed partial class WebShellController
         string old = entry.Title;
         title = title.Trim();
         title = title.Length > 80 ? title[..80] : title;
+        if (FindTimelineTrackForNode(id) is { } timelineTrack)
+        {
+            RenameTimelineTrack(timelineTrack.Id, title);
+            return;
+        }
+
         ApplyRename(id, title, publish: true);
         PushAction("Rename node",
             undo: () => ApplyRename(id, old, publish: true),
@@ -2361,6 +2367,28 @@ internal sealed partial class WebShellController
         }
     }
 
+    private bool DisableNativeOnSharedOutput(OutputNode output)
+    {
+        if (output.NativeSource == null)
+        {
+            return false;
+        }
+
+        var entry = _nodes.Values.FirstOrDefault(item => ReferenceEquals(item.Output, output));
+        if (entry == null || _links.Count(link => link.To == entry.Id) <= 1)
+        {
+            return false;
+        }
+
+        ClearNativeFlagsIntoOutput(output);
+        string? error = _graph.SetNativePassthrough(output, output.NativeSource, false);
+        PublishGraph();
+        PublishTelemetry(force: true);
+        SetStatus(error ?? $"{entry.Title}: native passthrough disabled because another route was connected.",
+            error != null);
+        return error == null;
+    }
+
     private void DisableNativeChainForLink(LinkEntry link)
     {
         bool found = TryFindOutputForLink(link, out var output);
@@ -2558,6 +2586,11 @@ internal sealed partial class WebShellController
             Gain = gain,
         };
         _links.Add(link);
+        if (to.Output != null)
+        {
+            DisableNativeOnSharedOutput(to.Output);
+        }
+
         if (publish) PublishGraph();
         return link;
     }

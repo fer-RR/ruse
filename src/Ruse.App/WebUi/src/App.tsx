@@ -162,6 +162,7 @@ export default function App() {
   const [welcomeOpen, setWelcomeOpen] = useState(false);
   const [showClear, setShowClear] = useState(false);
   const [timelineTrackRemoval, setTimelineTrackRemoval] = useState<{ id: string; name: string } | null>(null);
+  const [timelineTrackRename, setTimelineTrackRename] = useState<{ id: string; name: string } | null>(null);
   const [trayPrompt, setTrayPrompt] = useState(false);
   const [renamePrompt, setRenamePrompt] = useState<RenamePrompt | null>(null);
   const [canvasMenu, setCanvasMenu] = useState<CanvasMenu | null>(null);
@@ -1128,7 +1129,7 @@ export default function App() {
           setTimelineOpen(true);
           send('timeline-open');
         }
-        send(timeline.playing ? 'timeline-stop' : 'timeline-play');
+        send(timeline.playing ? 'timeline-pause' : 'timeline-play');
       } else if (event.key.toLowerCase() === 'b') {
         const selected = nodesRef.current.find(node =>
           node.selected && node.data.kind === 'modifier' && !node.data.diagnostics);
@@ -1268,16 +1269,71 @@ export default function App() {
   const mixerOutputs = useMemo(() => graph.nodes.filter(node => node.kind === 'output'), [graph.nodes]);
   const mixerModifiers = useMemo(() => graph.nodes.filter(node => node.kind === 'modifier'), [graph.nodes]);
   const timelineNodeIds = useMemo(() => new Set(graph.nodes.map(node => node.id)), [graph.nodes]);
-  const timelineAutomationTargets = useMemo<TimelineAutomationTarget[]>(() =>
-    graph.nodes.filter(node => node.kind === 'modifier' || node.isMetronome || node.isToneGenerator || node.isSynthGenerator).flatMap(node => node.parameters.map(parameter => ({
-      nodeId: node.id,
-      label: `${node.title} · ${parameter.name}`,
-      processorIndex: parameter.processorIndex,
-      parameterIndex: parameter.parameterIndex,
-      min: parameter.min,
-      max: parameter.max,
-      value: parameter.value,
-    }))), [graph.nodes]);
+  const timelineAutomationTargets = useMemo<TimelineAutomationTarget[]>(() => {
+    const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
+    const downstream = new Map<string, string[]>();
+    for (const link of graph.links) {
+      if (link.kind !== 'source-modifier' && link.kind !== 'modifier-modifier') continue;
+      const list = downstream.get(link.from);
+      if (list) list.push(link.to);
+      else downstream.set(link.from, [link.to]);
+    }
+
+    const targets: TimelineAutomationTarget[] = [];
+    for (const track of timeline.project.tracks) {
+      const start = track.sourceNodeId ?? track.generatorNodeId;
+      const reachable = new Set<string>();
+      if (start) {
+        const pending = [start];
+        for (let index = 0; index < pending.length; index++) {
+          const id = pending[index];
+          if (reachable.has(id)) continue;
+          reachable.add(id);
+          for (const next of downstream.get(id) ?? []) {
+            if (!reachable.has(next)) pending.push(next);
+          }
+        }
+      }
+
+      for (const id of reachable) {
+        const node = nodesById.get(id);
+        if (!node || !(node.kind === 'modifier' ||
+          node.isMetronome || node.isToneGenerator || node.isSynthGenerator)) {
+          continue;
+        }
+
+        for (const parameter of node.parameters) {
+          targets.push({
+            nodeId: node.id,
+            trackId: track.id,
+            label: `${node.title} · ${parameter.name}`,
+            processorIndex: parameter.processorIndex,
+            parameterIndex: parameter.parameterIndex,
+            min: parameter.min,
+            max: parameter.max,
+            value: parameter.value,
+          });
+        }
+      }
+
+      if (!track.generatorNodeId) {
+        for (const clip of track.clips.filter(clip => Boolean(clip.sourcePath))) {
+          targets.push({
+            nodeId: `clip:${clip.id}`,
+            trackId: track.id,
+            label: `${track.name} · ${clip.name || t('Audio clip')} · ${t('Clip pitch')}`,
+            processorIndex: -1,
+            parameterIndex: 0,
+            min: -24,
+            max: 24,
+            value: clip.pitchSemitones ?? 0,
+          });
+        }
+      }
+    }
+
+    return targets;
+  }, [graph.links, graph.nodes, timeline.project.tracks, t]);
   const menuNode = canvasMenu?.kind === 'node' ? nodes.find(node => node.id === canvasMenu.id) : undefined;
   const menuLink = canvasMenu?.kind === 'edge' ? graph.links.find(link => link.id === canvasMenu.id) : undefined;
   const menuDbVertical = menuNode?.data.isDbMeter
@@ -1562,6 +1618,7 @@ export default function App() {
               onDismissIntro={dismissTimelineIntro}
               nodeIds={timelineNodeIds}
               onPlay={() => send('timeline-play')}
+              onPause={() => send('timeline-pause')}
               onStop={() => send('timeline-stop')}
               onToggleRecord={() => send('timeline-record')}
               onAddTrack={() => send('timeline-add-track')}
@@ -1600,6 +1657,7 @@ export default function App() {
                 const track = timeline.project.tracks.find(item => item.id === trackId);
                 setTimelineTrackRemoval({ id: trackId, name: track?.name ?? t('Track') });
               }}
+              onRenameTrack={(trackId, name) => setTimelineTrackRename({ id: trackId, name })}
               onShowTrackNode={(trackId, sourceNodeId) => {
                 if (sourceNodeId && graph.nodes.some(node => node.id === sourceNodeId)) {
                   focusMixerNode(sourceNodeId);
@@ -1689,6 +1747,17 @@ export default function App() {
           setTimelineTrackRemoval(null);
         }}
         onClose={() => setTimelineTrackRemoval(null)}
+      />}
+      {timelineTrackRename && <PromptDialog
+        title={t('Rename track')}
+        label={t('Track name')}
+        value={timelineTrackRename.name}
+        submitLabel={t('Rename')}
+        onSubmit={value => {
+          send('timeline-track-rename', { trackId: timelineTrackRename.id, name: value });
+          setTimelineTrackRename(null);
+        }}
+        onClose={() => setTimelineTrackRename(null)}
       />}
       {chainEditor && <ChainEditorDialog
         request={chainEditor}
