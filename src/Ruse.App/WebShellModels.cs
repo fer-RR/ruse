@@ -215,7 +215,13 @@ internal sealed class MixerStateDto
     public float Width { get; set; } = 1f;
     public bool AutoGain { get; set; }
     public float Crossfade { get; set; }
-    public List<MixerInputDto> Inputs { get; set; } = new();
+}
+
+internal sealed class MixerInputStateDto
+{
+    public string MixerId { get; set; } = "";
+    public int GraphVersion { get; set; }
+    public MixerInputDto Input { get; set; } = new();
 }
 
 internal sealed class MixerInputDto
@@ -425,6 +431,65 @@ internal sealed class NodeTelemetryDto
     public bool NoteActive { get; set; }
     public double? InputLatencyMs { get; set; }
     public double? OutputLatencyMs { get; set; }
+
+    public void Reset()
+    {
+        Level = 0;
+        LevelLeft = 0;
+        LevelRight = 0;
+        MeterDbLeft = -60f;
+        MeterDbRight = -60f;
+        Clipping = false;
+        ClipGuardActive = false;
+        FilePlaying = false;
+        FilePaused = false;
+        FilePositionSeconds = 0;
+        FileDurationSeconds = 0;
+        RecordingStatus = null;
+        RecordingSeconds = null;
+        RecordingError = null;
+        Spectrum = null;
+        SpectrumPeakHz = null;
+        Spectrogram = null;
+        SpectrogramPeakHz = null;
+        SpectrogramColumns = null;
+        SpectrogramNewColumns = null;
+        SpectrogramTotalColumns = null;
+        SpectrogramFull = null;
+        SpectrogramWindowSeconds = null;
+        Waveform = null;
+        WaveformPeak = null;
+        Db = null;
+        PeakDb = null;
+        DbLeft = null;
+        DbRight = null;
+        PeakDbLeft = null;
+        PeakDbRight = null;
+        DbMeterVertical = null;
+        LoudnessIntegrated = null;
+        LoudnessShortTerm = null;
+        LoudnessRange = null;
+        LoudnessTruePeak = null;
+        TranscriptionStatus = null;
+        Transcript = null;
+        PartialTranscript = null;
+        TranslatedTranscript = null;
+        TranslatedPartial = null;
+        DetectedLanguage = null;
+        TranscriptionError = null;
+        TranscriptionLevel = 0;
+        TranscriptionHasAudio = false;
+        TranscriptionElapsed = null;
+        UsesGpu = null;
+        NoteName = null;
+        NoteMidi = null;
+        NoteCents = null;
+        NoteHz = null;
+        NoteConfidence = null;
+        NoteActive = false;
+        InputLatencyMs = null;
+        OutputLatencyMs = null;
+    }
 }
 
 internal sealed class TelemetryDto
@@ -491,6 +556,7 @@ internal sealed class SettingsDto
     public string FollowOutputId { get; set; } = "";
     public string UiLanguage { get; set; } = "en";
     public string Theme { get; set; } = "dark";
+    public double UiScale { get; set; } = 1.0;
     public bool StartRoutingOnLaunch { get; set; }
     public bool HighlightMutedNodes { get; set; } = true;
     public bool SignalGlow { get; set; } = true;

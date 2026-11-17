@@ -58,6 +58,9 @@ public sealed class AppSettings
     /// <summary>Workspace colour scheme: "dark" or "light".</summary>
     public string Theme { get; set; } = "dark";
 
+    /// <summary>WebView zoom factor for the whole interface. 1.0 is 100%.</summary>
+    public double UiScale { get; set; } = 1.0;
+
     /// <summary>Draw a red border around muted nodes so they stand out.</summary>
     public bool HighlightMutedNodes { get; set; } = true;
 

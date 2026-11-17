@@ -1,67 +1,37 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Circle, ClipboardPaste, Copy, Flag, Pause, Play, Plus, Redo2, Scissors, Square, Undo2 } from 'lucide-react';
+import { Circle, ClipboardPaste, Copy, Eye, Flag, Pause, Play, Plus, Redo2, Scissors, Square, Trash2, Undo2, X } from 'lucide-react';
 import type {
   TimelineAutomationLaneModel,
   TimelineAutomationTarget,
   TimelineClipModel,
   TimelineState,
-  TimelineTrackModel,
 } from '../timeline';
 import { useI18n } from '../i18n';
 import { readTimelinePalette } from '../timelinePalette';
 import { formatGainDb, nextVolumeValue } from '../gain';
 import { withShortcut } from '../shortcuts';
-import { useNodeTelemetry } from '../telemetry';
 import { ConfirmDialog, PromptDialog } from './Dialogs';
 import TimelineContextMenu from './TimelineContextMenu';
 import TimelineLabelOverlay, { type TimelineStickyLabel } from './TimelineLabelOverlay';
+import { TrackGainSlider, TrackMeter } from './TimelineTrackControls';
 import WelcomeTimelineAnimation from './WelcomeTimelineAnimation';
 
 const BASE_PIXELS_PER_SECOND = 80;
 const MAX_CANVAS_WIDTH = 16000;
 const MIN_ZOOM = 0.001;
 const MAX_ZOOM = 4;
-const RULER_HEIGHT = 22;
 const TRACK_HEIGHT = 72;
 const AUTOMATION_HEIGHT = 48;
 
-type DragKind = 'move' | 'resize-left' | 'resize-right' | 'stretch-right' | 'fade-in' | 'fade-out';
-
-interface TimelineRow {
-  kind: 'track' | 'automation';
-  index: number;
-  track: TimelineTrackModel;
-  lane?: TimelineAutomationLaneModel;
-  y: number;
-  height: number;
-}
-
-interface ClipPreview {
-  startSample: number;
-  lengthSamples: number;
-  sourceOffsetSamples: number;
-  fadeInSamples: number;
-  fadeOutSamples: number;
-}
-
-interface DragState {
-  kind: DragKind;
-  trackId: string;
-  clipId: string;
-  targetTrackId: string;
-  pointerStartX: number;
-  original: ClipPreview;
-  preview: ClipPreview;
-}
-
-interface AutomationDrag {
-  trackId: string;
-  laneId: string;
-  pointIndex: number;
-  pointerStartX: number;
-  originalPoints: { sample: number; value: number; curve: number }[];
-  points: { sample: number; value: number; curve: number }[];
-}
+import {
+  drawTimeline,
+  RULER_HEIGHT,
+  type ClipPreview,
+  type DragKind,
+  type TimelineAutomationDrag,
+  type TimelineDragState,
+  type TimelineRow,
+} from './timelineCanvas';
 
 type PendingRemoval =
   | { kind: 'automation'; trackId: string; laneId: string }
@@ -75,105 +45,6 @@ export interface TimelineClipUpdate {
   pitchSemitones?: number;
   fadeInSamples?: number;
   fadeOutSamples?: number;
-}
-
-function TrackMeter({ nodeId }: { nodeId?: string }) {
-  const telemetry = useNodeTelemetry(nodeId ?? '');
-  const level = Math.max(0, Math.min(1, telemetry?.level ?? 0));
-  const [peak, setPeak] = useState(level);
-  useEffect(() => {
-    setPeak(current => Math.max(level, current));
-    const timer = window.setTimeout(() => {
-      setPeak(current => current > level + 0.01 ? current * 0.86 : level);
-    }, 650);
-    return () => window.clearTimeout(timer);
-  }, [level]);
-  return (
-    <span className={`timeline-track-meter ${telemetry?.clipping ? 'clipping' : ''}`} aria-hidden="true">
-      <span style={{ width: `${level * 100}%` }} />
-      <i style={{ left: `${Math.min(100, peak * 100)}%` }} />
-    </span>
-  );
-}
-
-function TrackGainSlider({ track, onChange }: { track: TimelineTrackModel; onChange: (gain: number) => void }) {
-  const [value, setValue] = useState(track.gain);
-  const [dragging, setDragging] = useState(false);
-  const dragTimer = useRef<number | null>(null);
-  const pending = useRef<number | null>(null);
-  const sendTimer = useRef<number | null>(null);
-  const onChangeRef = useRef(onChange);
-
-  useEffect(() => {
-    onChangeRef.current = onChange;
-  }, [onChange]);
-
-  useEffect(() => {
-    if (!dragging) setValue(track.gain);
-  }, [dragging, track.gain]);
-
-  useEffect(() => () => {
-    if (dragTimer.current !== null) window.clearTimeout(dragTimer.current);
-    if (sendTimer.current !== null) window.clearTimeout(sendTimer.current);
-    if (pending.current !== null) onChangeRef.current(pending.current);
-  }, []);
-
-  const queue = (next: number) => {
-    pending.current = next;
-    if (sendTimer.current === null) {
-      sendTimer.current = window.setTimeout(() => {
-        sendTimer.current = null;
-        if (pending.current !== null) {
-          onChangeRef.current(pending.current);
-          pending.current = null;
-        }
-      }, 50);
-    }
-  };
-
-  return (
-    <span className="timeline-track-gain">
-      <input
-        type="range"
-        min={0}
-        max={1.5}
-        step={0.01}
-        value={value}
-        aria-label={`${track.name} volume`}
-        aria-valuetext={formatGainDb(value)}
-        onPointerDown={() => {
-          if (dragTimer.current !== null) window.clearTimeout(dragTimer.current);
-          setDragging(true);
-        }}
-        onPointerUp={() => {
-          if (dragTimer.current !== null) window.clearTimeout(dragTimer.current);
-          dragTimer.current = window.setTimeout(() => {
-            dragTimer.current = null;
-            setDragging(false);
-          }, 180);
-        }}
-        onPointerCancel={() => setDragging(false)}
-        onChange={event => {
-          const next = Number(event.target.value);
-          setValue(next);
-          queue(next);
-        }}
-        onDoubleClick={() => {
-          setValue(1);
-          queue(1);
-        }}
-        onKeyDown={event => {
-          const next = nextVolumeValue(event, value);
-          if (next !== null) {
-            event.preventDefault();
-            setValue(next);
-            queue(next);
-          }
-        }}
-      />
-      <small className="volume-db">{formatGainDb(value)}</small>
-    </span>
-  );
 }
 
 export default function TimelinePanel({
@@ -309,8 +180,12 @@ export default function TimelinePanel({
   }, []);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const panRef = useRef<{ clientX: number; scrollLeft: number } | null>(null);
+  const panRef = useRef<{ clientX: number; clientY: number; scrollLeft: number; scrollTop: number } | null>(null);
   const [zoom, setZoom] = useState(1);
+  const [rowZoom, setRowZoom] = useState(() => {
+    const saved = Number(localStorage.getItem('ruse.timelineRowZoom'));
+    return Number.isFinite(saved) ? Math.max(0.5, Math.min(2, saved)) : 1;
+  });
   const [palette, setPalette] = useState(readTimelinePalette);
   const [panning, setPanning] = useState(false);
   const [seeking, setSeeking] = useState(false);
@@ -322,8 +197,8 @@ export default function TimelinePanel({
   const [markerRename, setMarkerRename] = useState<{ id: string; name: string } | null>(null);
   const [snap, setSnap] = useState('0.1');
   const [tempoDraft, setTempoDraft] = useState('120');
-  const [drag, setDrag] = useState<DragState | null>(null);
-  const [automationDrag, setAutomationDrag] = useState<AutomationDrag | null>(null);
+  const [drag, setDrag] = useState<TimelineDragState | null>(null);
+  const [automationDrag, setAutomationDrag] = useState<TimelineAutomationDrag | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
   const [clipMenu, setClipMenu] = useState<{ x: number; y: number; trackId: string; clipId: string } | null>(null);
   const [timelineMenu, setTimelineMenu] = useState<{ x: number; y: number; sample: number } | null>(null);
@@ -528,6 +403,10 @@ export default function TimelinePanel({
     localStorage.setItem('ruse.timelineFollow', follow ? '1' : '0');
   }, [follow]);
 
+  useEffect(() => {
+    localStorage.setItem('ruse.timelineRowZoom', String(rowZoom));
+  }, [rowZoom]);
+
 
   useEffect(() => {
     const workspace = scrollRef.current?.closest('.workspace') as HTMLElement | null;
@@ -541,21 +420,23 @@ export default function TimelinePanel({
     return () => window.removeEventListener('resize', clampHeight);
   }, []);
 
+  const trackHeight = Math.max(36, Math.round(TRACK_HEIGHT * rowZoom));
+  const automationHeight = Math.max(28, Math.round(AUTOMATION_HEIGHT * rowZoom));
   const rows = useMemo(() => {
     const result: TimelineRow[] = [];
     let rowY = RULER_HEIGHT;
     for (let index = 0; index < state.project.tracks.length; index++) {
       const track = state.project.tracks[index];
-      result.push({ kind: 'track', index, track, y: rowY, height: TRACK_HEIGHT });
-      rowY += TRACK_HEIGHT;
+      result.push({ kind: 'track', index, track, y: rowY, height: trackHeight });
+      rowY += trackHeight;
       for (const lane of track.automation ?? []) {
-        result.push({ kind: 'automation', index, track, lane, y: rowY, height: AUTOMATION_HEIGHT });
-        rowY += AUTOMATION_HEIGHT;
+        result.push({ kind: 'automation', index, track, lane, y: rowY, height: automationHeight });
+        rowY += automationHeight;
       }
     }
 
     return result;
-  }, [state.project.tracks]);
+  }, [state.project.tracks, trackHeight, automationHeight]);
 
   const maxEnd = Math.max(
     sampleRate * 2,
@@ -578,7 +459,7 @@ export default function TimelinePanel({
     }
   }, [follow, pixelsPerSecond, sampleRate, state.playheadSample, state.playing]);
   const width = Math.max(320, Math.ceil(seconds * pixelsPerSecond));
-  const height = Math.max(RULER_HEIGHT + TRACK_HEIGHT,
+  const height = Math.max(RULER_HEIGHT + trackHeight,
     rows.length > 0 ? rows[rows.length - 1].y + rows[rows.length - 1].height : RULER_HEIGHT);
   const playheadX = (state.playheadSample / sampleRate) * pixelsPerSecond;
   const loopActive = state.project.loopEndSample > state.project.loopStartSample;
@@ -663,7 +544,11 @@ export default function TimelinePanel({
     const element = scrollRef.current;
     if (!element) return;
     const handleWheel = (event: WheelEvent) => {
-      if (event.shiftKey && !event.ctrlKey) {
+      if (event.altKey) {
+        event.preventDefault();
+        setRowZoom(current => Math.max(0.5, Math.min(2,
+          current * (event.deltaY > 0 ? 0.9 : 1.1))));
+      } else if (event.shiftKey && !event.ctrlKey) {
         event.preventDefault();
         element.scrollLeft += event.deltaY;
       } else if (event.ctrlKey) {
@@ -749,296 +634,30 @@ export default function TimelinePanel({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const pixelWidth = Math.round(width * dpr);
-    const pixelHeight = Math.round(height * dpr);
-    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
-    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
-    canvas.style.width = `${width}px`;
-    canvas.style.height = `${height}px`;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.lineWidth = 1;
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = palette.background;
-    ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = palette.ruler;
-    ctx.fillRect(0, 0, width, RULER_HEIGHT);
-    ctx.strokeStyle = palette.rulerLine;
-    ctx.beginPath();
-    ctx.moveTo(0, RULER_HEIGHT + 0.5);
-    ctx.lineTo(width, RULER_HEIGHT + 0.5);
-    ctx.stroke();
-
-    const barSeconds = beatSeconds * beatsPerBar;
-    const barCount = Math.ceil(seconds / barSeconds) + 1;
-    for (let bar = 0; bar < barCount; bar++) {
-      const x = bar * barSeconds * pixelsPerSecond;
-      ctx.strokeStyle = palette.gridMajor;
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, height);
-      ctx.stroke();
-      ctx.fillStyle = palette.rulerText;
-      ctx.font = '9px Consolas, monospace';
-      ctx.fillText(`${bar + 1}`, x + 3, 13);
-    }
-
-    const beatPixels = beatSeconds * pixelsPerSecond;
-    if (beatPixels >= 8) {
-      for (let beat = 1; beat * beatSeconds <= seconds; beat++) {
-        if (beat % beatsPerBar === 0) continue;
-        const x = beat * beatSeconds * pixelsPerSecond;
-        ctx.strokeStyle = palette.beatMinor;
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-        ctx.stroke();
-      }
-    }
-    if (displayLoopActive) {
-      const startX = (displayLoopStart / sampleRate) * pixelsPerSecond;
-      const endX = (displayLoopEnd / sampleRate) * pixelsPerSecond;
-      ctx.fillStyle = palette.loopFill;
-      ctx.fillRect(startX, 0, Math.max(1, endX - startX), height);
-      ctx.strokeStyle = palette.loopStroke;
-      ctx.beginPath();
-      ctx.moveTo(startX, 0);
-      ctx.lineTo(startX, height);
-      ctx.moveTo(endX, 0);
-      ctx.lineTo(endX, height);
-      ctx.stroke();
-    }
-
-    for (const row of rows) {
-      if (row.kind === 'track') {
-        const index = row.index;
-        ctx.fillStyle = index % 2 === 0 ? palette.trackA : palette.trackB;
-        ctx.fillRect(0, row.y, width, row.height);
-
-        for (const clip of row.track.clips) {
-          const view = previewFor(row.track.id, clip);
-          const x = (view.startSample / sampleRate) * pixelsPerSecond;
-          const w = Math.max(2, (view.lengthSamples / sampleRate) * pixelsPerSecond);
-          const clipY = row.y + 20;
-          const clipH = row.height - 28;
-          const generatorClip = Boolean(row.track.generatorNodeId);
-          ctx.fillStyle = generatorClip ? palette.generatorClip : palette.clip;
-          ctx.fillRect(x, clipY, w, clipH);
-          const isSelected = selectedClipKeys.includes(clipKey(row.track.id, clip.id));
-          ctx.strokeStyle = isSelected ? palette.fade : generatorClip ? palette.generatorStroke : palette.clipStroke;
-          ctx.lineWidth = isSelected ? 2 : 1;
-          ctx.strokeRect(x + 0.5, clipY + 0.5, Math.max(1, w - 1), clipH - 1);
-          ctx.lineWidth = 1;
-
-          if (generatorClip) {
-            ctx.save();
-            ctx.beginPath();
-            ctx.rect(x, clipY, w, clipH);
-            ctx.clip();
-            ctx.strokeStyle = palette.generatorHatch;
-            for (let line = x - clipH; line < x + w; line += 14) {
-              ctx.beginPath();
-              ctx.moveTo(line, clipY + clipH);
-              ctx.lineTo(line + clipH, clipY);
-              ctx.stroke();
-            }
-            ctx.restore();
-          }
-
-          if (clip.peaks?.length) {
-            const center = row.y + row.height / 2 + 4;
-            const half = (row.height - 30) / 2;
-            ctx.strokeStyle = palette.waveform;
-            ctx.beginPath();
-            for (let p = 0; p < clip.peaks.length; p++) {
-              const px = x + (p / clip.peaks.length) * w;
-              const peak = Math.max(1, clip.peaks[p] * half);
-              ctx.moveTo(px, center - peak);
-              ctx.lineTo(px, center + peak);
-            }
-            ctx.stroke();
-          }
-
-          const fadeInWidth = (view.fadeInSamples / sampleRate) * pixelsPerSecond;
-          const fadeOutWidth = (view.fadeOutSamples / sampleRate) * pixelsPerSecond;
-          if (fadeInWidth > 0) {
-            ctx.strokeStyle = palette.fade;
-            ctx.beginPath();
-            ctx.moveTo(x, clipY + clipH);
-            ctx.lineTo(x + Math.min(w, fadeInWidth), clipY);
-            ctx.stroke();
-          }
-          if (fadeOutWidth > 0) {
-            ctx.strokeStyle = palette.fade;
-            ctx.beginPath();
-            ctx.moveTo(x + w - Math.min(w, fadeOutWidth), clipY);
-            ctx.lineTo(x + w, clipY + clipH);
-            ctx.stroke();
-          }
-
-          ctx.fillStyle = palette.fade;
-          ctx.beginPath();
-          ctx.arc(x + 7, clipY + 6, 3.5, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(x + w - 7, clipY + 6, 3.5, 0, Math.PI * 2);
-          ctx.fill();
-
-          ctx.fillStyle = palette.clipText;
-          ctx.font = '9px Consolas, monospace';
-          const label = clip.name || t('Audio clip');
-          ctx.fillText(label, x + 4, row.y + 34);
-        }
-
-        if (selectedClipModel && selectedClipModel.track.id === row.track.id) {
-          const selected = selectedClipModel.clip;
-          for (const other of row.track.clips) {
-            if (other.id === selected.id) continue;
-            const overlapStart = Math.max(selected.startSample, other.startSample);
-            const overlapEnd = Math.min(selected.startSample + selected.lengthSamples,
-              other.startSample + other.lengthSamples);
-            if (overlapEnd <= overlapStart) continue;
-            const x = (overlapStart / sampleRate) * pixelsPerSecond;
-            const w = Math.max(1, ((overlapEnd - overlapStart) / sampleRate) * pixelsPerSecond);
-            ctx.fillStyle = palette.xfadeFill;
-            ctx.fillRect(x, row.y + 20, w, row.height - 28);
-            ctx.save();
-            ctx.setLineDash([3, 3]);
-            ctx.strokeStyle = palette.fade;
-            ctx.strokeRect(x + 0.5, row.y + 20.5, Math.max(1, w - 1), row.height - 29);
-            ctx.restore();
-            ctx.fillStyle = palette.fade;
-            ctx.font = '8px Consolas, monospace';
-            ctx.fillText('XFADE', x + 4, row.y + row.height - 12);
-          }
-        }
-
-        if (drag?.kind === 'move' && drag.targetTrackId === row.track.id &&
-            drag.targetTrackId !== drag.trackId) {
-          const sourceName = tracks
-            .find(track => track.id === drag.trackId)
-            ?.clips.find(clip => clip.id === drag.clipId)?.name;
-          const x = (drag.preview.startSample / sampleRate) * pixelsPerSecond;
-          const w = Math.max(2, (drag.preview.lengthSamples / sampleRate) * pixelsPerSecond);
-          ctx.save();
-          ctx.globalAlpha = 0.45;
-          ctx.fillStyle = palette.dragPreview;
-          ctx.fillRect(x, row.y + 20, w, row.height - 28);
-          ctx.globalAlpha = 0.95;
-          ctx.setLineDash([4, 3]);
-          ctx.strokeStyle = palette.fade;
-          ctx.strokeRect(x + 0.5, row.y + 20.5, Math.max(1, w - 1), row.height - 29);
-          ctx.setLineDash([]);
-          if (sourceName) {
-            ctx.fillStyle = palette.dragLabel;
-            ctx.font = '9px Consolas, monospace';
-            ctx.fillText(sourceName, x + 4, row.y + 34);
-          }
-          ctx.restore();
-        }
-      } else if (row.lane) {
-        const lane = row.lane;
-        ctx.fillStyle = palette.automationBackground;
-        ctx.fillRect(0, row.y, width, row.height);
-        ctx.strokeStyle = palette.automationLine;
-        ctx.beginPath();
-        ctx.moveTo(0, row.y);
-        ctx.lineTo(width, row.y);
-        ctx.stroke();
-        const valueY = (value: number) => automationValueY(lane, row, value);
-        const points = [...pointsForLane(row.track.id, lane)].sort((a, b) => a.sample - b.sample);
-        if (points.length > 0) {
-          ctx.strokeStyle = palette.automationCurve;
-          ctx.beginPath();
-          ctx.moveTo((points[0].sample / sampleRate) * pixelsPerSecond, valueY(points[0].value));
-          for (let i = 1; i < points.length; i++) {
-            const previous = points[i - 1];
-            const next = points[i];
-            const previousX = (previous.sample / sampleRate) * pixelsPerSecond;
-            const nextX = (next.sample / sampleRate) * pixelsPerSecond;
-            const previousY = valueY(previous.value);
-            const nextY = valueY(next.value);
-            if (previous.curve === 1) {
-              ctx.lineTo(nextX, previousY);
-              ctx.lineTo(nextX, nextY);
-            } else if (previous.curve === 2) {
-              for (let step = 1; step <= 16; step++) {
-                const t = step / 16;
-                ctx.lineTo(previousX + (nextX - previousX) * t,
-                  previousY + (nextY - previousY) * t * t);
-              }
-            } else {
-              ctx.lineTo(nextX, nextY);
-            }
-          }
-          ctx.stroke();
-          for (let index = 0; index < points.length; index++) {
-            const point = points[index];
-            const pointX = (point.sample / sampleRate) * pixelsPerSecond;
-            const active = automationDrag?.laneId === lane.id &&
-              automationDrag.points[automationDrag.pointIndex] === point;
-            ctx.fillStyle = active ? palette.automationPointActive : palette.automationPoint;
-            ctx.beginPath();
-            ctx.arc(pointX, valueY(point.value), active ? 7 : 5, 0, Math.PI * 2);
-            ctx.fill();
-            if (active) {
-              const pointY = valueY(point.value);
-              ctx.fillStyle = palette.labelBackground;
-              ctx.fillRect(pointX + 9, pointY - 17, 76, 15);
-              ctx.fillStyle = palette.labelText;
-              ctx.fillText(point.value.toFixed(2), pointX + 14, pointY - 6);
-            }
-          }
-        }
-      }
-    }
-
-    for (const marker of state.project.markers ?? []) {
-      const startX = (marker.startSample / sampleRate) * pixelsPerSecond;
-      const endX = marker.endSample > marker.startSample ? (marker.endSample / sampleRate) * pixelsPerSecond : startX;
-      if (marker.endSample > marker.startSample) {
-        ctx.fillStyle = palette.regionFill;
-        ctx.fillRect(startX, RULER_HEIGHT, Math.max(1, endX - startX), Math.max(1, height - RULER_HEIGHT));
-        ctx.strokeStyle = palette.regionStroke;
-        ctx.beginPath();
-        ctx.moveTo(endX, 0);
-        ctx.lineTo(endX, height);
-        ctx.stroke();
-      }
-
-      ctx.strokeStyle = palette.marker;
-      ctx.beginPath();
-      ctx.moveTo(startX, 0);
-      ctx.lineTo(startX, height);
-      ctx.stroke();
-      ctx.fillStyle = palette.marker;
-      ctx.beginPath();
-      ctx.moveTo(startX, 0);
-      ctx.lineTo(startX + 7, 0);
-      ctx.lineTo(startX, 8);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = palette.markerText;
-      ctx.font = '9px Consolas, monospace';
-      ctx.fillText(marker.name, startX + 8, 12);
-    }
-    ctx.fillStyle = palette.playhead;
-    ctx.beginPath();
-    ctx.moveTo(playheadX - 5, 0);
-    ctx.lineTo(playheadX + 5, 0);
-    ctx.lineTo(playheadX, 8);
-    ctx.fill();
-    ctx.strokeStyle = palette.playhead;
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    ctx.moveTo(playheadX, 0);
-    ctx.lineTo(playheadX, height);
-    ctx.stroke();
-
-  }, [automationDrag, automationTargets, beatsPerBar, beatSeconds, drag, displayLoopActive, displayLoopEnd, displayLoopStart, height, loopDrag, palette, pixelsPerSecond, rows, sampleRate, seconds, selectedClip, selectedClipKeys, selectedClipModel, state.playheadSample, state.project.markers, t, tempo, width]);
+    drawTimeline(canvas, {
+      width,
+      height,
+      palette,
+      seconds,
+      beatSeconds,
+      beatsPerBar,
+      pixelsPerSecond,
+      sampleRate,
+      displayLoopActive,
+      displayLoopStart,
+      displayLoopEnd,
+      rows,
+      tracks,
+      selectedClipKeys,
+      selectedClipModel,
+      drag,
+      automationDrag,
+      automationTargets,
+      markers: state.project.markers ?? [],
+      playheadX,
+      audioClipLabel: t('Audio clip'),
+    });
+  }, [automationDrag, automationTargets, beatsPerBar, beatSeconds, drag, displayLoopActive, displayLoopEnd, displayLoopStart, height, palette, pixelsPerSecond, playheadX, rows, sampleRate, seconds, selectedClipKeys, selectedClipModel, state.project.markers, t, tracks, width]);
 
   const locate = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -1223,6 +842,17 @@ export default function TimelinePanel({
           <div className="timeline-zoom" role="group" aria-label={t('Timeline zoom')}>
             <button className="icon-button compact" onClick={() => zoomBy(0.5)} title={t('Zoom out')} aria-label={t('Zoom out')}>-</button>
             <button className="icon-button compact" onClick={() => zoomBy(2)} title={t('Zoom in')} aria-label={t('Zoom in')}>+</button>
+            <select
+              className="timeline-row-zoom"
+              value={rowZoom}
+              onChange={event => setRowZoom(Number(event.target.value))}
+              aria-label={t('Track height')}
+              title={t('Track height')}
+            >
+              {[0.5, 0.75, 1, 1.25, 1.5, 2].map(value => (
+                <option key={value} value={value}>{Math.round(value * 100)}%</option>
+              ))}
+            </select>
             <button className="tool-button" onClick={fitTimeline} title={t('Fit timeline')}>{t('Fit')}</button>
             <button className={`tool-button ${follow ? 'active' : ''}`} aria-pressed={follow} title={t('Follow playhead')} onClick={() => setFollow(value => !value)}>{t('Follow')}</button>
             <button className={`tool-button ${state.metronome ? 'active' : ''}`} aria-pressed={state.metronome === true} onClick={onToggleMetronome} title={t('Transport click')}>{t('Transport click')}</button>
@@ -1372,7 +1002,7 @@ export default function TimelinePanel({
           <button className="tool-button" onClick={onBounce}>{t('Bounce mix')}</button>
           <button className="tool-button" disabled={!loopActive} title={loopActive ? t('Bounce range') : t('Shift+drag the ruler to set a loop range')} onClick={onBounceRange}>{t('Bounce range')}</button>
           <button className="tool-button" onClick={onFreeze}>{t('Freeze')}</button>
-          <button className="icon-button compact" onClick={onClose} aria-label={t('Close timeline')}>�</button>
+          <button className="icon-button compact" onClick={onClose} title={t('Close timeline')} aria-label={t('Close timeline')}><X size={13} /></button>
         </div>
       </header>
       {showIntro && (
@@ -1410,13 +1040,13 @@ export default function TimelinePanel({
                     title={hasNode ? t('Show track node') : t('Restore track node')}
                     aria-label={hasNode ? t('Show track node') : t('Restore track node')}
                     onClick={() => onShowTrackNode(track.id, trackNodeId)}
-                  >{hasNode ? '?' : '+'}</button>
+                  >{hasNode ? <Eye size={13} /> : <Plus size={13} />}</button>
                   <button
                     className="icon-button compact danger-text"
                     title={t('Remove track')}
                     aria-label={t('Remove track')}
                     onClick={() => setPendingRemoval({ kind: 'track', trackId: track.id })}
-                  >�</button>
+                  ><Trash2 size={13} /></button>
                 </span>
               </div>
               <div className="timeline-track-mix">
@@ -1573,7 +1203,7 @@ export default function TimelinePanel({
             role="application"
             aria-label={t('Timeline')}
             aria-keyshortcuts="Control+C Control+X Control+V Control+A Delete Backspace ArrowLeft ArrowRight Home End"
-            title={`${t('Shift+drag a clip edge to time-stretch')} � ${t('Shift+drag the ruler to set a loop range')}`}
+            title={`${t('Shift+drag a clip edge to time-stretch')} \u00B7 ${t('Shift+drag the ruler to set a loop range')}`}
             onKeyDown={event => {
               const mod = event.ctrlKey || event.metaKey;
               const selectedTrack = selectedClip
@@ -1626,7 +1256,9 @@ export default function TimelinePanel({
               if (event.button === 1 || (event.button === 0 && event.altKey)) {
                 panRef.current = {
                   clientX: event.clientX,
+                  clientY: event.clientY,
                   scrollLeft: scrollRef.current?.scrollLeft ?? 0,
+                  scrollTop: scrollRef.current?.scrollTop ?? 0,
                 };
                 setPanning(true);
                 event.preventDefault();
@@ -1711,6 +1343,7 @@ export default function TimelinePanel({
               const pan = panRef.current;
               if (pan && scrollRef.current) {
                 scrollRef.current.scrollLeft = pan.scrollLeft - (event.clientX - pan.clientX);
+                scrollRef.current.scrollTop = pan.scrollTop - (event.clientY - pan.clientY);
                 return;
               }
 
@@ -1914,7 +1547,7 @@ export default function TimelinePanel({
               onClick: () => onAddAutomation(menuClipModel.track.id, {
                 nodeId: `clip:${menuClipModel.clip.id}`,
                 trackId: menuClipModel.track.id,
-                label: `${menuClipModel.track.name} � ${menuClipModel.clip.name || t('Audio clip')} � ${t('Clip pitch')}`,
+                label: `${menuClipModel.track.name} \u00B7 ${menuClipModel.clip.name || t('Audio clip')} \u00B7 ${t('Clip pitch')}`,
                 processorIndex: -1,
                 parameterIndex: 0,
                 min: -24,

@@ -47,7 +47,7 @@ export default function TimelineContextMenu({
               onClose();
             }}
           >
-            {item.icon}{item.label}
+            {item.icon}<span className="menu-label">{item.label}</span>
           </button>
         ))}
       </div>

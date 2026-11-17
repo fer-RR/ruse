@@ -58,7 +58,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 
 - Optional local Whisper transcription, translation and text-to-speech.
 - Local control API for scripts and automation, off by default.
-- Five UI themes: Dark, Light, Midnight, Blueprint and Studio '74.
+- Six UI themes: Dark, Light, Midnight, Blueprint, Studio '74 and Receiver.
 - Keyboard shortcuts, reduced-motion support and screen-reader labels.
 - English, German, Spanish, French, Italian, Japanese, Korean, Portuguese (Brazil) and Chinese (Simplified) UI.
 

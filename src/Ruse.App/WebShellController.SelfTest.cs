@@ -56,6 +56,11 @@ internal sealed partial class WebShellController
         var mixerSourceEntry = RegisterSource(new SourceNode("Mixer history source", SourceKind.Tone), 0, 0);
         var mixerEntry = AddMixer(0, 0);
         var mixerLink = ConnectEntries(mixerSourceEntry, mixerEntry);
+        var linkIndexBefore = GetLinkIndex();
+        Check("link index cache reuse", ReferenceEquals(linkIndexBefore, GetLinkIndex()));
+        Check("link index includes connected input",
+            linkIndexBefore.Incoming.TryGetValue(mixerEntry.Id, out var indexedInputs) &&
+            indexedInputs.Any(link => link.Id == mixerLink.Id));
         mixerLink.Gain = 0.6f;
         mixerLink.Pan = 0.4f;
         mixerLink.DelayMs = 12f;
@@ -65,6 +70,11 @@ internal sealed partial class WebShellController
         SyncMixerInput(mixerLink);
         var mixerLinkSnapshot = CloneLink(mixerLink);
         RemoveLinkInternal(mixerLink);
+        var linkIndexAfterRemove = GetLinkIndex();
+        Check("link index invalidates on remove",
+            !ReferenceEquals(linkIndexBefore, linkIndexAfterRemove) &&
+            (!linkIndexAfterRemove.Incoming.TryGetValue(mixerEntry.Id, out var removedInputs) ||
+             removedInputs.All(link => link.Id != mixerLink.Id)));
         RestoreLink(mixerLinkSnapshot);
         var restoredMixerLink = _links.FirstOrDefault(link => link.Id == mixerLinkSnapshot.Id);
         Check("mixer link undo restores input settings",
@@ -91,6 +101,21 @@ internal sealed partial class WebShellController
                                       Meter(float.PositiveInfinity) == 0 &&
                                       Finite(double.NegativeInfinity) == 0);
 
+        var reusedMeter = new NodeTelemetryDto
+        {
+            Level = 1,
+            Clipping = true,
+            Spectrum = new[] { 1f, 2f },
+            NoteName = "A4",
+        };
+        reusedMeter.Reset();
+        Check("telemetry dto reset",
+            reusedMeter.Level == 0 &&
+            !reusedMeter.Clipping &&
+            reusedMeter.Spectrum == null &&
+            reusedMeter.NoteName == null &&
+            Math.Abs(reusedMeter.MeterDbLeft + 60f) < 1e-6f);
+
         string nodeStateJson = JsonSerializer.Serialize(new NodeStateDto
         {
             Id = "node",
@@ -108,6 +133,23 @@ internal sealed partial class WebShellController
             nodeStateJson.Contains("\"parallel\":true", StringComparison.Ordinal) &&
             !nodeStateJson.Contains("\"solo\"", StringComparison.Ordinal) &&
             !nodeStateJson.Contains("\"enabled\"", StringComparison.Ordinal));
+
+        string mixerInputStateJson = JsonSerializer.Serialize(new MixerInputStateDto
+        {
+            MixerId = "mixer",
+            Input = new MixerInputDto
+            {
+                LinkId = "link",
+                Title = "Mic",
+                Gain = 0.5f,
+                Pan = -0.25f,
+            },
+        }, _json);
+        Check("mixer-input-state delta contract",
+            mixerInputStateJson.Contains("\"mixerId\":\"mixer\"", StringComparison.Ordinal) &&
+            mixerInputStateJson.Contains("\"linkId\":\"link\"", StringComparison.Ordinal) &&
+            mixerInputStateJson.Contains("\"input\":", StringComparison.Ordinal) &&
+            !mixerInputStateJson.Contains("\"inputs\":", StringComparison.Ordinal));
 
         const int fftFrames = 4096;
         var fftTone = new float[fftFrames * 2];
@@ -388,6 +430,7 @@ internal sealed partial class WebShellController
             Left = 0,
             Top = 0,
             Theme = "light",
+            UiScale = 1.25,
             UseGpu = true,
             IsolateVst3 = false,
             TranslationProvider = "opus",
@@ -412,6 +455,7 @@ internal sealed partial class WebShellController
         var appSettingsBack = JsonSerializer.Deserialize<AppSettings>(appSettingsJson) ?? new AppSettings();
         Check("settings persistence",
             appSettingsBack.Theme == "light" &&
+            Math.Abs(appSettingsBack.UiScale - 1.25) < 0.001 &&
             appSettingsBack.UseGpu &&
             !appSettingsBack.IsolateVst3 &&
             appSettingsBack.TranslationProvider == "opus" &&
@@ -435,6 +479,7 @@ internal sealed partial class WebShellController
         var settingsDto = new SettingsDto
         {
             Theme = "light",
+            UiScale = 1.25,
             UseGpu = true,
             IsolateVst3 = false,
             TranslationProvider = "opus",
@@ -460,6 +505,7 @@ internal sealed partial class WebShellController
         var settingsBack = JsonSerializer.Deserialize<SettingsDto>(settingsJson, _json) ?? new SettingsDto();
         Check("settings bridge contract",
             settingsBack.Theme == "light" &&
+            Math.Abs(settingsBack.UiScale - 1.25) < 0.001 &&
             settingsBack.UseGpu &&
             !settingsBack.IsolateVst3 &&
             settingsBack.TranslationProvider == "opus" &&
@@ -480,6 +526,27 @@ internal sealed partial class WebShellController
             settingsBack.EngineCushionMode == "manual" &&
             settingsBack.EngineCushionManualMs == 20 &&
             settingsBack.ElasticRing);
+
+        Check("ui scale clamps",
+            Math.Abs(ClampUiScale(5) - 1.5) < 0.001 &&
+            Math.Abs(ClampUiScale(0.1) - 0.75) < 0.001 &&
+            Math.Abs(ClampUiScale(double.NaN) - 1.0) < 0.001);
+
+        if (_webView != null)
+        {
+            double previousScale = _settings.UiScale;
+            _settings.UiScale = 1.25;
+            ApplyUiScale();
+            double appliedZoom = _webView.ZoomFactor;
+            bool applied = Math.Abs(appliedZoom - 1.25) < 0.01;
+            _settings.UiScale = 5;
+            ApplyUiScale();
+            double clampedZoom = _webView.ZoomFactor;
+            bool clamped = Math.Abs(clampedZoom - 1.5) < 0.01;
+            _settings.UiScale = previousScale;
+            ApplyUiScale();
+            Check("ui scale applies", applied && clamped);
+        }
 
         var midiModifier = new ModifierNode("MIDI test");
         var midiGain = new GainProcessor();

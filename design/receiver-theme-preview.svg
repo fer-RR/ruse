@@ -1,0 +1,219 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900">
+  <defs>
+    <linearGradient id="walnutBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3A2417"/>
+      <stop offset="0.5" stop-color="#24160F"/>
+      <stop offset="1" stop-color="#150D09"/>
+    </linearGradient>
+    <linearGradient id="alu" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EEF0F1"/>
+      <stop offset="0.45" stop-color="#C9CDD1"/>
+      <stop offset="1" stop-color="#8E9296"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#11161A"/>
+      <stop offset="1" stop-color="#05080A"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#2FD3D8" stop-opacity="0"/>
+      <stop offset="0.2" stop-color="#2FD3D8"/>
+      <stop offset="0.8" stop-color="#2FD3D8"/>
+      <stop offset="1" stop-color="#2FD3D8" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grain" width="180" height="18" patternUnits="userSpaceOnUse">
+      <path d="M0 4 C40 2 80 7 120 4 S170 2 180 5" fill="none" stroke="#000" stroke-opacity="0.16" stroke-width="1"/>
+      <path d="M0 12 C50 15 90 9 130 13 S170 15 180 11" fill="none" stroke="#fff" stroke-opacity="0.03" stroke-width="1"/>
+    </pattern>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <style>
+      .title { font-family: Bahnschrift, "Arial Narrow", sans-serif; fill: #F1E8DA; font-size: 20px; letter-spacing: 4px; font-weight: 600; }
+      .sub { font-family: Bahnschrift, "Arial Narrow", sans-serif; fill: #8E8271; font-size: 12px; letter-spacing: 1.4px; }
+      .label { font-family: Bahnschrift, "Arial Narrow", sans-serif; fill: #C9BDA9; font-size: 11px; letter-spacing: 1.4px; }
+      .mono { font-family: Consolas, monospace; fill: #C9BDA9; font-size: 10px; letter-spacing: 0.4px; }
+      .eyebrow { font-family: Bahnschrift, "Arial Narrow", sans-serif; fill: #8E8271; font-size: 9px; letter-spacing: 1.8px; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="900" fill="url(#walnutBg)"/>
+  <rect width="1400" height="900" fill="url(#grain)" opacity="0.55"/>
+
+  <g transform="translate(48 42)">
+    <text class="title" x="0" y="0">RUSE / RECEIVER THEME</text>
+    <text class="sub" x="0" y="24">Walnut cabinet · brushed aluminum · black glass · teal dial · amber lamp · pilot red</text>
+  </g>
+
+  <!-- Palette -->
+  <g transform="translate(48 110)">
+    <text class="eyebrow" x="0" y="0">PALETTE</text>
+    <g transform="translate(0 18)">
+      <rect width="34" height="34" rx="4" fill="#3A2417"/>
+      <text class="mono" x="44" y="15">WALNUT</text><text class="mono" x="44" y="28" fill="#8E8271">#3A2417</text>
+    </g>
+    <g transform="translate(0 66)">
+      <rect width="34" height="34" rx="4" fill="url(#alu)"/>
+      <text class="mono" x="44" y="15">ALUMINUM</text><text class="mono" x="44" y="28" fill="#8E8271">#C9CDD1</text>
+    </g>
+    <g transform="translate(0 114)">
+      <rect width="34" height="34" rx="4" fill="#06090B" stroke="#C9CDD1" stroke-opacity="0.25"/>
+      <text class="mono" x="44" y="15">GLASS</text><text class="mono" x="44" y="28" fill="#8E8271">#06090B</text>
+    </g>
+    <g transform="translate(0 162)">
+      <rect width="34" height="34" rx="4" fill="#2FD3D8"/>
+      <text class="mono" x="44" y="15">DIAL TEAL</text><text class="mono" x="44" y="28" fill="#8E8271">#2FD3D8</text>
+    </g>
+    <g transform="translate(0 210)">
+      <rect width="34" height="34" rx="4" fill="#FFB25E"/>
+      <text class="mono" x="44" y="15">LAMP AMBER</text><text class="mono" x="44" y="28" fill="#8E8271">#FFB25E</text>
+    </g>
+    <g transform="translate(0 258)">
+      <rect width="34" height="34" rx="4" fill="#E5483A"/>
+      <text class="mono" x="44" y="15">PILOT RED</text><text class="mono" x="44" y="28" fill="#8E8271">#E5483A</text>
+    </g>
+    <g transform="translate(0 320)">
+      <text class="eyebrow" x="0" y="0">TYPE</text>
+      <text class="label" x="0" y="22" font-size="16">Bahnschrift / Arial Narrow</text>
+      <text class="mono" x="0" y="40">Condensed labels, wide tracking, uppercase eyebrows.</text>
+    </g>
+  </g>
+
+  <!-- App mock -->
+  <g transform="translate(300 110)">
+    <rect width="1040" height="720" rx="16" fill="#140F0B" stroke="#C9CDD1" stroke-opacity="0.22"/>
+    <rect x="1" y="1" width="1038" height="718" rx="15" fill="none" stroke="#2FD3D8" stroke-opacity="0.08"/>
+
+    <!-- Title bar -->
+    <rect x="0" y="0" width="1040" height="52" rx="16" fill="#2A211A"/>
+    <rect x="0" y="40" width="1040" height="12" fill="#2A211A"/>
+    <line x1="0" y1="52" x2="1040" y2="52" stroke="#C9CDD1" stroke-opacity="0.16"/>
+    <circle cx="26" cy="26" r="9" fill="none" stroke="#6FE3E6" stroke-width="2"/>
+    <line x1="26" y1="26" x2="18" y2="20" stroke="#FFB25E" stroke-width="2.5" stroke-linecap="round"/>
+    <text class="label" x="46" y="30" fill="#F1E8DA" font-size="13" letter-spacing="2">RUSE</text>
+    <rect x="820" y="16" width="86" height="22" rx="11" fill="#11251C" stroke="#59E0C0" stroke-opacity="0.55"/>
+    <text class="eyebrow" x="863" y="31" text-anchor="middle" fill="#59E0C0">LIVE</text>
+    <rect x="916" y="16" width="102" height="22" rx="4" fill="#3A2D22" stroke="#C9CDD1" stroke-opacity="0.2"/>
+    <text class="eyebrow" x="967" y="31" text-anchor="middle" fill="#C9BDA9">PRESET</text>
+
+    <!-- Sidebar -->
+    <rect x="0" y="52" width="238" height="668" fill="#1E1712"/>
+    <line x1="238" y1="52" x2="238" y2="720" stroke="#C9CDD1" stroke-opacity="0.14"/>
+    <text class="eyebrow" x="18" y="82">LIBRARY</text>
+    <rect x="18" y="96" width="202" height="30" rx="6" fill="#0C0A08" stroke="#C9CDD1" stroke-opacity="0.16"/>
+    <text class="mono" x="30" y="116" fill="#8E8271">Search sources…</text>
+    <g transform="translate(18 146)">
+      <rect width="202" height="44" rx="7" fill="#2A211A" stroke="#2FD3D8" stroke-opacity="0.25"/>
+      <rect x="10" y="10" width="24" height="24" rx="5" fill="#2FD3D8" opacity="0.18"/>
+      <circle cx="22" cy="22" r="5" fill="#6FE3E6"/>
+      <text class="label" x="44" y="19" fill="#F1E8DA">Game audio</text>
+      <text class="mono" x="44" y="33" fill="#8E8271">Application</text>
+    </g>
+    <g transform="translate(18 198)">
+      <rect width="202" height="44" rx="7" fill="#241A13" stroke="#C9CDD1" stroke-opacity="0.12"/>
+      <rect x="10" y="10" width="24" height="24" rx="5" fill="#FFB25E" opacity="0.16"/>
+      <circle cx="22" cy="22" r="5" fill="#FFB25E"/>
+      <text class="label" x="44" y="19" fill="#C9BDA9">Microphone</text>
+      <text class="mono" x="44" y="33" fill="#8E8271">Input</text>
+    </g>
+    <g transform="translate(18 250)">
+      <rect width="202" height="44" rx="7" fill="#241A13" stroke="#C9CDD1" stroke-opacity="0.12"/>
+      <rect x="10" y="10" width="24" height="24" rx="5" fill="#59E0C0" opacity="0.16"/>
+      <circle cx="22" cy="22" r="5" fill="#59E0C0"/>
+      <text class="label" x="44" y="19" fill="#C9BDA9">Speakers</text>
+      <text class="mono" x="44" y="33" fill="#8E8271">Output</text>
+    </g>
+
+    <!-- Canvas node -->
+    <g transform="translate(286 96)">
+      <rect width="300" height="196" rx="10" fill="url(#glass)" stroke="#C9CDD1" stroke-opacity="0.45"/>
+      <rect width="300" height="36" rx="9" fill="url(#alu)"/>
+      <rect x="0" y="27" width="300" height="9" fill="url(#alu)"/>
+      <text class="label" x="14" y="23" fill="#1A110C" font-size="12" letter-spacing="1.2">COMPRESSOR</text>
+      <circle cx="276" cy="18" r="5" fill="#E5483A"/>
+      <circle cx="14" cy="76" r="22" fill="url(#alu)" stroke="#5A2E1B" stroke-width="3"/>
+      <circle cx="14" cy="76" r="22" fill="none" stroke="#1A110C" stroke-opacity="0.5" stroke-width="5" stroke-dasharray="2 6"/>
+      <rect x="11" y="54" width="6" height="14" rx="2" fill="#1A110C"/>
+      <circle cx="14" cy="76" r="4" fill="#E5483A"/>
+      <text class="mono" x="50" y="70" fill="#C9BDA9">THRESHOLD</text>
+      <text class="label" x="50" y="88" fill="#F1E8DA" font-size="16">-18.0 dB</text>
+      <rect x="50" y="106" width="214" height="6" rx="3" fill="#0C0A08"/>
+      <rect x="50" y="106" width="142" height="6" rx="3" fill="#2FD3D8"/>
+      <circle cx="192" cy="109" r="5" fill="#F1E8DA"/>
+      <text class="mono" x="50" y="132" fill="#8E8271">RATIO 4:1 · ATTACK 10 ms · RELEASE 120 ms</text>
+      <rect x="50" y="148" width="214" height="24" rx="4" fill="#0C0A08" stroke="#C9CDD1" stroke-opacity="0.14"/>
+      <text class="mono" x="60" y="164" fill="#59E0C0">GAIN REDUCTION  -3.2 dB</text>
+      <line x1="0" y1="196" x2="300" y2="196" stroke="#2FD3D8" stroke-opacity="0.4"/>
+    </g>
+
+    <!-- Mixer strip -->
+    <g transform="translate(610 96)">
+      <rect width="180" height="196" rx="9" fill="#2A211A" stroke="#C9CDD1" stroke-opacity="0.2"/>
+      <text class="eyebrow" x="12" y="22">MIXER / MASTER</text>
+      <rect x="12" y="36" width="156" height="5" rx="2" fill="#0C0A08"/>
+      <rect x="12" y="36" width="118" height="5" rx="2" fill="#59E0C0"/>
+      <rect x="12" y="52" width="156" height="5" rx="2" fill="#0C0A08"/>
+      <rect x="12" y="52" width="96" height="5" rx="2" fill="#FFB25E"/>
+      <g transform="translate(34 78)">
+        <rect width="14" height="76" rx="7" fill="#0C0A08"/>
+        <rect x="3" y="18" width="8" height="28" rx="4" fill="#C9CDD1"/>
+        <line x1="0" y1="32" x2="14" y2="32" stroke="#F1E8DA" stroke-width="2"/>
+      </g>
+      <text class="mono" x="64" y="94" fill="#C9BDA9">WIDTH</text>
+      <rect x="64" y="104" width="102" height="6" rx="3" fill="#0C0A08"/>
+      <rect x="64" y="104" width="68" height="6" rx="3" fill="#2FD3D8"/>
+      <text class="mono" x="64" y="132" fill="#C9BDA9">A/B</text>
+      <rect x="64" y="142" width="102" height="6" rx="3" fill="#0C0A08"/>
+      <rect x="64" y="142" width="34" height="6" rx="3" fill="#FFB25E"/>
+      <text class="mono" x="12" y="180" fill="#8E8271">PEAK -1.2 dBFS</text>
+      <circle cx="160" cy="176" r="4" fill="#E5483A"/>
+    </g>
+
+    <!-- Timeline -->
+    <g transform="translate(286 314)">
+      <rect width="742" height="226" rx="10" fill="#0F0B08" stroke="#C9CDD1" stroke-opacity="0.18"/>
+      <rect width="742" height="30" rx="9" fill="#2A211A"/>
+      <rect x="0" y="21" width="742" height="9" fill="#2A211A"/>
+      <text class="eyebrow" x="14" y="20">TIMELINE</text>
+      <text class="mono" x="700" y="20" fill="#6FE3E6">00:01:24.320</text>
+      <g transform="translate(14 46)">
+        <line x1="0" y1="0" x2="714" y2="0" stroke="#C9CDD1" stroke-opacity="0.16"/>
+        <g stroke="#2FD3D8" stroke-opacity="0.5">
+          <line x1="0" y1="0" x2="0" y2="8"/><line x1="102" y1="0" x2="102" y2="8"/>
+          <line x1="204" y1="0" x2="204" y2="8"/><line x1="306" y1="0" x2="306" y2="8"/>
+          <line x1="408" y1="0" x2="408" y2="8"/><line x1="510" y1="0" x2="510" y2="8"/>
+          <line x1="612" y1="0" x2="612" y2="8"/>
+        </g>
+        <rect x="0" y="16" width="714" height="58" rx="4" fill="#1A120D"/>
+        <rect x="14" y="24" width="330" height="42" rx="4" fill="#241A13" stroke="#2FD3D8" stroke-opacity="0.55"/>
+        <path d="M20 52 C40 38 60 62 80 48 S120 34 140 50 S180 66 200 48 S240 34 260 52 S300 62 320 48" fill="none" stroke="#2FD3D8" stroke-width="1.5"/>
+        <rect x="360" y="24" width="220" height="42" rx="4" fill="#241A13" stroke="#FFB25E" stroke-opacity="0.45"/>
+        <path d="M366 52 C386 40 406 64 426 48 S466 34 486 52 S526 62 546 46" fill="none" stroke="#FFB25E" stroke-width="1.5"/>
+        <line x1="430" y1="16" x2="430" y2="74" stroke="#FFB25E" stroke-width="1.5"/>
+        <circle cx="430" cy="16" r="4" fill="#E5483A"/>
+        <rect x="0" y="82" width="714" height="42" rx="4" fill="#1A120D"/>
+        <rect x="60" y="90" width="400" height="26" rx="4" fill="#241A13" stroke="#C9CDD1" stroke-opacity="0.2"/>
+        <path d="M66 108 C86 96 106 118 126 104 S166 92 186 108 S226 118 246 102 S286 90 306 108 S346 118 366 102 S406 90 426 108" fill="none" stroke="#C9CDD1" stroke-width="1.2" opacity="0.7"/>
+      </g>
+    </g>
+
+    <!-- Settings rows -->
+    <g transform="translate(286 558)">
+      <rect width="742" height="142" rx="10" fill="#241A13" stroke="#C9CDD1" stroke-opacity="0.18"/>
+      <text class="eyebrow" x="16" y="24">AUDIO ENGINE</text>
+      <text class="label" x="16" y="50" fill="#F1E8DA">Auto audio settings</text>
+      <rect x="650" y="38" width="36" height="18" rx="9" fill="#1F6947"/>
+      <circle cx="677" cy="47" r="7" fill="#59E0C0"/>
+      <line x1="16" y1="68" x2="726" y2="68" stroke="#C9CDD1" stroke-opacity="0.12"/>
+      <text class="label" x="16" y="90" fill="#F1E8DA">Low-latency mode</text>
+      <rect x="650" y="78" width="36" height="18" rx="9" fill="#303B49"/>
+      <circle cx="659" cy="87" r="7" fill="#8E8271"/>
+      <line x1="16" y1="108" x2="726" y2="108" stroke="#C9CDD1" stroke-opacity="0.12"/>
+      <text class="label" x="16" y="130" fill="#F1E8DA">Find best audio settings</text>
+      <rect x="620" y="116" width="106" height="22" rx="5" fill="#3A2D22" stroke="#C9CDD1" stroke-opacity="0.22"/>
+      <text class="mono" x="673" y="131" text-anchor="middle" fill="#C9BDA9">TEST</text>
+    </g>
+  </g>
+
+  <text class="sub" x="48" y="872">Mockup preview — the live Receiver theme is selectable in Settings &gt; Interface &gt; Theme.</text>
+</svg>

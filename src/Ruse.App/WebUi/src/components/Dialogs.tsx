@@ -20,6 +20,16 @@ const THEME_OPTIONS = [
   { id: 'midnight', label: 'Midnight' },
   { id: 'blueprint', label: 'Blueprint' },
   { id: 'studio74', label: "Studio '74" },
+  { id: 'receiver', label: 'Receiver' },
+] as const;
+
+const UI_SCALE_OPTIONS = [
+  { value: 0.8, label: '80%' },
+  { value: 0.9, label: '90%' },
+  { value: 1, label: '100%' },
+  { value: 1.1, label: '110%' },
+  { value: 1.25, label: '125%' },
+  { value: 1.5, label: '150%' },
 ] as const;
 
 export function Modal({ title, onClose, children, className = '', movable = false }: {
@@ -622,7 +632,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                   <small>{t('Tests audio settings for this PC. Takes about 20-30 seconds. Routing pauses and a quiet test tone plays.')}</small>
                 </span>
                 <button className="tool-button" onClick={optimizer.run} disabled={optimizerBusy}>
-                  <Gauge size={14} /> {optimizerBusy ? t('Testing audio...') : t('Find best audio settings')}
+                  <Gauge size={14} /> {optimizerBusy ? t('Testing audio...') : t('Test')}
                 </button>
               </div>
               {optimizerBusy && (
@@ -811,6 +821,12 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 <span><strong>{t('Language')}</strong><small>{t('Interface language. Audio status and device names stay in English.')}</small></span>
                 <select value={normalizeLanguage(settings.uiLanguage)} onChange={event => onChange({ ...settings, uiLanguage: event.target.value })}>
                   {LANGUAGES.map(language => <option key={language.id} value={language.id}>{language.label}</option>)}
+                </select>
+              </label>
+              <label className="setting-row">
+                <span><strong>{t('Interface scale')}</strong><small>{t('Scale the interface without changing audio settings.')}</small></span>
+                <select value={settings.uiScale} onChange={event => onChange({ ...settings, uiScale: Number(event.target.value) })}>
+                  {UI_SCALE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </label>
             </SettingsSection>

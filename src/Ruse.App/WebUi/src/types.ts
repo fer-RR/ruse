@@ -215,7 +215,12 @@ export interface MixerStateUpdate {
   width: number;
   autoGain: boolean;
   crossfade: number;
-  inputs: MixerInputModel[];
+}
+
+export interface MixerInputStateUpdate {
+  mixerId: string;
+  graphVersion?: number;
+  input: MixerInputModel;
 }
 
 export interface MixerInputModel {
@@ -479,7 +484,8 @@ export interface SettingsModel {
   timelineBounceTailSeconds: number;
   followOutputId: string;
   uiLanguage: string;
-  theme: 'dark' | 'light' | 'midnight' | 'blueprint' | 'studio74';
+  theme: 'dark' | 'light' | 'midnight' | 'blueprint' | 'studio74' | 'receiver';
+  uiScale: number;
   startRoutingOnLaunch: boolean;
   highlightMutedNodes: boolean;
   signalGlow: boolean;

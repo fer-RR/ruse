@@ -1493,11 +1493,11 @@ public static class LatencySelfTest
                           Math.Abs(samples[index + 1] - expected) < 0.01f;
             }
 
-            return packets && complete && ordered;
+            bool stopped = capture.Stop();
+            return packets && complete && ordered && stopped;
         }
         finally
         {
-            capture.Stop();
             capture.Dispose();
         }
     }

@@ -73,6 +73,7 @@ export const demoSettings: SettingsModel = {
   followOutputId: '',
   uiLanguage: 'en',
   theme: 'dark',
+  uiScale: 1,
   startRoutingOnLaunch: false,
   highlightMutedNodes: true,
   signalGlow: true,

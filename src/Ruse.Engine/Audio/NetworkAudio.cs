@@ -190,11 +190,13 @@ public sealed class NetworkPcmCapture : IDisposable
 
     public void Start()
     {
-        if (_receiver != null)
+        if (_receiver is { IsAlive: true })
         {
             return;
         }
 
+        _receiver = null;
+        _pump = null;
         _stop = false;
         _primed = false;
         _targetBufferMs = Math.Clamp(_targetBufferMs, 10, 250);
@@ -207,6 +209,7 @@ public sealed class NetworkPcmCapture : IDisposable
         var client = new UdpClient(new IPEndPoint(IPAddress.Any, _port));
         client.Client.ReceiveBufferSize = 1 << 20;
         client.Client.ReceiveTimeout = 20;
+        client.Client.Blocking = false;
         TryDisableConnectionReset(client);
         _client = client;
         _watchdog = AudioThreadWatchdog.Register($"NetworkInput-{_port}", TimeSpan.FromSeconds(2), () =>
@@ -214,52 +217,69 @@ public sealed class NetworkPcmCapture : IDisposable
             SetError("Network input stopped responding; closing the socket to recover.");
             try { _client?.Dispose(); } catch { }
         });
-        _receiver = new Thread(ReceiveLoop) { IsBackground = true, Name = $"NetworkInput-{_port}" };
+        _receiver = new Thread(() => ReceiveLoop(client)) { IsBackground = true, Name = $"NetworkInput-{_port}" };
         _pump = new Thread(PumpLoop) { IsBackground = true, Name = $"NetworkPump-{_port}" };
         _receiver.Start();
         _pump.Start();
     }
 
-    private void ReceiveLoop()
+    private void ReceiveLoop(UdpClient client)
     {
         using var mmcss = MmcssScope.Enter();
         EndPoint remote = new IPEndPoint(IPAddress.Any, 0);
-        while (!_stop)
+        try
         {
-            _watchdog?.Beat();
-            try
+            while (!_stop)
             {
-                int received = _client!.Client.ReceiveFrom(_receiveBuffer, ref remote);
-                if (received > 0)
+                _watchdog?.Beat();
+                try
                 {
-                    Parse(_receiveBuffer, received);
+                    // Poll first so a wedged driver cannot block ReceiveFrom
+                    // indefinitely. The socket is non-blocking as well, so a
+                    // packet that disappears between Poll and ReceiveFrom
+                    // surfaces as WouldBlock instead of a hang.
+                    if (!client.Client.Poll(20_000, SelectMode.SelectRead))
+                    {
+                        FlushReorder(Environment.TickCount64);
+                        continue;
+                    }
+
+                    int received = client.Client.ReceiveFrom(_receiveBuffer, ref remote);
+                    if (received > 0)
+                    {
+                        Parse(_receiveBuffer, received);
+                    }
+                }
+                catch (ObjectDisposedException)
+                {
+                    break;
+                }
+                catch (SocketException ex)
+                {
+                    if (_stop) break;
+                    if (ex.SocketErrorCode is SocketError.TimedOut or SocketError.WouldBlock)
+                    {
+                        FlushReorder(Environment.TickCount64);
+                    }
+                    else
+                    {
+                        SetError(ex.Message);
+                        Thread.Sleep(5);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (!_stop)
+                    {
+                        SetError(ex.Message);
+                        Thread.Sleep(5);
+                    }
                 }
             }
-            catch (ObjectDisposedException)
-            {
-                break;
-            }
-            catch (SocketException ex)
-            {
-                if (_stop) break;
-                if (ex.SocketErrorCode == SocketError.TimedOut)
-                {
-                    FlushReorder(Environment.TickCount64);
-                }
-                else
-                {
-                    SetError(ex.Message);
-                    Thread.Sleep(5);
-                }
-            }
-            catch (Exception ex)
-            {
-                if (!_stop)
-                {
-                    SetError(ex.Message);
-                    Thread.Sleep(5);
-                }
-            }
+        }
+        finally
+        {
+            try { client.Dispose(); } catch { }
         }
     }
 
@@ -518,32 +538,38 @@ public sealed class NetworkPcmCapture : IDisposable
         }
     }
 
-    private static void WaitForNextBlock(
+    private void WaitForNextBlock(
         System.Diagnostics.Stopwatch clock, long producedFrames, HighResolutionTimer? timer)
     {
         long dueTicks = (long)(producedFrames * (double)System.Diagnostics.Stopwatch.Frequency /
             NetworkPcm.SampleRate);
-        long remaining = dueTicks - clock.ElapsedTicks;
-        if (remaining <= 0)
+        long sliceTicks = System.Diagnostics.Stopwatch.Frequency / 50; // 20 ms stop latency
+        while (!_stop)
         {
-            return;
-        }
+            long remaining = dueTicks - clock.ElapsedTicks;
+            if (remaining <= 0)
+            {
+                return;
+            }
 
-        if (timer != null && timer.Wait(remaining))
-        {
-            return;
-        }
+            long waitTicks = Math.Min(remaining, sliceTicks);
+            if (timer != null && timer.Wait(waitTicks))
+            {
+                continue;
+            }
 
-        // Fallback for systems without a high-resolution waitable timer. Sleep
-        // is only a coarse lower bound, so the caller re-checks the clock.
-        double milliseconds = remaining * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
-        if (milliseconds > 1.6)
-        {
-            Thread.Sleep((int)(milliseconds - 1));
-        }
-        else
-        {
-            Thread.SpinWait(200);
+            // Fallback for systems without a high-resolution waitable timer.
+            // Sleep is only a coarse lower bound, so the caller re-checks the
+            // clock and the stop flag.
+            double milliseconds = waitTicks * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            if (milliseconds > 1.6)
+            {
+                Thread.Sleep((int)(milliseconds - 1));
+            }
+            else
+            {
+                Thread.SpinWait(200);
+            }
         }
     }
 
@@ -579,9 +605,13 @@ public sealed class NetworkPcmCapture : IDisposable
         _stop = true;
         _watchdog?.Dispose();
         _watchdog = null;
+
+        // Null the field before disposing so a concurrent Start cannot hand the
+        // same socket to a new receiver thread.
+        UdpClient? client = Interlocked.Exchange(ref _client, null);
         try
         {
-            _client?.Dispose();
+            client?.Dispose();
         }
         catch
         {
@@ -602,32 +632,19 @@ public sealed class NetworkPcmCapture : IDisposable
             _pump = null;
         }
 
-        if (receiverJoined && pumpJoined)
-        {
-            _client = null;
-        }
-
         _primed = false;
 
         if (!receiverJoined || !pumpJoined)
         {
             Ruse.App.Diagnostics.AppLog.Warning(
-                $"Network input '{_port}' threads did not stop in time; keeping them.");
+                $"Network input '{_port}' threads did not stop in time; they will exit in the background.");
             return false;
         }
 
         return true;
     }
 
-    public void Dispose()
-    {
-        if (!Stop())
-        {
-            Ruse.App.Diagnostics.AppLog.Warning(
-                $"Network input '{_port}' was disposed while its threads were still alive; resources are kept.");
-            return;
-        }
-    }
+    public void Dispose() => Stop();
 }
 
 /// <summary>

@@ -31,8 +31,14 @@ import TimelineBoundary from './components/TimelineBoundary';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
   CatalogItem, CatalogSnapshot, ChainEditorRequest, FirstRouteResult, FrameModel, GraphSnapshot, HistorySnapshot,
-  LinkStateUpdate, MixerStateUpdate, NodeStateUpdate, SettingsModel, StatusMessage, TelemetrySnapshot,
+  LinkStateUpdate, MixerInputStateUpdate, MixerStateUpdate, NodeStateUpdate, SettingsModel, StatusMessage,
+  TelemetrySnapshot,
 } from './types';
+import {
+  applyLinkState, applyMixerInputStateToFlow, applyMixerInputStateToGraph,
+  applyMixerStateToFlow, applyMixerStateToGraph, applyNodeStateToFlow,
+  applyNodeStateToGraph, applyParameterUpdate, applySourceState,
+} from './bridgeUpdates';
 import type { TimelineAutomationTarget, TimelineState } from './timeline';
 
 const TimelinePanel = lazy(() => import('./components/TimelinePanel'));
@@ -448,74 +454,25 @@ export default function App() {
       case 'graph': setGraph(payload as GraphSnapshot); break;
       case 'node-state': {
         const update = payload as NodeStateUpdate;
-        setGraph(current => ({
-          ...current,
-          nodes: current.nodes.map(node => node.id === update.id
-            ? {
-                ...node,
-                volume: update.volume ?? node.volume,
-                muted: update.muted ?? node.muted,
-                solo: update.solo ?? node.solo,
-                enabled: update.enabled ?? node.enabled,
-                send: update.send ?? node.send,
-                isParallel: update.parallel ?? node.isParallel,
-                color: update.color !== undefined ? (update.color || undefined) : node.color,
-                accent: update.accent ?? node.accent,
-              }
-            : node),
-        }));
-        setNodes(current => current.map(node => node.id === update.id
-          ? {
-              ...node,
-              data: {
-                ...node.data,
-                volume: update.volume ?? node.data.volume,
-                muted: update.muted ?? node.data.muted,
-                solo: update.solo ?? node.data.solo,
-                enabled: update.enabled ?? node.data.enabled,
-                send: update.send ?? node.data.send,
-                isParallel: update.parallel ?? node.data.isParallel,
-                color: update.color !== undefined ? (update.color || undefined) : node.data.color,
-                accent: update.accent ?? node.data.accent,
-              },
-            }
-          : node));
+        setGraph(current => applyNodeStateToGraph(current, update));
+        setNodes(current => applyNodeStateToFlow(current, update));
         break;
       }
       case 'mixer-state': {
         const update = payload as MixerStateUpdate;
-        const apply = <T extends { id: string }>(node: T) => node.id === update.id
-          ? {
-              ...node,
-              mixerWidth: update.width,
-              mixerAutoGain: update.autoGain,
-              mixerCrossfade: update.crossfade,
-              mixerInputs: update.inputs,
-            }
-          : node;
-        setGraph(current => ({ ...current, nodes: current.nodes.map(apply) }));
-        setNodes(current => current.map(node => node.id === update.id
-          ? {
-              ...node,
-              data: {
-                ...node.data,
-                mixerWidth: update.width,
-                mixerAutoGain: update.autoGain,
-                mixerCrossfade: update.crossfade,
-                mixerInputs: update.inputs,
-              },
-            }
-          : node));
+        setGraph(current => applyMixerStateToGraph(current, update));
+        setNodes(current => applyMixerStateToFlow(current, update));
+        break;
+      }
+      case 'mixer-input-state': {
+        const update = payload as MixerInputStateUpdate;
+        setGraph(current => applyMixerInputStateToGraph(current, update));
+        setNodes(current => applyMixerInputStateToFlow(current, update));
         break;
       }
       case 'link-state': {
         const update = payload as LinkStateUpdate;
-        setGraph(current => ({
-          ...current,
-          links: current.links.map(link => link.id === update.id
-            ? { ...link, gain: update.gain, enabled: update.enabled, native: update.native, nativeRate: update.nativeRate }
-            : link),
-        }));
+        setGraph(current => applyLinkState(current, update));
         break;
       }
       case 'link-reject': {
@@ -530,14 +487,7 @@ export default function App() {
       }
       case 'param': {
         const update = payload as { id: string; processor: number; parameter: number; value: number };
-        setNodes(current => current.map(node => {
-          if (node.id !== update.id) return node;
-          const parameters = node.data.parameters.map(parameter =>
-            parameter.processorIndex === update.processor && parameter.parameterIndex === update.parameter
-              ? { ...parameter, value: update.value }
-              : parameter);
-          return { ...node, data: { ...node.data, parameters } };
-        }));
+        setNodes(current => applyParameterUpdate(current, update));
         break;
       }
       case 'source-state': {
@@ -550,9 +500,7 @@ export default function App() {
           synthCutoffHz?: number; synthResonance?: number; synthMovement?: number;
           synthLfoRateHz?: number; synthStereoWidth?: number;
         };
-        setNodes(current => current.map(node => node.id === update.id
-          ? { ...node, data: { ...node.data, ...update } }
-          : node));
+        setNodes(current => applySourceState(current, update));
         break;
       }
       case 'timeline-bounce-progress': {
@@ -1595,6 +1543,7 @@ export default function App() {
                 : theme === 'midnight' ? '#22304A'
                 : theme === 'blueprint' ? '#2B6BA8'
                 : theme === 'studio74' ? '#4A5D4E'
+                : theme === 'receiver' ? '#8E8271'
                 : '#34465A'
             } />
             <ViewportPortal>
@@ -1854,32 +1803,32 @@ export default function App() {
       {canvasMenu && <div className="context-layer" onPointerDown={event => { if (event.target === event.currentTarget) setCanvasMenu(null); } }>
         <div className="context-menu" role="menu" aria-label={t('Canvas')} onKeyDown={onContextMenuKeyDown} style={{ left: menuLeft, top: menuTop } }>
           {canvasMenu.kind === 'node' && menuNode && <>
-            <button role="menuitem" tabIndex={-1} onClick={() => { setRenamePrompt({ id: menuNode.id, title: menuNode.data.title }); setCanvasMenu(null); } }><Pencil size={14} /> {t('Rename')}</button>
-            <button role="menuitem" tabIndex={-1} onClick={() => { send('duplicate', { id: menuNode.id }); setCanvasMenu(null); } }><Copy size={14} /> {t('Duplicate')} <kbd>{SHORTCUTS.duplicate}</kbd></button>
-            {menuNode.data.canFreezeEffects && <button role="menuitem" tabIndex={-1} onClick={() => { send('freeze-effects', { id: menuNode.id }); setCanvasMenu(null); } }><Snowflake size={14} /> {t('Freeze effects')}</button>}
-            <button role="menuitem" tabIndex={-1} onClick={() => { send('mute', { id: menuNode.id, value: !menuNode.data.muted }); setCanvasMenu(null); } }>{menuNode.data.muted ? <Volume2 size={14} /> : <VolumeX size={14} />} {menuNode.data.muted ? t('Unmute node') : t('Mute node')} <kbd>{SHORTCUTS.muteSelected}</kbd></button>
-            {menuNode.data.isDbMeter && <button role="menuitem" tabIndex={-1} onClick={() => { send('db-meter-orientation', { id: menuNode.id, vertical: !menuDbVertical }); setCanvasMenu(null); } }><ArrowUpDown size={14} /> {menuDbVertical ? t('Make horizontal') : t('Make vertical')}</button>}
-            <button role="menuitem" tabIndex={-1} onClick={() => { send('disconnect-node', { id: menuNode.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect routes')}</button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { setRenamePrompt({ id: menuNode.id, title: menuNode.data.title }); setCanvasMenu(null); } }><Pencil size={14} /> <span className="menu-label">{t('Rename')}</span></button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { send('duplicate', { id: menuNode.id }); setCanvasMenu(null); } }><Copy size={14} /> <span className="menu-label">{t('Duplicate')}</span> <kbd>{SHORTCUTS.duplicate}</kbd></button>
+            {menuNode.data.canFreezeEffects && <button role="menuitem" tabIndex={-1} onClick={() => { send('freeze-effects', { id: menuNode.id }); setCanvasMenu(null); } }><Snowflake size={14} /> <span className="menu-label">{t('Freeze effects')}</span></button>}
+            <button role="menuitem" tabIndex={-1} onClick={() => { send('mute', { id: menuNode.id, value: !menuNode.data.muted }); setCanvasMenu(null); } }>{menuNode.data.muted ? <Volume2 size={14} /> : <VolumeX size={14} />} <span className="menu-label">{menuNode.data.muted ? t('Unmute node') : t('Mute node')}</span> <kbd>{SHORTCUTS.muteSelected}</kbd></button>
+            {menuNode.data.isDbMeter && <button role="menuitem" tabIndex={-1} onClick={() => { send('db-meter-orientation', { id: menuNode.id, vertical: !menuDbVertical }); setCanvasMenu(null); } }><ArrowUpDown size={14} /> <span className="menu-label">{menuDbVertical ? t('Make horizontal') : t('Make vertical')}</span></button>}
+            <button role="menuitem" tabIndex={-1} onClick={() => { send('disconnect-node', { id: menuNode.id }); setCanvasMenu(null); } }><Unplug size={14} /> <span className="menu-label">{t('Disconnect routes')}</span></button>
             <div className="menu-separator" role="separator" />
-            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('remove', { id: menuNode.id }); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Remove node')} <kbd>{SHORTCUTS.remove}</kbd></button>
+            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('remove', { id: menuNode.id }); setCanvasMenu(null); } }><Trash2 size={14} /> <span className="menu-label">{t('Remove node')}</span> <kbd>{SHORTCUTS.remove}</kbd></button>
           </>}
           {canvasMenu.kind === 'edge' && menuLink && <>
             {menuLink.kind === 'direct' && <>
-              <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.native === true} onClick={() => { send('link-native', { id: menuLink.id, value: menuLink.native !== true }); setCanvasMenu(null); } }><Zap size={14} /> {t('Native passthrough')}{menuLink.native === true ? ' ✓' : ''}</button>
-              {menuLink.nativeFallback && <button role="menuitem" tabIndex={-1} onClick={() => { send('link-native-cancel-restore', { id: menuLink.id }); setCanvasMenu(null); } }><Zap size={14} /> {t('Cancel native restore')}</button>}
-              <button role="menuitem" tabIndex={-1} onClick={() => { openExplainer('native'); setCanvasMenu(null); } }><Info size={14} /> {t('About native passthrough')}</button>
+              <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.native === true} onClick={() => { send('link-native', { id: menuLink.id, value: menuLink.native !== true }); setCanvasMenu(null); } }><Zap size={14} /> <span className="menu-label">{t('Native passthrough')}{menuLink.native === true ? ' ✓' : ''}</span></button>
+              {menuLink.nativeFallback && <button role="menuitem" tabIndex={-1} onClick={() => { send('link-native-cancel-restore', { id: menuLink.id }); setCanvasMenu(null); } }><Zap size={14} /> <span className="menu-label">{t('Cancel native restore')}</span></button>}
+              <button role="menuitem" tabIndex={-1} onClick={() => { openExplainer('native'); setCanvasMenu(null); } }><Info size={14} /> <span className="menu-label">{t('About native passthrough')}</span></button>
             </>}
-            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('disconnect', { id: menuLink.id }); setCanvasMenu(null); } }><Unplug size={14} /> {t('Disconnect cable')}</button>
+            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('disconnect', { id: menuLink.id }); setCanvasMenu(null); } }><Unplug size={14} /> <span className="menu-label">{t('Disconnect cable')}</span></button>
           </>}
           {canvasMenu.kind === 'pane' && <>
             <button role="menuitem" tabIndex={-1} onClick={() => {
               if (canvasMenu.flowX != null && canvasMenu.flowY != null) sendAdd(systemItem, findFreeSpot({ x: canvasMenu.flowX, y: canvasMenu.flowY }));
               setCanvasMenu(null);
-            } }><Plus size={14} /> {t('Add system audio')}</button>
-            <button role="menuitem" tabIndex={-1} onClick={() => { fitGraph(); setCanvasMenu(null); } }><Maximize2 size={14} /> {t('Fit graph')} <kbd>{SHORTCUTS.fit}</kbd></button>
-            <button role="menuitem" tabIndex={-1} onClick={tidyGraph }><LayoutGrid size={14} /> {t('Tidy up')} <kbd>{SHORTCUTS.tidy}</kbd></button>
+            } }><Plus size={14} /> <span className="menu-label">{t('Add system audio')}</span></button>
+            <button role="menuitem" tabIndex={-1} onClick={() => { fitGraph(); setCanvasMenu(null); } }><Maximize2 size={14} /> <span className="menu-label">{t('Fit graph')}</span> <kbd>{SHORTCUTS.fit}</kbd></button>
+            <button role="menuitem" tabIndex={-1} onClick={tidyGraph }><LayoutGrid size={14} /> <span className="menu-label">{t('Tidy up')}</span> <kbd>{SHORTCUTS.tidy}</kbd></button>
             <div className="menu-separator" role="separator" />
-            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { setShowClear(true); setCanvasMenu(null); } }><Trash2 size={14} /> {t('Clear graph')}</button>
+            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { setShowClear(true); setCanvasMenu(null); } }><Trash2 size={14} /> <span className="menu-label">{t('Clear graph')}</span></button>
           </>}
         </div>
       </div>}

@@ -783,10 +783,12 @@ internal sealed partial class WebShellController
             "ember" => "studio74",
             "midnightstudy" => "midnight",
             "deepdive" or "glass" => "midnight",
-            "light" or "midnight" or "blueprint" or "studio74" => settings.Theme,
+            "light" or "midnight" or "blueprint" or "studio74" or "receiver" => settings.Theme,
             _ => "dark",
         };
+        _settings.UiScale = ClampUiScale(settings.UiScale);
         ApplyWindowTheme();
+        ApplyUiScale();
         _settings.StartRoutingOnLaunch = settings.StartRoutingOnLaunch;
         _settings.HighlightMutedNodes = settings.HighlightMutedNodes;
         _settings.SignalGlow = settings.SignalGlow;

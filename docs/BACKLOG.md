@@ -4,11 +4,14 @@ Keep this short. Nothing is started unless noted.
 
 ## Before next feature work
 
-- Commit and release the post-0.9.10 work as **0.9.11**: Deep Dive removal,
-  mixer-state deltas, and timeline normalize/reverse/consolidate.
-- Manually review mixer slider updates on a live routed session.
-- Test timeline consolidation on real multi-track clips; the new track starts
-  muted to avoid doubled playback.
+- Commit and release the post-0.9.11 work as **0.9.12**: performance/architecture
+  pass, network stop fix, UI scale, Receiver theme, timeline vertical zoom and
+  2D panning, translation and layout hardening.
+- Manually review the Receiver theme and interface scale (80–150%) on a live
+  routed session.
+- Test timeline vertical zoom and 2D panning with many tracks and automation
+  lanes.
+- Test network input stop/restart and long-running capture.
 - Run live translation/OPUS-MT tests, review `--demo` screenshots, and test
   translator/VST3 nodes with real microphones, noisy routes and the installed
   `ring-out`, `rnnoise` and `DirtyFilterPlus` plugins.
@@ -71,6 +74,8 @@ Keep this short. Nothing is started unless noted.
 
 ## Localization
 
+- First terminology pass done for de/es/fr/it/ja/ko/pt-BR/zh-CN (UI labels,
+  mixer/timeline terms, TTS and network strings).
 - Native review for es/fr/de/it/ja/ko/zh-CN; technical terms first.
 - Translate native status/history text and engine errors.
 - RTL support and optional Windows language auto-detection.
@@ -116,10 +121,11 @@ Keep this short. Nothing is started unless noted.
   device testing remain.
 - Realtime residuals: graph render faults are logged by a deferred
   `AudioFaultLog`; isolated VST3 uses a lock-free slot handoff; output rings
-  trim overfill with a crossfade. `NetworkPcmCapture` can still abandon a
-  blocked thread; a job object is the next step if a real driver reproduces it.
-  In-process VST3 still runs on the render thread and needs a dedicated plugin
-  thread.
+  trim overfill with a crossfade. `NetworkPcmCapture` now polls non-blocking,
+  disposes the socket immediately on stop, and slices the pump wait so shutdown
+  latency is bounded; a job object remains a last resort only if a real driver
+  still wedges a thread. In-process VST3 still runs on the render thread and
+  needs a dedicated plugin thread.
 - `SourceNode` decode scratch can still grow for capture packets above 16384
   samples; verify large 96 kHz/multichannel devices.
 - `AudioFileRecorder.Stop` joins the writer for 2 s; on a failing disk it can

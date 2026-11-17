@@ -28,6 +28,19 @@ internal sealed partial class WebShellController : IDisposable
     private AudioGraph _graph = new();
     private readonly Dictionary<string, NodeEntry> _nodes = new();
     private readonly List<LinkEntry> _links = new();
+    // Rebuilt lazily for telemetry and invalidated on link add/remove/clear.
+    private LinkIndex? _cachedLinkIndex;
+    // Reused per telemetry tick; Post serializes synchronously on the UI thread.
+    private readonly TelemetryDto _telemetry = new();
+    private readonly Dictionary<string, float> _telemetrySourceLevels = new();
+    private readonly Dictionary<string, bool> _telemetrySourceClipping = new();
+    private readonly Dictionary<string, bool> _telemetryOutputClipping = new();
+    private readonly Dictionary<string, float> _telemetryModifierLevels = new();
+    private readonly HashSet<string> _telemetryVisiting = new();
+    private readonly HashSet<string> _telemetryClippingUpstream = new();
+    private readonly HashSet<string> _telemetryClippingDownstream = new();
+    private readonly HashSet<string> _telemetrySeenIds = new();
+    private readonly List<string> _telemetryStaleIds = new();
     private readonly Dictionary<string, long> _nodeClipHoldUntil = new();
     private readonly Dictionary<string, long> _spectrogramCursors = new();
     private readonly Dictionary<string, string> _nativeFallbackSources = new(StringComparer.Ordinal);
@@ -36,6 +49,7 @@ internal sealed partial class WebShellController : IDisposable
     private readonly DispatcherTimer _devicesTimer;
     private readonly DispatcherTimer _updateTimer;
     private CoreWebView2? _core;
+    private WebView2? _webView;
     private string _webView2Version = "";
     private CatalogDto _catalog = new();
     private int _graphVersion;
@@ -117,7 +131,9 @@ internal sealed partial class WebShellController : IDisposable
         var environment = await CoreWebView2Environment.CreateAsync(null, userData);
         await webView.EnsureCoreWebView2Async(environment);
         _core = webView.CoreWebView2;
+        _webView = webView;
         _webView2Version = environment.BrowserVersionString;
+        ApplyUiScale();
 
         var settings = _core.Settings;
         settings.AreDefaultContextMenusEnabled = false;
@@ -944,6 +960,7 @@ internal sealed partial class WebShellController : IDisposable
             FollowOutputId = _settings.FollowOutputId,
             UiLanguage = _settings.UiLanguage,
             Theme = _settings.Theme,
+            UiScale = _settings.UiScale,
             StartRoutingOnLaunch = _settings.StartRoutingOnLaunch,
             HighlightMutedNodes = _settings.HighlightMutedNodes,
             SignalGlow = _settings.SignalGlow,
@@ -1067,17 +1084,29 @@ internal sealed partial class WebShellController : IDisposable
         _lastTelemetryPublish = now;
         PollTtsSources();
         long telemetryStarted = System.Diagnostics.Stopwatch.GetTimestamp();
-        var telemetry = new TelemetryDto
-        {
-            Running = _running,
-            MasterGain = Finite(OutputNode.MasterGain),
-            MasterMuted = OutputNode.MasterMuted,
-            MicMuted = _micMuted,
-        };
+        TelemetryDto telemetry = _telemetry;
+        telemetry.Running = _running;
+        telemetry.Clipping = false;
+        telemetry.MasterGain = Finite(OutputNode.MasterGain);
+        telemetry.MasterMuted = OutputNode.MasterMuted;
+        telemetry.MicMuted = _micMuted;
+        telemetry.Diagnostics = null;
 
-        var sourceLevels = new Dictionary<string, float>(_nodes.Count);
-        var sourceClipping = new Dictionary<string, bool>(_nodes.Count);
-        var outputClipping = new Dictionary<string, bool>(_nodes.Count);
+        var sourceLevels = _telemetrySourceLevels;
+        var sourceClipping = _telemetrySourceClipping;
+        var outputClipping = _telemetryOutputClipping;
+        var modifierLevels = _telemetryModifierLevels;
+        var visiting = _telemetryVisiting;
+        var clippingUpstream = _telemetryClippingUpstream;
+        var clippingDownstream = _telemetryClippingDownstream;
+        var seen = _telemetrySeenIds;
+        sourceLevels.Clear();
+        sourceClipping.Clear();
+        outputClipping.Clear();
+        modifierLevels.Clear();
+        seen.Clear();
+        LinkIndex? linkIndex = null;
+
         foreach (var entry in _nodes.Values)
         {
             if (entry.Source is { } source)
@@ -1091,11 +1120,19 @@ internal sealed partial class WebShellController : IDisposable
             }
         }
 
-        var modifierLevels = new Dictionary<string, float>();
-
         foreach (var entry in _nodes.Values)
         {
-            var meter = new NodeTelemetryDto();
+            if (!telemetry.Meters.TryGetValue(entry.Id, out var meter))
+            {
+                meter = new NodeTelemetryDto();
+                telemetry.Meters[entry.Id] = meter;
+            }
+            else
+            {
+                meter.Reset();
+            }
+
+            seen.Add(entry.Id);
             if (entry.Source != null)
             {
                 meter.Level = entry.Source.Muted ? 0 : Meter(entry.Source.MeterLevel);
@@ -1137,11 +1174,16 @@ internal sealed partial class WebShellController : IDisposable
             }
             else
             {
-                meter.Level = Meter(ModifierLevel(entry.Id, sourceLevels, modifierLevels, new HashSet<string>()));
+                linkIndex ??= GetLinkIndex();
+                visiting.Clear();
+                clippingUpstream.Clear();
+                clippingDownstream.Clear();
+                meter.Level = Meter(ModifierLevel(
+                    entry.Id, sourceLevels, modifierLevels, visiting, linkIndex));
                 meter.LevelLeft = meter.Level;
                 meter.LevelRight = meter.Level;
                 meter.Clipping = ModifierClipping(entry.Id, sourceClipping, outputClipping,
-                    new HashSet<string>(), new HashSet<string>());
+                    clippingUpstream, clippingDownstream, linkIndex);
                 if (entry.Modifier is { IsMixer: true } mixerMeter)
                 {
                     float dbLeft = Finite(mixerMeter.MixerMeterDbLeft);
@@ -1304,6 +1346,21 @@ internal sealed partial class WebShellController : IDisposable
             telemetry.Meters[entry.Id] = meter;
         }
 
+        var stale = _telemetryStaleIds;
+        stale.Clear();
+        foreach (var id in telemetry.Meters.Keys)
+        {
+            if (!seen.Contains(id))
+            {
+                stale.Add(id);
+            }
+        }
+
+        foreach (var id in stale)
+        {
+            telemetry.Meters.Remove(id);
+        }
+
         _running = telemetry.Running;
         if (_settings.ShowDiagnostics)
         {
@@ -1334,22 +1391,27 @@ internal sealed partial class WebShellController : IDisposable
         string id,
         Dictionary<string, float> sourceLevels,
         Dictionary<string, float> cache,
-        HashSet<string> visiting)
+        HashSet<string> visiting,
+        LinkIndex linkIndex)
     {
         if (cache.TryGetValue(id, out float cached)) return cached;
         if (!visiting.Add(id)) return 0;
 
         float level = 0;
-        foreach (var link in _links)
+        if (linkIndex.Incoming.TryGetValue(id, out var incoming))
         {
-            if (link.To != id) continue;
-            if (link.Kind == "source-modifier" && sourceLevels.TryGetValue(link.From, out float sourceLevel))
+            foreach (var link in incoming)
             {
-                level = Math.Max(level, sourceLevel);
-            }
-            else if (link.Kind == "modifier-modifier")
-            {
-                level = Math.Max(level, ModifierLevel(link.From, sourceLevels, cache, visiting));
+                if (link.Kind == "source-modifier" &&
+                    sourceLevels.TryGetValue(link.From, out float sourceLevel))
+                {
+                    level = Math.Max(level, sourceLevel);
+                }
+                else if (link.Kind == "modifier-modifier")
+                {
+                    level = Math.Max(level,
+                        ModifierLevel(link.From, sourceLevels, cache, visiting, linkIndex));
+                }
             }
         }
 
@@ -1363,24 +1425,28 @@ internal sealed partial class WebShellController : IDisposable
         Dictionary<string, bool> sourceClipping,
         Dictionary<string, bool> outputClipping,
         HashSet<string> upstream,
-        HashSet<string> downstream)
+        HashSet<string> downstream,
+        LinkIndex linkIndex)
     {
-        if (ReachesClippingOutput(id, outputClipping, downstream)) return true;
+        if (ReachesClippingOutput(id, outputClipping, downstream, linkIndex)) return true;
         if (!upstream.Add(id)) return false;
 
-        foreach (var link in _links)
+        if (linkIndex.Incoming.TryGetValue(id, out var incoming))
         {
-            if (link.To != id) continue;
-            if (link.Kind == "source-modifier" &&
-                sourceClipping.TryGetValue(link.From, out bool clipped) && clipped)
+            foreach (var link in incoming)
             {
-                return true;
-            }
+                if (link.Kind == "source-modifier" &&
+                    sourceClipping.TryGetValue(link.From, out bool clipped) && clipped)
+                {
+                    return true;
+                }
 
-            if (link.Kind == "modifier-modifier" &&
-                ModifierClipping(link.From, sourceClipping, outputClipping, upstream, downstream))
-            {
-                return true;
+                if (link.Kind == "modifier-modifier" &&
+                    ModifierClipping(link.From, sourceClipping, outputClipping,
+                        upstream, downstream, linkIndex))
+                {
+                    return true;
+                }
             }
         }
 
@@ -1390,27 +1456,65 @@ internal sealed partial class WebShellController : IDisposable
     private bool ReachesClippingOutput(
         string id,
         Dictionary<string, bool> outputClipping,
-        HashSet<string> visited)
+        HashSet<string> visited,
+        LinkIndex linkIndex)
     {
         if (!visited.Add(id)) return false;
 
-        foreach (var link in _links)
+        if (linkIndex.Outgoing.TryGetValue(id, out var outgoing))
         {
-            if (link.From != id) continue;
-            if (link.Kind == "modifier-output" &&
-                outputClipping.TryGetValue(link.To, out bool clipped) && clipped)
+            foreach (var link in outgoing)
             {
-                return true;
-            }
+                if (link.Kind == "modifier-output" &&
+                    outputClipping.TryGetValue(link.To, out bool clipped) && clipped)
+                {
+                    return true;
+                }
 
-            if (link.Kind == "modifier-modifier" &&
-                ReachesClippingOutput(link.To, outputClipping, visited))
-            {
-                return true;
+                if (link.Kind == "modifier-modifier" &&
+                    ReachesClippingOutput(link.To, outputClipping, visited, linkIndex))
+                {
+                    return true;
+                }
             }
         }
 
         return false;
+    }
+
+    private LinkIndex GetLinkIndex() => _cachedLinkIndex ??= BuildLinkIndex();
+
+    private void InvalidateLinkIndex() => _cachedLinkIndex = null;
+
+    private LinkIndex BuildLinkIndex()
+    {
+        var index = new LinkIndex();
+        foreach (var link in _links)
+        {
+            if (!index.Incoming.TryGetValue(link.To, out var incoming))
+            {
+                incoming = new List<LinkEntry>();
+                index.Incoming[link.To] = incoming;
+            }
+
+            incoming.Add(link);
+
+            if (!index.Outgoing.TryGetValue(link.From, out var outgoing))
+            {
+                outgoing = new List<LinkEntry>();
+                index.Outgoing[link.From] = outgoing;
+            }
+
+            outgoing.Add(link);
+        }
+
+        return index;
+    }
+
+    private sealed class LinkIndex
+    {
+        public Dictionary<string, List<LinkEntry>> Incoming { get; } = new(StringComparer.Ordinal);
+        public Dictionary<string, List<LinkEntry>> Outgoing { get; } = new(StringComparer.Ordinal);
     }
 
     private static string RecorderStatus(OutputNode output)
@@ -1461,9 +1565,30 @@ internal sealed partial class WebShellController : IDisposable
             "midnight" => Color.FromRgb(0x08, 0x0B, 0x11),
             "blueprint" => Color.FromRgb(0x08, 0x3B, 0x78),
             "studio74" => Color.FromRgb(0x1E, 0x1D, 0x1B),
+            "receiver" => Color.FromRgb(0x1E, 0x17, 0x12),
             _ => Color.FromRgb(0x17, 0x1E, 0x29),
         };
         _window.Background = new SolidColorBrush(color);
+    }
+
+    private static double ClampUiScale(double value) =>
+        double.IsFinite(value) ? Math.Clamp(Math.Round(value, 2), 0.75, 1.5) : 1.0;
+
+    private void ApplyUiScale()
+    {
+        if (_webView == null)
+        {
+            return;
+        }
+
+        try
+        {
+            _webView.ZoomFactor = ClampUiScale(_settings.UiScale);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning("Could not apply the UI scale: " + ex.Message);
+        }
     }
 
     /// <summary>Persists the answer to the first-close tray prompt.</summary>
