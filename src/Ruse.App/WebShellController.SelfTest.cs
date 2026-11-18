@@ -347,6 +347,21 @@ internal sealed partial class WebShellController
             vtt.StartsWith("WEBVTT", StringComparison.Ordinal) &&
             vtt.Contains("00:00:01.000 --> 00:00:02.000", StringComparison.Ordinal));
 
+        var clauses = SpeechText.Clauses(
+            "Hello, world. This is a longer clause, with a comma, and another clause that should be short enough for streaming.");
+        Check("speech clause splitting",
+            clauses.Count >= 3 && clauses.All(clause => clause.Length <= 110));
+
+        Check("streaming tts catalog",
+            TtsModels.All.Any(model => model.Family == "kokoro-sharp") &&
+            TtsModels.All.Any(model => model.Family == "piper"));
+
+        int resampledFrames = 0;
+        var resampler = new MonoToStereo48k(24000, (_, frames) => resampledFrames += frames);
+        resampler.Push(new float[240]);
+        resampler.Flush();
+        Check("tts pcm resample", resampledFrames >= 470);
+
         var chunker = new SpeechChunker();
         var vadSamples = new float[16000 * 5];
         for (int i = 0; i < 16000 * 2; i++)
@@ -359,6 +374,50 @@ internal sealed partial class WebShellController
             vadCut &&
             vadChunk.Length >= 16000 * 2 &&
             Math.Abs(vadStart) < 0.001);
+
+        int segmentedTap = TranscriptionProcessor.NextTapId();
+        TranscriptionProcessor.EnsureTap(segmentedTap);
+        try
+        {
+            var segmentInput = new float[48000 * 3 * 2];
+            for (int frame = 0; frame < 48000 * 2; frame++)
+            {
+                float sample = 0.05f * MathF.Sin(2f * MathF.PI * 180f * frame / 48000f);
+                segmentInput[frame * 2] = sample;
+                segmentInput[frame * 2 + 1] = sample;
+            }
+
+            TranscriptionProcessor.WriteTap(segmentedTap, segmentInput, 48000 * 3);
+            using var segmenter = new VadSegmenter(segmentedTap, silero: null);
+            bool segmentStarted = false;
+            segmenter.SpeechStarted += () => segmentStarted = true;
+            using var segmentCancel = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            var segment = segmenter.ReadAsync(segmentCancel.Token).GetAwaiter().GetResult();
+            Check("endpointed speech segment",
+                segmentStarted && segment != null && segment.Samples.Length >= 16000 * 2);
+        }
+        finally
+        {
+            TranscriptionProcessor.RemoveTap(segmentedTap);
+        }
+
+        string vadSpeechPath = Path.Combine(AppContext.BaseDirectory, "Assets", "vad_speech.wav");
+        float vadProbability = 0f;
+        using (var silero = SileroVad.TryCreate())
+        {
+            if (silero != null && File.Exists(vadSpeechPath))
+            {
+                using var reader = new AudioFileReader(vadSpeechPath);
+                ISampleProvider samples = reader;
+                var frame = new float[SileroVad.WindowSamples];
+                while (samples.Read(frame.AsSpan()) == frame.Length)
+                {
+                    vadProbability = Math.Max(vadProbability, silero.Process(frame));
+                }
+            }
+
+            Check("silero vad speech", silero != null && vadProbability >= 0.5f);
+        }
 
         var quietChunker = new SpeechChunker();
         var quietSamples = new float[16000 * 7];
@@ -1707,6 +1766,67 @@ internal sealed partial class WebShellController
         {
             _graph.AutoRun = bridgeAutoRun;
         }
+
+        var seriesSource = RegisterSource(
+            new SourceNode("Barge-in series", SourceKind.SystemLoopback), 40, 1800);
+        var seriesModifierNode = new ModifierNode("Barge-in transcript");
+        var seriesTranscriber = new TranscriptionProcessor();
+        seriesTranscriber.SetTapId(TranscriptionProcessor.NextTapId());
+        seriesModifierNode.Add(seriesTranscriber);
+        var seriesModifier = RegisterModifier(seriesModifierNode, 400, 1800);
+        ConnectEntries(seriesSource, seriesModifier, publish: false);
+
+        var ttsSource = RegisterSource(
+            new SourceNode("Barge-in TTS", SourceKind.Tts), 800, 1800);
+        Check("barge-in requires key", !IsBargeKeyLinked(ttsSource, seriesTranscriber.TapId));
+        ttsSource.TtsSourceNodeId = seriesModifier.Id;
+        Check("barge-in ignores own source", !IsBargeKeyLinked(ttsSource, seriesTranscriber.TapId));
+        ttsSource.TtsSourceNodeId = null;
+        ConnectEntries(seriesModifier, ttsSource, kind: "barge-key", publish: false);
+        Check("barge-in key link", IsBargeKeyLinked(ttsSource, seriesTranscriber.TapId));
+        TranscriptionProcessor.RemoveTap(seriesTranscriber.TapId);
+
+        var ttsPreset = new Preset { Name = "TTS preset link test" };
+        ttsPreset.Sources.Add(new PresetSource
+        {
+            Id = "tts-preset-voice",
+            Title = "Preset voice",
+            Kind = SourceKind.Tts.ToString(),
+            TtsModel = "kokoro-streaming",
+            TtsSourceModifierIndex = 0,
+            X = 40,
+            Y = 2200,
+        });
+        ttsPreset.Sources.Add(new PresetSource
+        {
+            Id = "tts-preset-input",
+            Title = "Preset input",
+            Kind = SourceKind.SystemLoopback.ToString(),
+            X = 40,
+            Y = 2400,
+        });
+        ttsPreset.Modifiers.Add(new PresetModifier
+        {
+            Title = "Preset translator",
+            Enabled = true,
+            X = 400,
+            Y = 2200,
+            Processors = { new PresetProcessor { TypeId = TranslatorProcessor.Id } },
+        });
+        ApplyPreset(ttsPreset, autoRun: false);
+        var presetTts = _nodes.Values.FirstOrDefault(entry => entry.Id == "tts-preset-voice");
+        var presetProducer = _nodes.Values.FirstOrDefault(entry => entry.Modifier != null);
+        Check("tts preset source link", presetTts?.TtsSourceNodeId == presetProducer?.Id);
+
+        var groupA = RegisterSource(new SourceNode("Group A", SourceKind.Tone), 40, 2600);
+        var groupB = RegisterSource(new SourceNode("Group B", SourceKind.Tone), 40, 2800);
+        GroupMixerNodes(groupA.Id, groupB.Id);
+        Check("mixer drag group",
+            groupA.GroupId is { Length: > 0 } &&
+            groupA.GroupId == groupB.GroupId &&
+            groupA.Source?.GroupKey?.StartsWith("source:g:", StringComparison.Ordinal) == true);
+        UngroupMixerGroup(groupA.GroupId!);
+        Check("mixer ungroup", groupA.GroupId == null && groupB.GroupId == null);
 
         ClearGraph();
         ClearHistory();

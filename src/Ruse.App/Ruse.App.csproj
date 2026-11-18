@@ -9,9 +9,9 @@
     <AssemblyName>Ruse</AssemblyName>
     <RootNamespace>Ruse.App</RootNamespace>
     <ApplicationIcon>Assets\ruse.ico</ApplicationIcon>
-    <Version>0.9.12</Version>
-    <AssemblyVersion>0.9.12.0</AssemblyVersion>
-    <FileVersion>0.9.12.0</FileVersion>
+    <Version>0.9.14</Version>
+    <AssemblyVersion>0.9.14.0</AssemblyVersion>
+    <FileVersion>0.9.14.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,6 +21,8 @@
 
   <ItemGroup>
     <Resource Include="Assets\ruse.ico" />
+    <Content Include="Assets\silero_vad.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\vad_speech.wav" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -29,13 +31,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="KokoroSharp.CPU" Version="0.8.4" />
     <PackageReference Include="LLamaSharp" Version="0.30.0" />
     <PackageReference Include="LLamaSharp.Backend.Cpu" Version="0.30.0" />
     <PackageReference Include="LLamaSharp.Backend.Vulkan.Windows" Version="0.30.0" />
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.31.1" />
     <PackageReference Include="Microsoft.ML.Tokenizers" Version="2.0.1" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
+    <PackageReference Include="PiperSharp" Version="1.0.7" />
     <PackageReference Include="SharpCompress" Version="0.50.8" />
+    <PackageReference Include="Vosk" Version="0.3.38" />
     <PackageReference Include="Whisper.net" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime" Version="1.9.1" />
     <PackageReference Include="Whisper.net.Runtime.Vulkan" Version="1.9.1" />

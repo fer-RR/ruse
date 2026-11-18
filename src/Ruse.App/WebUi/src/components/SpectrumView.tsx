@@ -6,6 +6,9 @@ const HEIGHT = 200;
 const TOP = 5;
 const BOTTOM = HEIGHT - 12;
 const DEFAULT_BANDS = 256;
+const BAR_COUNT = 32;
+const SEGMENT_HEIGHT = 4;
+const SEGMENT_GAP = 2;
 const FREQUENCY_REFS = [
   [50, '50'], [100, '100'], [250, '250'], [500, '500'], [1000, '1k'],
   [2000, '2k'], [5000, '5k'], [10000, '10k'], [20000, '20k'],
@@ -62,19 +65,21 @@ export default function SpectrumView({
   color,
   floor = -100,
   ceiling = -30,
+  bars = false,
 }: {
   bands?: number[];
   peakHz?: number;
   color: string;
   floor?: number;
   ceiling?: number;
+  bars?: boolean;
 }) {
   const { t } = useI18n();
   const ref = useRef<HTMLCanvasElement>(null);
   const targetsRef = useRef<number[]>([]);
   const displayRef = useRef<number[]>([]);
   const peaksRef = useRef<number[]>([]);
-  const configRef = useRef({ color, floor, ceiling, t, hasBands: false });
+  const configRef = useRef({ color, floor, ceiling, t, hasBands: false, bars });
   const staticRef = useRef<HTMLCanvasElement | null>(null);
   const staticKeyRef = useRef('');
   const gradientRef = useRef<{ key: string; gradient: CanvasGradient } | null>(null);
@@ -109,8 +114,9 @@ export default function SpectrumView({
     configRef.current.floor = floor;
     configRef.current.ceiling = ceiling;
     configRef.current.t = t;
+    configRef.current.bars = bars;
     gradientRef.current = null;
-  }, [color, floor, ceiling, t]);
+  }, [color, floor, ceiling, t, bars]);
 
   useEffect(() => {
     let frame = 0;
@@ -162,42 +168,68 @@ export default function SpectrumView({
           context.clearRect(0, 0, WIDTH, HEIGHT);
 
           const count = display.length;
-          const barWidth = WIDTH / Math.max(1, count);
-          context.beginPath();
-          context.moveTo(0, BOTTOM);
-          for (let index = 0; index < count; index++) {
-            const x = index * barWidth + barWidth / 2;
-            context.lineTo(x, dbToY(display[index], config.floor, config.ceiling));
+          if (config.bars) {
+            const barCount = Math.min(BAR_COUNT, count);
+            const groupSize = count / barCount;
+            const slot = WIDTH / Math.max(1, barCount);
+            const gap = Math.max(1, slot * 0.3);
+            const barWidth = Math.max(1, slot - gap);
+            context.fillStyle = gradientRef.current!.gradient;
+            context.globalAlpha = 0.9;
+            for (let bar = 0; bar < barCount; bar++) {
+              const start = Math.floor(bar * groupSize);
+              const end = Math.max(start + 1, Math.floor((bar + 1) * groupSize));
+              let level = -Infinity;
+              for (let index = start; index < end && index < count; index++) {
+                if (display[index] > level) level = display[index];
+              }
+
+              const x = bar * slot + gap / 2;
+              const levelY = dbToY(level, config.floor, config.ceiling);
+              for (let y = BOTTOM - SEGMENT_HEIGHT; y >= levelY; y -= SEGMENT_HEIGHT + SEGMENT_GAP) {
+                context.fillRect(x, y, barWidth, SEGMENT_HEIGHT);
+              }
+            }
+
+            context.globalAlpha = 1;
+          } else {
+            const barWidth = WIDTH / Math.max(1, count);
+            context.beginPath();
+            context.moveTo(0, BOTTOM);
+            for (let index = 0; index < count; index++) {
+              const x = index * barWidth + barWidth / 2;
+              context.lineTo(x, dbToY(display[index], config.floor, config.ceiling));
+            }
+
+            context.lineTo(WIDTH, BOTTOM);
+            context.closePath();
+            context.fillStyle = gradientRef.current!.gradient;
+            context.globalAlpha = 0.24;
+            context.fill();
+            context.globalAlpha = 1;
+
+            context.beginPath();
+            for (let index = 0; index < count; index++) {
+              const x = index * barWidth + barWidth / 2;
+              const y = dbToY(display[index], config.floor, config.ceiling);
+              if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+            }
+
+            context.strokeStyle = config.color;
+            context.lineWidth = 1.4;
+            context.stroke();
+
+            context.beginPath();
+            for (let index = 0; index < peaks.length; index++) {
+              const x = index * barWidth + barWidth / 2;
+              const y = dbToY(peaks[index], config.floor, config.ceiling);
+              if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
+            }
+
+            context.strokeStyle = 'rgba(255,255,255,0.42)';
+            context.lineWidth = 0.8;
+            context.stroke();
           }
-
-          context.lineTo(WIDTH, BOTTOM);
-          context.closePath();
-          context.fillStyle = gradientRef.current!.gradient;
-          context.globalAlpha = 0.24;
-          context.fill();
-          context.globalAlpha = 1;
-
-          context.beginPath();
-          for (let index = 0; index < count; index++) {
-            const x = index * barWidth + barWidth / 2;
-            const y = dbToY(display[index], config.floor, config.ceiling);
-            if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
-          }
-
-          context.strokeStyle = config.color;
-          context.lineWidth = 1.4;
-          context.stroke();
-
-          context.beginPath();
-          for (let index = 0; index < peaks.length; index++) {
-            const x = index * barWidth + barWidth / 2;
-            const y = dbToY(peaks[index], config.floor, config.ceiling);
-            if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
-          }
-
-          context.strokeStyle = 'rgba(255,255,255,0.42)';
-          context.lineWidth = 0.8;
-          context.stroke();
 
           if (staticRef.current) {
             context.drawImage(staticRef.current, 0, 0);

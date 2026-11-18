@@ -367,17 +367,19 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
     const physicalInputs = catalog.inputs.filter(item => !item.virtual);
     const virtualInputs = catalog.inputs.filter(item => item.virtual);
     const physicalOutputs = catalog.outputs;
+    const hearing = catalog.effects.filter(item => item.id === 'hearing-profile');
+    const effects = catalog.effects.filter(item => item.id !== 'hearing-profile');
     return {
       applications: { id: 'applications', label: 'Applications', items: [systemItem, ...catalog.apps] },
       network: { id: 'network', label: 'Network', items: [networkInputItem, networkOutputItem] },
       physicalOutputs: { id: 'physicalOutputs', label: 'Speakers & headphones', items: physicalOutputs },
-      generators: { id: 'generators', label: 'Generators', items: [metronomeItem, toneItem, synthItem] },
-      physicalInputs: { id: 'physicalInputs', label: 'Microphones & inputs', items: [ttsItem, ...physicalInputs] },
+      generators: { id: 'generators', label: 'Miscellaneous', items: [metronomeItem, toneItem, synthItem, ttsItem, ...hearing] },
+      physicalInputs: { id: 'physicalInputs', label: 'Microphones & inputs', items: physicalInputs },
       recording: { id: 'recording', label: 'Record & Play', items: [recorderItem, filePlayerItem] },
       samples: { id: 'samples', label: 'Samples', items: catalog.samples ?? [] },
       virtualBuses: { id: 'virtualBuses', label: 'Virtual buses', items: virtualInputs },
       virtualInputs: { id: 'virtualInputs', label: 'Virtual inputs', items: catalog.virtuals },
-      effects: { id: 'effects', label: 'Effects', items: catalog.effects },
+      effects: { id: 'effects', label: 'Effects', items: effects },
       plugins: { id: 'plugins', label: 'VST3 plugins', items: catalog.vst3Plugins },
       chains: { id: 'chains', label: 'Saved chains', items: catalog.chains },
       templates: { id: 'templates', label: 'Frame templates', items: catalog.frameTemplates },

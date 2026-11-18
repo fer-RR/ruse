@@ -723,6 +723,8 @@ export const zhCN: Record<string, string> = {
   "Text-to-speech models download once and then work offline. Supertonic 3 supports many languages; Kokoro provides English and Chinese voices.": "语音合成模型下载一次后即可离线使用。Supertonic 3 支持多种语言；Kokoro 提供英语和中文语音。",
   "Text to speech": "语音合成",
   "Speak": "朗读",
+  "Playing": "播放中",
+  "Jump to latest": "跳到最新",
   "Open text file": "打开文本文件",
   "Used by new Text to speech nodes; each node can use the default.": "Used by new Text to speech nodes; each node can use the default.",
   "UDP port": "UDP 端口",
@@ -854,6 +856,7 @@ export const zhCN: Record<string, string> = {
   "Motion rate": "运动速率",
   "Stereo width": "立体声宽度",
   "Generators": "生成器",
+  "Miscellaneous": "其他",
   "Show track node": "显示轨道节点",
   "Restore track node": "恢复轨道节点",
   "Remove track": "移除轨道",
@@ -957,4 +960,8 @@ export const zhCN: Record<string, string> = {
   "Interface scale": "界面缩放",
   "Scale the interface without changing audio settings.": "缩放界面，不改变音频设置。",
   "Track height": "轨道高度",
-};
+  "Low-latency partial transcripts": "Low-latency partial transcripts",
+  "Use Vosk for live partial text while Whisper produces the final transcript. English-only experimental model.": "Use Vosk for live partial text while Whisper produces the final transcript. English-only experimental model.",
+  "Vosk English model installed.": "Vosk English model installed.",
+  "Install the Vosk English model to enable live partial transcripts.": "Install the Vosk English model to enable live partial transcripts.",
+  "Install Vosk model": "Install Vosk model",};

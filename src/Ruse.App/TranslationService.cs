@@ -36,11 +36,8 @@ internal sealed class TranslationSession : IDisposable
     private readonly string _provider;
     private readonly CancellationTokenSource _cancel = new();
     private readonly object _textLock = new();
-    private readonly object _sampleLock = new();
-    private readonly SpeechChunker _chunker = new();
     private readonly List<SubtitleCue> _sourceCues = new();
     private readonly List<SubtitleCue> _translatedCues = new();
-    private float[] _decoded = new float[8192];
     private readonly Task _worker;
     private readonly long _startedAt = Environment.TickCount64;
 
@@ -105,7 +102,6 @@ internal sealed class TranslationSession : IDisposable
     public void Clear()
     {
         TranscriptionProcessor.ClearTap(_tapId);
-        lock (_sampleLock) _chunker.Clear();
         lock (_textLock)
         {
             _sourceText = "";
@@ -289,42 +285,36 @@ internal sealed class TranslationSession : IDisposable
 
     private async Task RunRecognitionAsync(WhisperProcessor processor)
     {
-        var buffer = new byte[8192];
+        using var silero = SileroVad.TryCreate();
+        using var vad = new VadSegmenter(_tapId, silero);
+        using var vosk = StreamingAsrOptions.Enabled ? VoskStreamingRecognizer.TryCreate() : null;
+        int partialFrames = 0;
+        vad.SpeechStarted += () => SpeechActivityHub.PublishSpeechStarted(_tapId);
+        vad.SpeechEnded += () =>
+        {
+            vosk?.Reset();
+            partialFrames = 0;
+            SpeechActivityHub.PublishSpeechEnded(_tapId);
+        };
+        vad.FrameAvailable += (frame, _) =>
+        {
+            if (vosk == null) return;
+            vosk.Accept(frame);
+            if (++partialFrames < 15) return;
+            partialFrames = 0;
+            string partial = vosk.Partial();
+            if (partial.Length > 0)
+            {
+                lock (_textLock) _sourcePartial = partial;
+            }
+        };
         while (!_cancel.IsCancellationRequested)
         {
-            int read = TranscriptionProcessor.ReadAvailable(_tapId, buffer);
-            float[]? chunk = null;
-            double chunkStart = 0;
-            if (read > 1)
+            var segment = await vad.ReadAsync(_cancel.Token);
+            if (segment != null)
             {
-                int sampleCount = read / 2;
-                lock (_sampleLock)
-                {
-                    if (_decoded.Length < sampleCount)
-                    {
-                        _decoded = new float[sampleCount];
-                    }
-
-                    for (int i = 0; i < sampleCount; i++)
-                    {
-                        short value = (short)(buffer[i * 2] | (buffer[i * 2 + 1] << 8));
-                        _decoded[i] = value / 32768f;
-                    }
-
-                    if (_chunker.Add(_decoded.AsSpan(0, sampleCount), out var produced, out var start))
-                    {
-                        chunk = produced;
-                        chunkStart = start;
-                    }
-                }
+                await TranslateChunkAsync(processor, segment.Samples, segment.StartSeconds);
             }
-
-            if (chunk != null)
-            {
-                await TranslateChunkAsync(processor, chunk, chunkStart);
-            }
-
-            await Task.Delay(40, _cancel.Token);
         }
     }
 

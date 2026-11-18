@@ -2294,6 +2294,103 @@ public static class LatencySelfTest
         return peak <= 0.51f && guard.Engaged;
     }
 
+    private static bool TestHearingProfile()
+    {
+        const int frames = 480;
+        var profile = new HearingProfileProcessor();
+        profile.Parameters.First(parameter => parameter.Name == "Loudness match").Set(0);
+        profile.Parameters.First(parameter => parameter.Name == "Safety limiter").Set(0);
+
+        profile.Parameters.First(parameter => parameter.Name == "Left gain").Set(-12f);
+        profile.Parameters.First(parameter => parameter.Name == "Right gain").Set(12f);
+        var block = new float[frames * 2];
+        Array.Fill(block, 0.1f);
+        profile.Process(block, frames);
+
+        float left = 0f;
+        float right = 0f;
+        for (int index = 0; index < block.Length; index += 2)
+        {
+            left = Math.Max(left, Math.Abs(block[index]));
+            right = Math.Max(right, Math.Abs(block[index + 1]));
+        }
+
+        if (right < left * 5f)
+        {
+            return false;
+        }
+
+        profile.Reset();
+        profile.Parameters.First(parameter => parameter.Name == "Left gain").Set(0f);
+        profile.Parameters.First(parameter => parameter.Name == "Right gain").Set(0f);
+        profile.Parameters.First(parameter => parameter.Name == "Monitor delay").Set(10f);
+        var delayed = new float[960 * 2];
+        delayed[0] = 1f;
+        delayed[1] = 1f;
+        profile.Process(delayed, 960);
+        if (Math.Abs(delayed[0]) > 1e-4f || delayed[480 * 2] < 0.5f)
+        {
+            return false;
+        }
+
+        profile.Reset();
+        profile.Parameters.First(parameter => parameter.Name == "Monitor delay").Set(0f);
+        profile.Parameters.First(parameter => parameter.Name == "Safety limiter").Set(1f);
+        profile.Parameters.First(parameter => parameter.Name == "Limiter ceiling").Set(-6f);
+        profile.Parameters.First(parameter => parameter.Name == "Left gain").Set(20f);
+        profile.Parameters.First(parameter => parameter.Name == "Right gain").Set(20f);
+        var hot = new float[frames * 2];
+        for (int pass = 0; pass < 20; pass++)
+        {
+            Array.Fill(hot, 0.9f);
+            profile.Process(hot, frames);
+        }
+
+        for (int index = 0; index < hot.Length; index++)
+        {
+            if (Math.Abs(hot[index]) > 0.51f)
+            {
+                return false;
+            }
+        }
+
+        profile.Reset();
+        profile.Parameters.First(parameter => parameter.Name == "Safety limiter").Set(1f);
+        profile.Parameters.First(parameter => parameter.Name == "Limiter ceiling").Set(-1f);
+        profile.Parameters.First(parameter => parameter.Name == "Left gain").Set(0f);
+        profile.Parameters.First(parameter => parameter.Name == "Right gain").Set(0f);
+        profile.Parameters.First(parameter => parameter.Name == "Loudness match").Set(1f);
+        profile.Parameters.First(parameter => parameter.Name == "Target loudness").Set(-20f);
+        profile.Parameters.First(parameter => parameter.Name == "Max boost").Set(12f);
+        var quiet = new float[240 * 2];
+        double inputPower = 0;
+        double outputPower = 0;
+        for (int pass = 0; pass < 300; pass++)
+        {
+            for (int frame = 0; frame < 240; frame++)
+            {
+                float sample = 0.01f * MathF.Sin(2f * MathF.PI * 1000f * (pass * 240 + frame) / 48000f);
+                quiet[frame * 2] = sample;
+                quiet[frame * 2 + 1] = sample;
+                if (pass >= 290)
+                {
+                    inputPower += sample * sample * 2;
+                }
+            }
+
+            profile.Process(quiet, 240);
+            if (pass >= 290)
+            {
+                for (int index = 0; index < quiet.Length; index++)
+                {
+                    outputPower += quiet[index] * quiet[index];
+                }
+            }
+        }
+
+        return outputPower > inputPower * 3.0;
+    }
+
     private static bool TestAutoTuneKey()
     {
         int tapId = NoteDetectorProcessor.NextTapId();
@@ -2486,7 +2583,7 @@ public static class LatencySelfTest
         const int frames = 240; // matches the mixer pump
         const int blocks = sampleRate / frames * 5; // 5 seconds of audio
 
-        const int expectedEffectCount = 60;
+        const int expectedEffectCount = 61;
         string[] requiredIds =
         [
             GainProcessor.Id,
@@ -2505,6 +2602,7 @@ public static class LatencySelfTest
             ConvolutionReverbProcessor.Id,
             SidechainDuckerProcessor.Id,
             ClipGuardProcessor.Id,
+            HearingProfileProcessor.Id,
             AutoTuneProcessor.Id,
             AutoTuneExperimentalProcessor.Id,
             NoteDetectorProcessor.Id,
@@ -2701,6 +2799,11 @@ public static class LatencySelfTest
         if (!TestParametricEqResponse())
         {
             failures.Add("parametric EQ did not boost a 1 kHz tone");
+        }
+
+        if (!TestHearingProfile())
+        {
+            failures.Add("hearing profile did not apply per-ear gain, delay, limiting and loudness matching");
         }
 
         if (!TestAutoTune())

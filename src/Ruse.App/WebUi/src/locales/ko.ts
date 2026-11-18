@@ -723,6 +723,8 @@ export const ko: Record<string, string> = {
   "Text-to-speech models download once and then work offline. Supertonic 3 supports many languages; Kokoro provides English and Chinese voices.": "음성 합성 모델은 한 번 다운로드하면 오프라인으로 작동합니다. Supertonic 3는 다양한 언어를 지원하고 Kokoro는 영어와 중국어 음성을 제공합니다.",
   "Text to speech": "음성 합성",
   "Speak": "읽기",
+  "Playing": "재생 중",
+  "Jump to latest": "최신으로 이동",
   "Open text file": "텍스트 파일 열기",
   "Used by new Text to speech nodes; each node can use the default.": "Used by new Text to speech nodes; each node can use the default.",
   "UDP port": "UDP 포트",
@@ -854,6 +856,7 @@ export const ko: Record<string, string> = {
   "Motion rate": "움직임 속도",
   "Stereo width": "스테레오 폭",
   "Generators": "생성기",
+  "Miscellaneous": "기타",
   "Show track node": "트랙 노드 표시",
   "Restore track node": "트랙 노드 복원",
   "Remove track": "트랙 제거",
@@ -957,4 +960,8 @@ export const ko: Record<string, string> = {
   "Interface scale": "인터페이스 배율",
   "Scale the interface without changing audio settings.": "오디오 설정을 변경하지 않고 인터페이스 크기를 조정합니다.",
   "Track height": "트랙 높이",
-};
+  "Low-latency partial transcripts": "Low-latency partial transcripts",
+  "Use Vosk for live partial text while Whisper produces the final transcript. English-only experimental model.": "Use Vosk for live partial text while Whisper produces the final transcript. English-only experimental model.",
+  "Vosk English model installed.": "Vosk English model installed.",
+  "Install the Vosk English model to enable live partial transcripts.": "Install the Vosk English model to enable live partial transcripts.",
+  "Install Vosk model": "Install Vosk model",};

@@ -246,6 +246,25 @@ public partial class App : Application
             }
         }
 
+        int ttsTestIndex = Array.FindIndex(e.Args, a => a.Equals("--tts-test", StringComparison.OrdinalIgnoreCase));
+        if (ttsTestIndex >= 0 && ttsTestIndex + 3 < e.Args.Length)
+        {
+            try
+            {
+                string line = TtsPipelineTest.RunAsync(
+                    e.Args[ttsTestIndex + 1],
+                    e.Args[ttsTestIndex + 2],
+                    e.Args[ttsTestIndex + 3]).GetAwaiter().GetResult();
+                File.WriteAllText(e.Args[ttsTestIndex + 3] + ".txt", line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[ttsTestIndex + 3] + ".txt", "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
         int vst3TestIndex = Array.FindIndex(e.Args, a => a.Equals("--vst3-test", StringComparison.OrdinalIgnoreCase));
         if (vst3TestIndex >= 0 && vst3TestIndex + 2 < e.Args.Length)
         {

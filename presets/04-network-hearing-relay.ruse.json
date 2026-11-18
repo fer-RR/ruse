@@ -1,0 +1,134 @@
+{
+  "Name": "04-network-hearing-relay",
+  "Sources": [
+    {
+      "Id": "relay-network",
+      "Title": "Room / event feed (network)",
+      "ControlId": "room-event-feed-network",
+      "Kind": "Network",
+      "ProcessId": null,
+      "ProcessName": null,
+      "DeviceId": null,
+      "FilePath": null,
+      "OutputId": null,
+      "Color": null,
+      "Solo": false,
+      "FileLoop": false,
+      "FileSpeed": 1,
+      "ToneFrequency": 1000,
+      "ToneWaveform": "Sine",
+      "ToneLevelDb": -18,
+      "IsMetronome": false,
+      "MetronomeBpm": 120,
+      "MetronomeBeatsPerBar": 4,
+      "SynthFrequency": 110,
+      "SynthWaveform": "Saw",
+      "SynthLevelDb": -18,
+      "SynthHarmonics": 0.3,
+      "SynthDetuneCents": 6,
+      "SynthNoise": 0.05,
+      "SynthCutoffHz": 2200,
+      "SynthResonance": 0.2,
+      "SynthMovement": 0.15,
+      "SynthLfoRateHz": 0.7,
+      "SynthStereoWidth": 0.4,
+      "TtsText": null,
+      "TtsSourceNodeId": null,
+      "TtsSourceModifierIndex": -1,
+      "TtsModel": null,
+      "TtsSpeed": 1,
+      "TtsVoice": 0,
+      "NetworkPort": 7890,
+      "X": 40,
+      "Y": 140,
+      "Width": null,
+      "Height": null,
+      "Volume": 1,
+      "Muted": false
+    }
+  ],
+  "Outputs": [
+    {
+      "DeviceId": "{0.0.0.00000000}.{d3c0c66a-7bf7-4d7e-9489-e50b279f81f6}",
+      "Title": "Speakers (High Definition Audio Device)",
+      "ControlId": "relay-output",
+      "IsVirtual": false,
+      "MicHint": null,
+      "IsFile": false,
+      "IsNetwork": false,
+      "NetworkHost": null,
+      "NetworkPort": 7890,
+      "FilePath": null,
+      "FileFormat": null,
+      "RecordingMode": "Off",
+      "AutoSave": false,
+      "SaveToSamples": false,
+      "RecorderSilenceStopSeconds": 0,
+      "RecorderStartThresholdDb": -40,
+      "Color": null,
+      "Solo": false,
+      "X": 740,
+      "Y": 140,
+      "Width": null,
+      "Height": null,
+      "Volume": 1,
+      "Muted": false
+    }
+  ],
+  "Routes": [],
+  "Timeline": null,
+  "Modifiers": [
+    {
+      "Title": "Hearing profile",
+      "ControlId": "hearing-profile-relay",
+      "Enabled": true,
+      "Parallel": false,
+      "Send": 0.5,
+      "IsMixer": false,
+      "MixerWidth": 1,
+      "MixerAutoGain": false,
+      "MixerCrossfade": 0,
+      "TranscriberModel": null,
+      "Color": null,
+      "TranslatorTarget": null,
+      "TranslatorModel": null,
+      "X": 390,
+      "Y": 140,
+      "Width": null,
+      "Height": null,
+      "Processors": [
+        {
+          "TypeId": "hearing-profile",
+          "Parameters": {},
+          "PluginPath": null,
+          "PluginState": null,
+          "IrPath": null,
+          "NoiseProfilePath": null,
+          "Send": 0.5,
+          "Elements": null,
+          "Name": null
+        }
+      ]
+    }
+  ],
+  "MixerInputs": [],
+  "Frames": [],
+  "SourceModifiers": [
+    {
+      "SourceIndex": 0,
+      "ModifierIndex": 0
+    }
+  ],
+  "Sidechains": [],
+  "BargeKeys": [],
+  "MidiBindings": [],
+  "ModifierOutputs": [
+    {
+      "ModifierIndex": 0,
+      "OutputIndex": 0,
+      "Gain": 1,
+      "Enabled": true
+    }
+  ],
+  "ModifierLinks": []
+}

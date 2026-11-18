@@ -41,6 +41,7 @@ internal sealed partial class WebShellController
                     FilePath = entry.Source.Kind == SourceKind.Tts ? null : entry.Source.FilePath,
                     OutputId = entry.Source.SelectedOutputId,
                     Color = entry.Color,
+                    GroupId = entry.GroupId,
                     Solo = entry.Source.Solo,
                     FileLoop = entry.Source.FileLoop,
                     FileSpeed = entry.Source.FileSpeed,
@@ -97,6 +98,7 @@ internal sealed partial class WebShellController
                     RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds,
                     RecorderStartThresholdDb = entry.Output.RecorderStartThresholdDb,
                     Color = entry.Color,
+                    GroupId = entry.GroupId,
                     Solo = entry.Output.Solo,
                     X = entry.X + offsetX,
                     Y = entry.Y + offsetY,
@@ -131,6 +133,19 @@ internal sealed partial class WebShellController
                     Processors = entry.Modifier.Processors.Select(PresetSerializer.SerializeProcessor).ToList(),
                 });
             }
+        }
+
+        foreach (var saved in preset.Sources)
+        {
+            if (saved.Kind != SourceKind.Tts.ToString() ||
+                string.IsNullOrWhiteSpace(saved.TtsSourceNodeId) ||
+                !_nodes.TryGetValue(saved.TtsSourceNodeId, out var producer) ||
+                !modifierIndex.TryGetValue(producer.Id, out int sourceModifier))
+            {
+                continue;
+            }
+
+            saved.TtsSourceModifierIndex = sourceModifier;
         }
 
         foreach (var link in _links)
@@ -172,6 +187,16 @@ internal sealed partial class WebShellController
                         ModifierIndex = keyModifier,
                     });
                 }
+            }
+            else if (link.Kind == "barge-key" &&
+                     modifierIndex.TryGetValue(link.From, out int bargeModifier) &&
+                     sourceIndex.TryGetValue(link.To, out int bargeSource))
+            {
+                preset.BargeKeys.Add(new PresetBargeKeyLink
+                {
+                    ModifierIndex = bargeModifier,
+                    SourceIndex = bargeSource,
+                });
             }
             else if (link.Kind == "source-modifier" &&
                      sourceIndex.TryGetValue(link.From, out int linkedSource) &&
@@ -357,6 +382,7 @@ internal sealed partial class WebShellController
                 sourceEntry.Width = saved.Width;
                 sourceEntry.Height = saved.Height;
                 sourceEntry.Color = NormalizeNodeColor(saved.Color);
+                sourceEntry.GroupId = string.IsNullOrWhiteSpace(saved.GroupId) ? null : saved.GroupId;
                 SyncEntryGroup(sourceEntry);
                 sources.Add(sourceEntry);
             }
@@ -426,6 +452,7 @@ internal sealed partial class WebShellController
                 outputEntry.Width = saved.Width;
                 outputEntry.Height = saved.Height;
                 outputEntry.Color = NormalizeNodeColor(saved.Color);
+                outputEntry.GroupId = string.IsNullOrWhiteSpace(saved.GroupId) ? null : saved.GroupId;
                 SyncEntryGroup(outputEntry);
                 outputs.Add(outputEntry);
             }
@@ -472,6 +499,19 @@ internal sealed partial class WebShellController
             modifiers.Add(modifierEntry);
         }
 
+        for (int index = 0; index < preset.Sources.Count; index++)
+        {
+            var saved = preset.Sources[index];
+            if (saved.TtsSourceModifierIndex < 0 ||
+                Resolve(sources, index) is not { Source.Kind: SourceKind.Tts } tts ||
+                Resolve(modifiers, saved.TtsSourceModifierIndex) is not { } producer)
+            {
+                continue;
+            }
+
+            tts.TtsSourceNodeId = producer.Id;
+        }
+
         foreach (var route in preset.Routes)
         {
             if (Resolve(sources, route.SourceIndex) is { } source && Resolve(outputs, route.OutputIndex) is { } output)
@@ -505,6 +545,16 @@ internal sealed partial class WebShellController
             else if (Resolve(sources, link.SourceIndex) is { } source)
             {
                 ConnectEntries(source, modifier, kind: "sidechain");
+            }
+        }
+
+        foreach (var link in preset.BargeKeys)
+        {
+            if (Resolve(modifiers, link.ModifierIndex) is { } modifier &&
+                Resolve(sources, link.SourceIndex) is { } tts &&
+                !string.Equals(tts.TtsSourceNodeId, modifier.Id, StringComparison.Ordinal))
+            {
+                ConnectEntries(modifier, tts, kind: "barge-key");
             }
         }
 
@@ -781,9 +831,8 @@ internal sealed partial class WebShellController
         {
             "ocean" => "blueprint",
             "ember" => "studio74",
-            "midnightstudy" => "midnight",
-            "deepdive" or "glass" => "midnight",
-            "light" or "midnight" or "blueprint" or "studio74" or "receiver" => settings.Theme,
+            "midnightstudy" or "midnight" or "deepdive" or "glass" => "dark",
+            "light" or "blueprint" or "studio74" or "receiver" => settings.Theme,
             _ => "dark",
         };
         _settings.UiScale = ClampUiScale(settings.UiScale);
@@ -867,6 +916,8 @@ internal sealed partial class WebShellController
             ? "opus" : "qwen";
         _settings.TtsModel = TtsModels.Find(settings.TtsModel)?.Id ?? TtsModels.DefaultId;
         _settings.TtsSpeed = Math.Clamp(settings.TtsSpeed <= 0 ? 1f : settings.TtsSpeed, 0.5f, 2f);
+        _settings.StreamingAsrEnabled = settings.StreamingAsrEnabled;
+        StreamingAsrOptions.Enabled = _settings.StreamingAsrEnabled;
         StartupRegistration.SetEnabled(settings.StartWithWindows);
         _settings.Save();
         ConfigureAudioEngine();

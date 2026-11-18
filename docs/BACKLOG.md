@@ -2,6 +2,25 @@
 
 Keep this short. Nothing is started unless noted.
 
+## Audit handoff — 0.9.14 (2026-11-17)
+
+Full findings: `docs/AUDIT-2026-11-17.md`. Fix one at a time, P0 first.
+
+- **P0:** validate preset paths; validate-before-clear; atomic persistence;
+  OutputNode start/pump fault handling; route subscription lifetime; global
+  Space/modal shortcuts; TTS queue bound/cancel; one TTS host per text;
+  responsive shell; tray prompt close; recorder deletion confirmation.
+- **P1:** native passthrough ownership/clock/limiter; mixer delay latency;
+  tap/inference decoupling; CTS/session/model lifecycle; CJK segmentation;
+  model hashes/probes; control resync; updater TOCTOU; edge selection/shortcut
+  scope/timeline cut-paste; contrast/keyboard access; group fader/node-state
+  performance.
+- **P2:** see audit file; includes remaining persistence, UI, i18n, a11y and
+  performance items.
+- **Not quick fixes:** native inference cancellation, signed updater, full
+  screen-reader graph/timeline parity, cross-layer timeline clipboard,
+  responsive-layout architecture, Roaming model migration.
+
 ## Before next feature work
 
 - Commit and release the post-0.9.11 work as **0.9.12**: performance/architecture

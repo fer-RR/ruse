@@ -17,6 +17,7 @@ public sealed class WaveformProcessor : IAudioProcessor, IParameterizedProcessor
 
     private volatile float _tapId;
     private volatile float _trigger = TriggerRising;
+    private volatile float _gain = 12f;
 
     public WaveformProcessor()
     {
@@ -42,6 +43,17 @@ public sealed class WaveformProcessor : IAudioProcessor, IParameterizedProcessor
                 Options = new[] { "Rising", "Falling", "Off" },
                 Get = () => _trigger,
                 Set = value => _trigger = Math.Clamp(MathF.Round(value), TriggerRising, TriggerOff),
+            },
+            new AudioParameter
+            {
+                Name = "Display gain",
+                Min = 0f,
+                Max = 40f,
+                Default = 12f,
+                IsInteger = true,
+                Get = () => _gain,
+                Set = value => _gain = Math.Clamp(MathF.Round(value), 0f, 40f),
+                Unit = "dB",
             },
         };
     }

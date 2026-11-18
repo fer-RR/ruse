@@ -59,6 +59,32 @@ internal static class TtsModels
             "OpenRAIL",
             "Fast multilingual voice model. English, Portuguese, Spanish, French, German, Italian, Japanese, Korean, Chinese, and more."),
         new TtsModel(
+            "kokoro-streaming",
+            "Kokoro 82M (streaming)",
+            "kokoro-sharp",
+            "8 languages",
+            320,
+            "",
+            "",
+            "",
+            Array.Empty<string>(),
+            new[] { "af_heart", "af_bella", "am_michael" },
+            "MIT wrapper / Apache 2.0 model",
+            "Segment-streaming Kokoro; downloads on first use."),
+        new TtsModel(
+            "piper-en-us",
+            "Piper English (streaming)",
+            "piper",
+            "English",
+            60,
+            "",
+            "",
+            "",
+            Array.Empty<string>(),
+            new[] { "en_US-lessac-medium" },
+            "GPL-3.0 engine / per-voice license",
+            "External Piper binary; raw PCM output."),
+        new TtsModel(
             "kokoro-int8-multi-lang-v1_1",
             "Kokoro 82M",
             "kokoro",
@@ -101,6 +127,11 @@ internal static class TtsModels
             return false;
         }
 
+        if (model.Family is "kokoro-sharp" or "piper")
+        {
+            return StreamingTtsProviders.IsInstalled(model.Id);
+        }
+
         string dir = PathFor(model.Id);
         return model.RequiredFiles.All(file => File.Exists(Path.Combine(dir, file)));
     }
@@ -112,7 +143,13 @@ internal static class TtsModels
 
     public static long GetInstalledSizeBytes() => DirectoryBytes(Root);
 
-    public static long GetInstalledSizeBytes(string id) => DirectoryBytes(PathFor(id));
+    public static long GetInstalledSizeBytes(string id)
+    {
+        var model = Find(id);
+        return model?.Family is "kokoro-sharp" or "piper"
+            ? StreamingTtsProviders.InstalledSize(id)
+            : DirectoryBytes(PathFor(id));
+    }
 
     private static long DirectoryBytes(string path)
     {
@@ -146,6 +183,12 @@ internal static class TtsModels
         if (IsInstalled(model.Id))
         {
             progress?.Report(new TtsModelProgress(model.Id, "done", 1));
+            return;
+        }
+
+        if (model.Family is "kokoro-sharp" or "piper")
+        {
+            await StreamingTtsProviders.DownloadAsync(model.Id, progress, cancellationToken).ConfigureAwait(false);
             return;
         }
 
@@ -242,6 +285,12 @@ internal static class TtsModels
 
     public static void Delete(string id)
     {
+        if (Find(id)?.Family is "kokoro-sharp" or "piper")
+        {
+            StreamingTtsProviders.Delete(id);
+            return;
+        }
+
         string dir = PathFor(Find(id)?.Id ?? id);
         if (Directory.Exists(dir))
         {

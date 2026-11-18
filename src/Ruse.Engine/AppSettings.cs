@@ -94,6 +94,9 @@ public sealed class AppSettings
     /// <summary>Run VST3 plugins in a child process so a plugin crash cannot close Ruse.</summary>
     public bool IsolateVst3 { get; set; } = true;
 
+    /// <summary>Use Vosk for live partial transcripts while Whisper produces finals.</summary>
+    public bool StreamingAsrEnabled { get; set; }
+
     /// <summary>Default Whisper model id for new transcriber nodes.</summary>
     public string TranscriberModel { get; set; } = "whisper-small.en";
     public string TranslatorModel { get; set; } = "qwen2.5-1.5b-instruct-q4_k_m";

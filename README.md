@@ -20,6 +20,8 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 - **Keep voice and game audio separate.** Route Discord, a game, a microphone and music to different devices with independent levels.
 - **Clean up a microphone.** Add high-pass, EQ, compression, noise reduction, de-esser, gate and limiter before the mic reaches Discord, OBS or a call.
 - **Build a monitor mix.** Use the mixer, sends, sidechain ducker and native-safe processors for a small live or streaming setup.
+- **Make audio easier to hear.** Use the hearing profile for per-ear EQ/gain, lip-sync delay, loudness matching and a safety limiter.
+- **Import a real audiogram.** Load a CSV or JSON hearing test, preview PTA4/severity, and generate a per-ear starting profile.
 - **Record the final mix.** Record WAV, FLAC or MP3 from any route, or render a timeline mix offline.
 - **Send audio to another PC.** Use Ruse-to-Ruse UDP audio over your local network.
 - **Process with VST3.** Host VST3 effects in an isolated process so a plugin crash does not take down the whole app.
@@ -39,12 +41,22 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 
 ### Processing
 
-- **60 built-in effects**, including EQ, filters, dynamics, gates, saturation, pitch, auto-tune, vocoder, delays, reverbs, convolution and character effects.
+- **61 built-in effects**, including EQ, filters, dynamics, hearing profiles, gates, saturation, pitch, auto-tune, vocoder, delays, reverbs, convolution and character effects.
 - VST3 hosting in an isolated child process.
 - Effect chains, saved chains, frame templates, per-effect bypass and mixer groups with independent gain/mute/solo.
 - Freeze a file or sample source through its routed effects into a rendered proxy, then bypass the original route. Generated proxies are removed when their source node is deleted or its file is replaced.
 - Timeline tracks, clips, fades, gain, pitch, stretch, automation, markers, regions, time signatures, multi-select clipboard editing, normalize/reverse/consolidate and offline bounce/freeze.
 - Consolidate renders raw track audio (clip gain, fades and pitch) without insert effects; use bounce or freeze for full graph rendering.
+
+### Speech
+
+- Shared 16 kHz speech tap with VAD endpointing and pre-roll.
+- Silero VAD with an energy fallback for low-power or missing-model cases.
+- Optional Vosk English partial transcripts while Whisper produces the final transcript; install the 40 MB model from Settings > Speech & translation > Live speech.
+- Kokoro 82M and Piper are selectable streaming TTS backends. Kokoro uses the MIT KokoroSharp wrapper; Piper runs as an optional external engine because its maintained runtime is GPL-3.0.
+- TTS barge-in/ducking when new speech begins.
+- Clause-level TTS streaming with lag-aware catch-up and stale-speech skipping.
+- Local Whisper transcription, translation and TTS.
 
 ### Output and recording
 
@@ -58,7 +70,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 
 - Optional local Whisper transcription, translation and text-to-speech.
 - Local control API for scripts and automation, off by default.
-- Six UI themes: Dark, Light, Midnight, Blueprint, Studio '74 and Receiver.
+- Five UI themes: Dark, Light, Blueprint, Studio '74 and Receiver.
 - Keyboard shortcuts, reduced-motion support and screen-reader labels.
 - English, German, Spanish, French, Italian, Japanese, Korean, Portuguese (Brazil) and Chinese (Simplified) UI.
 
@@ -118,6 +130,36 @@ The first-run tour and the `?` help buttons explain the main workflows.
 | Send audio to a second PC | Source → Network output; Network input → speakers on the other PC |
 | Keep music out of a call | Music app → Headphones only; microphone → call output |
 | Add a VST3 effect | Source → VST3 node → destination; open the plugin editor in the node |
+| Make TV or games easier to hear | App or system audio -> Hearing profile -> Headphones |
+
+## Audiogram import
+
+The **Hearing profile** node can import a real audiogram from CSV or JSON. Values are treated as air-conduction thresholds in **dB HL**. Ruse interpolates them onto its 8 hearing bands, previews PTA4/severity and the applied gains, and generates a conservative half-gain starting profile. Adjust it by ear after import; it is not a clinical fitting.
+
+CSV:
+
+```csv
+frequency,left,right
+250,30,20
+500,40,30
+1000,45,35
+2000,50,40
+4000,55,45
+8000,60,50
+```
+
+JSON:
+
+```json
+{
+  "unit": "db_hl",
+  "frequencies": [250, 500, 1000, 2000, 4000, 8000],
+  "left": [30, 40, 45, 50, 55, 60],
+  "right": [20, 30, 35, 40, 45, 50]
+}
+```
+
+OpenHear audiogram JSON (`right_ear`/`left_ear` with `thresholds`) is also supported.
 
 ## Build from source
 

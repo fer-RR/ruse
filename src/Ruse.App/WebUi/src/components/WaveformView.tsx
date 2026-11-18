@@ -50,15 +50,18 @@ export default function WaveformView({
   samples,
   peak,
   color,
+  gainDb = 12,
 }: {
   samples?: number[];
   peak?: number;
   color: string;
+  gainDb?: number;
 }) {
   const { t } = useI18n();
   const ref = useRef<HTMLCanvasElement>(null);
   const visible = useElementVisible(ref);
   const gridRef = useRef<HTMLCanvasElement | null>(null);
+  const gain = Math.pow(10, Math.max(0, Math.min(40, gainDb)) / 20);
 
   useEffect(() => {
     if (!visible) return;
@@ -87,7 +90,7 @@ export default function WaveformView({
     context.beginPath();
     for (let index = 0; index < values.length; index++) {
       const x = index * step + step / 2;
-      const y = valueToY(values[index]);
+      const y = valueToY(values[index] * gain);
       if (index === 0) context.moveTo(x, y); else context.lineTo(x, y);
     }
 
@@ -107,7 +110,7 @@ export default function WaveformView({
       const x = index * step + step / 2;
       context.fillRect(x - 1, values[index] > 0 ? TOP : BOTTOM - 2, 2, 2);
     }
-  }, [samples, color, t, visible]);
+  }, [samples, color, t, visible, gain]);
 
   const milliseconds = ((samples?.length ?? 0) / 48).toFixed(1);
 
@@ -116,6 +119,7 @@ export default function WaveformView({
       <canvas ref={ref} width={WIDTH} height={HEIGHT} aria-label={t('Waveform')} />
       <div className="spectrum-meta">
         <span>{milliseconds} ms</span>
+        {gainDb > 0 && <span>+{Math.round(gainDb)} dB</span>}
         <strong>{formatPeak(peak)}</strong>
       </div>
     </div>

@@ -21,7 +21,8 @@ export default function RuseEdge({
   const labelRef = useRef<HTMLDivElement>(null);
   const ropeRef = useRef<CableRope | null>(null);
   const active = useNodeActive(source);
-  const sidechain = (data as { kind?: string } | undefined)?.kind === 'sidechain';
+  const edgeKind = (data as { kind?: string } | undefined)?.kind;
+  const keyed = edgeKind === 'sidechain' || edgeKind === 'barge-key';
   const native = (data as { native?: boolean; nativeRate?: number } | undefined)?.native === true;
   const nativeRate = (data as { nativeRate?: number } | undefined)?.nativeRate;
   const rejected = (data as { rejected?: boolean } | undefined)?.rejected === true;
@@ -44,7 +45,7 @@ export default function RuseEdge({
         opacity: active ? 1 : 0.78,
         filter: 'drop-shadow(0 0 5px rgba(67, 227, 154, 0.45))',
       }
-    : sidechain ? { ...baseStyle, strokeDasharray: '5 4' } : baseStyle;
+    : keyed ? { ...baseStyle, strokeDasharray: '5 4' } : baseStyle;
 
 
   useEffect(() => {
@@ -93,7 +94,7 @@ export default function RuseEdge({
           />
         </>
       )}
-      {sidechain && (
+      {keyed && (
         <EdgeLabelRenderer>
           <div ref={keyLabelRef} className="edge-key-label" style={physics ? undefined : { transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
             KEY

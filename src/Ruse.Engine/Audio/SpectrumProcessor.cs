@@ -15,6 +15,7 @@ public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor
     private volatile float _smoothing = 55f;
     private volatile float _floor = -100f;
     private volatile float _ceiling = -30f;
+    private volatile float _mode;
 
     public SpectrumProcessor()
     {
@@ -58,6 +59,18 @@ public sealed class SpectrumProcessor : IAudioProcessor, IParameterizedProcessor
                 Get = () => _ceiling,
                 Set = value => _ceiling = Math.Clamp(value, -40f, 0f),
                 Unit = "dB",
+            },
+            new AudioParameter
+            {
+                Name = "Mode",
+                Min = 0f,
+                Max = 1f,
+                Default = 0f,
+                IsInteger = true,
+                IsChoice = true,
+                Options = new[] { "Line", "Bars" },
+                Get = () => _mode,
+                Set = value => _mode = Math.Clamp(MathF.Round(value), 0f, 1f),
             },
         };
     }

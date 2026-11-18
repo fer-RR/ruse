@@ -35,6 +35,7 @@ public sealed class SourceNode : IDisposable
     private long _driftFrames;
     private long _driftLastTicks;
     private double _driftPpm;
+    private bool _ttsStreaming;
 
     // Every consumer of this source (each output route) takes its own copy of
     // the audio. Sharing one queue would mean two outputs split the signal
@@ -75,11 +76,14 @@ public sealed class SourceNode : IDisposable
     public string? NetworkError => (_capture as NetworkPcmCapture)?.LastError;
     public double NetworkBufferedMs => (_capture as NetworkPcmCapture)?.BufferedMs ?? 0;
     public int TtsQueuedFiles => (_capture as TtsAudioCapture)?.QueuedFiles ?? 0;
+    public int TtsQueuedFrames => (_capture as TtsStreamCapture)?.QueuedFrames ?? 0;
+    public bool IsTtsStreaming => _capture is TtsStreamCapture;
 
     private volatile bool _timelineRunning;
     public bool IsRunning => (_timelineRunning || _capture != null) && !_faulted &&
         (_capture is not AudioFileCapture file || file.IsRunning) &&
-        (_capture is not TtsAudioCapture tts || tts.IsRunning);
+        (_capture is not TtsAudioCapture tts || tts.IsRunning) &&
+        (_capture is not TtsStreamCapture stream || stream.IsRunning);
 
     /// <summary>Raised when the capture stream stops by itself (device lost, error).</summary>
     public event Action<SourceNode, string>? Faulted;
@@ -230,6 +234,18 @@ public sealed class SourceNode : IDisposable
     }
     
     public void CompleteTtsAudio() => (_capture as TtsAudioCapture)?.Complete();
+
+    public void StartTtsStream()
+    {
+        Stop();
+        _ttsStreaming = true;
+        Start();
+    }
+
+    public void EnqueueTtsSamples(ReadOnlySpan<float> samples) =>
+        (_capture as TtsStreamCapture)?.Enqueue(samples);
+
+    public void CompleteTtsStream() => (_capture as TtsStreamCapture)?.Complete();
     
     public void ClearTtsAudio()
     {
@@ -586,7 +602,7 @@ public sealed class SourceNode : IDisposable
             return;
         }
 
-        if (Kind is SourceKind.File or SourceKind.Tts && !HasFile)
+        if (Kind is SourceKind.File or SourceKind.Tts && !HasFile && !_ttsStreaming)
         {
             return;
         }
@@ -615,7 +631,8 @@ public sealed class SourceNode : IDisposable
                 StartFileCapture();
                 break;
             case SourceKind.Tts:
-                StartTtsCapture();
+                if (_ttsStreaming) StartTtsStreamCapture();
+                else StartTtsCapture();
                 break;
             case SourceKind.Tone:
                 if (IsMetronome) StartMetronomeCapture();
@@ -759,6 +776,25 @@ public sealed class SourceNode : IDisposable
         }
     }
     
+    private void StartTtsStreamCapture()
+    {
+        var capture = new TtsStreamCapture();
+        SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate, bitsPerSample: 32);
+        capture.DataAvailable += OnDataAvailable;
+        _capture = capture;
+        try
+        {
+            capture.Start();
+        }
+        catch
+        {
+            _capture = null;
+            capture.DataAvailable -= OnDataAvailable;
+            capture.Dispose();
+            throw;
+        }
+    }
+
     private void StartNetworkCapture()
     {
         var capture = new NetworkPcmCapture(NetworkPort, NetworkPcm.DefaultBufferMs);
@@ -1319,8 +1355,13 @@ public sealed class SourceNode : IDisposable
                 ttsAudio.DataAvailable -= OnDataAvailable;
                 ttsAudio.Dispose();
                 break;
+            case TtsStreamCapture ttsStream:
+                ttsStream.DataAvailable -= OnDataAvailable;
+                ttsStream.Dispose();
+                break;
         }
 
+        _ttsStreaming = false;
         _loopbackDevice?.Dispose();
         _loopbackDevice = null;
         _capture = null;

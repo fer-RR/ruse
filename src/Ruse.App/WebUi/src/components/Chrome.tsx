@@ -10,13 +10,12 @@ import { useI18n } from '../i18n';
 import { withShortcut } from '../shortcuts';
 import { useGlobalTelemetry, useRecordingSummary } from '../telemetry';
 import type { StatusMessage } from '../types';
-import RuseLogo from './RuseLogo';
 
 function WindowButton({ action, label, children, danger = false }: { action: string; label: string; children: ReactNode; danger?: boolean }) {
   return <button className={`window-button ${danger ? 'close' : ''}`} aria-label={label} onClick={() => send('window', { action })}>{children}</button>;
 }
 
-export function TitleBar() {
+export function TitleBar({ version }: { version?: string }) {
   const { t } = useI18n();
   const recording = useRecordingSummary();
 
@@ -56,8 +55,7 @@ export function TitleBar() {
       }}
     >
       <div className="brand-plate">
-        <RuseLogo />
-        <div><strong>RUSE</strong><span>AUDIO ROUTER · AR-02</span></div>
+        <div><strong>RUSE</strong><span>AUDIO ROUTER · {version || 'dev'}</span></div>
       </div>
       <div className="titlebar-divider" />
       <span className="titlebar-caption">STEREO ROUTING UNIT</span>

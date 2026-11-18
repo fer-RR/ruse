@@ -1,6 +1,6 @@
 import { Profiler, memo, useEffect, useMemo, useRef, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowUpDown, SlidersHorizontal, Volume2, VolumeX, X } from 'lucide-react';
+import type { DragEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { ArrowUpDown, GripVertical, SlidersHorizontal, Volume2, VolumeX, X } from 'lucide-react';
 import { send } from '../bridge';
 import { formatGainDb, nextVolumeValue } from '../gain';
 import { useI18n } from '../i18n';
@@ -8,6 +8,7 @@ import { useGlobalTelemetry, useNodeTelemetry, useUiTelemetry } from '../telemet
 import type { LinkModel, NodeModel } from '../types';
 
 const MIN_DB = -60;
+const MIXER_DRAG_TYPE = 'application/ruse-mixer-node';
 const EMPTY_INSERTS: NodeModel[] = [];
 
 function clampDb(value: number | undefined, fallbackLevel: number | undefined): number {
@@ -218,18 +219,40 @@ function SendRowImpl({ source, output, inserts, links }: {
 
 const SendRow = memo(SendRowImpl);
 
-function MixerStrip({ node, outputs, links, inserts, vertical, onFocusNode }: {
+function MixerStrip({ node, outputs, links, inserts, vertical, groupColors, onFocusNode }: {
   node: NodeModel;
   outputs: NodeModel[];
   links: LinkModel[];
   inserts: NodeModel[];
   vertical: boolean;
+  groupColors?: string[];
   onFocusNode: (id: string) => void;
 }) {
   const { t } = useI18n();
   const telemetry = useNodeTelemetry(node.id);
   const [volume, setVolume] = useState(node.volume);
+  const [dropTarget, setDropTarget] = useState(false);
   useEffect(() => setVolume(node.volume), [node.volume]);
+
+  const dragStart = (event: DragEvent<HTMLElement>) => {
+    event.dataTransfer.setData(MIXER_DRAG_TYPE, node.id);
+    event.dataTransfer.effectAllowed = 'move';
+  };
+
+  const dragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes(MIXER_DRAG_TYPE)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDropTarget(true);
+  };
+
+  const drop = (event: DragEvent<HTMLDivElement>) => {
+    const from = event.dataTransfer.getData(MIXER_DRAG_TYPE);
+    setDropTarget(false);
+    if (!from || from === node.id) return;
+    event.preventDefault();
+    send('mixer-group', { from, to: node.id });
+  };
 
   const level = Math.max(0, Math.min(1, telemetry?.level ?? 0));
   const dbLeft = clampDb(telemetry?.meterDbLeft, telemetry?.levelLeft ?? level);
@@ -239,8 +262,23 @@ function MixerStrip({ node, outputs, links, inserts, vertical, onFocusNode }: {
     : '';
 
   return (
-    <div className={`mixer-strip mixer-${node.kind} ${vertical ? 'vertical' : ''} ${node.muted ? 'muted' : ''} ${node.solo ? 'soloed' : ''} ${telemetry?.clipping ? 'clipping' : ''}`}>
+    <div
+      className={`mixer-strip mixer-${node.kind} ${vertical ? 'vertical' : ''} ${node.muted ? 'muted' : ''} ${node.solo ? 'soloed' : ''} ${telemetry?.clipping ? 'clipping' : ''} ${dropTarget ? 'drop-target' : ''}`}
+      onDragOver={dragOver}
+      onDragLeave={() => setDropTarget(false)}
+      onDrop={drop}
+    >
+      {node.groupId && groupColors && groupColors.length > 1 && (
+        <span className="mixer-strip-group-tint" style={{ background: groupBackground(groupColors) }} />
+      )}
       <div className="mixer-strip-head">
+        <span
+          className="mixer-drag-handle"
+          draggable
+          title={t('Group')}
+          aria-label={t('Group')}
+          onDragStart={dragStart}
+        ><GripVertical size={12} /></span>
         <input
           className="mixer-color"
           type="color"
@@ -430,15 +468,43 @@ function MasterStrip({ outputs, vertical }: { outputs: NodeModel[]; vertical: bo
   );
 }
 
-function mixGroups(nodes: NodeModel[]) {
-  const groups = new Map<string, NodeModel[]>();
+interface MixerGroupView {
+  id: string;
+  groupId?: string;
+  key?: string;
+  colors: string[];
+  items: NodeModel[];
+}
+
+function mixGroups(nodes: NodeModel[]): MixerGroupView[] {
+  const groups = new Map<string, MixerGroupView>();
   for (const node of nodes) {
-    const color = node.color ?? 'default';
-    const list = groups.get(color) ?? [];
-    list.push(node);
-    groups.set(color, list);
+    const id = node.groupId
+      ? `group:${node.groupId}`
+      : node.color
+        ? `color:${node.color}`
+        : 'ungrouped';
+    const group = groups.get(id) ?? {
+      id,
+      groupId: node.groupId,
+      key: node.groupKey,
+      colors: [],
+      items: [],
+    };
+    group.key ??= node.groupKey;
+    group.colors.push(node.color ?? node.accent ?? 'var(--text-3)');
+    group.items.push(node);
+    groups.set(id, group);
   }
-  return [...groups.entries()];
+
+  return [...groups.values()];
+}
+
+function groupBackground(colors: string[]): string {
+  const unique = [...new Set(colors)];
+  if (unique.length === 0) return 'var(--text-3)';
+  if (unique.length === 1) return unique[0];
+  return `linear-gradient(90deg, ${unique.join(', ')})`;
 }
 
 function MixerGroupTools({ items, label, groupKey }: { items: NodeModel[]; label: string; groupKey?: string }) {
@@ -572,53 +638,95 @@ function MixerPanel({ sources, outputs, modifiers, links, onClose, onExplain, on
             <div className="mixer-section-head"><span>{t('Sources')}</span><span>{sources.length}</span></div>
             {sources.length === 0
               ? <p className="mixer-empty">{t('No sources on the canvas.')}</p>
-              : mixGroups(sources).map(([color, items]) => (
-                <details className="mixer-group" open key={color}>
-                  <summary>
-                    <i style={{ background: color === 'default' ? 'var(--text-3)' : color }} />
-                    <span>{color === 'default' ? t('Ungrouped') : color}</span>
-                    <span>{items.length}</span>
-                    <MixerGroupTools items={items} label={color === 'default' ? t('Ungrouped') : color} groupKey={color === 'default' ? undefined : `source:${color}`} />
-                  </summary>
-                  <div className="mixer-strips">
-                    {items.map(node => <MixerStrip
-                      key={node.id}
-                      node={node}
-                      outputs={outputs}
-                      links={links}
-                      inserts={sourceInserts.get(node.id) ?? EMPTY_INSERTS}
-                      vertical={vertical}
-                      onFocusNode={onFocusNode}
-                    />)}
-                  </div>
-                </details>
-              ))}
+              : mixGroups(sources).map(group => {
+                const label = group.groupId
+                  ? t('Group')
+                  : group.id === 'ungrouped'
+                    ? t('Ungrouped')
+                    : group.colors[0];
+                return (
+                  <details className="mixer-group" open key={group.id}>
+                    <summary>
+                      <i style={{ background: groupBackground(group.colors) }} />
+                      <span className="mixer-group-label">{label}</span>
+                      <span className="mixer-group-count">{group.items.length}</span>
+                      {group.groupId && (
+                        <button
+                          type="button"
+                          className="mixer-group-ungroup"
+                          title={t('Remove group')}
+                          aria-label={t('Remove group')}
+                          onClick={event => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            send('mixer-ungroup', { groupId: group.groupId });
+                          }}
+                        ><X size={10} /></button>
+                      )}
+                      <MixerGroupTools items={group.items} label={label} groupKey={group.key} />
+                    </summary>
+                    <div className="mixer-strips">
+                      {group.items.map(node => <MixerStrip
+                        key={node.id}
+                        node={node}
+                        outputs={outputs}
+                        links={links}
+                        inserts={sourceInserts.get(node.id) ?? EMPTY_INSERTS}
+                        vertical={vertical}
+                        groupColors={group.colors}
+                        onFocusNode={onFocusNode}
+                      />)}
+                    </div>
+                  </details>
+                );
+              })}
           </section>
           <section className="mixer-section">
             <div className="mixer-section-head"><span>{t('Outputs')}</span><span>{outputs.length}</span></div>
             {outputs.length === 0
               ? <p className="mixer-empty">{t('No outputs on the canvas.')}</p>
-              : mixGroups(outputs).map(([color, items]) => (
-                <details className="mixer-group" open key={color}>
-                  <summary>
-                    <i style={{ background: color === 'default' ? 'var(--text-3)' : color }} />
-                    <span>{color === 'default' ? t('Ungrouped') : color}</span>
-                    <span>{items.length}</span>
-                    <MixerGroupTools items={items} label={color === 'default' ? t('Ungrouped') : color} groupKey={color === 'default' ? undefined : `output:${color}`} />
-                  </summary>
-                  <div className="mixer-strips">
-                    {items.map(node => <MixerStrip
-                      key={node.id}
-                      node={node}
-                      outputs={outputs}
-                      links={links}
-                      inserts={outputInserts.get(node.id) ?? EMPTY_INSERTS}
-                      vertical={vertical}
-                      onFocusNode={onFocusNode}
-                    />)}
-                  </div>
-                </details>
-              ))}
+              : mixGroups(outputs).map(group => {
+                const label = group.groupId
+                  ? t('Group')
+                  : group.id === 'ungrouped'
+                    ? t('Ungrouped')
+                    : group.colors[0];
+                return (
+                  <details className="mixer-group" open key={group.id}>
+                    <summary>
+                      <i style={{ background: groupBackground(group.colors) }} />
+                      <span className="mixer-group-label">{label}</span>
+                      <span className="mixer-group-count">{group.items.length}</span>
+                      {group.groupId && (
+                        <button
+                          type="button"
+                          className="mixer-group-ungroup"
+                          title={t('Remove group')}
+                          aria-label={t('Remove group')}
+                          onClick={event => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            send('mixer-ungroup', { groupId: group.groupId });
+                          }}
+                        ><X size={10} /></button>
+                      )}
+                      <MixerGroupTools items={group.items} label={label} groupKey={group.key} />
+                    </summary>
+                    <div className="mixer-strips">
+                      {group.items.map(node => <MixerStrip
+                        key={node.id}
+                        node={node}
+                        outputs={outputs}
+                        links={links}
+                        inserts={outputInserts.get(node.id) ?? EMPTY_INSERTS}
+                        vertical={vertical}
+                        groupColors={group.colors}
+                        onFocusNode={onFocusNode}
+                      />)}
+                    </div>
+                  </details>
+                );
+              })}
           </section>
           <section className="mixer-section mixer-master-section">
             <div className="mixer-section-head"><span>{t('Master')}</span></div>

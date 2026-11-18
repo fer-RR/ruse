@@ -5,6 +5,11 @@ summary; keep the complete licence texts with any distributed build.
 
 ## MIT
 
+- **KokoroSharp / KokoroSharp.CPU** - Copyright (c) Lyrcaxis. MIT.
+  https://github.com/Lyrcaxis/KokoroSharp
+- **PiperSharp** - Copyright (c) Ikars Melnalksnis. MIT wrapper.
+  https://github.com/Lyx52/PiperSharp
+
 - **OpenAI Whisper** — code and model weights, Copyright (c) 2022 OpenAI
   https://github.com/openai/whisper
 - **whisper.cpp / ggml** — Copyright (c) 2023-2024 The ggml authors
@@ -20,6 +25,8 @@ summary; keep the complete licence texts with any distributed build.
   own licences. https://github.com/steinbergmedia/vst3sdk
 - **Microsoft.ML.OnnxRuntime** — Copyright (c) Microsoft Corporation.
   https://github.com/microsoft/onnxruntime
+- **Silero VAD** - Copyright (c) Silero Team. MIT licence.
+  https://github.com/snakers4/silero-vad
 - **Microsoft.ML.Tokenizers** — Copyright (c) Microsoft Corporation.
   https://github.com/dotnet/machinelearning
 - **NAudio** — Copyright (c) Mark Heath
@@ -83,6 +90,11 @@ THIS SOFTWARE.
 
 ## Apache 2.0
 
+- **Vosk API** - Copyright (c) Alpha Cephei Inc. Apache 2.0.
+  https://github.com/alphacep/vosk-api
+- **Vosk Small English model** - Apache 2.0. Downloaded separately when the user installs it; not bundled.
+  https://alphacephei.com/vosk/models
+
 - **sherpa-onnx** — Copyright (c) 2019-2026 Xiaomi Corporation.
   https://github.com/k2-fsa/sherpa-onnx
 - **Kokoro-82M model** — Copyright (c) hexgrad. The Kokoro model files are
@@ -101,6 +113,12 @@ THIS SOFTWARE.
   the user installs the TTS model; not bundled. The model is released under the
   OpenRAIL licence; review its use restrictions before redistribution.
   https://huggingface.co/Supertone/supertonic-3
+## GPL-3.0
+
+- **Piper engine and voices** - The maintained Piper engine is GPL-3.0; each voice has its own MODEL_CARD licence. Downloaded separately, not bundled with Ruse.
+  https://github.com/OHF-Voice/piper1-gpl
+  https://huggingface.co/rhasspy/piper-voices
+
 ## Build-time only
 
 The web UI build uses Vite, TypeScript, browserslist/caniuse-lite and other

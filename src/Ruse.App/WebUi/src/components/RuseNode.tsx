@@ -1,10 +1,10 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
   AppWindow, AudioLines, Check, ChevronDown, ChevronUp, Combine, Copy, FileAudio, GripVertical, Languages, Layers3, Mic, MonitorSpeaker,
-  Play, Power, Puzzle, Radio, Settings, SlidersHorizontal, Square, Timer, Volume2, VolumeX, X,
+  Play, Power, Puzzle, Radio, Settings, SkipForward, SlidersHorizontal, Square, Timer, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
 import { formatGainDb, nextVolumeValue } from '../gain';
@@ -30,6 +30,7 @@ import SpectrumView from './SpectrumView';
 import SpectrogramView from './SpectrogramView';
 import WaveformView from './WaveformView';
 import GraphicEqualizerView from './GraphicEqualizerView';
+import HearingProfileView from './HearingProfileView';
 import MixerControls from './MixerControls';
 
 const RECORD_FORMATS = [
@@ -321,15 +322,25 @@ function NoteDetectorView({ telemetry }: { telemetry?: NodeTelemetry }) {
 function TtsControls({ node }: { node: RuseFlowNode['data'] }) {
   const { t } = useI18n();
   const [text, setText] = useState(node.ttsText ?? '');
+  const textRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => setText(node.ttsText ?? ''), [node.ttsText]);
   const installed = node.ttsModelInstalled === true;
   const sources = node.ttsSources ?? [];
   const voices = node.ttsVoices ?? [];
+  const playing = node.ttsStatus === 'Generating' || node.ttsStatus === 'Speaking';
   const commitText = () => {
     if (text !== (node.ttsText ?? '')) {
       send('tts-text', { id: node.id, text });
     }
   };
+
+  useEffect(() => {
+    const area = textRef.current;
+    if (!area || !playing || document.activeElement === area) return;
+    const progress = Math.max(0, Math.min(node.ttsSpokenLength ?? 0, text.length));
+    const ratio = progress > 0 && text.length > 0 ? progress / text.length : 1;
+    area.scrollTop = Math.max(0, ratio * area.scrollHeight - area.clientHeight * 0.6);
+  }, [playing, node.ttsSpokenLength, text.length]);
 
   return (
     <div className="tts-controls nodrag">
@@ -345,6 +356,7 @@ function TtsControls({ node }: { node: RuseFlowNode['data'] }) {
         </div>
       )}
       <textarea
+        ref={textRef}
         className="tts-text"
         value={text}
         placeholder={t('Type text to speak')}
@@ -358,12 +370,26 @@ function TtsControls({ node }: { node: RuseFlowNode['data'] }) {
           disabled={!installed || !text.trim()}
           onClick={() => {
             commitText();
+            send('tts-jump-latest', { id: node.id });
+          }}
+        >
+          <SkipForward size={11} /> {t('Jump to latest')}
+        </button>
+        <button
+          className={`small-button ${playing ? 'active' : ''}`}
+          disabled={!installed || !text.trim() || playing}
+          onClick={() => {
+            commitText();
             send('tts-speak', { id: node.id });
           }}
         >
-          <Play size={11} /> {t('Speak')}
+          <Volume2 size={11} /> {playing ? t('Playing') : t('Speak')}
         </button>
-        <button className="small-button" onClick={() => send('tts-stop', { id: node.id })}>
+        <button
+          className="small-button"
+          disabled={!playing}
+          onClick={() => send('tts-stop', { id: node.id })}
+        >
           <Square size={11} /> {t('Stop')}
         </button>
       </div>
@@ -727,8 +753,9 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const isSpectrogram = data.isSpectrogram === true;
   const isWaveform = data.isWaveform === true;
   const isParametricEq = data.isParametricEq === true;
+  const isHearingProfile = data.isHearingProfile === true;
   const canParallel = isModifier && !isDbMeter && !isLoudness && !isSpectrum && !isSpectrogram && !isWaveform &&
-    !data.isTranscriber && !data.isTranslator && !data.isVst3 && !data.isGraphicEq && !data.isMixer;
+    !data.isTranscriber && !data.isTranslator && !data.isVst3 && !data.isGraphicEq && !isHearingProfile && !data.isMixer;
   const dbVertical = isDbMeter && (telemetry?.dbMeterVertical ?? true);
   const enabled = data.enabled !== false;
   const recording = telemetry?.recordingStatus === 'REC';
@@ -738,20 +765,24 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     : installedModels[0]?.id ?? '';
   const spectrumFloor = data.parameters.find(parameter => parameter.name === 'Floor')?.value ?? -100;
   const spectrumCeiling = data.parameters.find(parameter => parameter.name === 'Ceiling')?.value ?? -30;
+  const spectrumBars = (data.parameters.find(parameter => parameter.name === 'Mode')?.value ?? 0) >= 1;
+  const waveformGain = data.parameters.find(parameter => parameter.name === 'Display gain')?.value ?? 12;
   const spectrogramContrast = data.parameters.find(parameter => parameter.name === 'Contrast')?.value ?? 1;
   const spectrogramPalette = Math.round(data.parameters.find(parameter => parameter.name === 'Palette')?.value ?? 0);
   const formatRateValue = data.sampleRate && data.sampleRate > 0 ? data.sampleRate : 48000;
   const formatBits = data.bitsPerSample ?? 32;
   const latency = data.kind === 'source' ? telemetry?.inputLatencyMs : data.kind === 'output' ? telemetry?.outputLatencyMs : undefined;
   const flowing = enabled && active;
+  const hasDiagnostics = Boolean(data.showDiagnostics && (data.kind === 'source' || data.kind === 'output'));
   const hasBadges = !enabled || recording || data.duplicateRisk || telemetry?.clipping ||
     telemetry?.clipGuardActive || (data.isTts && data.ttsUsesGpu !== true) ||
     ((data.isTranscriber || data.isTranslator) && typeof telemetry?.usesGpu === 'boolean') ||
-    (data.showDiagnostics && (data.kind === 'source' || data.kind === 'output'));
+    hasDiagnostics;
 
   const classes = [
     'ruse-node',
     hasBadges ? 'has-badges' : '',
+    hasDiagnostics ? 'has-diagnostics' : '',
 
     `node-${data.kind}`,
     selected ? 'selected' : '',
@@ -776,6 +807,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     isWaveform ? 'waveform-node' : '',
     data.isGraphicEq ? 'graphic-eq-node' : '',
     isParametricEq ? 'parametric-eq-node' : '',
+    isHearingProfile ? 'hearing-profile-node' : '',
     data.isMixer ? 'mixer-node' : '',
     data.isConvolutionReverb ? 'convolution-node' : '',
     isDbMeter ? (dbVertical ? 'db-meter-node db-meter-vertical' : 'db-meter-node db-meter-horizontal') : '',
@@ -786,6 +818,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   return (
     <div className={classes} style={{ '--accent': data.accent, ...(data.width ? { width: `${data.width}px`, minWidth: `${data.width}px`, maxWidth: `${data.width}px` } : {}) } as CSSProperties} role="group" aria-label={`${data.title}. ${t(data.subtitle)}`}>
       {data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
+      {data.isTts && <Handle id="barge" type="target" position={Position.Left} className="ruse-handle sidechain-handle" style={{ top: '82%' }} />}
       {data.supportsSidechain && <Handle id="sidechain" type="target" position={Position.Left} className="ruse-handle sidechain-handle" style={{ top: '72%' }} />}
       <header className="node-header">
         <span className="node-icon"><FlavorIcon flavor={data.flavor} /></span>
@@ -816,14 +849,18 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         {data.showDiagnostics && (data.kind === 'source' || data.kind === 'output') && typeof latency === 'number' && Number.isFinite(latency) ? (
           <span className="node-badge latency-badge" title={t('Latency')}>{data.kind === 'source' ? 'IN' : 'OUT'} {latency.toFixed(1)} ms</span>
         ) : null}
-        {data.isMetronome || data.isToneGenerator || data.isSynthGenerator ? (
+        {data.isMetronome || data.isToneGenerator || data.isSynthGenerator || (data.isFilePlayer && data.filePath) ? (
           <span
             className="node-timeline-drag nodrag"
             draggable
             title={t('Drag to timeline')}
             onDragStart={event => {
               event.stopPropagation();
-              event.dataTransfer.setData('application/ruse-generator', JSON.stringify({ id: data.id, title: data.title }));
+              if (data.isFilePlayer && data.filePath) {
+                event.dataTransfer.setData('application/ruse-recording', data.filePath);
+              } else {
+                event.dataTransfer.setData('application/ruse-generator', JSON.stringify({ id: data.id, title: data.title }));
+              }
               event.dataTransfer.effectAllowed = 'copy';
             }}
           ><GripVertical size={13} /></span>
@@ -876,6 +913,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             color={data.accent}
             floor={spectrumFloor}
             ceiling={spectrumCeiling}
+            bars={spectrumBars}
           />}
           {isSpectrogram && <SpectrogramView
             values={telemetry?.spectrogram}
@@ -894,9 +932,15 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             samples={telemetry?.waveform}
             peak={telemetry?.waveformPeak}
             color={data.accent}
+            gainDb={waveformGain}
           />}
           {data.isMixer && <MixerControls node={data} telemetry={telemetry} />}
           {data.isGraphicEq && <GraphicEqualizerView
+            nodeId={data.id}
+            parameters={data.parameters}
+            accent={data.accent}
+          />}
+          {isHearingProfile && <HearingProfileView
             nodeId={data.id}
             parameters={data.parameters}
             accent={data.accent}
@@ -972,7 +1016,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
             </div>
           )}
           {data.isParametricEq && <ParametricEqView node={data} />}
-          {!data.isMixer && !data.isGraphicEq && !data.isParametricEq && data.parameters
+          {!data.isMixer && !data.isGraphicEq && !data.isParametricEq && !isHearingProfile && data.parameters
             .map(parameter => (
             <ParameterControl
               key={`${parameter.processorIndex}-${parameter.parameterIndex}`}

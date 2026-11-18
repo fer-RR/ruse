@@ -80,12 +80,20 @@ internal sealed partial class WebShellController : IDisposable
     private CancellationTokenSource? _ttsDownloadCancel;
     private TtsModelProgress? _ttsDownload;
     private long _lastTtsPublish;
+    private VoskModelProgress? _voskDownload;
+    private long _lastVoskPublish;
+    private CancellationTokenSource? _voskDownloadCancel;
+    private long _lastBargeInTick;
+    private readonly HashSet<int> _speechTaps = new();
     private Action<bool>? _trayDecision;
 
     public WebShellController(WebMainWindow window)
     {
         _window = window;
         _settings = AppSettings.Load();
+        StreamingAsrOptions.Enabled = _settings.StreamingAsrEnabled;
+        SpeechActivityHub.SpeechStarted += OnSpeechStarted;
+        SpeechActivityHub.SpeechEnded += OnSpeechEnded;
         FrozenProxyStore.Initialize();
         _graph.AutoRun = false;
         _settings.Theme = _settings.Theme switch
@@ -93,7 +101,7 @@ internal sealed partial class WebShellController : IDisposable
             "system" => "dark",
             "ocean" => "blueprint",
             "ember" => "studio74",
-            "midnightstudy" => "midnight",
+            "midnightstudy" or "midnight" or "deepdive" or "glass" => "dark",
             var theme => theme,
         };
         MixerGroupBus.Configure(_settings.MixerGroups);
@@ -454,6 +462,8 @@ internal sealed partial class WebShellController : IDisposable
             case "group-gain": SetGroupGain(String(message, "key"), (float)Number(message, "value", 1)); break;
             case "group-mute": SetGroupMuted(String(message, "key"), Bool(message, "value")); break;
             case "group-solo": SetGroupSolo(String(message, "key"), Bool(message, "value")); break;
+            case "mixer-group": GroupMixerNodes(String(message, "from"), String(message, "to")); break;
+            case "mixer-ungroup": UngroupMixerGroup(String(message, "groupId")); break;
             case "midi-learn": StartMidiLearn(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
             case "midi-unbind": ClearMidiBinding(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
             case "midi-refresh": _midi.RefreshDevices(); PublishSettings(); break;
@@ -504,6 +514,9 @@ internal sealed partial class WebShellController : IDisposable
             case "tts-voice": SetTtsVoice(String(message, "id"), (int)Number(message, "value", 0)); break;
             case "tts-speak": SpeakTts(String(message, "id")); break;
             case "tts-stop": StopTts(String(message, "id")); break;
+            case "tts-jump-latest": JumpTtsToLatest(String(message, "id")); break;
+            case "vosk-download": DownloadVoskModel(); break;
+            case "vosk-delete": DeleteVoskModel(); break;
             case "network-input-port": SetNetworkInputPort(String(message, "id"), (int)Number(message, "value", NetworkPcm.DefaultPort)); break;
             case "network-output-host": SetNetworkOutputHost(String(message, "id"), String(message, "value")); break;
             case "network-output-port": SetNetworkOutputPort(String(message, "id"), (int)Number(message, "value", NetworkPcm.DefaultPort)); break;
@@ -1035,6 +1048,18 @@ internal sealed partial class WebShellController : IDisposable
                     Percent = (int)Math.Round(_ttsDownload.Progress * 100),
                     Message = _ttsDownload.Error ?? "",
                 },
+            StreamingAsrEnabled = _settings.StreamingAsrEnabled,
+            VoskInstalled = VoskModels.IsInstalled,
+            VoskSize = VoskModels.IsInstalled ? TranscriptionModels.FormatSize(VoskModels.GetInstalledSizeBytes()) : "",
+            VoskDownload = _voskDownload == null
+                ? null
+                : new TtsDownloadDto
+                {
+                    Id = _voskDownload.Id,
+                    Phase = _voskDownload.Phase,
+                    Percent = (int)Math.Round(_voskDownload.Progress * 100),
+                    Message = _voskDownload.Error ?? "",
+                },
             InstalledTtsModelsCount = installedTtsCount,
             InstalledTtsModelsSize = TtsModels.FormatSize(installedTtsBytes / 1024.0 / 1024.0),
             OpusModels = opusModels,
@@ -1562,7 +1587,6 @@ internal sealed partial class WebShellController : IDisposable
         Color color = theme switch
         {
             "light" => Color.FromRgb(0xEE, 0xF1, 0xF6),
-            "midnight" => Color.FromRgb(0x08, 0x0B, 0x11),
             "blueprint" => Color.FromRgb(0x08, 0x3B, 0x78),
             "studio74" => Color.FromRgb(0x1E, 0x1D, 0x1B),
             "receiver" => Color.FromRgb(0x1E, 0x17, 0x12),
@@ -1702,6 +1726,8 @@ internal sealed partial class WebShellController : IDisposable
         _disposed = true;
         _updateTimer.Stop();
         _updates.Dispose();
+        SpeechActivityHub.SpeechStarted -= OnSpeechStarted;
+        SpeechActivityHub.SpeechEnded -= OnSpeechEnded;
         if (_core != null)
         {
             _core.WebMessageReceived -= OnWebMessageReceived;
@@ -1721,6 +1747,8 @@ internal sealed partial class WebShellController : IDisposable
         _translationDownloadCancel?.Dispose();
         _ttsDownloadCancel?.Cancel();
         _ttsDownloadCancel?.Dispose();
+        _voskDownloadCancel?.Cancel();
+        _voskDownloadCancel?.Dispose();
         TranscriptionRegistry.StopAll();
         TranslationRegistry.StopAll();
         SpeechModelCache.DropAll();
@@ -1749,6 +1777,7 @@ internal sealed partial class WebShellController : IDisposable
         /// <summary>Stable, human-readable key for the control API.</summary>
         public string ControlId { get; set; } = "";
         public string? Color { get; set; }
+        public string? GroupId { get; set; }
         public double X { get; set; }
         public double Y { get; set; }
         public double? Width { get; set; }

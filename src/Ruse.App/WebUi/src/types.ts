@@ -1,5 +1,5 @@
 export type NodeKind = 'source' | 'output' | 'modifier';
-export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output' | 'sidechain';
+export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output' | 'sidechain' | 'barge-key';
 export type CatalogKind = 'app' | 'system' | 'metronome' | 'tone' | 'synth' | 'tts' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'mixer' | 'chain' | 'file-player' | 'sample' | 'recorder' | 'vst3' | 'template';
 
 export interface ChainElement {
@@ -83,6 +83,8 @@ export interface NodeModel {
   groupMuted?: boolean;
   groupSolo?: boolean;
   color?: string;
+  groupId?: string;
+  groupKey?: string;
   supportsSidechain?: boolean;
   micHint?: string;
   deviceId?: string;
@@ -99,6 +101,7 @@ export interface NodeModel {
   isWaveform?: boolean;
   isGraphicEq?: boolean;
   isParametricEq?: boolean;
+  isHearingProfile?: boolean;
   isMixer?: boolean;
   mixerWidth?: number;
   mixerAutoGain?: boolean;
@@ -151,6 +154,7 @@ export interface NodeModel {
   networkBufferedMs?: number;
   isTts?: boolean;
   ttsText?: string;
+  ttsSpokenLength?: number;
   ttsSourceNodeId?: string;
   ttsModel?: string;
   ttsSpeed?: number;
@@ -484,7 +488,7 @@ export interface SettingsModel {
   timelineBounceTailSeconds: number;
   followOutputId: string;
   uiLanguage: string;
-  theme: 'dark' | 'light' | 'midnight' | 'blueprint' | 'studio74' | 'receiver';
+  theme: 'dark' | 'light' | 'blueprint' | 'studio74' | 'receiver';
   uiScale: number;
   startRoutingOnLaunch: boolean;
   highlightMutedNodes: boolean;
@@ -542,6 +546,10 @@ export interface SettingsModel {
   ttsSpeed?: number;
   ttsModels: TtsModelInfo[];
   ttsDownload?: TtsDownload | null;
+  streamingAsrEnabled?: boolean;
+  voskInstalled?: boolean;
+  voskSize?: string;
+  voskDownload?: TtsDownload | null;
   installedTtsModelsSize?: string;
   installedTtsModelsCount?: number;
   opusModels: OpusModelInfo[];

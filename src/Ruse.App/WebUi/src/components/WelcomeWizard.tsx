@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import type { SettingsModel } from '../types';
 import { Modal } from './Dialogs';
-import RuseLogo from './RuseLogo';
 import WelcomeConnectAnimation from './WelcomeConnectAnimation';
 import WelcomeDragAnimation from './WelcomeDragAnimation';
 import WelcomeExamplesAnimation from './WelcomeExamplesAnimation';
@@ -39,7 +38,6 @@ export default function WelcomeWizard({ settings, onChange, onClose }: {
 
         <div className="welcome-tour-copy">
           <div className="welcome-tour-heading">
-            <span className="welcome-tour-logo"><RuseLogo size={34} /></span>
             <h2>{step === 0
               ? t('Send sound anywhere.')
               : step === 1

@@ -741,7 +741,7 @@ export default function App() {
         source: link.from,
         target: link.to,
         sourceHandle: source?.isNoteDetector ? 'key' : 'out',
-        targetHandle: link.kind === 'sidechain' ? 'sidechain' : 'in',
+        targetHandle: link.kind === 'barge-key' ? 'barge' : link.kind === 'sidechain' ? 'sidechain' : 'in',
         type: 'ruseEdge',
         data: { kind: link.kind, native: link.native === true, nativeRate: link.native === true ? (link.nativeRate || source?.sampleRate) : undefined, rejected: rejectedLinkId === link.id, physics: settings.cablePhysics },
         animated: false,
@@ -916,7 +916,9 @@ export default function App() {
       send('connect', {
         from: connection.source,
         to: connection.target,
-        kind: connection.targetHandle === 'sidechain' ? 'sidechain' : '',
+        kind: connection.targetHandle === 'barge'
+          ? 'barge-key'
+          : connection.targetHandle === 'sidechain' ? 'sidechain' : '',
       });
     }
   };
@@ -927,6 +929,11 @@ export default function App() {
     const target = connection.target ? nodeById.get(connection.target) : undefined;
     if (!source || !target || source.id === target.id) return false;
     if (source.isNoteDetector && connection.targetHandle !== 'sidechain') return false;
+    if (connection.targetHandle === 'barge') {
+      return source.kind === 'modifier' &&
+             (source.isTranscriber === true || source.isTranslator === true) &&
+             target.isTts === true;
+    }
     if (connection.targetHandle === 'sidechain') {
       return (source.kind === 'source' || source.kind === 'modifier') &&
              target.kind === 'modifier' && target.supportsSidechain === true;
@@ -1359,7 +1366,7 @@ export default function App() {
         else if (target?.closest('.react-flow')) activeSurfaceRef.current = 'graph';
       }}
     >
-      <TitleBar />
+      <TitleBar version={settings.appVersion} />
       <Toolbar
         running={running}
         audioPlaying={audioPlaying}
@@ -1540,7 +1547,6 @@ export default function App() {
           >
             <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color={
               theme === 'light' ? '#C5CFDD'
-                : theme === 'midnight' ? '#22304A'
                 : theme === 'blueprint' ? '#2B6BA8'
                 : theme === 'studio74' ? '#4A5D4E'
                 : theme === 'receiver' ? '#8E8271'

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Activity, AudioLines, Cable, Check, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, LayoutGrid, Plus, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
+import { Activity, AudioLines, Cable, Check, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, Keyboard, LayoutGrid, Plus, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { TRANSLATION_TARGETS } from '../languages';
@@ -17,7 +17,6 @@ import { useAudioOptimizer } from '../audioOptimizer';
 const THEME_OPTIONS = [
   { id: 'dark', label: 'Dark' },
   { id: 'light', label: 'Light' },
-  { id: 'midnight', label: 'Midnight' },
   { id: 'blueprint', label: 'Blueprint' },
   { id: 'studio74', label: "Studio '74" },
   { id: 'receiver', label: 'Receiver' },
@@ -269,6 +268,7 @@ const LICENSES: ReadonlyArray<readonly [string, string, string]> = [
 const SETTINGS_TABS = [
   { id: 'behavior', label: 'Behavior', Icon: SlidersHorizontal },
   { id: 'workspace', label: 'Workspace', Icon: LayoutGrid },
+  { id: 'shortcuts', label: 'Shortcuts', Icon: Keyboard },
   { id: 'audio', label: 'Audio', Icon: Headphones },
   { id: 'speech', label: 'Speech & translation', Icon: AudioLines },
   { id: 'diagnostics', label: 'Info', Icon: Activity },
@@ -500,6 +500,31 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 download={settings.ttsDownload}
                 onSelectDefault={id => onChange({ ...settings, ttsModel: id })}
               />
+            </SettingsSection>
+            <SettingsSection
+              title="Live speech"
+              summary={settings.streamingAsrEnabled ? (settings.voskInstalled ? t('On') : t('No models installed')) : t('Off')}
+            >
+              <ToggleSetting
+                label={t('Low-latency partial transcripts')}
+                description={t('Use Vosk for live partial text while Whisper produces the final transcript. English-only experimental model.')}
+                checked={settings.streamingAsrEnabled === true}
+                onChange={value => onChange({ ...settings, streamingAsrEnabled: value })}
+              />
+              <p className="settings-note">
+                {settings.voskInstalled
+                  ? `${t('Vosk English model installed.')} ${settings.voskSize ? `(${settings.voskSize})` : ''}`
+                  : t('Install the Vosk English model to enable live partial transcripts.')}
+              </p>
+              <div className="settings-actions">
+                <button className="tool-button" onClick={() => send('vosk-download')} disabled={settings.voskInstalled || settings.voskDownload?.phase === 'downloading'}>
+                  <Download size={14} /> {t('Install Vosk model')}
+                </button>
+                {settings.voskInstalled && <button className="tool-button" onClick={() => send('vosk-delete')}>{t('Delete')}</button>}
+              </div>
+              {settings.voskDownload && (
+                <p className="settings-note">{settings.voskDownload.phase} {settings.voskDownload.percent}% {settings.voskDownload.message}</p>
+              )}
             </SettingsSection>
           </>
         )}
@@ -845,6 +870,15 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
           </>
         )}
 
+        {tab === 'shortcuts' && (
+          <SettingsSection title="Keyboard shortcuts" summary={SHORTCUT_LIST.length}>
+            <div className="shortcut-list settings-shortcut-list">
+              {SHORTCUT_LIST.map(([key, description]) => <div key={key}><kbd>{key}</kbd><span>{t(description)}</span></div>)}
+            </div>
+            <p className="settings-note">{t("Drag from a node's OUT port to another node's IN port. Drop an effect or saved chain directly on a cable to insert it inline. Double-click a node's name to rename it.")}</p>
+          </SettingsSection>
+        )}
+
         {tab === 'diagnostics' && (
           <>
             <SettingsSection title="Diagnostics" summary={settings.showDiagnostics ? t('On') : t('Off')}>
@@ -942,12 +976,6 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 <button className="tool-button" onClick={() => send('create-desktop-shortcut')}><Plus size={14} /> {t('Add desktop shortcut')}</button>
                 <button className="tool-button" onClick={() => send('copy-diagnostics')}><Copy size={14} /> {t('Copy diagnostics')}</button>
               </div>
-            </SettingsSection>
-            <SettingsSection title="Keyboard shortcuts" summary={SHORTCUT_LIST.length}>
-              <div className="shortcut-list settings-shortcut-list">
-                {SHORTCUT_LIST.map(([key, description]) => <div key={key}><kbd>{key}</kbd><span>{t(description)}</span></div>)}
-              </div>
-              <p className="settings-note">{t("Drag from a node's OUT port to another node's IN port. Drop an effect or saved chain directly on a cable to insert it inline. Double-click a node's name to rename it.")}</p>
             </SettingsSection>
             <SettingsSection title="Licences" summary={LICENSES.length}>
               <div className="license-list">

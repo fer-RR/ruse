@@ -98,6 +98,8 @@ internal sealed class NodeDto
     public bool Muted { get; set; }
     public bool Solo { get; set; }
     public string? Color { get; set; }
+    public string? GroupId { get; set; }
+    public string? GroupKey { get; set; }
     public bool SupportsSidechain { get; set; }
     public string? MicHint { get; set; }
     public string? DeviceId { get; set; }
@@ -128,6 +130,7 @@ internal sealed class NodeDto
     public bool IsWaveform { get; set; }
     public bool IsGraphicEq { get; set; }
     public bool IsParametricEq { get; set; }
+    public bool IsHearingProfile { get; set; }
     public List<string> EqBandTypes { get; set; } = new();
     public bool IsConvolutionReverb { get; set; }
     public string? IrPath { get; set; }
@@ -170,6 +173,7 @@ internal sealed class NodeDto
     public float ToneFrequency { get; set; } = 1000f;
     public bool IsTts { get; set; }
     public string? TtsText { get; set; }
+    public int TtsSpokenLength { get; set; }
     public string? TtsSourceNodeId { get; set; }
     public string? TtsModel { get; set; }
     public float TtsSpeed { get; set; } = 1f;
@@ -612,6 +616,10 @@ internal sealed class SettingsDto
     public float TtsSpeed { get; set; } = 1f;
     public List<TtsModelDto> TtsModels { get; set; } = new();
     public TtsDownloadDto? TtsDownload { get; set; }
+    public bool StreamingAsrEnabled { get; set; }
+    public bool VoskInstalled { get; set; }
+    public string VoskSize { get; set; } = "";
+    public TtsDownloadDto? VoskDownload { get; set; }
     public string InstalledTtsModelsSize { get; set; } = "";
     public int InstalledTtsModelsCount { get; set; }
     public List<TranslatorModelDto> TranslatorModels { get; set; } = new();

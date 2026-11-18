@@ -723,6 +723,8 @@ export const ja: Record<string, string> = {
   "Text-to-speech models download once and then work offline. Supertonic 3 supports many languages; Kokoro provides English and Chinese voices.": "音声合成モデルは一度ダウンロードするとオフラインで動作します。Supertonic 3は多くの言語に対応し、Kokoroは英語と中国語の音声を提供します。",
   "Text to speech": "音声合成",
   "Speak": "読み上げ",
+  "Playing": "再生中",
+  "Jump to latest": "最新へジャンプ",
   "Open text file": "テキストファイルを開く",
   "Used by new Text to speech nodes; each node can use the default.": "Used by new Text to speech nodes; each node can use the default.",
   "UDP port": "UDPポート",
@@ -854,6 +856,7 @@ export const ja: Record<string, string> = {
   "Motion rate": "動きの速さ",
   "Stereo width": "ステレオ幅",
   "Generators": "ジェネレーター",
+  "Miscellaneous": "その他",
   "Show track node": "トラックノードを表示",
   "Restore track node": "トラックノードを復元",
   "Remove track": "トラックを削除",
@@ -957,4 +960,8 @@ export const ja: Record<string, string> = {
   "Interface scale": "インターフェースの倍率",
   "Scale the interface without changing audio settings.": "音声設定を変えずにインターフェースを拡大/縮小します。",
   "Track height": "トラックの高さ",
-};
+  "Low-latency partial transcripts": "Low-latency partial transcripts",
+  "Use Vosk for live partial text while Whisper produces the final transcript. English-only experimental model.": "Use Vosk for live partial text while Whisper produces the final transcript. English-only experimental model.",
+  "Vosk English model installed.": "Vosk English model installed.",
+  "Install the Vosk English model to enable live partial transcripts.": "Install the Vosk English model to enable live partial transcripts.",
+  "Install Vosk model": "Install Vosk model",};

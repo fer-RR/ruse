@@ -31,6 +31,9 @@ public sealed class Preset
     /// <summary>source → modifier key inputs, by index; these are not audible routes.</summary>
     public List<PresetSidechainLink> Sidechains { get; set; } = new();
 
+    /// <summary>Transcriber/translator to TTS barge-in key links, by index.</summary>
+    public List<PresetBargeKeyLink> BargeKeys { get; set; } = new();
+
     /// <summary>MIDI note/CC mappings for effect parameters.</summary>
     public List<PresetMidiBinding> MidiBindings { get; set; } = new();
 
@@ -63,6 +66,7 @@ public sealed class PresetSource
     public string? FilePath { get; set; }
     public string? OutputId { get; set; }
     public string? Color { get; set; }
+    public string? GroupId { get; set; }
     public bool Solo { get; set; }
     public bool FileLoop { get; set; }
     public float FileSpeed { get; set; } = 1f;
@@ -85,6 +89,7 @@ public sealed class PresetSource
     public float SynthStereoWidth { get; set; } = 0.4f;
     public string? TtsText { get; set; }
     public string? TtsSourceNodeId { get; set; }
+    public int TtsSourceModifierIndex { get; set; } = -1;
     public string? TtsModel { get; set; }
     public float TtsSpeed { get; set; } = 1f;
     public int TtsVoice { get; set; }
@@ -116,6 +121,7 @@ public sealed class PresetOutput
     public double RecorderSilenceStopSeconds { get; set; }
     public double RecorderStartThresholdDb { get; set; } = -40;
     public string? Color { get; set; }
+    public string? GroupId { get; set; }
     public bool Solo { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
@@ -228,6 +234,12 @@ public sealed class PresetSidechainLink
     public int SourceIndex { get; set; }
     public int? SourceModifierIndex { get; set; }
     public int ModifierIndex { get; set; }
+}
+
+public sealed class PresetBargeKeyLink
+{
+    public int ModifierIndex { get; set; }
+    public int SourceIndex { get; set; }
 }
 
 public sealed class PresetModifierOutputLink

@@ -1404,6 +1404,8 @@ internal sealed partial class WebShellController
             Subtitle = entry.Subtitle,
             Accent = string.IsNullOrWhiteSpace(entry.Color) ? entry.Accent : entry.Color,
             Color = entry.Color,
+            GroupId = entry.GroupId,
+            GroupKey = entry.Source?.GroupKey ?? entry.Output?.GroupKey,
             X = entry.X,
             Y = entry.Y,
             Width = entry.Width,
@@ -1464,6 +1466,7 @@ internal sealed partial class WebShellController
             dto.NetworkError = entry.Source.NetworkError;
             dto.NetworkBufferedMs = entry.Source.NetworkBufferedMs;
             dto.TtsText = entry.TtsText;
+            dto.TtsSpokenLength = entry.TtsSpokenLength;
             dto.TtsSourceNodeId = entry.TtsSourceNodeId;
             dto.TtsModel = entry.TtsModel ?? _settings.TtsModel;
             dto.TtsSpeed = entry.TtsSpeed;
@@ -1519,6 +1522,7 @@ internal sealed partial class WebShellController
             dto.IsGraphicEq = entry.Modifier.Processors.Count == 1 &&
                 entry.Modifier.Processors[0] is GraphicEqualizerProcessor;
             dto.IsParametricEq = entry.Modifier.Processors.OfType<ParametricEqProcessor>().Any();
+            dto.IsHearingProfile = entry.Modifier.Processors.OfType<HearingProfileProcessor>().Any();
             if (dto.IsParametricEq)
             {
                 dto.EqBandTypes = ParametricEqProcessor.BandTypes.ToList();
@@ -1808,13 +1812,80 @@ internal sealed partial class WebShellController
     {
         if (entry.Source != null)
         {
-            entry.Source.GroupKey = GroupKeyFor("source", entry.Color);
+            entry.Source.GroupKey = entry.GroupId is { Length: > 0 } group
+                ? $"source:g:{group}"
+                : GroupKeyFor("source", entry.Color);
         }
 
         if (entry.Output != null)
         {
-            entry.Output.GroupKey = GroupKeyFor("output", entry.Color);
+            entry.Output.GroupKey = entry.GroupId is { Length: > 0 } group
+                ? $"output:g:{group}"
+                : GroupKeyFor("output", entry.Color);
         }
+    }
+
+    private void GroupMixerNodes(string fromId, string toId)
+    {
+        if (!_nodes.TryGetValue(fromId, out var from) ||
+            !_nodes.TryGetValue(toId, out var to) ||
+            fromId == toId)
+        {
+            return;
+        }
+
+        bool bothSources = from.Source != null && to.Source != null;
+        bool bothOutputs = from.Output != null && to.Output != null;
+        if (!bothSources && !bothOutputs)
+        {
+            SetStatus("Mixer groups can only combine sources with sources or outputs with outputs.", isError: true);
+            return;
+        }
+
+        string groupId = to.GroupId ?? $"{from.Kind}-{Guid.NewGuid():N}";
+        if (from.GroupId == groupId) return;
+
+        string? fromBefore = from.GroupId;
+        string? toBefore = to.GroupId;
+        void Apply(string? fromGroup, string? toGroup)
+        {
+            from.GroupId = fromGroup;
+            to.GroupId = toGroup;
+            SyncEntryGroup(from);
+            SyncEntryGroup(to);
+            PublishGraph();
+        }
+
+        Apply(groupId, groupId);
+        PushAction("Group mixer channels",
+            undo: () => Apply(fromBefore, toBefore),
+            redo: () => Apply(groupId, groupId));
+        SetStatus($"Grouped {from.Title} with {to.Title}.");
+    }
+
+    private void UngroupMixerGroup(string groupId)
+    {
+        if (string.IsNullOrWhiteSpace(groupId)) return;
+        var members = _nodes.Values.Where(entry =>
+            string.Equals(entry.GroupId, groupId, StringComparison.Ordinal)).ToList();
+        if (members.Count == 0) return;
+
+        var before = members.Select(entry => (Entry: entry, Group: entry.GroupId)).ToList();
+        void Apply(string? group)
+        {
+            foreach (var item in before)
+            {
+                item.Entry.GroupId = group;
+                SyncEntryGroup(item.Entry);
+            }
+            PublishGraph();
+        }
+
+        Apply(null);
+        PushAction("Ungroup mixer channels",
+            undo: () => Apply(groupId),
+            redo: () => Apply(null));
+        SetStatus("Mixer group dissolved.");
     }
 
     private static string? NormalizeNodeColor(string? color) =>
@@ -2053,6 +2124,7 @@ internal sealed partial class WebShellController
         }
 
         bool sidechain = string.Equals(kind, "sidechain", StringComparison.OrdinalIgnoreCase);
+        bool barge = string.Equals(kind, "barge-key", StringComparison.OrdinalIgnoreCase);
         if (sidechain &&
             ((from.Source == null && from.Modifier == null) || to.Modifier == null ||
              !to.Modifier.Processors.Any(SidechainRouting.Supports)))
@@ -2061,22 +2133,41 @@ internal sealed partial class WebShellController
             return;
         }
 
+        if (barge && (from.Modifier == null ||
+                      !from.Modifier.Processors.Any(processor => processor is TranscriptionProcessor or TranslatorProcessor) ||
+                      to.Source?.Kind != SourceKind.Tts))
+        {
+            SetStatus("Connect a transcriber or translator output to a TTS key input.", isError: true);
+            return;
+        }
+
+        if (barge && string.Equals(to.TtsSourceNodeId, from.Id, StringComparison.Ordinal))
+        {
+            SetStatus("A TTS node cannot use its own text source as a barge-in key.", isError: true);
+            return;
+        }
+
         if (_links.Any(link => link.From == fromId && link.To == toId &&
-                               (sidechain
-                                   ? link.Kind == "sidechain"
-                                   : link.Kind != "sidechain")))
+                               (barge
+                                   ? link.Kind == "barge-key"
+                                   : sidechain
+                                       ? link.Kind == "sidechain"
+                                       : link.Kind != "sidechain" && link.Kind != "barge-key")))
         {
             SetStatus("Those nodes are already connected.", isError: true);
             return;
         }
 
-        var link = ConnectEntries(from, to, gain: gain, publish: false, kind: sidechain ? "sidechain" : null);
+        var link = ConnectEntries(from, to, gain: gain, publish: false,
+            kind: barge ? "barge-key" : sidechain ? "sidechain" : null);
         link.Enabled = enabled;
         ApplyLinkRouting(link, publish: false);
         PushConnect(link);
-        SetStatus(sidechain
-            ? $"Connected {from.Title} as a sidechain key."
-            : $"Connected {from.Title} to {to.Title}.");
+        SetStatus(barge
+            ? $"Connected {from.Title} as a TTS barge-in key."
+            : sidechain
+                ? $"Connected {from.Title} as a sidechain key."
+                : $"Connected {from.Title} to {to.Title}.");
         PublishGraph();
     }
 
@@ -2088,7 +2179,12 @@ internal sealed partial class WebShellController
             _graph.AddOutputNode(to.Output);
         }
 
-        if (kind == "sidechain")
+        if (kind == "barge-key")
+        {
+            // Control-only cable: speech activity from the producer stops the
+            // connected TTS; nothing is routed through the audio graph.
+        }
+        else if (kind == "sidechain")
         {
             if (to.Modifier == null ||
                 !to.Modifier.Processors.Any(SidechainRouting.Supports))

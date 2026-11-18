@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Windows.Threading;
 using Ruse.App.Audio;
 
 namespace Ruse.App;
@@ -179,6 +180,13 @@ internal sealed partial class WebShellController
         }
 
         entry.TtsSourceNodeId = string.IsNullOrWhiteSpace(sourceNodeId) ? null : sourceNodeId;
+        foreach (var link in _links.Where(link =>
+                     link.Kind == "barge-key" &&
+                     link.To == entry.Id &&
+                     string.Equals(link.From, entry.TtsSourceNodeId, StringComparison.Ordinal)).ToList())
+        {
+            RemoveLinkInternal(link);
+        }
         entry.TtsSpokenLength = 0;
         entry.TtsStatus = TtsModels.IsInstalled(entry.TtsModel ?? _settings.TtsModel) ? "Ready" : "No model installed";
         PublishGraph();
@@ -268,7 +276,111 @@ internal sealed partial class WebShellController
         PublishTelemetry(force: true);
     }
 
-    private async Task SpeakTtsAsync(NodeEntry entry, string text)
+    private void JumpTtsToLatest(string id)
+    {
+        if (!TryGetTts(id, out var entry))
+        {
+            return;
+        }
+
+        string text = !string.IsNullOrWhiteSpace(entry.TtsSourceNodeId) &&
+                      TextFromSource(entry.TtsSourceNodeId) is { } source
+            ? source.Text
+            : entry.TtsText ?? "";
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        var clauses = SpeechText.Clauses(text);
+        string latest = clauses.Count > 0 ? clauses[^1] : text.Trim();
+        if (latest.Length == 0)
+        {
+            return;
+        }
+
+        entry.TtsGenerationCancel?.Cancel();
+        entry.TtsGenerating = false;
+        entry.Source?.Stop();
+        entry.TtsSpokenLength = text.Length;
+        entry.TtsText = text;
+        entry.TtsStatus = "Ready";
+        PublishGraph();
+        PublishTelemetry(force: true);
+        _ = SpeakTtsAsync(entry, latest, entry.TtsSpeed);
+        SetStatus("Jumped to the latest text.");
+    }
+
+    private async Task SpeakStreamingTtsAsync(NodeEntry entry, string modelId, string text, float? speedOverride)
+    {
+        if (entry.Source == null) return;
+        var cancel = new CancellationTokenSource();
+        entry.TtsGenerationCancel?.Cancel();
+        entry.TtsGenerationCancel = cancel;
+        entry.TtsGenerating = true;
+        entry.TtsStatus = "Generating";
+        entry.TtsModel = modelId;
+        entry.Source.StartTtsStream();
+        PublishGraph();
+
+        try
+        {
+            await using var provider = StreamingTtsProviders.Create(modelId);
+            float speed = Math.Clamp(speedOverride ?? entry.TtsSpeed, 0.5f, 2f);
+            var clauses = SpeechText.Clauses(text);
+            if (clauses.Count == 0) clauses.Add(text.Trim());
+            foreach (string clause in clauses)
+            {
+                cancel.Token.ThrowIfCancellationRequested();
+                await provider.StreamAsync(
+                    clause,
+                    speed,
+                    entry.TtsVoice,
+                    (samples, frames) =>
+                    {
+                        if (cancel.IsCancellationRequested ||
+                            _disposed ||
+                            !ReferenceEquals(entry.TtsGenerationCancel, cancel) ||
+                            !_nodes.TryGetValue(entry.Id, out var current) ||
+                            current.Source == null)
+                        {
+                            return;
+                        }
+                        current.Source.EnqueueTtsSamples(samples.AsSpan(0, frames * 2));
+                    },
+                    cancel.Token);
+            }
+            if (_nodes.TryGetValue(entry.Id, out var node) && node.Source != null)
+            {
+                node.Source.CompleteTtsStream();
+                node.TtsGenerating = false;
+                node.TtsStatus = "Speaking";
+                PublishGraph();
+                PublishTelemetry(force: true);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            if (_nodes.TryGetValue(entry.Id, out var node))
+            {
+                node.TtsGenerating = false;
+                node.TtsStatus = "Error: " + ex.Message;
+                node.Source?.CompleteTtsStream();
+            }
+            PublishGraph();
+            SetStatus("Text-to-speech failed: " + ex.Message, isError: true);
+        }
+        finally
+        {
+            if (ReferenceEquals(entry.TtsGenerationCancel, cancel)) entry.TtsGenerationCancel = null;
+            cancel.Dispose();
+        }
+    }
+
+    private async Task SpeakTtsAsync(NodeEntry entry, string text, float? speedOverride = null)
     {
         if (entry.TtsGenerating)
         {
@@ -294,14 +406,19 @@ internal sealed partial class WebShellController
             return;
         }
 
-        var sentences = SentenceSplitter.Split(text, 0, 1)
-            .Select(cue => cue.Text.Trim())
-            .Where(sentence => sentence.Length > 0)
-            .ToList();
-        if (sentences.Count == 0)
+        if (TtsModels.Find(modelId)?.Family is "kokoro-sharp" or "piper")
         {
-            sentences.Add(text.Trim());
+            await SpeakStreamingTtsAsync(entry, modelId, text, speedOverride);
+            return;
         }
+
+        var clauses = SpeechText.Clauses(text);
+        if (clauses.Count == 0)
+        {
+            clauses.Add(text.Trim());
+        }
+
+        float speed = Math.Clamp(speedOverride ?? entry.TtsSpeed, 0.5f, 2f);
 
         var cancel = new CancellationTokenSource();
         entry.TtsGenerationCancel?.Cancel();
@@ -314,8 +431,8 @@ internal sealed partial class WebShellController
         {
             string firstPath = await TtsSynthesis.SynthesizeAsync(
                 modelId,
-                sentences[0],
-                entry.TtsSpeed,
+                clauses[0],
+                speed,
                 entry.TtsVoice,
                 cancel.Token);
             if (_disposed || !_nodes.TryGetValue(entry.Id, out var current) || current.Source == null)
@@ -332,7 +449,7 @@ internal sealed partial class WebShellController
             PublishGraph();
             PublishTelemetry(force: true);
 
-            for (int index = 1; index < sentences.Count; index++)
+            for (int index = 1; index < clauses.Count; index++)
             {
                 // Keep one sentence buffered: synthesize the next sentence while
                 // the previous one is playing, but do not run the whole text
@@ -346,8 +463,8 @@ internal sealed partial class WebShellController
                 cancel.Token.ThrowIfCancellationRequested();
                 string path = await TtsSynthesis.SynthesizeAsync(
                     modelId,
-                    sentences[index],
-                    entry.TtsSpeed,
+                    clauses[index],
+                    speed,
                     entry.TtsVoice,
                     cancel.Token);
                 if (cancel.IsCancellationRequested ||
@@ -392,8 +509,11 @@ internal sealed partial class WebShellController
         }
     }
 
+    private sealed record TtsSourceState(string Text);
+
     private void PollTtsSources()
     {
+        bool publishReadyStatus = false;
         foreach (var entry in _nodes.Values.Where(entry => entry.Source?.Kind == SourceKind.Tts).ToList())
         {
             if (entry.Source == null)
@@ -401,9 +521,12 @@ internal sealed partial class WebShellController
                 continue;
             }
 
+            if (IsBargeInHeld(entry)) continue;
+
             if (!entry.Source.IsRunning && string.Equals(entry.TtsStatus, "Speaking", StringComparison.OrdinalIgnoreCase))
             {
                 entry.TtsStatus = "Ready";
+                publishReadyStatus = true;
             }
 
             if (entry.TtsGenerating || entry.Source.IsRunning ||
@@ -412,12 +535,13 @@ internal sealed partial class WebShellController
                 continue;
             }
 
-            string? text = TextFromSource(entry.TtsSourceNodeId);
-            if (text == null)
+            var source = TextFromSource(entry.TtsSourceNodeId);
+            if (source == null)
             {
                 continue;
             }
 
+            string text = source.Text;
             if (text.Length < entry.TtsSpokenLength)
             {
                 entry.TtsSpokenLength = 0;
@@ -433,12 +557,17 @@ internal sealed partial class WebShellController
             entry.TtsText = text;
             if (suffix.Length >= 2)
             {
-                _ = SpeakTtsAsync(entry, suffix);
+                _ = SpeakTtsAsync(entry, suffix, entry.TtsSpeed);
             }
+        }
+
+        if (publishReadyStatus)
+        {
+            PublishGraph();
         }
     }
 
-    private string? TextFromSource(string nodeId)
+    private TtsSourceState? TextFromSource(string nodeId)
     {
         if (!_nodes.TryGetValue(nodeId, out var producer) || producer.Modifier == null)
         {
@@ -447,12 +576,16 @@ internal sealed partial class WebShellController
 
         if (producer.Modifier.Processors.OfType<TranscriptionProcessor>().FirstOrDefault() is { } transcriber)
         {
-            return TranscriptionRegistry.Snapshot(transcriber.TapId)?.Transcript ?? "";
+            var snapshot = TranscriptionRegistry.Snapshot(transcriber.TapId, includeCues: true);
+            if (snapshot == null) return null;
+            return new TtsSourceState(snapshot.Transcript);
         }
 
         if (producer.Modifier.Processors.OfType<TranslatorProcessor>().FirstOrDefault() is { } translator)
         {
-            return TranslationRegistry.Snapshot(translator.TapId)?.TranslatedText ?? "";
+            var snapshot = TranslationRegistry.Snapshot(translator.TapId, includeCues: true);
+            if (snapshot == null) return null;
+            return new TtsSourceState(snapshot.TranslatedText);
         }
 
         return null;
@@ -472,6 +605,125 @@ internal sealed partial class WebShellController
             })
             .OrderBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    private void OnSpeechStarted(int tapId)
+    {
+        if (_disposed) return;
+        try
+        {
+            _window.Dispatcher.BeginInvoke(() => HandleBargeIn(tapId), DispatcherPriority.Background);
+        }
+        catch
+        {
+        }
+    }
+
+    private void OnSpeechEnded(int tapId)
+    {
+        if (_disposed) return;
+        try
+        {
+            _window.Dispatcher.BeginInvoke(() => _speechTaps.Remove(tapId), DispatcherPriority.Background);
+        }
+        catch
+        {
+        }
+    }
+
+    private void HandleBargeIn(int tapId)
+    {
+        if (_disposed) return;
+        _speechTaps.Add(tapId);
+        long now = Environment.TickCount64;
+        if (now - _lastBargeInTick < 250) return;
+        _lastBargeInTick = now;
+
+        foreach (var entry in _nodes.Values.Where(entry => entry.Source?.Kind == SourceKind.Tts).ToList())
+        {
+            if (IsBargeKeyLinked(entry, tapId) &&
+                (entry.TtsGenerating || entry.Source?.IsRunning == true))
+            {
+                StopTts(entry.Id);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Barge-in is opt-in: only a transcriber/translator connected to the TTS
+    /// key input may stop it. No key cable means no automatic interruption.
+    /// </summary>
+    private bool IsBargeInHeld(NodeEntry tts) =>
+        _speechTaps.Any(tapId => IsBargeKeyLinked(tts, tapId));
+
+    private bool IsBargeKeyLinked(NodeEntry tts, int tapId)
+    {
+        NodeEntry? producer = _nodes.Values.FirstOrDefault(entry =>
+            entry.Modifier?.Processors.Any(processor =>
+                processor is TranscriptionProcessor transcriber && transcriber.TapId == tapId ||
+                processor is TranslatorProcessor translator && translator.TapId == tapId) == true);
+        return producer != null &&
+               !string.Equals(tts.TtsSourceNodeId, producer.Id, StringComparison.Ordinal) &&
+               _links.Any(link => link.Enabled &&
+                   link.Kind == "barge-key" &&
+                   link.From == producer.Id &&
+                   link.To == tts.Id);
+    }
+
+    private async void DownloadVoskModel()
+    {
+        if (_voskDownloadCancel != null)
+        {
+            SetStatus("The Vosk model is already downloading.", isError: true);
+            return;
+        }
+
+        var cancel = new CancellationTokenSource();
+        _voskDownloadCancel = cancel;
+        var progress = new Progress<VoskModelProgress>(PublishVoskProgress);
+        try
+        {
+            await VoskModels.DownloadAsync(progress, cancel.Token);
+            SetStatus("Vosk model installed.");
+        }
+        catch (OperationCanceledException)
+        {
+            SetStatus("Vosk model download cancelled.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Vosk model download failed: " + ex.Message, isError: true);
+        }
+        finally
+        {
+            _voskDownloadCancel = null;
+            cancel.Dispose();
+            PublishSettings();
+        }
+    }
+
+    private void PublishVoskProgress(VoskModelProgress progress)
+    {
+        _voskDownload = progress;
+        long now = Environment.TickCount64;
+        bool terminal = progress.Phase is "done" or "error" or "cancelled";
+        if (!terminal && now - _lastVoskPublish < 100) return;
+        _lastVoskPublish = now;
+        PublishSettings();
+    }
+
+    private void DeleteVoskModel()
+    {
+        try
+        {
+            VoskModels.Delete();
+            PublishSettings();
+            SetStatus("Vosk model deleted.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus("Could not delete the Vosk model: " + ex.Message, isError: true);
+        }
     }
 
     private static void TryDelete(string path)

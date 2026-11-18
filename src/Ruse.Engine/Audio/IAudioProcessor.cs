@@ -282,6 +282,12 @@ public static class AudioProcessorCatalog
             "Ducks this route when a separate key source passes the threshold.",
             () => new SidechainDuckerProcessor()));
 
+        Register(new Descriptor(
+            HearingProfileProcessor.Id,
+            "Hearing profile",
+            "Per-ear EQ and gain, monitor delay, loudness matching and a safety limiter.",
+            () => new HearingProfileProcessor()));
+
         NaudioEffects.RegisterAll();
     }
 
