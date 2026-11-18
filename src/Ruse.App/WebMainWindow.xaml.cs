@@ -252,11 +252,16 @@ public partial class WebMainWindow : Window
         Hide();
     }
 
-    private void ApplyTrayDecision(bool keep)
+    private void ApplyTrayDecision(bool? keep)
     {
         _trayPromptOpen = false;
-        _controller.SaveTrayPreference(keep);
-        if (keep)
+        if (keep is not bool decision)
+        {
+            return;
+        }
+
+        _controller.SaveTrayPreference(decision);
+        if (decision)
         {
             CreateTrayIcon();
             if (_tray != null)

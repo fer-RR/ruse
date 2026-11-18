@@ -76,55 +76,77 @@ public sealed class TtsAudioCapture : IDisposable
         using var mmcss = MmcssScope.Enter();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long produced = 0;
-        while (!_stop)
+        try
         {
-            long due = (long)(clock.Elapsed.TotalSeconds * _sampleRate);
-            if (produced >= due)
+            while (!_stop)
             {
-                Thread.Sleep(1);
-                continue;
-            }
-
-            int frames = (int)Math.Min(_framesPerBlock, Math.Max(1, due - produced));
-            int samples = frames * _channels;
-            int offset = 0;
-            while (offset < samples && !_stop)
-            {
-                if (_reader == null && !TryOpenNext())
+                long due = (long)(clock.Elapsed.TotalSeconds * _sampleRate);
+                if (produced >= due)
                 {
-                    if (_complete)
+                    Thread.Sleep(1);
+                    continue;
+                }
+
+                int frames = (int)Math.Min(_framesPerBlock, Math.Max(1, due - produced));
+                int samples = frames * _channels;
+                int offset = 0;
+                while (offset < samples && !_stop)
+                {
+                    if (_reader == null && !TryOpenNext())
                     {
-                        _ended = true;
-                        _thread = null;
-                        return;
+                        if (_complete)
+                        {
+                            return;
+                        }
+
+                        // The next sentence is still being generated. Keep the
+                        // source alive and let the engine underrun rather than
+                        // tearing down the node.
+                        Thread.Sleep(5);
+                        continue;
                     }
 
-                    // The next sentence is still being generated. Keep the
-                    // source alive and let the engine underrun rather than
-                    // tearing down the node.
-                    Thread.Sleep(5);
-                    continue;
+                    int read = _reader!.Read(_samples.AsSpan(offset, samples - offset));
+                    if (read <= 0)
+                    {
+                        CloseCurrent();
+                        continue;
+                    }
+
+                    offset += read;
                 }
 
-                int read = _reader!.Read(_samples.AsSpan(offset, samples - offset));
-                if (read <= 0)
+                if (offset < samples)
                 {
-                    CloseCurrent();
-                    continue;
+                    Array.Clear(_samples, offset, samples - offset);
                 }
 
-                offset += read;
+                Buffer.BlockCopy(_samples, 0, _bytes, 0, samples * sizeof(float));
+                _packetArgs.Set(_bytes, samples * sizeof(float));
+                DataAvailable?.Invoke(this, _packetArgs);
+                produced += frames;
             }
-
-            if (offset < samples)
+        }
+        catch (ObjectDisposedException)
+        {
+            // Stop() raced the reader, or the owner is shutting down.
+        }
+        catch (InvalidOperationException) when (_stop)
+        {
+        }
+        finally
+        {
+            CloseCurrent();
+            lock (_sync)
             {
-                Array.Clear(_samples, offset, samples - offset);
+                while (_files.Count > 0)
+                {
+                    TryDelete(_files.Dequeue());
+                }
             }
 
-            Buffer.BlockCopy(_samples, 0, _bytes, 0, samples * sizeof(float));
-            _packetArgs.Set(_bytes, samples * sizeof(float));
-            DataAvailable?.Invoke(this, _packetArgs);
-            produced += frames;
+            _ended = true;
+            _thread = null;
         }
     }
 
@@ -195,9 +217,18 @@ public sealed class TtsAudioCapture : IDisposable
         _stop = true;
         Thread? thread = _thread;
         _thread = null;
-        if (thread != null && thread.IsAlive && thread != Thread.CurrentThread)
+        bool stopped = thread == null || !thread.IsAlive || thread == Thread.CurrentThread;
+        if (!stopped)
         {
-            thread.Join(500);
+            stopped = thread!.Join(500);
+        }
+
+        if (!stopped)
+        {
+            // The pump is blocked inside Read. Let it own the reader and clean
+            // up in its finally block instead of disposing underneath it.
+            _ended = true;
+            return;
         }
 
         string? current = _currentPath;

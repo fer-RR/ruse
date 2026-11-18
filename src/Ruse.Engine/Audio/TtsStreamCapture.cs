@@ -11,6 +11,7 @@ public sealed class TtsStreamCapture : IDisposable
     private const int SampleRate = 48000;
     private const int Channels = 2;
     private const int FramesPerBlock = SampleRate * 5 / 1000;
+    private const int MaxQueuedFrames = SampleRate * 30;
 
     private readonly object _sync = new();
     private readonly Queue<float[]> _pending = new();
@@ -34,25 +35,54 @@ public sealed class TtsStreamCapture : IDisposable
     public bool IsRunning => _thread is { IsAlive: true } && !_ended;
     public int QueuedFrames { get { lock (_sync) return _queuedFrames; } }
 
-    public void Enqueue(ReadOnlySpan<float> samples)
+    public bool Enqueue(ReadOnlySpan<float> samples, CancellationToken token = default)
     {
-        if (samples.IsEmpty) return;
+        if (samples.IsEmpty) return false;
         int frames = samples.Length / Channels;
-        if (frames <= 0) return;
+        if (frames <= 0) return false;
         var copy = samples[..(frames * Channels)].ToArray();
         lock (_sync)
         {
+            while (_queuedFrames + frames > MaxQueuedFrames && !_stop && !_ended)
+            {
+                token.ThrowIfCancellationRequested();
+                Monitor.Wait(_sync, 50);
+                token.ThrowIfCancellationRequested();
+            }
+
+            if (_stop || _ended)
+            {
+                return false;
+            }
+
             _pending.Enqueue(copy);
             _queuedFrames += frames;
+            return true;
         }
     }
 
-    public void Complete() => _complete = true;
+    public void Complete()
+    {
+        _complete = true;
+        lock (_sync)
+        {
+            Monitor.PulseAll(_sync);
+        }
+    }
 
     public void Start()
     {
         if (_thread != null) return;
+        lock (_sync)
+        {
+            _pending.Clear();
+            _current = null;
+            _currentOffset = 0;
+            _queuedFrames = 0;
+        }
+
         _stop = false;
+        _complete = false;
         _ended = false;
         _started = false;
         _thread = new Thread(Pump) { IsBackground = true, Name = "TtsStreamPump" };
@@ -110,6 +140,7 @@ public sealed class TtsStreamCapture : IDisposable
                 }
 
                 _queuedFrames = Math.Max(0, _queuedFrames - (offset / Channels));
+                Monitor.PulseAll(_sync);
                 if (offset < samples && _complete && _pending.Count == 0 && _current == null)
                 {
                     _ended = true;
@@ -142,6 +173,7 @@ public sealed class TtsStreamCapture : IDisposable
             _current = null;
             _currentOffset = 0;
             _queuedFrames = 0;
+            Monitor.PulseAll(_sync);
         }
 
         _ended = true;

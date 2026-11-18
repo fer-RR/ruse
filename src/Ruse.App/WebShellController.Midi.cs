@@ -129,6 +129,13 @@ internal sealed partial class WebShellController
                 continue;
             }
 
+            float min = ClampMidiBound(binding.Min, parameter, isMin: true);
+            float max = ClampMidiBound(binding.Max, parameter, isMin: false);
+            if (min > max)
+            {
+                (min, max) = (max, min);
+            }
+
             if (message.Kind == MidiInputKind.Note)
             {
                 if (parameter.IsToggle)
@@ -142,7 +149,7 @@ internal sealed partial class WebShellController
                     continue;
                 }
 
-                parameter.Set(message.Value > 0 ? binding.Max : binding.Min);
+                parameter.Set(message.Value > 0 ? max : min);
             }
             else if (parameter.IsToggle)
             {
@@ -151,7 +158,7 @@ internal sealed partial class WebShellController
             else
             {
                 float normalized = Math.Clamp(message.Value / 127f, 0f, 1f);
-                parameter.Set(binding.Min + (binding.Max - binding.Min) * normalized);
+                parameter.Set(min + (max - min) * normalized);
             }
 
             QueueMidiParameter(binding);
@@ -290,6 +297,14 @@ internal sealed partial class WebShellController
                 continue;
             }
 
+            var parameter = parameterized.Parameters[saved.ParameterIndex];
+            float min = ClampMidiBound(saved.Min, parameter, isMin: true);
+            float max = ClampMidiBound(saved.Max, parameter, isMin: false);
+            if (min > max)
+            {
+                (min, max) = (max, min);
+            }
+
             _midiBindings.Add(new MidiBindingEntry
             {
                 NodeId = modifier.Id,
@@ -300,10 +315,16 @@ internal sealed partial class WebShellController
                     ? MidiInputKind.Note
                     : MidiInputKind.ControlChange,
                 Number = saved.Number,
-                Min = saved.Min,
-                Max = saved.Max,
+                Min = min,
+                Max = max,
             });
         }
+    }
+
+    private static float ClampMidiBound(float value, AudioParameter parameter, bool isMin)
+    {
+        float fallback = isMin ? parameter.Min : parameter.Max;
+        return float.IsFinite(value) ? Math.Clamp(value, parameter.Min, parameter.Max) : fallback;
     }
 
     private void FlushMidiParameterChanges()

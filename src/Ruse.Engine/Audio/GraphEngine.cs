@@ -253,11 +253,16 @@ internal sealed class GraphEngine : IDisposable
             }
             else
             {
-                old.Dispose();
-                if (afterDrain != null)
+                // Disposing the old graph may join tap workers. Never do that
+                // while the UI thread holds _sync; hand it to the pool.
+                ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    old.Retire(afterDrain);
-                }
+                    old.Dispose();
+                    if (afterDrain != null)
+                    {
+                        old.Retire(afterDrain);
+                    }
+                });
             }
 
             _wake.Set();

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using NAudio.CoreAudioApi;
 using Ruse.App.Audio;
@@ -295,8 +296,32 @@ internal sealed partial class WebShellController
         return preset;
     }
 
-    private void ApplyPreset(Preset preset, bool autoRun, bool insert = false, double offsetX = 0, double offsetY = 0, bool trustRecorderPaths = false)
+    private bool ApplyPreset(Preset preset, bool autoRun, bool insert = false, double offsetX = 0, double offsetY = 0, bool trustRecorderPaths = false)
     {
+        var validation = PresetValidator.Validate(preset);
+        foreach (string warning in validation.Warnings)
+        {
+            AppLog.Warning("Preset: " + warning);
+        }
+
+        if (!validation.Ok)
+        {
+            SetStatus("Could not load the preset: " + string.Join(" ", validation.Errors), isError: true);
+            return false;
+        }
+
+        preset = validation.Preset;
+        if (insert)
+        {
+            bool collision = preset.Sources.Any(item => _nodes.ContainsKey(item.Id)) ||
+                preset.Frames.Any(item => _frames.Any(frame => string.Equals(frame.Id, item.Id, StringComparison.Ordinal)));
+            if (collision)
+            {
+                SetStatus("Could not insert the template: it reuses a node id already on the canvas.", isError: true);
+                return false;
+            }
+        }
+
         if (!insert)
         {
             ClearGraph();
@@ -330,9 +355,29 @@ internal sealed partial class WebShellController
             try
             {
                 var kind = Enum.TryParse<SourceKind>(saved.Kind, out var parsed) ? parsed : SourceKind.Application;
-                RestoreFrozenProxyPath(saved.FilePath);
-                var source = new SourceNode(saved.Title, kind, saved.ProcessId, saved.DeviceId,
-                    processName: saved.ProcessName, filePath: saved.FilePath, fileLoop: saved.FileLoop,
+                uint? processId = saved.ProcessId;
+                if (kind == SourceKind.Application)
+                {
+                    processId = ResolveApplicationProcess(processId, saved.ProcessName);
+                    if (processId == null)
+                    {
+                        sources.Add(null);
+                        AppLog.Warning(
+                            $"Skipped application source '{saved.Title}': '{saved.ProcessName}' is not running.");
+                        continue;
+                    }
+                }
+
+                string? sourcePath = saved.FilePath;
+                if (!string.IsNullOrWhiteSpace(sourcePath) && !TrustedPath.IsLocalFile(sourcePath))
+                {
+                    AppLog.Warning($"Skipped untrusted file path for source '{saved.Title}'.");
+                    sourcePath = null;
+                }
+
+                RestoreFrozenProxyPath(sourcePath);
+                var source = new SourceNode(saved.Title, kind, processId, saved.DeviceId,
+                    processName: saved.ProcessName, filePath: sourcePath, fileLoop: saved.FileLoop,
                     id: saved.Id);
                 if (saved.IsMetronome)
                 {
@@ -401,6 +446,15 @@ internal sealed partial class WebShellController
                 string? micHint = null;
                 if (saved.IsNetwork)
                 {
+                    if (!trustRecorderPaths)
+                    {
+                        // A preset is an untrusted document; do not silently
+                        // send audio to a network address it chose.
+                        outputs.Add(null);
+                        AppLog.Warning($"Skipped network output '{saved.Title}' from an imported preset.");
+                        continue;
+                    }
+
                     output = OutputNode.CreateForNetwork(saved.NetworkHost ?? "127.0.0.1", saved.NetworkPort);
                 }
                 else if (saved.IsFile)
@@ -698,6 +752,87 @@ internal sealed partial class WebShellController
             _running = false;
             PublishGraph();
         }
+
+        return true;
+    }
+
+    private static uint? ResolveApplicationProcess(uint? savedPid, string? processName)
+    {
+        if (string.IsNullOrWhiteSpace(processName))
+        {
+            return savedPid;
+        }
+
+        if (savedPid is uint pid)
+        {
+            try
+            {
+                using var process = Process.GetProcessById((int)pid);
+                if (string.Equals(process.ProcessName, processName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return pid;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        try
+        {
+            var session = AudioSessionEnumerator.GetRenderSessions()
+                .FirstOrDefault(item => string.Equals(
+                    item.ProcessName, processName, StringComparison.OrdinalIgnoreCase));
+            if (session != null)
+            {
+                return session.ProcessId;
+            }
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            var matches = Process.GetProcessesByName(processName);
+            try
+            {
+                var windowed = matches
+                    .Where(process =>
+                    {
+                        try
+                        {
+                            return !string.IsNullOrWhiteSpace(process.MainWindowTitle);
+                        }
+                        catch
+                        {
+                            return false;
+                        }
+                    })
+                    .ToList();
+                if (windowed.Count == 1)
+                {
+                    return (uint)windowed[0].Id;
+                }
+
+                if (matches.Length == 1)
+                {
+                    return (uint)matches[0].Id;
+                }
+            }
+            finally
+            {
+                foreach (var process in matches)
+                {
+                    process.Dispose();
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 
     private void RestoreNativePassthrough(IEnumerable<NodeEntry?> outputs)
@@ -737,8 +872,13 @@ internal sealed partial class WebShellController
             return;
         }
 
-        Directory.CreateDirectory(AppSettings.Directory);
-        File.WriteAllText(AppSettings.SessionPath, BuildPreset().ToJson());
+        if (!AtomicFile.TryWriteAllText(AppSettings.SessionPath, BuildPreset().ToJson(), out string error))
+        {
+            AppLog.Warning("Could not save the session: " + error);
+            SetStatus("Could not save the session: " + error, isError: true);
+            return;
+        }
+
         MarkGeneratedTimelineFilesSaved();
     }
 
@@ -746,18 +886,36 @@ internal sealed partial class WebShellController
     {
         try
         {
-            if (!File.Exists(AppSettings.SessionPath))
+            string path = AppSettings.SessionPath;
+            string backup = path + ".bak";
+            if (!File.Exists(path) && !File.Exists(backup))
             {
                 PublishGraph();
                 return;
             }
 
-            ApplyPreset(Preset.FromJson(File.ReadAllText(AppSettings.SessionPath)), autoRun: false,
-                trustRecorderPaths: true);
+            Preset preset;
+            try
+            {
+                preset = Preset.FromJson(File.ReadAllText(File.Exists(path) ? path : backup));
+            }
+            catch (Exception primary) when (File.Exists(backup))
+            {
+                AppLog.Warning($"Could not read the last session, trying the backup: {primary.Message}");
+                preset = Preset.FromJson(File.ReadAllText(backup));
+            }
+
+            if (!ApplyPreset(preset, autoRun: false, trustRecorderPaths: true))
+            {
+                PublishGraph();
+                return;
+            }
+
             SetStatus("Restored last session — routing is idle.");
         }
         catch (Exception ex)
         {
+            PublishGraph();
             ShowError("Could not restore the last session: " + ex.Message, ex);
         }
     }
@@ -789,10 +947,18 @@ internal sealed partial class WebShellController
             Title = "Save routing preset",
             Filter = "Ruse preset (*.ruse.json)|*.ruse.json|JSON (*.json)|*.json|All files (*.*)|*.*",
             FileName = "routing.ruse.json",
+            DefaultExt = "json",
+            AddExtension = true,
+            InitialDirectory = RuseFolders.Ensure(RuseFolders.Presets),
         };
         if (dialog.ShowDialog(_window) != true) return;
 
-        File.WriteAllText(dialog.FileName, BuildPreset().ToJson());
+        if (!AtomicFile.TryWriteAllText(dialog.FileName, BuildPreset().ToJson(), out string saveError))
+        {
+            SetStatus("Could not save the preset: " + saveError, isError: true);
+            return;
+        }
+
         MarkGeneratedTimelineFilesSaved();
         SetStatus($"Preset saved: {Path.GetFileName(dialog.FileName)}");
     }
@@ -803,11 +969,28 @@ internal sealed partial class WebShellController
         {
             Title = "Load routing preset",
             Filter = "Ruse preset (*.ruse.json)|*.ruse.json|JSON (*.json)|*.json|All files (*.*)|*.*",
+            CheckFileExists = true,
+            InitialDirectory = RuseFolders.Ensure(RuseFolders.Presets),
         };
         if (dialog.ShowDialog(_window) != true) return;
 
+        Preset preset;
+        try
+        {
+            preset = Preset.FromJson(File.ReadAllText(dialog.FileName));
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not read the preset: " + ex.Message, ex);
+            return;
+        }
+
+        if (!ApplyPreset(preset, autoRun: false))
+        {
+            return;
+        }
+
         ClearHistory();
-        ApplyPreset(Preset.FromJson(File.ReadAllText(dialog.FileName)), autoRun: false);
         SetStatus($"Preset loaded: {Path.GetFileName(dialog.FileName)}. Press Start routing to run it.");
     }
 
@@ -836,6 +1019,8 @@ internal sealed partial class WebShellController
             _ => "dark",
         };
         _settings.UiScale = ClampUiScale(settings.UiScale);
+        string motionMode = (settings.MotionMode ?? "system").ToLowerInvariant();
+        _settings.MotionMode = motionMode is "reduced" or "full" ? motionMode : "system";
         ApplyWindowTheme();
         ApplyUiScale();
         _settings.StartRoutingOnLaunch = settings.StartRoutingOnLaunch;
@@ -1311,6 +1496,7 @@ internal sealed partial class WebShellController
             DefaultExt = "srt",
             AddExtension = true,
             FilterIndex = 1,
+            InitialDirectory = RuseFolders.Ensure(RuseFolders.Exports),
         };
         if (dialog.ShowDialog(_window) != true) return;
 
@@ -1647,6 +1833,7 @@ internal sealed partial class WebShellController
             DefaultExt = "srt",
             AddExtension = true,
             FilterIndex = 1,
+            InitialDirectory = RuseFolders.Ensure(RuseFolders.Exports),
         };
         if (dialog.ShowDialog(_window) != true) return;
 

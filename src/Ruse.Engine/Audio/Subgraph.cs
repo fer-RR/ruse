@@ -61,7 +61,7 @@ public sealed class SubgraphDefinition
 
             if (instance is IImpulseResponseProcessor impulseResponse &&
                 !string.IsNullOrWhiteSpace(element.IrPath) &&
-                IsTrustedIrPath(element.IrPath))
+                TrustedPath.IsLocalFile(element.IrPath))
             {
                 try
                 {
@@ -75,7 +75,7 @@ public sealed class SubgraphDefinition
 
             if (instance is INoiseProfileProcessor noiseProfile &&
                 !string.IsNullOrWhiteSpace(element.NoiseProfilePath) &&
-                IsTrustedIrPath(element.NoiseProfilePath))
+                TrustedPath.IsLocalFile(element.NoiseProfilePath))
             {
                 try
                 {
@@ -109,11 +109,6 @@ public sealed class SubgraphDefinition
 
         return processor;
     }
-
-    private static bool IsTrustedIrPath(string path) =>
-        Path.IsPathFullyQualified(path) &&
-        !path.StartsWith(@"\\", StringComparison.Ordinal) &&
-        !path.StartsWith("//", StringComparison.Ordinal);
 
     /// <summary>Captures the current state of a chain processor.</summary>
     public static SubgraphDefinition FromProcessor(ChainProcessor processor)
@@ -266,13 +261,9 @@ public static class SubgraphLibrary
 
     public static void Save()
     {
-        try
+        if (!AtomicFile.TryWriteAllText(LibraryPath, JsonSerializer.Serialize(_chains, Options), out string error))
         {
-            Directory.CreateDirectory(AppSettings.Directory);
-            File.WriteAllText(LibraryPath, JsonSerializer.Serialize(_chains, Options));
-        }
-        catch
-        {
+            Ruse.App.Diagnostics.AppLog.Warning("Could not save effect chains: " + error);
         }
     }
 

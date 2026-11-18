@@ -127,7 +127,21 @@ internal static class VoskModels
 
     public static void Delete()
     {
-        if (Directory.Exists(PathFor)) Directory.Delete(PathFor, true);
+        VoskModelCache.Delete();
+        DeleteFiles();
+    }
+
+    internal static void DeleteFiles()
+    {
+        try
+        {
+            if (Directory.Exists(PathFor)) Directory.Delete(PathFor, true);
+            if (Directory.Exists(Root)) Directory.Delete(Root, true);
+        }
+        catch
+        {
+            // The cache retries after the last active recognizer releases it.
+        }
     }
 
     private static void TryDelete(string path)

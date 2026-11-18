@@ -76,6 +76,7 @@ export default function TimelinePanel({
   onAddMarker,
   onUpdateMarker,
   onRemoveMarker,
+  onCopyClips,
   onPasteClips,
   onNormalizeClip,
   onReverseClip,
@@ -128,7 +129,8 @@ export default function TimelinePanel({
   onAddMarker: (startSample: number, endSample?: number | null) => void;
   onUpdateMarker: (id: string, name: string) => void;
   onRemoveMarker: (id: string) => void;
-  onPasteClips: (clips: { trackId: string; clipId: string; startSample: number }[]) => void;
+  onCopyClips: (clips: { trackId: string; clipId: string }[]) => void;
+  onPasteClips: (placements: { trackId: string; startSample: number }[]) => void;
   onNormalizeClip: (trackId: string, clipId: string) => void;
   onReverseClip: (trackId: string, clipId: string) => void;
   onConsolidateClips: (clips: { trackId: string; clipId: string }[]) => void;
@@ -203,6 +205,8 @@ export default function TimelinePanel({
   const [clipMenu, setClipMenu] = useState<{ x: number; y: number; trackId: string; clipId: string } | null>(null);
   const [timelineMenu, setTimelineMenu] = useState<{ x: number; y: number; sample: number } | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  const timelineResizeCleanup = useRef<(() => void) | null>(null);
+  useEffect(() => () => timelineResizeCleanup.current?.(), []);
   const [follow, setFollow] = useState(() => localStorage.getItem('ruse.timelineFollow') !== '0');
   const [dockHeight, setDockHeight] = useState(() => {
     const saved = Number(localStorage.getItem('ruse.timelineHeight'));
@@ -321,6 +325,7 @@ export default function TimelinePanel({
       ? selectedClipEntries
       : selectedClipModel ? [{ ...selectedClipModel, trackId: selectedClipModel.track.id, clipId: selectedClipModel.clip.id }] : [];
     if (entries.length === 0) return;
+    onCopyClips(entries.map(entry => ({ trackId: entry.trackId, clipId: entry.clipId })));
     const anchor = Math.min(...entries.map(entry => entry.clip.startSample));
     setClipboard({
       items: entries.map(entry => ({
@@ -348,33 +353,41 @@ export default function TimelinePanel({
     if (!clipboard || clipboard.items.length === 0) return;
     const trackIds = new Set(tracks.map(track => track.id));
     const fallbackTrack = selectedClip?.trackId ?? tracks[0]?.id;
-    const clips = clipboard.items.flatMap(item => {
+    const placements = clipboard.items.flatMap(item => {
       const trackId = trackIds.has(item.trackId) ? item.trackId : fallbackTrack;
       return trackId
-        ? [{ trackId, clipId: item.clipId, startSample: Math.max(0, state.playheadSample + item.offset) }]
+        ? [{ trackId, startSample: Math.max(0, state.playheadSample + item.offset) }]
         : [];
     });
-    if (clips.length > 0) onPasteClips(clips);
+    if (placements.length > 0) onPasteClips(placements);
   };
 
   const [clipGain, setClipGain] = useState(1);
   const clipGainTimer = useRef<number | null>(null);
   const clipGainPending = useRef<number | null>(null);
+  const clipGainTarget = useRef<{ trackId: string; clipId: string } | null>(null);
   const clipGainDirtyUntil = useRef(0);
+  const flushClipGain = () => {
+    if (clipGainTimer.current !== null) {
+      window.clearTimeout(clipGainTimer.current);
+      clipGainTimer.current = null;
+    }
+    const pending = clipGainPending.current;
+    const target = clipGainTarget.current;
+    clipGainPending.current = null;
+    clipGainTarget.current = null;
+    if (pending !== null && target) {
+      onUpdateClip(target.trackId, target.clipId, { gain: pending });
+    }
+  };
   useEffect(() => {
     if (selectedClipModel && Date.now() >= clipGainDirtyUntil.current) {
       setClipGain(selectedClipModel.clip.gain);
     }
   }, [selectedClipModel?.clip.id, selectedClipModel?.clip.gain]);
-  useEffect(() => () => {
-    if (clipGainTimer.current !== null) window.clearTimeout(clipGainTimer.current);
-  }, []);
+  useEffect(() => () => flushClipGain(), []);
   useEffect(() => {
-    if (clipGainTimer.current !== null) {
-      window.clearTimeout(clipGainTimer.current);
-      clipGainTimer.current = null;
-    }
-    clipGainPending.current = null;
+    flushClipGain();
     clipGainDirtyUntil.current = 0;
   }, [selectedClip?.clipId]);
   const queueClipGain = (value: number, immediate = false) => {
@@ -382,20 +395,11 @@ export default function TimelinePanel({
     clipGainDirtyUntil.current = Date.now() + 400;
     setClipGain(value);
     clipGainPending.current = value;
-    const trackId = selectedClipModel.track.id;
-    const clipId = selectedClipModel.clip.id;
-    const send = () => {
-      const pending = clipGainPending.current;
-      clipGainTimer.current = null;
-      if (pending !== null) {
-        onUpdateClip(trackId, clipId, { gain: pending });
-      }
-    };
+    clipGainTarget.current = { trackId: selectedClipModel.track.id, clipId: selectedClipModel.clip.id };
     if (immediate) {
-      if (clipGainTimer.current !== null) window.clearTimeout(clipGainTimer.current);
-      send();
+      flushClipGain();
     } else if (clipGainTimer.current === null) {
-      clipGainTimer.current = window.setTimeout(send, 50);
+      clipGainTimer.current = window.setTimeout(flushClipGain, 50);
     }
   };
 
@@ -438,6 +442,35 @@ export default function TimelinePanel({
     return result;
   }, [state.project.tracks, trackHeight, automationHeight]);
 
+  const stickyLabels = useMemo(() => rows.flatMap((row): TimelineStickyLabel[] => {
+    if (row.kind === 'track') {
+      return [{
+        id: `label-${row.track.id}`,
+        top: row.y + 3,
+        text: row.track.name,
+        kind: 'track' as const,
+        muted: row.track.muted,
+        solo: row.track.solo,
+      }];
+    }
+
+    if (row.lane) {
+      const target = automationTargets.find(item => item.nodeId === row.lane?.targetNodeId &&
+        item.processorIndex === row.lane?.processorIndex &&
+        item.parameterIndex === row.lane?.parameterIndex);
+      const min = target?.min ?? 0;
+      const max = target?.max ?? 1;
+      return [{
+        id: `label-${row.lane.id}`,
+        top: row.y + 3,
+        text: `${target?.label ?? t('Unknown parameter')}  ${min.toFixed(2)}..${max.toFixed(2)}`,
+        kind: 'automation' as const,
+      }];
+    }
+
+    return [];
+  }), [automationTargets, rows, t]);
+
   const maxEnd = Math.max(
     sampleRate * 2,
     tracks.reduce((max, track) => track.clips.reduce((clipMax, clip) =>
@@ -477,10 +510,10 @@ export default function TimelinePanel({
   const snapSamples = snap === 'off'
     ? 0
     : snap === 'beat'
-      ? (60 / tempo) * sampleRate
+      ? Math.max(1, Math.round(beatSeconds * sampleRate))
       : snap === 'bar'
-        ? (240 / tempo) * sampleRate
-        : Number(snap) * sampleRate;
+        ? Math.max(1, Math.round(beatsPerBar * beatSeconds * sampleRate))
+        : Math.max(1, Math.round(Number(snap) * sampleRate));
 
   const snapSample = (sample: number) => snapSamples > 0
     ? Math.max(0, Math.round(sample / snapSamples) * snapSamples)
@@ -567,9 +600,6 @@ export default function TimelinePanel({
       target.processorIndex === lane.processorIndex &&
       target.parameterIndex === lane.parameterIndex);
 
-  const targetLabel = (lane: TimelineAutomationLaneModel) =>
-    targetFor(lane)?.label ?? t('Unknown parameter');
-
   const automationValueY = (lane: TimelineAutomationLaneModel, row: TimelineRow, value: number) => {
     const target = targetFor(lane);
     const min = target?.min ?? 0;
@@ -634,30 +664,35 @@ export default function TimelinePanel({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    drawTimeline(canvas, {
-      width,
-      height,
-      palette,
-      seconds,
-      beatSeconds,
-      beatsPerBar,
-      pixelsPerSecond,
-      sampleRate,
-      displayLoopActive,
-      displayLoopStart,
-      displayLoopEnd,
-      rows,
-      tracks,
-      selectedClipKeys,
-      selectedClipModel,
-      drag,
-      automationDrag,
-      automationTargets,
-      markers: state.project.markers ?? [],
-      playheadX,
-      audioClipLabel: t('Audio clip'),
+    const frame = requestAnimationFrame(() => {
+      drawTimeline(canvas, {
+        width,
+        height,
+        palette,
+        seconds,
+        beatSeconds,
+        beatsPerBar,
+        pixelsPerSecond,
+        sampleRate,
+        displayLoopActive,
+        displayLoopStart,
+        displayLoopEnd,
+        rows,
+        tracks,
+        selectedClipKeys,
+        selectedClipModel,
+        drag,
+        automationDrag,
+        automationTargets,
+        markers: state.project.markers ?? [],
+        playheadX,
+        drawPlayhead: false,
+        audioClipLabel: t('Audio clip'),
+      });
     });
-  }, [automationDrag, automationTargets, beatsPerBar, beatSeconds, drag, displayLoopActive, displayLoopEnd, displayLoopStart, height, palette, pixelsPerSecond, playheadX, rows, sampleRate, seconds, selectedClipKeys, selectedClipModel, state.project.markers, t, tracks, width]);
+    return () => cancelAnimationFrame(frame);
+  }, [automationDrag, automationTargets, beatsPerBar, beatSeconds, drag, displayLoopActive, displayLoopEnd, displayLoopStart, height, palette, pixelsPerSecond, rows, sampleRate, seconds, selectedClipKeys, selectedClipModel, state.project.markers, t, tracks, width]);
+
 
   const locate = (clientX: number, clientY: number) => {
     const canvas = canvasRef.current;
@@ -818,9 +853,14 @@ export default function TimelinePanel({
         const up = () => {
           window.removeEventListener('pointermove', move);
           window.removeEventListener('pointerup', up);
+          window.removeEventListener('pointercancel', up);
+          timelineResizeCleanup.current = null;
         };
+        timelineResizeCleanup.current?.();
+        timelineResizeCleanup.current = up;
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', up);
+        window.addEventListener('pointercancel', up);
       }} />
 
       <header className="timeline-header">
@@ -829,16 +869,7 @@ export default function TimelinePanel({
           {positionBar}.{positionBeat}.{String(positionTick).padStart(3, '0')}
           <small>{(state.playheadSample / sampleRate).toFixed(2)}s</small>
         </span>
-        <div className="timeline-actions">
-          <button className="icon-button compact" onClick={onPlay} disabled={state.playing} title={withShortcut(t('Play'), 'timelinePlay')} aria-label={t('Play')}>
-            <Play size={13} fill="currentColor" />
-          </button>
-          <button className="icon-button compact" onClick={onPause} disabled={!state.playing} title={withShortcut(t('Pause'), 'timelinePlay')} aria-label={t('Pause')}>
-            <Pause size={13} fill="currentColor" />
-          </button>
-          <button className="icon-button compact" onClick={onStop} disabled={!state.playing && state.playheadSample <= 0} title={t('Stop')} aria-label={t('Stop')}>
-            <Square size={12} fill="currentColor" />
-          </button>
+        <div className="timeline-header-end">
           <div className="timeline-zoom" role="group" aria-label={t('Timeline zoom')}>
             <button className="icon-button compact" onClick={() => zoomBy(0.5)} title={t('Zoom out')} aria-label={t('Zoom out')}>-</button>
             <button className="icon-button compact" onClick={() => zoomBy(2)} title={t('Zoom in')} aria-label={t('Zoom in')}>+</button>
@@ -861,6 +892,18 @@ export default function TimelinePanel({
               {[2, 3, 4, 6].map(value => <option key={value} value={value}>{value}</option>)}
             </select>
           </div>
+          <button className="icon-button compact timeline-close" onClick={onClose} title={t('Close timeline')} aria-label={t('Close timeline')}><X size={13} /></button>
+        </div>
+        <div className="timeline-actions">
+          <button className="icon-button compact" onClick={onPlay} disabled={state.playing} title={withShortcut(t('Play'), 'timelinePlay')} aria-label={t('Play')}>
+            <Play size={13} fill="currentColor" />
+          </button>
+          <button className="icon-button compact" onClick={onPause} disabled={!state.playing} title={withShortcut(t('Pause'), 'timelinePlay')} aria-label={t('Pause')}>
+            <Pause size={13} fill="currentColor" />
+          </button>
+          <button className="icon-button compact" onClick={onStop} disabled={!state.playing && state.playheadSample <= 0} title={t('Stop')} aria-label={t('Stop')}>
+            <Square size={12} fill="currentColor" />
+          </button>
           <label className="timeline-tempo">
             <span>{t('Tempo')}</span>
             <input
@@ -1002,7 +1045,6 @@ export default function TimelinePanel({
           <button className="tool-button" onClick={onBounce}>{t('Bounce mix')}</button>
           <button className="tool-button" disabled={!loopActive} title={loopActive ? t('Bounce range') : t('Shift+drag the ruler to set a loop range')} onClick={onBounceRange}>{t('Bounce range')}</button>
           <button className="tool-button" onClick={onFreeze}>{t('Freeze')}</button>
-          <button className="icon-button compact" onClick={onClose} title={t('Close timeline')} aria-label={t('Close timeline')}><X size={13} /></button>
         </div>
       </header>
       {showIntro && (
@@ -1171,32 +1213,8 @@ export default function TimelinePanel({
           </div>
         ) : (
           <>
-          <TimelineLabelOverlay labels={rows.flatMap((row): TimelineStickyLabel[] => {
-            if (row.kind === 'track') {
-              return [{
-                id: `label-${row.track.id}`,
-                top: row.y + 3,
-                text: row.track.name,
-                kind: 'track' as const,
-                muted: row.track.muted,
-                solo: row.track.solo,
-              }];
-            }
-
-            if (row.lane) {
-              const target = targetFor(row.lane);
-              const min = target?.min ?? 0;
-              const max = target?.max ?? 1;
-              return [{
-                id: `label-${row.lane.id}`,
-                top: row.y + 3,
-                text: `${targetLabel(row.lane)}  ${min.toFixed(2)}..${max.toFixed(2)}`,
-                kind: 'automation' as const,
-              }];
-            }
-
-            return [];
-          })} />
+          <div className="timeline-canvas-wrap">
+          <TimelineLabelOverlay labels={stickyLabels} />
           <canvas
             ref={canvasRef}
             tabIndex={0}
@@ -1477,6 +1495,12 @@ export default function TimelinePanel({
               }
             }}
           />
+          <div
+            className="timeline-playhead"
+            style={{ transform: `translateX(${playheadX}px)`, color: palette.playhead }}
+            aria-hidden="true"
+          />
+          </div>
           </>
         )}
       </div>

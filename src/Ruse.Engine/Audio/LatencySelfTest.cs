@@ -1117,11 +1117,115 @@ public static class LatencySelfTest
             failures.Add("unknown processor type should not resolve");
         }
 
+        if (TrustedPath.IsLocalFile(@"\\server\share\take.wav") ||
+            TrustedPath.IsLocalFile(@"//server/share/take.wav") ||
+            TrustedPath.IsLocalFile(@"\\.\C:\take.wav") ||
+            TrustedPath.IsLocalFile(@"relative\take.wav") ||
+            !TrustedPath.IsLocalFile(@"C:\Music\take.flac"))
+        {
+            failures.Add("trusted path guard accepted an unsafe path");
+        }
+
+        var guardedSource = new SourceNode("guarded", SourceKind.File,
+            filePath: @"\\server\share\take.wav");
+        if (guardedSource.HasFile || guardedSource.FileDurationSeconds != 0)
+        {
+            failures.Add("an untrusted source path was opened");
+        }
+
+        var malformed = new Preset
+        {
+            Sources = null!,
+            Outputs = null!,
+            Modifiers = null!,
+            Frames = null!,
+            Routes = null!,
+            SourceModifiers = null!,
+            Sidechains = null!,
+            BargeKeys = null!,
+            MidiBindings = null!,
+            ModifierOutputs = null!,
+            ModifierLinks = null!,
+            MixerInputs = null!,
+        };
+        var malformedResult = PresetValidator.Validate(malformed);
+        if (!malformedResult.Ok ||
+            malformedResult.Preset.Sources == null ||
+            malformedResult.Preset.Outputs == null ||
+            malformedResult.Preset.Modifiers == null ||
+            malformedResult.Preset.Frames == null ||
+            malformedResult.Preset.Routes == null ||
+            malformedResult.Preset.MidiBindings == null)
+        {
+            failures.Add("null preset collections were not repaired");
+        }
+
+        var invalid = new Preset();
+        invalid.Sources.Add(new PresetSource { Id = "dup", Kind = "Bogus", Title = "" });
+        invalid.Sources.Add(new PresetSource
+        {
+            Id = "dup",
+            Kind = "File",
+            FilePath = @"\\server\share\take.wav",
+        });
+        invalid.Modifiers.Add(new PresetModifier
+        {
+            Processors =
+            {
+                null!,
+                new PresetProcessor { TypeId = "bogus-effect" },
+                new PresetProcessor { TypeId = GainProcessor.Id },
+            },
+        });
+        invalid.Routes.Add(new PresetRoute { SourceIndex = 99, OutputIndex = 0 });
+        invalid.SourceModifiers.Add(new PresetSourceModifierLink { SourceIndex = 0, ModifierIndex = 99 });
+        invalid.MidiBindings.Add(new PresetMidiBinding { ModifierIndex = 0, ProcessorIndex = 9 });
+        var repaired = PresetValidator.Validate(invalid);
+        if (!repaired.Ok ||
+            repaired.Preset.Sources.Count != 2 ||
+            string.Equals(repaired.Preset.Sources[0].Id, repaired.Preset.Sources[1].Id, StringComparison.Ordinal) ||
+            repaired.Preset.Sources[0].Kind != "Application" ||
+            repaired.Preset.Sources[0].Title.Length == 0 ||
+            repaired.Preset.Sources[1].FilePath != null ||
+            repaired.Preset.Modifiers[0].Processors.Count != 1 ||
+            repaired.Preset.Routes.Count != 0 ||
+            repaired.Preset.SourceModifiers.Count != 0 ||
+            repaired.Preset.MidiBindings.Count != 0)
+        {
+            failures.Add("malformed preset values were not repaired");
+        }
+
+        string atomicDirectory = Path.Combine(Path.GetTempPath(), "ruse-atomic-" + Guid.NewGuid().ToString("N"));
+        string atomicPath = Path.Combine(atomicDirectory, "state.json");
+        try
+        {
+            bool firstWrite = AtomicFile.TryWriteAllText(atomicPath, "one", out _);
+            bool secondWrite = AtomicFile.TryWriteAllText(atomicPath, "two", out _);
+            if (!firstWrite || !secondWrite ||
+                File.ReadAllText(atomicPath) != "two" ||
+                !File.Exists(atomicPath + ".bak") ||
+                File.ReadAllText(atomicPath + ".bak") != "one" ||
+                File.Exists(atomicPath + ".tmp"))
+            {
+                failures.Add("atomic persistence did not replace safely");
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(atomicDirectory, true);
+            }
+            catch
+            {
+            }
+        }
+
         graph.Dispose();
 
         bool passed = failures.Count == 0;
         string summary = passed
-            ? "Preset round-trip: 3 modifiers, 3 links and all parameters survived JSON; replayed chain [Gain 0.50 â†’ High-pass 120 Hz]; unknown effect skipped."
+            ? "Preset round-trip: 3 modifiers, 3 links and all parameters survived JSON; replayed chain [Gain 0.50 -> High-pass 120 Hz]; unknown effect skipped; unsafe paths rejected; malformed preset repaired; atomic save kept a .bak."
             : "Preset round-trip FAILED: " + string.Join("; ", failures);
         return new PresetTestResult(passed, summary);
     }
@@ -1775,6 +1879,23 @@ public static class LatencySelfTest
         return Math.Abs(passThrough[0] - 1f) < 1e-6 && Math.Abs(passThrough[2] - 2f) < 1e-6;
     }
 
+    public static bool TestOutputDriftResampler()
+    {
+        var ring = new FloatRingBuffer(4096 * 2);
+        var input = new float[480 * 2];
+        for (int i = 0; i < input.Length; i++)
+        {
+            input[i] = i / 1000f;
+        }
+
+        ring.Write(input);
+        var resampler = new OutputDriftResampler();
+        var output = new float[480 * 2];
+        resampler.Process(ring, output, 2, 1.0001);
+        return Math.Abs(output[0] - input[0]) < 1e-6f &&
+               Math.Abs(output[2] - input[2]) < 1e-3f &&
+               float.IsFinite(output[^1]);
+    }
     public static bool TestMixerInputDelay()
     {
         var graph = new AudioGraph { AutoRun = false };
@@ -1815,8 +1936,27 @@ public static class LatencySelfTest
                 return false;
             }
 
-            return Math.Abs(result[100 * 2] - 1f) < 1e-3f &&
-                   Math.Abs(result[196 * 2] - 1f) < 1e-3f;
+            if (Math.Abs(result[100 * 2] - 1f) >= 1e-3f ||
+                Math.Abs(result[196 * 2] - 1f) >= 1e-3f)
+            {
+                return false;
+            }
+
+            // Change the delay after the graph was compiled; the live mixer
+            // path must move the input without a full graph rebuild.
+            graph.UpdateMixerInput(mixer, sourceB, null,
+                new ModifierNode.MixerInputSettings { DelayMs = 1f });
+            sourceA.WriteTestSamples(silence);
+            sourceB.WriteTestSamples(silence);
+            graph.RenderEngineOnceForTest();
+            output.ClearEngineAudio();
+            sourceA.WriteTestSamples(impulse);
+            sourceB.WriteTestSamples(impulse);
+            graph.RenderEngineOnceForTest();
+            count = output.ReadOfflineBlock(result);
+            return count >= result.Length &&
+                   Math.Abs(result[100 * 2] - 1f) < 1e-3f &&
+                   Math.Abs(result[148 * 2] - 1f) < 1e-3f;
         }
         finally
         {
@@ -1871,10 +2011,26 @@ public static class LatencySelfTest
         }
 
         var copies = timeline.Project.Tracks[0].Clips;
-        return copies.Count == 2 &&
-               copies[1].StartSample == 96000 &&
-               copies[1].LengthSamples == source.LengthSamples &&
-               Math.Abs(copies[1].Gain - source.Gain) < 1e-6;
+        if (copies.Count != 2 ||
+            copies[1].StartSample != 96000 ||
+            copies[1].LengthSamples != source.LengthSamples ||
+            Math.Abs(copies[1].Gain - source.Gain) >= 1e-6)
+        {
+            return false;
+        }
+
+        var pasteTrack = timeline.AddTrack("Clipboard");
+        if (!timeline.SnapshotClips(new[] { (track.Id, source.Id) }) ||
+            !timeline.RemoveClip(track.Id, source.Id) ||
+            !timeline.PasteClipboard(new[] { (pasteTrack.Id, 144000L) }))
+        {
+            return false;
+        }
+
+        var pasted = timeline.Project.Tracks.Last().Clips;
+        return pasted.Count == 1 &&
+               pasted[0].StartSample == 144000 &&
+               pasted[0].LengthSamples == source.LengthSamples;
     }
 
     public static bool TestTimelineClipProcessing()
@@ -2354,6 +2510,17 @@ public static class LatencySelfTest
             }
         }
 
+        if (profile.LatencySamples <= 0)
+        {
+            return false;
+        }
+
+        profile.Parameters.First(parameter => parameter.Name == "Safety limiter").Set(0);
+        if (profile.LatencySamples != 0)
+        {
+            return false;
+        }
+
         profile.Reset();
         profile.Parameters.First(parameter => parameter.Name == "Safety limiter").Set(1f);
         profile.Parameters.First(parameter => parameter.Name == "Limiter ceiling").Set(-1f);
@@ -2388,7 +2555,50 @@ public static class LatencySelfTest
             }
         }
 
-        return outputPower > inputPower * 3.0;
+        if (outputPower <= inputPower * 3.0)
+        {
+            return false;
+        }
+
+        var gated = new HearingProfileProcessor();
+        gated.Parameters.First(parameter => parameter.Name == "Noise gate").Set(1);
+        gated.Parameters.First(parameter => parameter.Name == "Loudness match").Set(0);
+        gated.Parameters.First(parameter => parameter.Name == "Safety limiter").Set(0);
+        var hiss = new float[frames * 2];
+        var random = new Random(3);
+        float residual = 0;
+        for (int pass = 0; pass < 200; pass++)
+        {
+            for (int index = 0; index < hiss.Length; index++)
+            {
+                hiss[index] = (float)((random.NextDouble() * 2.0 - 1.0) * 1e-3);
+            }
+
+            gated.Process(hiss, frames);
+            if (pass >= 100)
+            {
+                for (int index = 0; index < hiss.Length; index++)
+                {
+                    residual = Math.Max(residual, Math.Abs(hiss[index]));
+                }
+            }
+        }
+
+        if (residual > 1e-4f)
+        {
+            return false;
+        }
+
+        var voice = new float[frames * 2];
+        Array.Fill(voice, 0.1f);
+        gated.Process(voice, frames);
+        float voicePeak = 0;
+        for (int index = 0; index < voice.Length; index++)
+        {
+            voicePeak = Math.Max(voicePeak, Math.Abs(voice[index]));
+        }
+
+        return voicePeak >= 0.05f;
     }
 
     private static bool TestAutoTuneKey()
@@ -2583,11 +2793,13 @@ public static class LatencySelfTest
         const int frames = 240; // matches the mixer pump
         const int blocks = sampleRate / frames * 5; // 5 seconds of audio
 
-        const int expectedEffectCount = 61;
+        const int expectedEffectCount = 63;
         string[] requiredIds =
         [
             GainProcessor.Id,
             HighPassProcessor.Id,
+            "bandpass",
+            "allpass",
             ParametricEqProcessor.Id,
             GraphicEqualizerProcessor.Id,
             MoogLadderProcessor.Id,
@@ -3357,6 +3569,7 @@ public static class LatencySelfTest
         graph.AddModifier(modifier);
         graph.ConnectSourceToModifier(source, modifier);
         graph.ConnectModifierToOutput(modifier, output);
+        var liveRoute = output.Inputs.Count > 0 ? output.Inputs[0] : null;
 
         // A constant tone so the mix is not silent.
         var tone = new float[chunkFrames];
@@ -3390,6 +3603,7 @@ public static class LatencySelfTest
         graph.RemoveModifier(modifier);
 
         int routesAfter = output.Inputs.Count;
+        bool subscriptionCleared = liveRoute == null || liveRoute.Subscription == null;
         measuringAfter = true;
 
         Feed(20);
@@ -3401,11 +3615,32 @@ public static class LatencySelfTest
         graph.Dispose();
         source.Dispose();
 
-        bool pass = levelWithEffect > 0.3 && levelWithEffect < 0.5 && levelAfterRemoval < 0.0001 && routesAfter == 0;
+        float faultPeak = 0;
+        var faultSource = new SourceNode("Pump fault source", SourceKind.Application);
+        var faultOutput = OutputNode.CreateForTest((faultMix, length) =>
+        {
+            for (int i = 0; i < length; i++)
+            {
+                faultPeak = Math.Max(faultPeak, Math.Abs(faultMix[i]));
+            }
+        });
+        var faultRoute = new OutputNode.Route { Source = faultSource };
+        faultRoute.Processors = new IAudioProcessor[] { new ThrowingProcessor() };
+        faultOutput.Inputs.Add(faultRoute);
+        faultOutput.RefreshRoutes();
+        faultSource.WriteTestSamples(tone);
+        faultSource.WriteTestSamples(tone);
+        faultOutput.RenderChunk(mix, temp, bytes, channels);
+        bool effectFaultContained = faultPeak == 0;
+        faultOutput.Dispose();
+        faultSource.Dispose();
+
+        bool pass = levelWithEffect > 0.3 && levelWithEffect < 0.5 && levelAfterRemoval < 0.0001 && routesAfter == 0 && subscriptionCleared && effectFaultContained;
 
         string summary =
             $"Chain break: level through effect {levelWithEffect:0.000} (expected ~0.40 = 0.80 x 0.50), " +
-            $"level after removing effect {levelAfterRemoval:0.000}, routes left {routesAfter} " +
+            $"level after removing effect {levelAfterRemoval:0.000}, routes left {routesAfter}, " +
+            $"subscription cleared {subscriptionCleared}, effect fault contained {effectFaultContained} " +
             $"-> {(pass ? "PASS" : "FAIL")}";
 
         return new ChainBreakResult(levelWithEffect, levelAfterRemoval, routesAfter, summary);
@@ -4350,5 +4585,18 @@ public static class LatencySelfTest
         }
 
         return string.Join(" | ", results) + " -> " + (allPassed ? "PASS" : "FAIL");
+    }
+
+    private sealed class ThrowingProcessor : IAudioProcessor
+    {
+        public string TypeId => "test-throwing";
+        public string DisplayName => "Throwing test effect";
+
+        public void Process(Span<float> samples, int frames) =>
+            throw new InvalidOperationException("test effect failure");
+
+        public void Reset()
+        {
+        }
     }
 }

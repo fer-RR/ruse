@@ -35,6 +35,7 @@ public sealed class SourceNode : IDisposable
     private long _driftFrames;
     private long _driftLastTicks;
     private double _driftPpm;
+    private double _outputClockPpm = double.NaN;
     private bool _ttsStreaming;
 
     // Every consumer of this source (each output route) takes its own copy of
@@ -54,8 +55,9 @@ public sealed class SourceNode : IDisposable
     private readonly List<float> _convertScratch = new(16384);
 
     // WASAPI endpoints deliver the mix format (32-bit float), while the process
-    // loopback endpoint is fed a 16-bit PCM WAVEFORMATEX. Both reach the same
-    // converter, but they need different decoding on the way in.
+    // loopback endpoint is fed a 32-bit PCM WAVEFORMATEX (16-bit fallback).
+    // Both reach the same converter, but they need different decoding on the
+    // way in.
     private bool _sourceIsFloat = true;
     private float[] _pcmScratch = new float[16384];
     private const int MaxDecodeSamples = 1_048_576;
@@ -83,7 +85,8 @@ public sealed class SourceNode : IDisposable
     public bool IsRunning => (_timelineRunning || _capture != null) && !_faulted &&
         (_capture is not AudioFileCapture file || file.IsRunning) &&
         (_capture is not TtsAudioCapture tts || tts.IsRunning) &&
-        (_capture is not TtsStreamCapture stream || stream.IsRunning);
+        (_capture is not TtsStreamCapture stream || stream.IsRunning) &&
+        (_capture is not NetworkPcmCapture network || network.IsRunning);
 
     /// <summary>Raised when the capture stream stops by itself (device lost, error).</summary>
     public event Action<SourceNode, string>? Faulted;
@@ -137,10 +140,11 @@ public sealed class SourceNode : IDisposable
         FilePath = filePath;
         FileLoop = fileLoop;
         FileSpeed = Math.Clamp(fileSpeed, 0.5f, 2f);
-        _fileDurationSeconds = !string.IsNullOrWhiteSpace(filePath)
-            ? AudioFileCapture.GetDuration(filePath)
-            : 0;
+        _fileDurationSeconds = SafeDuration(filePath);
     }
+
+    private static double SafeDuration(string? path) =>
+        TrustedPath.IsLocalFile(path) ? AudioFileCapture.GetDuration(path!) : 0;
 
     public bool FileLoop { get; private set; }
     public float FileSpeed { get; private set; } = 1f;
@@ -208,14 +212,14 @@ public sealed class SourceNode : IDisposable
     }
     
     public bool HasFile => Kind is SourceKind.File or SourceKind.Tts &&
-        !string.IsNullOrWhiteSpace(FilePath) && File.Exists(FilePath);
+        TrustedPath.IsLocalFile(FilePath) && File.Exists(FilePath);
 
     public void SetTtsAudio(string path)
     {
         bool wasRunning = IsRunning;
         Stop();
-        FilePath = path;
-        _fileDurationSeconds = AudioFileCapture.GetDuration(path);
+        FilePath = TrustedPath.NormalizeLocalFile(path);
+        _fileDurationSeconds = SafeDuration(FilePath);
         if (wasRunning)
         {
             Start();
@@ -242,8 +246,8 @@ public sealed class SourceNode : IDisposable
         Start();
     }
 
-    public void EnqueueTtsSamples(ReadOnlySpan<float> samples) =>
-        (_capture as TtsStreamCapture)?.Enqueue(samples);
+    public void EnqueueTtsSamples(ReadOnlySpan<float> samples, CancellationToken token = default) =>
+        (_capture as TtsStreamCapture)?.Enqueue(samples, token);
 
     public void CompleteTtsStream() => (_capture as TtsStreamCapture)?.Complete();
     
@@ -257,9 +261,9 @@ public sealed class SourceNode : IDisposable
     {
         bool wasRunning = IsRunning;
         Stop();
-        FilePath = path;
+        FilePath = TrustedPath.NormalizeLocalFile(path);
         FileLoop = loop;
-        _fileDurationSeconds = AudioFileCapture.GetDuration(path);
+        _fileDurationSeconds = SafeDuration(FilePath);
         if (wasRunning)
         {
             Start();
@@ -477,6 +481,10 @@ public sealed class SourceNode : IDisposable
         public double BufferedMs => _buffer.AvailableToRead / (double)Math.Max(1, Channels) * 1000.0 / SampleRate;
 
         internal void Write(ReadOnlySpan<float> samples) => _buffer.Write(samples);
+
+        /// <summary>Drops stale native frames when the endpoint clock lags the source.</summary>
+        public int Skip(int frames) =>
+            _buffer.Skip(Math.Max(0, frames) * Channels) / Math.Max(1, Channels);
 
         public int Read(Span<float> destination) => _buffer.Read(destination);
 
@@ -707,11 +715,11 @@ public sealed class SourceNode : IDisposable
         var capture = new ProcessLoopbackCapture(ProcessId!.Value);
 
         // The endpoint format is only known once the capture thread has
-        // initialized; 48 kHz 16-bit PCM is the provisional assumption and is
+        // initialized; 48 kHz 32-bit PCM is the provisional assumption and is
         // corrected on the first packet. It has to be in place before the
         // capture starts, otherwise the first packet is decoded with a stale
-        // converter.
-        SetSourceFormat(2, FormatConverter.TargetSampleRate, isFloat: false);
+        // converter. 32-bit avoids the 16-bit dither floor on silent apps.
+        SetSourceFormat(2, FormatConverter.TargetSampleRate, isFloat: false, bitsPerSample: 32);
 
         capture.DataAvailable += OnDataAvailable;
         WireStopEvents(capture);
@@ -755,7 +763,7 @@ public sealed class SourceNode : IDisposable
 
     private void StartTtsCapture()
     {
-        if (string.IsNullOrWhiteSpace(FilePath) || !File.Exists(FilePath))
+        if (!TrustedPath.IsLocalFile(FilePath) || !File.Exists(FilePath))
         {
             throw new FileNotFoundException("The generated speech file is missing.", FilePath);
         }
@@ -873,7 +881,7 @@ public sealed class SourceNode : IDisposable
 
     private void StartFileCapture()
     {
-        if (string.IsNullOrWhiteSpace(FilePath) || !File.Exists(FilePath))
+        if (!TrustedPath.IsLocalFile(FilePath) || !File.Exists(FilePath))
         {
             throw new FileNotFoundException("Choose an audio file for this player.", FilePath);
         }
@@ -1210,22 +1218,37 @@ public sealed class SourceNode : IDisposable
 
         _driftFrames += frames;
         double elapsed = (now - _driftLastTicks) / (double)Stopwatch.Frequency;
-        if (elapsed < 2.0)
+        if (elapsed < 10.0)
         {
             return;
         }
 
         double measuredRate = _driftFrames / elapsed;
         double sourcePpm = (measuredRate / _sourceSampleRate - 1.0) * 1_000_000.0;
-        _driftPpm = _driftPpm == 0 ? sourcePpm : _driftPpm * 0.85 + sourcePpm * 0.15;
-        double correction = Math.Clamp(_driftPpm - AudioClock.OutputPpm, -500.0, 500.0);
+        if (_driftPpm == 0 || Math.Abs(sourcePpm - _driftPpm) >= 2.0)
+        {
+            // A longer window and a 2 ppm deadband keep estimator noise from
+            // modulating the resampler when the clocks are only a few ppm apart.
+            _driftPpm = _driftPpm == 0 ? sourcePpm : _driftPpm * 0.9 + sourcePpm * 0.1;
+        }
+
+        double outputPpm = double.IsNaN(_outputClockPpm) ? AudioClock.OutputPpm : _outputClockPpm;
+        double correction = Math.Clamp(_driftPpm - outputPpm, -500.0, 500.0);
         _converter.SetDriftPpm(correction);
         _driftFrames = 0;
         _driftLastTicks = now;
     }
 
     /// <summary>Measured source clock error relative to the engine output clock.</summary>
-    public double DriftPpm => _driftPpm - AudioClock.OutputPpm;
+    public double DriftPpm => _driftPpm - (double.IsNaN(_outputClockPpm) ? AudioClock.OutputPpm : _outputClockPpm);
+
+    /// <summary>Uses a specific output clock when this source reaches one device.</summary>
+    public void SetOutputClockPpm(double? ppm)
+    {
+        _outputClockPpm = ppm is double value && double.IsFinite(value)
+            ? Math.Clamp(value, -1000.0, 1000.0)
+            : double.NaN;
+    }
 
     /// <summary>Captured audio waiting to be consumed, in ms.</summary>
     public double BufferedMs

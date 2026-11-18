@@ -29,8 +29,12 @@ internal static class SongBuilder
         string clipDirectory = Path.Combine(outputDirectory, "Clips");
         Directory.CreateDirectory(clipDirectory);
 
-        string samples = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.MyMusic), "Ruse Samples");
+        string samples = RuseFolders.Samples;
+        if (!Directory.Exists(samples) || !Directory.EnumerateFiles(samples).Any())
+        {
+            samples = RuseFolders.LegacySamples;
+        }
+
         if (!Directory.Exists(samples))
         {
             throw new DirectoryNotFoundException($"Sample folder not found: {samples}");

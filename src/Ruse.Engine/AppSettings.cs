@@ -55,11 +55,17 @@ public sealed class AppSettings
     /// <summary>UI language code; the engine and audio status stay English for now.</summary>
     public string UiLanguage { get; set; } = "en";
 
+    /// <summary>Project media folders shown in the Media tab.</summary>
+    public List<string> MediaFolders { get; set; } = new();
+
     /// <summary>Workspace colour scheme: "dark" or "light".</summary>
     public string Theme { get; set; } = "dark";
 
     /// <summary>WebView zoom factor for the whole interface. 1.0 is 100%.</summary>
     public double UiScale { get; set; } = 1.0;
+
+    /// <summary>Animation preference: "system" follows Windows, "reduced" or "full" overrides it.</summary>
+    public string MotionMode { get; set; } = "system";
 
     /// <summary>Draw a red border around muted nodes so they stand out.</summary>
     public bool HighlightMutedNodes { get; set; } = true;
@@ -217,13 +223,9 @@ public sealed class AppSettings
 
     public void Save()
     {
-        try
+        if (!AtomicFile.TryWriteAllText(SettingsPath, JsonSerializer.Serialize(this, Options), out string error))
         {
-            System.IO.Directory.CreateDirectory(Directory);
-            File.WriteAllText(SettingsPath, JsonSerializer.Serialize(this, Options));
-        }
-        catch
-        {
+            Diagnostics.AppLog.Warning("Could not save settings: " + error);
         }
     }
 }

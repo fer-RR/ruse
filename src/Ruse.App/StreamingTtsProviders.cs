@@ -1,4 +1,5 @@
 using System.IO;
+using System.IO.Compression;
 using KokoroSharp;
 using KokoroSharp.Core;
 using KokoroSharp.Processing;
@@ -46,7 +47,13 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
 {
     private const int SampleRate = 24000;
     private static readonly SemaphoreSlim Gate = new(1, 1);
+    private static readonly object Sync = new();
     private static KokoroWavSynthesizer? _synthesizer;
+    private static bool _verified;
+    private static int _active;
+    private static bool _deletePending;
+
+    private const string ModelSha256 = "0cfd5e79aab70a3d8c1a57dc639835110ddb32c9f5ff4fdd1f4db202ea43bb05";
 
     public static string Root => Path.Combine(AppSettings.Directory, "models", "kokoro-streaming");
     public static string ModelPath => Path.Combine(Root, "kokoro.onnx");
@@ -76,6 +83,11 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
             {
                 File.Move(source, ModelPath, overwrite: true);
             }
+
+            ModelIntegrity.Verify(
+                await ModelIntegrity.ComputeFileSha256Async(ModelPath, token).ConfigureAwait(false),
+                ModelSha256, "Kokoro model");
+            _verified = true;
             progress?.Report(new TtsModelProgress("kokoro-streaming", "done", 1, ""));
         }
         finally
@@ -86,8 +98,57 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
 
     public static void Delete()
     {
-        _synthesizer = null;
-        try { if (Directory.Exists(Root)) Directory.Delete(Root, true); } catch { }
+        KokoroWavSynthesizer? old = null;
+        lock (Sync)
+        {
+            _deletePending = true;
+            if (_active == 0)
+            {
+                old = _synthesizer;
+                _synthesizer = null;
+                _deletePending = false;
+            }
+        }
+
+        (old as IDisposable)?.Dispose();
+        _verified = false;
+        DeleteModelFiles();
+    }
+
+    private static void DeleteModelFiles()
+    {
+        try
+        {
+            if (Directory.Exists(Root))
+            {
+                Directory.Delete(Root, true);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void ReleaseIfIdle()
+    {
+        KokoroWavSynthesizer? old = null;
+        bool deleteFiles = false;
+        lock (Sync)
+        {
+            if (_active == 0 && _deletePending)
+            {
+                old = _synthesizer;
+                _synthesizer = null;
+                _deletePending = false;
+                deleteFiles = true;
+            }
+        }
+
+        (old as IDisposable)?.Dispose();
+        if (deleteFiles)
+        {
+            DeleteModelFiles();
+        }
     }
 
     private static async Task<KokoroWavSynthesizer> EnsureAsync(CancellationToken token)
@@ -102,6 +163,14 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
         {
             if (_synthesizer == null)
             {
+                if (!_verified)
+                {
+                    ModelIntegrity.Verify(
+                        await ModelIntegrity.ComputeFileSha256Async(ModelPath, token).ConfigureAwait(false),
+                        ModelSha256, "Kokoro model");
+                    _verified = true;
+                }
+
                 var options = new SessionOptions
                 {
                     InterOpNumThreads = 1,
@@ -120,22 +189,66 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
 
     public async Task StreamAsync(string text, float speed, int voice, Action<float[], int> onSamples, CancellationToken token)
     {
-        var synthesizer = await EnsureAsync(token).ConfigureAwait(false);
-        string[] names = { "af_heart", "af_bella", "am_michael" };
-        KokoroVoice? selected = voice >= 0 && voice < names.Length ? KokoroVoiceManager.GetVoice(names[voice]) : null;
-        if (selected == null)
+        lock (Sync)
         {
-            var voices = KokoroVoiceManager.Voices;
-            if (voices.Count > 0) selected = voices[Math.Clamp(voice, 0, voices.Count - 1)];
-        }
-        if (selected == null) throw new InvalidOperationException("Kokoro has no voices installed.");
+            if (_deletePending)
+            {
+                throw new OperationCanceledException("The Kokoro model is being deleted.");
+            }
 
-        var converter = new MonoToStereo48k(SampleRate, onSamples);
-        var config = new KokoroTTSPipelineConfig { Speed = Math.Clamp(speed, 0.5f, 2f), PreprocessText = true };
-        var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        synthesizer.Synthesize(text, selected, samples => converter.Push(samples), () => done.TrySetResult(true), config);
-        await done.Task.WaitAsync(token).ConfigureAwait(false);
-        converter.Flush();
+            _active++;
+        }
+
+        try
+        {
+            var synthesizer = await EnsureAsync(token).ConfigureAwait(false);
+            string[] names = { "af_heart", "af_bella", "am_michael" };
+            KokoroVoice? selected = voice >= 0 && voice < names.Length ? KokoroVoiceManager.GetVoice(names[voice]) : null;
+            if (selected == null)
+            {
+                var voices = KokoroVoiceManager.Voices;
+                if (voices.Count > 0) selected = voices[Math.Clamp(voice, 0, voices.Count - 1)];
+            }
+            if (selected == null) throw new InvalidOperationException("Kokoro has no voices installed.");
+
+            var converter = new MonoToStereo48k(SampleRate, onSamples);
+            var config = new KokoroTTSPipelineConfig { Speed = Math.Clamp(speed, 0.5f, 2f), PreprocessText = true };
+            var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            bool canceled = false;
+            synthesizer.Synthesize(text, selected, samples =>
+            {
+                if (canceled || token.IsCancellationRequested)
+                {
+                    canceled = true;
+                    return;
+                }
+
+                converter.Push(samples);
+            }, () => done.TrySetResult(true), config);
+            try
+            {
+                await done.Task.WaitAsync(token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                canceled = true;
+                throw;
+            }
+
+            if (!canceled && !token.IsCancellationRequested)
+            {
+                converter.Flush();
+            }
+        }
+        finally
+        {
+            lock (Sync)
+            {
+                _active--;
+            }
+
+            ReleaseIfIdle();
+        }
     }
 
     private static void PushPcm16(byte[] buffer, int length, MonoToStereo48k converter)
@@ -154,10 +267,46 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
 internal sealed class PiperStreamingProvider : IStreamingTtsProvider
 {
     private const string VoiceKey = "en_US-lessac-medium";
+    private const string PiperVersion = "2023.11.14-2";
+    private const string PiperZipSha256 = "f3c58906402b24f3a96d92145f58acba6d86c9b5db896d207f78dc80811efcea";
+    private const string VoiceOnnxSha256 = "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f";
+    private const string VoiceJsonSha256 = "efe19c417bed055f2d69908248c6ba650fa135bc868b0e6abb3da181dab690a0";
 
     private static readonly SemaphoreSlim Gate = new(1, 1);
+    private static readonly object ActiveSync = new();
+    private static readonly HashSet<PiperWaveProvider> Active = new();
+    private static readonly System.Reflection.FieldInfo? ProcessField =
+        typeof(PiperWaveProvider).GetField("_process",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
     private static string? _piperDirectory;
     private static VoiceModel? _voice;
+    private static bool _verified;
+    private static bool _deleting;
+
+    private static void Release(PiperWaveProvider wave)
+    {
+        try
+        {
+            if (ProcessField?.GetValue(wave) is System.Diagnostics.Process process)
+            {
+                try
+                {
+                    if (!process.HasExited)
+                    {
+                        process.Kill(entireProcessTree: true);
+                    }
+                }
+                catch
+                {
+                }
+
+                process.Dispose();
+            }
+        }
+        catch
+        {
+        }
+    }
 
     public static string Root => Path.Combine(AppSettings.Directory, "models", "piper");
     public static bool IsInstalled => File.Exists(Path.Combine(Root, ".installed"));
@@ -187,10 +336,25 @@ internal sealed class PiperStreamingProvider : IStreamingTtsProvider
             if (IsInstalled) return;
             Directory.CreateDirectory(Root);
             progress?.Report(new TtsModelProgress("piper-en-us", "downloading", 0, ""));
-            await PiperDownloader.DownloadPiper().ExtractPiper(Root).ConfigureAwait(false);
-            var model = await PiperDownloader.DownloadModelByKey(VoiceKey).ConfigureAwait(false)
+            string archive = Path.Combine(Root, "piper.zip");
+            using (var input = await PiperDownloader.DownloadPiper(PiperVersion).ConfigureAwait(false))
+            {
+                await using var output = File.Create(archive);
+                await input.CopyToAsync(output, token).ConfigureAwait(false);
+            }
+
+            ModelIntegrity.Verify(
+                await ModelIntegrity.ComputeFileSha256Async(archive, token).ConfigureAwait(false),
+                PiperZipSha256, "Piper executable");
+            ZipFile.ExtractToDirectory(archive, Root, overwriteFiles: true);
+            try { File.Delete(archive); } catch { }
+
+            var model = await PiperDownloader.GetModelByKey(VoiceKey).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("The Piper voice could not be downloaded.");
+            await model.DownloadModel(Root).ConfigureAwait(false);
+            VerifyVoice(model);
             _voice = model;
+            _verified = true;
             File.WriteAllText(Path.Combine(Root, ".installed"), "1");
             progress?.Report(new TtsModelProgress("piper-en-us", "done", 100, ""));
         }
@@ -202,9 +366,27 @@ internal sealed class PiperStreamingProvider : IStreamingTtsProvider
 
     public static void Delete()
     {
+        PiperWaveProvider[] active;
+        lock (ActiveSync)
+        {
+            _deleting = true;
+            active = Active.ToArray();
+            Active.Clear();
+        }
+
+        foreach (var wave in active)
+        {
+            Release(wave);
+        }
+
         try { if (Directory.Exists(Root)) Directory.Delete(Root, true); } catch { }
         _piperDirectory = null;
         _voice = null;
+        _verified = false;
+        lock (ActiveSync)
+        {
+            _deleting = false;
+        }
     }
 
     private static async Task<(string Directory, VoiceModel Voice)> EnsureAsync(CancellationToken token)
@@ -215,12 +397,31 @@ internal sealed class PiperStreamingProvider : IStreamingTtsProvider
         }
         if (_voice == null)
         {
-            _voice = await PiperDownloader.DownloadModelByKey(VoiceKey).ConfigureAwait(false)
+            _voice = await PiperDownloader.GetModelByKey(VoiceKey).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("The Piper voice is not installed.");
+            _voice.ModelLocation = Path.Combine(Root, VoiceKey);
         }
+
+        if (!_verified)
+        {
+            VerifyVoice(_voice);
+            _verified = true;
+        }
+
         _piperDirectory ??= Directory.EnumerateDirectories(Root).FirstOrDefault(path => File.Exists(Path.Combine(path, "piper.exe")))
             ?? Root;
         return (_piperDirectory, _voice);
+    }
+
+    private static void VerifyVoice(VoiceModel model)
+    {
+        string directory = model.ModelLocation ?? Path.Combine(Root, VoiceKey);
+        ModelIntegrity.Verify(
+            ModelIntegrity.ComputeFileSha256Async(Path.Combine(directory, VoiceKey + ".onnx")).GetAwaiter().GetResult(),
+            VoiceOnnxSha256, "Piper voice");
+        ModelIntegrity.Verify(
+            ModelIntegrity.ComputeFileSha256Async(Path.Combine(directory, VoiceKey + ".onnx.json")).GetAwaiter().GetResult(),
+            VoiceJsonSha256, "Piper voice configuration");
     }
 
     public async Task StreamAsync(string text, float speed, int voice, Action<float[], int> onSamples, CancellationToken token)
@@ -235,27 +436,55 @@ internal sealed class PiperStreamingProvider : IStreamingTtsProvider
             Model = model,
             SpeakingRate = Math.Clamp(speed, 0.5f, 2f),
         });
-        wave.Start();
-        var converter = new MonoToStereo48k(wave.WaveFormat.SampleRate, onSamples);
-        var infer = wave.InferPlayback(text, token);
-        var wait = wave.WaitForExit(token);
-        var buffer = new byte[4096];
-        while (!wait.IsCompleted)
+        lock (ActiveSync)
         {
-            int read = wave.Read(buffer, 0, buffer.Length);
-            if (read > 0) PushPcm16(buffer, read, converter);
-            else await Task.Delay(5, token).ConfigureAwait(false);
+            if (_deleting)
+            {
+                Release(wave);
+                throw new OperationCanceledException("The Piper model is being deleted.");
+            }
+
+            Active.Add(wave);
         }
 
-        int tail;
-        while ((tail = wave.Read(buffer, 0, buffer.Length)) > 0)
+        try
         {
-            PushPcm16(buffer, tail, converter);
-        }
+            wave.Start();
+            var converter = new MonoToStereo48k(wave.WaveFormat.SampleRate, onSamples);
+            var infer = wave.InferPlayback(text, token);
+            var wait = wave.WaitForExit(token);
+            var buffer = new byte[4096];
+            while (!wait.IsCompleted)
+            {
+                token.ThrowIfCancellationRequested();
+                int read = wave.Read(buffer, 0, buffer.Length);
+                if (read > 0) PushPcm16(buffer, read, converter);
+                else await Task.Delay(5, token).ConfigureAwait(false);
+            }
 
-        await infer.ConfigureAwait(false);
-        await wait.ConfigureAwait(false);
-        converter.Flush();
+            token.ThrowIfCancellationRequested();
+
+            int tail;
+            while ((tail = wave.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                PushPcm16(buffer, tail, converter);
+            }
+
+            await infer.ConfigureAwait(false);
+            await wait.ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            converter.Flush();
+        }
+        finally
+        {
+            lock (ActiveSync)
+            {
+                Active.Remove(wave);
+            }
+
+            Release(wave);
+        }
     }
 
     private static void PushPcm16(byte[] buffer, int length, MonoToStereo48k converter)

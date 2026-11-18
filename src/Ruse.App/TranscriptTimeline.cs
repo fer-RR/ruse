@@ -140,7 +140,7 @@ internal static class SpeechAudio
 
 internal static class SentenceSplitter
 {
-    private static readonly Regex Boundary = new(@"(?<=[.!?ã€‚ï¼ï¼Ÿ])\s+", RegexOptions.Compiled);
+    private static readonly Regex Boundary = new(@"(?<=[.!?])\s+|(?<=[。！？])", RegexOptions.Compiled);
 
     public static List<SubtitleCue> Split(string text, double startSeconds, double endSeconds)
     {

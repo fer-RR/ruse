@@ -3,7 +3,7 @@ import type { CSSProperties } from 'react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, ChevronUp, Combine, Copy, FileAudio, GripVertical, Languages, Layers3, Mic, MonitorSpeaker,
+  AppWindow, Activity, AudioLines, Check, ChevronDown, ChevronUp, Combine, Copy, FileAudio, GripVertical, Languages, Layers3, Mic, MonitorSpeaker,
   Play, Power, Puzzle, Radio, Settings, SkipForward, SlidersHorizontal, Square, Timer, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
@@ -115,6 +115,10 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
 function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; telemetry?: NodeTelemetry }) {
   const { t } = useI18n();
   const [seekValue, setSeekValue] = useState<number | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisDismissed, setAnalysisDismissed] = useState(false);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const previousFilePath = useRef(node.filePath);
   const fileName = node.filePath ? node.filePath.split(/[\\/]/).pop() : t('No file selected');
   const hasFile = Boolean(node.filePath);
   const playing = telemetry?.filePlaying === true;
@@ -123,6 +127,27 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
   const duration = telemetry?.fileDurationSeconds ?? 0;
   const sliderValue = seekValue ?? (duration > 0 ? Math.round((position / duration) * 1000) : 0);
   const canSeek = hasFile && duration > 0 && (playing || paused);
+  const analysis = node.fileAnalysis;
+  const showAnalysis = Boolean(analysis) && !analysisDismissed;
+  const showAnalysisPanel = analyzing || showAnalysis || Boolean(node.fileAnalysisError);
+
+  useEffect(() => {
+    if (node.fileAnalysis || node.fileAnalysisError) setAnalyzing(false);
+  }, [node.fileAnalysis, node.fileAnalysisError]);
+
+  useEffect(() => {
+    if (previousFilePath.current === node.filePath) return;
+    previousFilePath.current = node.filePath;
+    setAnalyzing(false);
+    setAnalysisDismissed(true);
+  }, [node.filePath]);
+
+  useEffect(() => {
+    const root = controlsRef.current?.closest('.ruse-node');
+    if (!root) return;
+    root.classList.toggle('file-analysis-open', showAnalysisPanel);
+    return () => root.classList.remove('file-analysis-open');
+  }, [showAnalysisPanel]);
 
   const commitSeek = () => {
     if (seekValue === null || duration <= 0) return;
@@ -131,7 +156,7 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
   };
 
   return (
-    <div className="file-player-controls nodrag">
+    <div className="file-player-controls nodrag" ref={controlsRef}>
       <div
         className="file-player-name"
         title={node.filePath ?? ''}
@@ -188,6 +213,17 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
         </button>
         <button className="small-button" onClick={() => send('file-player-file', { id: node.id })}>{t('Choose file')}</button>
         <button className="small-button" disabled={!hasFile} onClick={() => send('file-player-restart', { id: node.id })}>{t('Restart')}</button>
+        <button
+          className="small-button"
+          disabled={!hasFile || analyzing}
+          onClick={() => {
+            setAnalysisDismissed(false);
+            setAnalyzing(true);
+            send('file-player-analyze', { id: node.id });
+          }}
+        >
+          <Activity size={11} /> {analyzing ? t('Analyzing...') : t('Analyze')}
+        </button>
         <label className="file-player-speed">
           <span>{t('Speed')}</span>
           <select value={node.fileSpeed ?? 1} onChange={event => send('file-player-speed', { id: node.id, value: Number(event.target.value) })}>
@@ -203,6 +239,51 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
           <span>{t('Loop')}</span>
         </label>
       </div>
+      {showAnalysisPanel && (
+        <div className="file-analysis-panel" role="region" aria-label={t('File analysis')}>
+          <div className="file-analysis-head">
+            <strong>{t('File analysis')}</strong>
+            <button
+              type="button"
+              className="icon-button compact"
+              title={t('Close')}
+              aria-label={t('Close')}
+              onClick={() => {
+                setAnalysisDismissed(true);
+                setAnalyzing(false);
+              }}
+            ><X size={12} /></button>
+          </div>
+          {analyzing ? (
+            <p className="file-analysis-empty">{t('Analyzing...')}</p>
+          ) : node.fileAnalysisError ? (
+            <p className="file-analysis-error">{node.fileAnalysisError}</p>
+          ) : analysis ? (
+            <div className="file-analysis-grid">
+              <div><span>Format</span><b>{analysis.extension || '—'} · {analysis.encoding}</b></div>
+              <div><span>Duration</span><b>{formatTime(analysis.durationSeconds)}</b></div>
+              <div><span>Size</span><b>{formatBytes(analysis.fileSizeBytes)}</b></div>
+              <div><span>Bitrate</span><b>{analysis.bitrateKbps > 0 ? `${analysis.bitrateKbps} kbps` : '—'}</b></div>
+              <div><span>Sample rate</span><b>{analysis.sampleRate} Hz</b></div>
+              <div><span>Channels</span><b>{analysis.channels}</b></div>
+              <div><span>Bits</span><b>{analysis.bitsPerSample || '—'}</b></div>
+              <div><span>Frames</span><b>{analysis.frameCount.toLocaleString()}</b></div>
+              <div><span>Peak</span><b>{formatDb(analysis.peakDb)}</b></div>
+              <div><span>True peak</span><b>{formatDb(analysis.truePeakDb)}</b></div>
+              <div><span>RMS</span><b>{formatDb(analysis.rmsDb)}</b></div>
+              <div><span>Crest</span><b>{analysis.crestFactorDb.toFixed(1)} dB</b></div>
+              <div><span>Integrated</span><b>{analysis.integratedLufs.toFixed(1)} LUFS</b></div>
+              <div><span>Loudness range</span><b>{analysis.loudnessRange.toFixed(1)} LU</b></div>
+              <div><span>Silence</span><b>{analysis.silencePercent.toFixed(1)}%</b></div>
+              <div><span>Clipped</span><b>{analysis.clippedSamples.toLocaleString()}</b></div>
+              <div><span>DC L / R</span><b>{analysis.dcOffsetLeft.toFixed(4)} / {analysis.dcOffsetRight.toFixed(4)}</b></div>
+              <div><span>Correlation</span><b>{analysis.stereoCorrelation.toFixed(2)}</b></div>
+              <div><span>Balance</span><b>{analysis.stereoBalanceDb.toFixed(1)} dB</b></div>
+              {analysis.lastModifiedUtc && <div><span>Modified</span><b>{new Date(analysis.lastModifiedUtc).toLocaleDateString()}</b></div>}
+            </div>
+          ) : null}
+        </div>
+      )}
     </div>
   );
 }
@@ -663,6 +744,18 @@ function formatTime(seconds: number): string {
   const whole = Math.max(0, Math.floor(seconds));
   const minutes = Math.floor(whole / 60);
   return `${minutes}:${String(whole % 60).padStart(2, '0')}`;
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${Math.round(bytes)} B`;
+}
+
+function formatDb(value: number): string {
+  return Number.isFinite(value) ? `${value.toFixed(1)} dB` : '—';
 }
 
 function DbMeterView({ db, peakDb, dbLeft, dbRight, peakDbLeft, peakDbRight, vertical }: {

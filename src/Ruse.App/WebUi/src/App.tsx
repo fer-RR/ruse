@@ -14,8 +14,9 @@ import { I18nProvider, normalizeLanguage, translate } from './i18n';
 import type { RuseFlowNode } from './flow';
 import { chainLayout, nearestFreePosition } from './layout';
 import { catalogKey } from './library';
-import { SHORTCUTS } from './shortcuts';
+import { SHORTCUTS, hasOpenDialog, shouldIgnoreShortcut } from './shortcuts';
 import { getNodeTelemetry, publishTelemetry, setNodeTitles, useUiTelemetry } from './telemetry';
+import { setMotionMode, useReducedMotion } from './useReducedMotion';
 import RuseNode from './components/RuseNode';
 import RuseEdge from './components/RuseEdge';
 import RuseConnectionLine from './components/RuseConnectionLine';
@@ -30,8 +31,8 @@ import MixerPanel from './components/MixerPanel';
 import TimelineBoundary from './components/TimelineBoundary';
 import { DIAGNOSTICS_NODE_ID, loadDiagnosticsLayout, saveDiagnosticsLayout } from './diagnostics';
 import type {
-  CatalogItem, CatalogSnapshot, ChainEditorRequest, FirstRouteResult, FrameModel, GraphSnapshot, HistorySnapshot,
-  LinkStateUpdate, MixerInputStateUpdate, MixerStateUpdate, NodeStateUpdate, SettingsModel, StatusMessage,
+  CatalogItem, CatalogSnapshot, ChainEditorRequest, FileAnalysis, FirstRouteResult, FrameModel, GraphSnapshot, HistorySnapshot,
+  LinkStateUpdate, MediaListModel, MixerInputStateUpdate, MixerStateUpdate, NodeModel, NodeStateUpdate, SettingsModel, StatusMessage,
   TelemetrySnapshot,
 } from './types';
 import {
@@ -56,6 +57,7 @@ const emptyCatalog: CatalogSnapshot = {
   defaultOutputId: '', defaultOutputName: '', perAppCaptureAvailable: true,
 };
 const initialSettings: SettingsModel = demoSettings;
+const EMPTY_NODES: NodeModel[] = [];
 const systemItem: CatalogItem = {
   id: 'system', kind: 'system', name: 'System audio', subtitle: 'Windows loopback',
   details: 'Capture everything playing through the default output',
@@ -106,6 +108,8 @@ export default function App() {
   const workspaceRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const [catalog, setCatalog] = useState<CatalogSnapshot>(isHosted ? emptyCatalog : demoCatalog);
+  const [media, setMedia] = useState<MediaListModel>({ folders: [], files: [] });
+  const [mediaWaveforms, setMediaWaveforms] = useState<Record<string, number[]>>({});
   const [graph, setGraph] = useState<GraphSnapshot>(isHosted ? { version: 0, nodes: [], links: [], running: false } : demoGraph);
   const [settings, setSettings] = useState<SettingsModel>(initialSettings);
   const language = normalizeLanguage(settings.uiLanguage);
@@ -190,7 +194,11 @@ export default function App() {
   const [libraryRemoval, setLibraryRemoval] = useState<CatalogItem | null>(null);
   const [aliases, setAliases] = useState<Record<string, string>>(() => {
     try {
-      return JSON.parse(localStorage.getItem('ruse.libraryAliases') ?? '{}') as Record<string, string>;
+      const parsed: unknown = JSON.parse(localStorage.getItem('ruse.libraryAliases') ?? '{}');
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+      return Object.fromEntries(
+        Object.entries(parsed as Record<string, unknown>)
+          .filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
     } catch {
       return {};
     }
@@ -201,6 +209,8 @@ export default function App() {
   const [frameRename, setFrameRename] = useState<FrameModel | null>(null);
   const [frameRemoval, setFrameRemoval] = useState<FrameRemoval | null>(null);
   const [recorderRemoval, setRecorderRemoval] = useState<RecorderRemoval | null>(null);
+  const [frameTipDismissed, setFrameTipDismissed] = useState(() => localStorage.getItem('ruse.frameTipDismissed') === '1');
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<Set<string>>(() => new Set());
   const appShellRef = useRef<HTMLDivElement>(null);
   const activeSurfaceRef = useRef<'graph' | 'timeline'>('graph');
   const connectingRef = useRef(false);
@@ -208,17 +218,25 @@ export default function App() {
   const pendingTelemetry = useRef<TelemetrySnapshot | null>(null);
   const pendingMoves = useRef<Map<string, { x: number; y: number; at: number  }>>(new Map());
   const framesRef = useRef<FrameModel[]>([]);
+  const frameMoveCleanup = useRef<(() => void) | null>(null);
   const frameEditing = useRef(false);
   const graphSeen = useRef(false);
   const [rejectedLinkId, setRejectedLinkId] = useState<string | null>(null);
 
   const nodesRef = useRef(nodes);
+  const graphRef = useRef(graph);
   const settingsRef = useRef(settings);
   const sidebarCollapsedRef = useRef(sidebarCollapsed);
   const zCounter = useRef(1);
   useEffect(() => { nodesRef.current = nodes; }, [nodes]);
+  useEffect(() => { graphRef.current = graph; }, [graph]);
   useEffect(() => { framesRef.current = frames; }, [frames]);
   useEffect(() => { settingsRef.current = settings; }, [settings]);
+  useEffect(() => {
+    setMotionMode(settings.motionMode ?? 'system');
+  }, [settings.motionMode]);
+  useEffect(() => () => frameMoveCleanup.current?.(), []);
+  const reducedMotion = useReducedMotion();
   const applyDiagnostics = useCallback((show: boolean) => {
     const next = { ...settingsRef.current, showDiagnostics: show };
     settingsRef.current = next;
@@ -288,6 +306,7 @@ export default function App() {
   }, [sidebarWidth]);
   useEffect(() => { localStorage.setItem('ruse.libraryAliases', JSON.stringify(aliases)); }, [aliases]);
 
+  useEffect(() => { localStorage.setItem('ruse.frameTipDismissed', frameTipDismissed ? '1' : '0'); }, [frameTipDismissed]);
   const saveFrames = (next: FrameModel[]) => {
     framesRef.current = next;
     setFrames(next);
@@ -432,8 +451,119 @@ export default function App() {
     window.addEventListener('pointercancel', finish);
   };
 
+  const moveFrame = (event: React.PointerEvent<HTMLDivElement>, frame: FrameModel) => {
+    if (event.button !== 0 || event.altKey) return;
+    const target = event.target as Element | null;
+    if (target?.closest('button, input, select, textarea')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    frameMoveCleanup.current?.();
+    frameEditing.current = true;
+    draggingRef.current = true;
+    setInteracting(true);
+
+    const origin = { ...frame };
+    const start = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    const movingNodes = nodesRef.current.filter(node => {
+      const width = node.measured?.width ?? node.data.width ?? 204;
+      const height = node.measured?.height ?? 140;
+      const centerX = node.position.x + width / 2;
+      const centerY = node.position.y + height / 2;
+      return centerX >= origin.x && centerX <= origin.x + origin.width &&
+        centerY >= origin.y && centerY <= origin.y + origin.height;
+    });
+    const origins = new Map(movingNodes.map(node => [node.id, { ...node.position }]));
+    let next = origin;
+    let moved = false;
+
+    const move = (moveEvent: PointerEvent) => {
+      const point = flow.screenToFlowPosition({ x: moveEvent.clientX, y: moveEvent.clientY });
+      const x = snapFrameValue(origin.x + point.x - start.x);
+      const y = snapFrameValue(origin.y + point.y - start.y);
+      const dx = x - origin.x;
+      const dy = y - origin.y;
+      if (dx === 0 && dy === 0 && !moved) return;
+      moved = true;
+      next = { ...origin, x, y };
+      framesRef.current = framesRef.current.map(item => item.id === frame.id ? next : item);
+      setFrames(framesRef.current);
+      if (origins.size > 0) {
+        setNodes(current => current.map(node => {
+          const from = origins.get(node.id);
+          return from ? { ...node, position: { x: from.x + dx, y: from.y + dy } } : node;
+        }));
+      }
+    };
+
+    const finish = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      frameMoveCleanup.current = null;
+      frameEditing.current = false;
+      draggingRef.current = false;
+      setInteracting(false);
+      flushPendingTelemetry();
+      if (!moved) return;
+      saveFrames(framesRef.current);
+      const dx = next.x - origin.x;
+      const dy = next.y - origin.y;
+      for (const node of movingNodes) {
+        const from = origins.get(node.id);
+        if (!from) continue;
+        const x = from.x + dx;
+        const y = from.y + dy;
+        if (node.data.diagnostics) {
+          saveDiagnosticsLayout({ ...loadDiagnosticsLayout(), x, y });
+        } else {
+          pendingMoves.current.set(node.id, { x, y, at: performance.now() });
+          send('move', { id: node.id, x, y });
+        }
+      }
+    };
+
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+    frameMoveCleanup.current = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+    };
+  };
+
+  useEffect(() => {
+    const ids = new Set(graph.links.map(link => link.id));
+    setSelectedEdgeIds(current => {
+      if ([...current].every(id => ids.has(id))) return current;
+      return new Set([...current].filter(id => ids.has(id)));
+    });
+  }, [graph.links]);
+
   const removeFrameOnly = (frame: FrameModel) => {
     saveFrames(framesRef.current.filter(item => item.id !== frame.id));
+  };
+
+  const confirmRecorderRemoval = (ids: string[]): Promise<boolean> => {
+    const active = nodesRef.current.filter(node =>
+      ids.includes(node.id) &&
+      node.data.isRecorder &&
+      getNodeTelemetry(node.id)?.recordingStatus === 'REC');
+    if (active.length === 0) return Promise.resolve(true);
+    return new Promise(resolve => {
+      setRecorderRemoval({
+        id: active[0].id,
+        title: active.map(node => node.data.title).join(', '),
+        resolve,
+      });
+    });
+  };
+
+  const requestClear = async () => {
+    const recorderIds = nodesRef.current
+      .filter(node => !node.data.diagnostics && node.data.isRecorder)
+      .map(node => node.id);
+    if (await confirmRecorderRemoval(recorderIds)) setShowClear(true);
   };
 
   const requestRemoveFrame = (frame: FrameModel) => {
@@ -451,6 +581,8 @@ export default function App() {
   useEffect(() => subscribe((type, payload) => {
     switch (type) {
       case 'catalog': setCatalog(payload as CatalogSnapshot); break;
+      case 'media-list': setMedia(payload as MediaListModel); break;
+      case 'media-waveform': { const update = payload as { path: string; peaks: number[] }; setMediaWaveforms(current => ({ ...current, [update.path]: update.peaks })); break; }
       case 'graph': setGraph(payload as GraphSnapshot); break;
       case 'node-state': {
         const update = payload as NodeStateUpdate;
@@ -516,6 +648,20 @@ export default function App() {
         }
         break;
       case 'settings': setSettings(payload as SettingsModel); break;
+      case 'file-analysis': {
+        const update = payload as { id: string; analysis?: FileAnalysis; error?: string };
+        setNodes(current => current.map(node => node.id === update.id
+          ? {
+              ...node,
+              data: {
+                ...node.data,
+                fileAnalysis: update.analysis ?? null,
+                fileAnalysisError: update.error,
+              },
+            }
+          : node));
+        break;
+      }
       case 'first-route': setFirstRouteResult(payload as FirstRouteResult); break;
       case 'tray-open-mixer': setMixerOpen(true); break;
       case 'tray-open-timeline': setTimelineOpen(true); break;
@@ -745,13 +891,14 @@ export default function App() {
         type: 'ruseEdge',
         data: { kind: link.kind, native: link.native === true, nativeRate: link.native === true ? (link.nativeRate || source?.sampleRate) : undefined, rejected: rejectedLinkId === link.id, physics: settings.cablePhysics },
         animated: false,
+        selected: selectedEdgeIds.has(link.id),
         interactionWidth: 22,
         style: { stroke: source?.accent ?? '#5B8DEF', strokeWidth: 2, opacity: 0.84 },
       };
     });
-  }, [graph.links, graph.nodes, rejectedLinkId, settings.cablePhysics]);
+  }, [graph.links, graph.nodes, rejectedLinkId, settings.cablePhysics, selectedEdgeIds]);
 
-  const sendAdd = useCallback((item: CatalogItem, position: { x: number; y: number }, linkId?: string) => {
+  const sendAdd = useCallback((item: CatalogItem, position: { x: number; y: number }, linkId?: string, connectTo?: string) => {
     send('add', {
       kind: item.kind,
       id: item.id,
@@ -762,6 +909,7 @@ export default function App() {
       linkId: linkId ?? '',
       x: Math.round(position.x / 20) * 20,
       y: Math.round(position.y / 20) * 20,
+      connectTo: connectTo ?? '',
     });
   }, [aliases, t]);
 
@@ -817,9 +965,9 @@ export default function App() {
     const height = target.measured?.height ?? 140;
     flow.setCenter(target.position.x + width / 2, target.position.y + height / 2, {
       zoom: flow.getZoom(),
-      duration: 220,
+      duration: reducedMotion ? 0 : 220,
     });
-  }, [flow, setNodes]);
+  }, [flow, reducedMotion, setNodes]);
 
   const findFreeSpot = useCallback((position: { x: number; y: number }) => {
     const others = nodesRef.current.map(node => ({
@@ -870,7 +1018,7 @@ export default function App() {
       }));
     const positions = chainLayout(
       layoutNodes,
-      graph.links.map(link => ({ from: link.from, to: link.to, kind: link.kind })),
+      graphRef.current.links.map(link => ({ from: link.from, to: link.to, kind: link.kind })),
     );
 
     const byId = new Map(positions.map(position => [position.id, position]));
@@ -979,6 +1127,48 @@ export default function App() {
       setNodes(current => current.map(item => item.id === node.id ? { ...item, position: free } : item));
     }
 
+    const draggedRect = {
+      x: node.position.x,
+      y: node.position.y,
+      width: moving.width,
+      height: moving.height,
+    };
+    let connectTarget: RuseFlowNode | undefined;
+    let bestOverlap = 0;
+    if (node.data.kind === 'source' || node.data.kind === 'output') {
+      for (const candidate of nodesRef.current) {
+        if (candidate.id === node.id || candidate.data.diagnostics) continue;
+        const matches = node.data.kind === 'source'
+          ? candidate.data.kind === 'output'
+          : candidate.data.kind === 'source';
+        if (!matches) continue;
+        const targetRect = {
+          x: candidate.position.x,
+          y: candidate.position.y,
+          width: candidate.measured?.width ?? candidate.data.width ?? 204,
+          height: candidate.measured?.height ?? 140,
+        };
+        const overlapWidth = Math.max(0, Math.min(draggedRect.x + draggedRect.width, targetRect.x + targetRect.width) - Math.max(draggedRect.x, targetRect.x));
+        const overlapHeight = Math.max(0, Math.min(draggedRect.y + draggedRect.height, targetRect.y + targetRect.height) - Math.max(draggedRect.y, targetRect.y));
+        const overlap = overlapWidth * overlapHeight;
+        const threshold = Math.min(draggedRect.width * draggedRect.height, targetRect.width * targetRect.height) * 0.35;
+        if (overlap >= threshold && overlap > bestOverlap) {
+          bestOverlap = overlap;
+          connectTarget = candidate;
+        }
+      }
+    }
+
+    if (connectTarget) {
+      const from = node.data.kind === 'source' ? node.id : connectTarget.id;
+      const to = node.data.kind === 'source' ? connectTarget.id : node.id;
+      const exists = graphRef.current.links.some(link =>
+        link.kind === 'direct' && link.from === from && link.to === to);
+      if (!exists) {
+        send('connect', { from, to, gain: 1, enabled: true });
+      }
+    }
+
     draggingRef.current = false;
     setInteracting(false);
     flushPendingTelemetry();
@@ -1000,11 +1190,27 @@ export default function App() {
 
   const onEdgesChange = (changes: EdgeChange<Edge>[]) => {
     for (const change of changes) {
-      if (change.type === 'remove') send('disconnect', { id: change.id });
+      if (change.type === 'remove') {
+        send('disconnect', { id: change.id });
+        setSelectedEdgeIds(current => {
+          if (!current.has(change.id)) return current;
+          const next = new Set(current);
+          next.delete(change.id);
+          return next;
+        });
+      } else if (change.type === 'select') {
+        setSelectedEdgeIds(current => {
+          if (current.has(change.id) === change.selected) return current;
+          const next = new Set(current);
+          if (change.selected) next.add(change.id);
+          else next.delete(change.id);
+          return next;
+        });
+      }
     }
   };
 
-  const fitGraph = () => flow.fitView({ padding: 0.18, duration: 180 });
+  const fitGraph = () => flow.fitView({ padding: 0.18, duration: reducedMotion ? 0 : 180 });
   const modalOpen = showSettings || showAudioHelp || welcomeOpen || firstRouteOpen || showRouteCheck || processPicker != null || explainer != null ||
     showClear || trayPrompt || renamePrompt != null || chainEditor != null ||
     renameLibrary != null || libraryRemoval != null || canvasMenu != null;
@@ -1037,11 +1243,13 @@ export default function App() {
 
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      if (modalOpen || hasOpenDialog()) return;
+
       const target = event.target as HTMLElement;
       const textInput = target instanceof HTMLInputElement &&
         !['range', 'checkbox', 'radio', 'button', 'submit'].includes(target.type);
       const editing = textInput || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable;
-      if (modalOpen) return;
       if (event.key === 'F1') {
         event.preventDefault();
         setSettingsTab('diagnostics');
@@ -1053,6 +1261,7 @@ export default function App() {
         send('refresh');
         return;
       }
+      if (shouldIgnoreShortcut(event, false)) return;
       if (editing) return;
       const modifier = event.ctrlKey || event.metaKey;
       const timelineHistory = timelineOpen && activeSurfaceRef.current === 'timeline';
@@ -1127,30 +1336,37 @@ export default function App() {
         }
         send(timeline.playing ? 'timeline-pause' : 'timeline-play');
       } else if (event.key.toLowerCase() === 'b') {
+        if (activeSurfaceRef.current !== 'graph') return;
         const selected = nodesRef.current.find(node =>
           node.selected && node.data.kind === 'modifier' && !node.data.diagnostics);
         if (selected) {
           send('effect-enabled', { id: selected.id, value: selected.data.enabled === false });
         }
       } else if (event.key.toLowerCase() === 'f') {
+        if (activeSurfaceRef.current !== 'graph') return;
         fitGraph();
       } else if (event.key.toLowerCase() === 'm') {
+        if (activeSurfaceRef.current !== 'graph') return;
         muteSelected();
       } else if (event.key.toLowerCase() === 't') {
+        if (activeSurfaceRef.current !== 'graph') return;
         tidyGraph();
       } else if (event.key === '0') {
-        flow.zoomTo(1, { duration: 160 });
+        if (activeSurfaceRef.current !== 'graph') return;
+        flow.zoomTo(1, { duration: reducedMotion ? 0 : 160 });
       } else if (event.key === '+' || event.key === '=') {
-        flow.zoomIn({ duration: 120 });
+        if (activeSurfaceRef.current !== 'graph') return;
+        flow.zoomIn({ duration: reducedMotion ? 0 : 120 });
       } else if (event.key === '-') {
-        flow.zoomOut({ duration: 120 });
+        if (activeSurfaceRef.current !== 'graph') return;
+        flow.zoomOut({ duration: reducedMotion ? 0 : 120 });
       } else if (event.key === 'Escape') {
         setCanvasMenu(null);
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [flow, toggleDiagnostics, modalOpen, running, ui.micMuted, timeline.playing, timelineOpen, toggleTimeline]);
+  }, [flow, reducedMotion, toggleDiagnostics, modalOpen, running, ui.micMuted, timeline.playing, timelineOpen, toggleTimeline]);
 
   const startSidebarResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1257,15 +1473,41 @@ export default function App() {
     if (!warningSignature) setDismissedWarning('');
   }, [warningSignature]);
   const warningVisible = !!primaryWarning && warningSignature !== dismissedWarning;
-  const usedDeviceIds = useMemo(
-    () => new Set(graph.nodes.filter(node => node.deviceId).map(node => node.deviceId!)),
+  const deviceSignature = useMemo(
+    () => graph.nodes.map(node => `${node.id}:${node.deviceId ?? ''}`).join('|'),
     [graph.nodes],
   );
-  const mixerSources = useMemo(() => graph.nodes.filter(node => node.kind === 'source'), [graph.nodes]);
-  const mixerOutputs = useMemo(() => graph.nodes.filter(node => node.kind === 'output'), [graph.nodes]);
-  const mixerModifiers = useMemo(() => graph.nodes.filter(node => node.kind === 'modifier'), [graph.nodes]);
-  const timelineNodeIds = useMemo(() => new Set(graph.nodes.map(node => node.id)), [graph.nodes]);
+  const nodeStructureSignature = useMemo(
+    () => graph.nodes.map(node =>
+      `${node.id}:${node.kind}:${node.title}:${node.enabled === false}:${node.isMetronome === true}:${node.isToneGenerator === true}:${node.isSynthGenerator === true}:${node.parameters.map(parameter => `${parameter.processorIndex}.${parameter.parameterIndex}`).join(',')}`).join('|'),
+    [graph.nodes],
+  );
+  const linkStructureSignature = useMemo(
+    () => graph.links.map(link => `${link.id}:${link.from}:${link.to}:${link.kind}:${link.enabled !== false}`).join('|'),
+    [graph.links],
+  );
+  const usedDeviceIds = useMemo(
+    () => new Set(graph.nodes.filter(node => node.deviceId).map(node => node.deviceId!)),
+    [deviceSignature],
+  );
+  const mixerSources = useMemo(
+    () => mixerOpen ? graph.nodes.filter(node => node.kind === 'source') : EMPTY_NODES,
+    [graph.nodes, mixerOpen],
+  );
+  const mixerOutputs = useMemo(
+    () => mixerOpen ? graph.nodes.filter(node => node.kind === 'output') : EMPTY_NODES,
+    [graph.nodes, mixerOpen],
+  );
+  const mixerModifiers = useMemo(
+    () => mixerOpen ? graph.nodes.filter(node => node.kind === 'modifier') : EMPTY_NODES,
+    [graph.nodes, mixerOpen],
+  );
+  const timelineNodeIds = useMemo(
+    () => new Set(graph.nodes.map(node => node.id)),
+    [nodeStructureSignature],
+  );
   const timelineAutomationTargets = useMemo<TimelineAutomationTarget[]>(() => {
+    if (!timelineOpen) return [];
     const nodesById = new Map(graph.nodes.map(node => [node.id, node]));
     const downstream = new Map<string, string[]>();
     for (const link of graph.links) {
@@ -1341,7 +1583,7 @@ export default function App() {
     }
 
     return targets;
-  }, [graph.links, graph.nodes, timeline.project.tracks, t]);
+  }, [linkStructureSignature, nodeStructureSignature, timeline.project.tracks, timelineOpen, t]);
   const menuNode = canvasMenu?.kind === 'node' ? nodes.find(node => node.id === canvasMenu.id) : undefined;
   const menuLink = canvasMenu?.kind === 'edge' ? graph.links.find(link => link.id === canvasMenu.id) : undefined;
   const menuDbVertical = menuNode?.data.isDbMeter
@@ -1379,7 +1621,7 @@ export default function App() {
         onRefresh={() => send('refresh')}
         onSave={() => send('save-preset')}
         onLoad={() => send('load-preset')}
-        onClear={() => setShowClear(true)}
+        onClear={requestClear}
         onUndo={() => send('undo')}
         onRedo={() => send('redo')}
         onTidy={tidyGraph}
@@ -1424,6 +1666,8 @@ export default function App() {
               catalog={catalog}
               searchRef={searchRef}
               aliases={aliases}
+              media={media}
+              waveforms={mediaWaveforms}
               usedDeviceIds={usedDeviceIds}
               onAdd={quickAdd}
               onRename={setRenameLibrary}
@@ -1450,11 +1694,42 @@ export default function App() {
             const files = Array.from(event.dataTransfer.files ?? []);
             if (files.length > 0) {
               const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-              const spot = findFreeSpot({ x: position.x - 102, y: position.y - 60 });
+              const output = nodesRef.current.find(node => {
+                if (node.data.kind !== 'output') return false;
+                const width = node.measured?.width ?? node.data.width ?? 204;
+                const height = node.measured?.height ?? 140;
+                return position.x >= node.position.x && position.x <= node.position.x + width &&
+                  position.y >= node.position.y && position.y <= node.position.y + height;
+              });
+              const spot = output
+                ? { x: Math.max(0, output.position.x - 240), y: output.position.y }
+                : findFreeSpot({ x: position.x - 102, y: position.y - 60 });
               window.chrome?.webview?.postMessageWithAdditionalObjects?.(
-                { type: 'file-drop', payload: { x: spot.x, y: spot.y } },
+                { type: 'file-drop', payload: { x: spot.x, y: spot.y, connectTo: output?.id } },
                 files,
               );
+              return;
+            }
+
+            const mediaPath = event.dataTransfer.getData('application/ruse-media');
+            if (mediaPath) {
+              const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+              const output = nodesRef.current.find(node => {
+                if (node.data.kind !== 'output') return false;
+                const width = node.measured?.width ?? node.data.width ?? 204;
+                const height = node.measured?.height ?? 140;
+                return position.x >= node.position.x && position.x <= node.position.x + width &&
+                  position.y >= node.position.y && position.y <= node.position.y + height;
+              });
+              const spot = output
+                ? { x: Math.max(0, output.position.x - 240), y: output.position.y }
+                : findFreeSpot({ x: position.x - 102, y: position.y - 60 });
+              send('add-file-player', {
+                path: mediaPath,
+                x: spot.x,
+                y: spot.y,
+                connectTo: output?.id,
+              });
               return;
             }
 
@@ -1474,16 +1749,31 @@ export default function App() {
             const canInsert = item.kind === 'effect' || item.kind === 'chain' || item.kind === 'vst3';
             const linkId = canInsert ? findLinkAtPoint(position) : undefined;
             const halfWidth = item.kind === 'vst3' ? 170 : 102;
-            sendAdd(
-              item,
-              linkId ? { x: position.x - halfWidth, y: position.y - 60 } : findFreeSpot({ x: position.x, y: position.y }),
-              linkId,
-            );
+            let addPosition = linkId
+              ? { x: position.x - halfWidth, y: position.y - 60 }
+              : findFreeSpot({ x: position.x, y: position.y });
+            let connectTo = '';
+            if (item.kind === 'sample' && item.filePath) {
+              const output = nodesRef.current.find(node => {
+                if (node.data.kind !== 'output') return false;
+                const width = node.measured?.width ?? node.data.width ?? 204;
+                const height = node.measured?.height ?? 140;
+                return position.x >= node.position.x && position.x <= node.position.x + width &&
+                  position.y >= node.position.y && position.y <= node.position.y + height;
+              });
+              if (output) {
+                addPosition = { x: Math.max(0, output.position.x - 240), y: output.position.y };
+                connectTo = output.id;
+              }
+            }
+            sendAdd(item, addPosition, linkId, connectTo);
           }}
         >
           <ReactFlow
             nodes={nodes}
             edges={edges}
+            tabIndex={0}
+            aria-label={t('Routing canvas')}
             nodeTypes={nodeTypes}
             edgeTypes={edgeTypes}
             onNodesChange={onNodesChange as (changes: NodeChange<RuseFlowNode>[]) => void}
@@ -1504,14 +1794,7 @@ export default function App() {
             onBeforeDelete={async ({ nodes: deleting, edges }) => {
               const hasDiagnostics = deleting.some(node => node.data.diagnostics);
               const deletable = deleting.filter(node => !node.data.diagnostics);
-              const active = deletable.filter(node =>
-                node.data.isRecorder && getNodeTelemetry(node.id)?.recordingStatus === 'REC');
-              if (active.length > 0) {
-                const confirmed = await new Promise<boolean>(resolve => {
-                  setRecorderRemoval({ id: active[0].id, title: active[0].data.title, resolve });
-                });
-                if (!confirmed) return false;
-              }
+              if (!(await confirmRecorderRemoval(deletable.map(node => node.id)))) return false;
               return hasDiagnostics ? { nodes: deletable, edges } : true;
             }}
             onNodeContextMenu={(event, node) => {
@@ -1557,7 +1840,7 @@ export default function App() {
                 {frameDraft && <div className="ruse-frame draft" style={{ left: frameDraft.x, top: frameDraft.y, width: frameDraft.width, height: frameDraft.height }} />}
                 {frames.map(frame => (
                   <div className="ruse-frame" key={frame.id} style={{ left: frame.x, top: frame.y, width: frame.width, height: frame.height } }>
-                    <div className="ruse-frame-header">
+                    <div className="ruse-frame-header" onPointerDown={event => moveFrame(event, frame)}>
                       <span
                         className="ruse-frame-title"
                         title={t('Double-click to rename')}
@@ -1589,6 +1872,12 @@ export default function App() {
                 ))}
               </div>
             </ViewportPortal>            <Panel position="top-left" className="graph-caption"><span>{t('Routing canvas')}</span><strong>{t('{nodes} nodes · {cables} cables', { nodes: graphNodeCount, cables: edges.length })}</strong></Panel>
+            {!frameTipDismissed && frames.length === 0 && graphNodeCount >= 2 && (
+              <Panel position="bottom-center" className="frame-tip">
+                <span>{t('Hold Ctrl and drag on empty canvas to draw a Frame. Drag its title bar to move the whole group.')}</span>
+                <button type="button" className="icon-button compact" aria-label={t('Close')} title={t('Close')} onClick={() => setFrameTipDismissed(true)}><X size={11} /></button>
+              </Panel>
+            )}
             <Panel position="bottom-left" className="canvas-controls">
               <button title={t('Zoom out')} aria-label={t('Zoom out')} onClick={() => flow.zoomOut({ duration: 120 }) }><Minus size={14} /></button>
               <button title={t('Reset zoom')} aria-label={t('Reset zoom')} onClick={() => flow.zoomTo(1, { duration: 160 }) }>{Math.round(zoom * 100)}%</button>
@@ -1597,7 +1886,7 @@ export default function App() {
             </Panel>
             {showMiniMap && <MiniMap
               className="ruse-minimap"
-              style={timelineOpen ? { bottom: 'var(--timeline-dock-height, 340px)' } : undefined}
+              style={timelineOpen ? { bottom: 'min(var(--timeline-dock-height, 340px), calc(100% - 120px))' } : undefined}
               pannable
               zoomable
               nodeColor={node => (node.data as RuseFlowNode['data']).accent}
@@ -1660,7 +1949,8 @@ export default function App() {
               onAddMarker={(startSample, endSample) => send('timeline-marker-add', { startSample, endSample })}
               onUpdateMarker={(id, name) => send('timeline-marker-update', { id, name })}
               onRemoveMarker={id => send('timeline-marker-remove', { id })}
-              onPasteClips={clips => send('timeline-copy-clips', { clips })}
+              onCopyClips={clips => send('timeline-copy-clips', { clips })}
+              onPasteClips={placements => send('timeline-paste-clipboard', { placements })}
               onNormalizeClip={(trackId, clipId) => send('timeline-normalize-clip', { trackId, clipId })}
               onReverseClip={(trackId, clipId) => send('timeline-reverse-clip', { trackId, clipId })}
               onConsolidateClips={clips => send('timeline-consolidate', { clips })}
@@ -1708,6 +1998,7 @@ export default function App() {
       {trayPrompt && <TrayPromptDialog
         onKeep={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: true }); }}
         onQuit={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: false }); }}
+        onCancel={() => { setTrayPrompt(false); send('close-to-tray-result', { cancel: true }); }}
       />}
       {showClear && <ConfirmDialog title={t('Clear routing graph')} body={t('This removes every node and cable. The current session will be replaced when you close Ruse.')} confirmLabel={t('Clear graph')} onConfirm={() => { setShowClear(false); send('clear'); }} onClose={() => setShowClear(false)} />}
       {recorderRemoval && <ConfirmDialog
@@ -1738,9 +2029,11 @@ export default function App() {
         frameName={frameRemoval.frame.name}
         nodeCount={frameRemoval.nodeIds.length}
         onRemoveFrame={() => { removeFrameOnly(frameRemoval.frame); setFrameRemoval(null); }}
-        onRemoveWithNodes={() => {
-          const ids = frameRemoval.nodeIds;
-          removeFrameOnly(frameRemoval.frame);
+        onRemoveWithNodes={async () => {
+          const removal = frameRemoval;
+          const ids = removal.nodeIds;
+          if (!(await confirmRecorderRemoval(ids))) return;
+          removeFrameOnly(removal.frame);
           for (const id of ids) send('remove', { id });
           setFrameRemoval(null);
         }}
@@ -1834,7 +2127,7 @@ export default function App() {
             <button role="menuitem" tabIndex={-1} onClick={() => { fitGraph(); setCanvasMenu(null); } }><Maximize2 size={14} /> <span className="menu-label">{t('Fit graph')}</span> <kbd>{SHORTCUTS.fit}</kbd></button>
             <button role="menuitem" tabIndex={-1} onClick={tidyGraph }><LayoutGrid size={14} /> <span className="menu-label">{t('Tidy up')}</span> <kbd>{SHORTCUTS.tidy}</kbd></button>
             <div className="menu-separator" role="separator" />
-            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { setShowClear(true); setCanvasMenu(null); } }><Trash2 size={14} /> <span className="menu-label">{t('Clear graph')}</span></button>
+            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { setCanvasMenu(null); void requestClear(); } }><Trash2 size={14} /> <span className="menu-label">{t('Clear graph')}</span></button>
           </>}
         </div>
       </div>}
@@ -1846,6 +2139,7 @@ export default function App() {
         settings={settings}
         onChange={next => { setSettings(next); send('settings', { ...next }); }}
         onClose={() => { setWelcomeOpen(false); send('onboarding-complete'); }}
+        onCreateDesktopShortcut={() => send('create-desktop-shortcut')}
       /></Suspense>}
       {showAudioHelp && <DuplicateAudioDialog warning={primaryWarning} onClose={() => setShowAudioHelp(false)} />}
     </div>

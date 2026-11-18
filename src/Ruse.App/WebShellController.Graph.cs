@@ -97,7 +97,7 @@ internal sealed partial class WebShellController
                 AddFilePlayer(x, y);
                 return;
             case "sample":
-                AddFilePlayer(x, y, String(message, "filePath"));
+                AddFilePlayer(x, y, String(message, "filePath"), String(message, "connectTo"));
                 return;
             case "recorder":
                 entry = RegisterOutput(OutputNode.CreateForFile(string.Empty, AudioFileFormat.Wav24), x, y);
@@ -151,7 +151,7 @@ internal sealed partial class WebShellController
     }
 
 
-    private void AddFilePlayer(double x = 80, double y = 120, string? path = null)
+    private void AddFilePlayer(double x = 80, double y = 120, string? path = null, string? connectTo = null)
     {
         var source = new SourceNode("File player", SourceKind.File);
         var entry = RegisterSource(source, x, y);
@@ -172,6 +172,10 @@ internal sealed partial class WebShellController
         }
 
         PushAddNode(entry);
+        if (!string.IsNullOrWhiteSpace(connectTo) && _nodes.TryGetValue(connectTo, out var target) && target.Output != null)
+        {
+            ConnectNodes(entry.Id, target.Id);
+        }
         StartRoutingForNewSource(entry);
         PublishGraph();
         PublishTelemetry(force: true);
@@ -194,6 +198,7 @@ internal sealed partial class WebShellController
             Filter = "Audio files|*.wav;*.mp3;*.flac;*.aiff;*.aif;*.m4a;*.wma;*.ogg|All files|*.*",
             CheckFileExists = true,
             FileName = source.FilePath ?? "",
+            InitialDirectory = RuseFolders.Ensure(RuseFolders.Samples),
         };
         if (dialog.ShowDialog(_window) != true)
         {
@@ -356,6 +361,7 @@ internal sealed partial class WebShellController
             Filter = "Impulse responses|*.wav;*.aif;*.aiff;*.flac;*.mp3|All files|*.*",
             CheckFileExists = true,
             FileName = processor.ImpulseResponsePath ?? "",
+            InitialDirectory = RuseFolders.Ensure(RuseFolders.Samples),
         };
         if (dialog.ShowDialog(_window) != true)
         {
@@ -404,6 +410,7 @@ internal sealed partial class WebShellController
             Filter = "Audio files|*.wav;*.aif;*.aiff;*.flac;*.mp3|All files|*.*",
             CheckFileExists = true,
             FileName = processor.NoiseProfilePath ?? "",
+            InitialDirectory = RuseFolders.Ensure(RuseFolders.Samples),
         };
         if (dialog.ShowDialog(_window) != true)
         {
@@ -560,6 +567,30 @@ internal sealed partial class WebShellController
         source.ResumeFile();
         PublishTelemetry(force: true);
         SetStatus($"{entry.Title}: playing.");
+    }
+
+    private async void AnalyzeFilePlayer(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Source is not { Kind: SourceKind.File } source ||
+            string.IsNullOrWhiteSpace(source.FilePath))
+        {
+            return;
+        }
+
+        string path = source.FilePath;
+        SetStatus($"{entry.Title}: analyzing {Path.GetFileName(path)}...");
+        try
+        {
+            var analysis = await Task.Run(() => AudioFileAnalysis.Analyze(path, CancellationToken.None));
+            Post("file-analysis", new { id, analysis });
+            SetStatus($"{entry.Title}: analysis ready.");
+        }
+        catch (Exception ex)
+        {
+            Post("file-analysis", new { id, error = ex.Message });
+            SetStatus($"{entry.Title}: could not analyze the file: {ex.Message}", isError: true);
+        }
     }
 
     private void SeekFilePlayer(string id, double seconds)
@@ -1043,6 +1074,10 @@ internal sealed partial class WebShellController
             Source = source,
         };
         _nodes.Add(entry.Id, entry);
+        if (source.IsMetronome || source.Kind is SourceKind.Tone or SourceKind.Synth)
+        {
+            _generatorSources[entry.Id] = source;
+        }
         entry.ControlId = MakeUniqueControlId(entry, controlId);
         UpdateSourceEndpoint(entry);
         source.Faulted += (node, reason) => _window.Dispatcher.BeginInvoke(new Action(() =>
@@ -1779,8 +1814,19 @@ internal sealed partial class WebShellController
         _settings.MixerGroups[key] = state;
         if (publish)
         {
-            PublishGraph();
-            PublishTelemetry(force: true);
+            PublishGroupState(key);
+        }
+    }
+
+    private void PublishGroupState(string key)
+    {
+        foreach (var entry in _nodes.Values)
+        {
+            string? groupKey = entry.Source?.GroupKey ?? entry.Output?.GroupKey;
+            if (string.Equals(groupKey, key, StringComparison.OrdinalIgnoreCase))
+            {
+                PublishNodeState(entry.Id);
+            }
         }
     }
 
@@ -2565,6 +2611,7 @@ internal sealed partial class WebShellController
         }
 
         _nodes.Remove(id);
+        _generatorSources.TryRemove(id, out _);
         ReleaseFrozenProxyPath(entry.Source?.FilePath);
         _nodeClipHoldUntil.Remove(id);
         _spectrogramCursors.Remove(id);
@@ -2645,6 +2692,7 @@ internal sealed partial class WebShellController
         _graph.Dispose();
         _graph = new AudioGraph { AutoRun = false };
         _nodes.Clear();
+        _generatorSources.Clear();
         _links.Clear();
         InvalidateLinkIndex();
         _frames.Clear();
@@ -2698,7 +2746,7 @@ internal sealed partial class WebShellController
 
                     if (output.RecorderMode == RecorderMode.On)
                     {
-                        if (StartRecorder(entry, output)) recordings++;
+                        if (StartRecorder(entry, output, autoStarted: true)) recordings++;
                         else if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
                     }
                     else if (output.RecorderMode == RecorderMode.Armed)

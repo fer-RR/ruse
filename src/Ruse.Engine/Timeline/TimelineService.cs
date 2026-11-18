@@ -18,20 +18,45 @@ public sealed partial class TimelineService : IDisposable
 
     private readonly object _gate = new();
     private readonly Dictionary<string, TrackPlayback> _tracks = new();
+    private List<TimelineClip> _clipboard = new();
     private TrackPlayback[] _trackSnapshot = Array.Empty<TrackPlayback>();
     private TimelineProject _project = new();
     private long _playheadSample;
-    private bool _playing;
-    private readonly Stack<TimelineProject> _undo = new();
-    private readonly Stack<TimelineProject> _redo = new();
+    private volatile bool _playing;
+    private volatile RenderState _renderState = new(Array.Empty<TrackPlayback>(), -1, -1);
+
+    private sealed record HistorySnapshot(TimelineProject Project, long MetadataBytes);
+    private sealed record RenderState(TrackPlayback[] Tracks, long LoopStart, long LoopEnd);
+
+    private readonly List<HistorySnapshot> _undoHistory = new();
+    private readonly List<HistorySnapshot> _redoHistory = new();
+    private readonly Dictionary<float[], int> _historyArrays = new(ReferenceEqualityComparer.Instance);
+    private long _historyArrayBytes;
+    private long _historyMetadataBytes;
+    private int _maxUndoSteps = 50;
+    private long _maxUndoBytes = 512L * 1024 * 1024;
+
+    private void PublishRenderState() =>
+        _renderState = new(_trackSnapshot, _project.LoopStartSample, _project.LoopEndSample);
 
     public TimelineProject Project => _project;
     public int SampleRate => AudioEngineConfig.SampleRate;
     public long PlayheadSample { get { lock (_gate) return _playheadSample; } }
     public bool IsPlaying { get { lock (_gate) return _playing; } }
     public bool HasTracks { get { lock (_gate) return _tracks.Count > 0; } }
-    public bool CanUndo { get { lock (_gate) return _undo.Count > 0; } }
-    public bool CanRedo { get { lock (_gate) return _redo.Count > 0; } }
+    public bool CanUndo { get { lock (_gate) return _undoHistory.Count > 0; } }
+    public bool CanRedo { get { lock (_gate) return _redoHistory.Count > 0; } }
+    public long HistoryBytes { get { lock (_gate) return _historyMetadataBytes + _historyArrayBytes; } }
+
+    public void SetHistoryLimits(int maxSteps, long maxBytes)
+    {
+        lock (_gate)
+        {
+            _maxUndoSteps = Math.Max(1, maxSteps);
+            _maxUndoBytes = Math.Max(16L * 1024 * 1024, maxBytes);
+            TrimHistory();
+        }
+    }
     public Action<string, int, int, float>? ApplyAutomation { get; set; }
     public Action<string, float>? ApplyGeneratorGate { get; set; }
 
@@ -111,7 +136,7 @@ public sealed partial class TimelineService : IDisposable
                 var clip = track.Clips[i];
                 try
                 {
-                    audio[i] = !string.IsNullOrWhiteSpace(clip.SourcePath) && File.Exists(clip.SourcePath)
+                    audio[i] = TrustedPath.IsLocalFile(clip.SourcePath) && File.Exists(clip.SourcePath)
                         ? LoadClip(clip.SourcePath)
                         : null;
                 }
@@ -152,8 +177,8 @@ public sealed partial class TimelineService : IDisposable
             _trackSnapshot = _tracks.Values.ToArray();
             _playheadSample = 0;
             _playing = false;
-            _undo.Clear();
-            _redo.Clear();
+            PublishRenderState();
+            ClearHistory();
         }
     }
 
@@ -168,7 +193,8 @@ public sealed partial class TimelineService : IDisposable
             _project.Tracks.Add(track);
             _tracks[track.Id] = new TrackPlayback(track);
             _trackSnapshot = _tracks.Values.ToArray();
-            _redo.Clear();
+            PublishRenderState();
+            ClearRedo();
             return track;
         }
     }
@@ -185,7 +211,8 @@ public sealed partial class TimelineService : IDisposable
             _project.Tracks.Add(track);
             _tracks[track.Id] = new TrackPlayback(track);
             _trackSnapshot = _tracks.Values.ToArray();
-            _redo.Clear();
+            PublishRenderState();
+            ClearRedo();
             return track;
         }
     }
@@ -1100,6 +1127,7 @@ public sealed partial class TimelineService : IDisposable
             _tracks.Remove(trackId);
             _project.Tracks.RemoveAll(track => string.Equals(track.Id, trackId, StringComparison.Ordinal));
             _trackSnapshot = _tracks.Values.ToArray();
+            PublishRenderState();
             return true;
         }
     }
@@ -1342,6 +1370,27 @@ public sealed partial class TimelineService : IDisposable
         }
     }
 
+    public int RenameSourcePath(string oldPath, string newPath)
+    {
+        lock (_gate)
+        {
+            int changed = 0;
+            foreach (var track in _project.Tracks)
+            {
+                foreach (var clip in track.Clips)
+                {
+                    if (string.Equals(clip.SourcePath, oldPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        clip.SourcePath = newPath;
+                        changed++;
+                    }
+                }
+            }
+
+            return changed;
+        }
+    }
+
     public long TotalLengthSamples()
     {
         lock (_gate)
@@ -1374,14 +1423,14 @@ public sealed partial class TimelineService : IDisposable
                 return paths;
             }
 
-            foreach (var project in _undo)
+            foreach (var snapshot in _undoHistory)
             {
-                AddReferencedSourcePaths(project, paths);
+                AddReferencedSourcePaths(snapshot.Project, paths);
             }
 
-            foreach (var project in _redo)
+            foreach (var snapshot in _redoHistory)
             {
-                AddReferencedSourcePaths(project, paths);
+                AddReferencedSourcePaths(snapshot.Project, paths);
             }
 
             return paths;
@@ -1498,13 +1547,16 @@ public sealed partial class TimelineService : IDisposable
     {
         lock (_gate)
         {
-            if (_undo.Count == 0)
+            if (_undoHistory.Count == 0)
             {
                 return false;
             }
 
-            _redo.Push(CloneProject(_project));
-            RestoreState(_undo.Pop());
+            var snapshot = _undoHistory[^1];
+            _undoHistory.RemoveAt(_undoHistory.Count - 1);
+            _redoHistory.Add(CreateSnapshot(_project));
+            RestoreState(snapshot.Project);
+            TrimHistory();
             return true;
         }
     }
@@ -1513,31 +1565,152 @@ public sealed partial class TimelineService : IDisposable
     {
         lock (_gate)
         {
-            if (_redo.Count == 0)
+            if (_redoHistory.Count == 0)
             {
                 return false;
             }
 
-            _undo.Push(CloneProject(_project));
-            RestoreState(_redo.Pop());
+            var snapshot = _redoHistory[^1];
+            _redoHistory.RemoveAt(_redoHistory.Count - 1);
+            _undoHistory.Add(CreateSnapshot(_project));
+            RestoreState(snapshot.Project);
+            TrimHistory();
             return true;
         }
     }
 
     private void Remember()
     {
-        _undo.Push(CloneProject(_project));
-        if (_undo.Count > 100)
+        _undoHistory.Add(CreateSnapshot(_project));
+        ClearRedo();
+        TrimHistory();
+    }
+
+    private void ClearRedo()
+    {
+        foreach (var snapshot in _redoHistory)
         {
-            var keep = _undo.ToArray().Take(100).Reverse().ToArray();
-            _undo.Clear();
-            foreach (var project in keep)
-            {
-                _undo.Push(project);
-            }
+            _historyMetadataBytes -= snapshot.MetadataBytes;
+            ReleaseProjectArrays(snapshot.Project);
         }
 
-        _redo.Clear();
+        _redoHistory.Clear();
+    }
+
+    private void ClearHistory()
+    {
+        _undoHistory.Clear();
+        _redoHistory.Clear();
+        _historyArrays.Clear();
+        _historyArrayBytes = 0;
+        _historyMetadataBytes = 0;
+    }
+
+    private HistorySnapshot CreateSnapshot(TimelineProject project)
+    {
+        var clone = CloneProject(project);
+        long metadata = EstimateProjectBytes(clone);
+        RegisterProjectArrays(clone);
+        _historyMetadataBytes += metadata;
+        return new HistorySnapshot(clone, metadata);
+    }
+
+    private void TrimHistory()
+    {
+        while (_undoHistory.Count > _maxUndoSteps)
+        {
+            RemoveOldest(_undoHistory);
+        }
+
+        while (_redoHistory.Count > _maxUndoSteps)
+        {
+            RemoveOldest(_redoHistory);
+        }
+
+        while (_historyMetadataBytes + _historyArrayBytes > _maxUndoBytes &&
+               (_undoHistory.Count > 0 || _redoHistory.Count > 0))
+        {
+            if (_undoHistory.Count > 0) RemoveOldest(_undoHistory);
+            else RemoveOldest(_redoHistory);
+        }
+    }
+
+    private void RemoveOldest(List<HistorySnapshot> history)
+    {
+        var snapshot = history[0];
+        history.RemoveAt(0);
+        _historyMetadataBytes -= snapshot.MetadataBytes;
+        ReleaseProjectArrays(snapshot.Project);
+    }
+
+    private void RegisterProjectArrays(TimelineProject project)
+    {
+        foreach (var track in project.Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                RegisterArray(clip.Peaks);
+                if (clip.Audio != null) RegisterArray(clip.Audio);
+            }
+        }
+    }
+
+    private void ReleaseProjectArrays(TimelineProject project)
+    {
+        foreach (var track in project.Tracks)
+        {
+            foreach (var clip in track.Clips)
+            {
+                ReleaseArray(clip.Peaks);
+                if (clip.Audio != null) ReleaseArray(clip.Audio);
+            }
+        }
+    }
+
+    private void RegisterArray(float[] array)
+    {
+        if (_historyArrays.TryGetValue(array, out int count))
+        {
+            _historyArrays[array] = count + 1;
+            return;
+        }
+
+        _historyArrays[array] = 1;
+        _historyArrayBytes += (long)array.Length * sizeof(float);
+    }
+
+    private void ReleaseArray(float[] array)
+    {
+        if (!_historyArrays.TryGetValue(array, out int count))
+        {
+            return;
+        }
+
+        if (count > 1)
+        {
+            _historyArrays[array] = count - 1;
+            return;
+        }
+
+        _historyArrays.Remove(array);
+        _historyArrayBytes -= (long)array.Length * sizeof(float);
+    }
+
+    private static long EstimateProjectBytes(TimelineProject project)
+    {
+        long bytes = 512 + ((long)project.Markers.Count * 96);
+        foreach (var track in project.Tracks)
+        {
+            bytes += 256 + ((long)track.Automation.Count * 128);
+            foreach (var lane in track.Automation)
+            {
+                bytes += (long)lane.Points.Count * 24;
+            }
+
+            bytes += (long)track.Clips.Count * 320;
+        }
+
+        return bytes;
     }
 
     private void RestoreState(TimelineProject project)
@@ -1555,6 +1728,7 @@ public sealed partial class TimelineService : IDisposable
         }
 
         _trackSnapshot = _tracks.Values.ToArray();
+        PublishRenderState();
     }
 
     private static TimelineProject CloneProject(TimelineProject source, bool includePeaks = true) => new()
@@ -1734,6 +1908,111 @@ public sealed partial class TimelineService : IDisposable
         }
     }
 
+    public bool SnapshotClips(IReadOnlyList<(string TrackId, string ClipId)> items)
+    {
+        lock (_gate)
+        {
+            var clips = new List<TimelineClip>();
+            foreach (var item in items)
+            {
+                if (!_tracks.TryGetValue(item.TrackId, out var playback))
+                {
+                    continue;
+                }
+
+                var source = playback.Track.Clips.FirstOrDefault(clip =>
+                    string.Equals(clip.Id, item.ClipId, StringComparison.Ordinal));
+                if (source != null)
+                {
+                    clips.Add(source);
+                }
+            }
+
+            if (clips.Count == 0)
+            {
+                return false;
+            }
+
+            long anchor = clips.Min(clip => clip.StartSample);
+            _clipboard = clips.Select(source => new TimelineClip
+            {
+                Name = source.Name,
+                SourcePath = source.SourcePath,
+                StartSample = source.StartSample - anchor,
+                LengthSamples = source.LengthSamples,
+                SourceOffsetSamples = source.SourceOffsetSamples,
+                Gain = source.Gain,
+                PitchSemitones = source.PitchSemitones,
+                FadeInSamples = source.FadeInSamples,
+                FadeOutSamples = source.FadeOutSamples,
+                Loop = source.Loop,
+                Peaks = source.Peaks,
+                Audio = source.Audio,
+            }).ToList();
+
+            return true;
+        }
+    }
+
+    public bool PasteClipboard(IReadOnlyList<(string TrackId, long StartSample)> placements)
+    {
+        lock (_gate)
+        {
+            if (_clipboard.Count == 0 || placements.Count == 0)
+            {
+                return false;
+            }
+
+            var pending = new List<(TimelineTrack Track, TimelineClip Clip)>();
+            int count = Math.Min(_clipboard.Count, placements.Count);
+            for (int index = 0; index < count; index++)
+            {
+                if (!_tracks.TryGetValue(placements[index].TrackId, out var playback))
+                {
+                    continue;
+                }
+
+                var source = _clipboard[index];
+                pending.Add((playback.Track, new TimelineClip
+                {
+                    Name = source.Name,
+                    SourcePath = source.SourcePath,
+                    StartSample = Math.Max(0, placements[index].StartSample),
+                    LengthSamples = source.LengthSamples,
+                    SourceOffsetSamples = source.SourceOffsetSamples,
+                    Gain = source.Gain,
+                    PitchSemitones = source.PitchSemitones,
+                    FadeInSamples = source.FadeInSamples,
+                    FadeOutSamples = source.FadeOutSamples,
+                    Loop = source.Loop,
+                    Peaks = source.Peaks,
+                    Audio = source.Audio,
+                }));
+            }
+
+            if (pending.Count == 0)
+            {
+                return false;
+            }
+
+            Remember();
+            foreach (var item in pending)
+            {
+                item.Track.Clips.Add(item.Clip);
+            }
+
+            foreach (var track in pending.Select(item => item.Track).Distinct())
+            {
+                if (_tracks.TryGetValue(track.Id, out var playback))
+                {
+                    playback.RefreshClips();
+                    playback.RefreshAutomation();
+                }
+            }
+
+            return true;
+        }
+    }
     public bool CopyClips(IReadOnlyList<(string TrackId, string ClipId, long StartSample)> copies)
     {
         lock (_gate)
@@ -1837,6 +2116,7 @@ public sealed partial class TimelineService : IDisposable
             bool valid = start >= 0 && end > start;
             _project.LoopStartSample = valid ? start : -1;
             _project.LoopEndSample = valid ? end : -1;
+            PublishRenderState();
         }
     }
 
@@ -1853,14 +2133,12 @@ public sealed partial class TimelineService : IDisposable
         bool playing;
         long loopStart;
         long loopEnd;
-        lock (_gate)
-        {
-            tracks = _trackSnapshot;
-            position = _playheadSample;
-            playing = _playing;
-            loopStart = _project.LoopStartSample;
-            loopEnd = _project.LoopEndSample;
-        }
+        var state = _renderState;
+        tracks = state.Tracks;
+        position = Volatile.Read(ref _playheadSample);
+        playing = _playing;
+        loopStart = state.LoopStart;
+        loopEnd = state.LoopEnd;
 
         long next = playing ? AdvancePosition(position, frames, loopStart, loopEnd) : position;
         bool anySolo = false;
@@ -1963,10 +2241,7 @@ public sealed partial class TimelineService : IDisposable
             return;
         }
 
-        lock (_gate)
-        {
-            _playheadSample = next;
-        }
+        Interlocked.Exchange(ref _playheadSample, next);
     }
 
     private static List<TimelineAutomationPoint> NormalizeAutomationPoints(
@@ -2118,6 +2393,11 @@ public sealed partial class TimelineService : IDisposable
 
     private static float[] LoadClip(string path)
     {
+        if (!TrustedPath.IsLocalFile(path))
+        {
+            throw new InvalidOperationException("The clip path must be a local file.");
+        }
+
         using var reader = new AudioFileReader(path);
         ISampleProvider sampleProvider = reader;
         var converter = new FormatConverter(reader.WaveFormat.Channels, reader.WaveFormat.SampleRate);

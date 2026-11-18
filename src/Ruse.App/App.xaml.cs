@@ -28,6 +28,24 @@ public partial class App : Application
 
     private const string InstanceMutexName = "Ruse.App.SingleInstance";
     private const string ActivateEventName = "Ruse.App.SingleInstance.Activate";
+
+    private static readonly HashSet<string> HeadlessModes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "--model-probe", "--translation-probe", "--translation-text-test",
+        "--opus-download-test", "--opus-test", "--control-test", "--keep-control-test",
+        "--make-song", "--chain-test", "--low-latency-test", "--converter-test",
+        "--modifier-test", "--preset-test", "--filter-test", "--transparency-test",
+        "--effects-test", "--dsp-test", "--tts-batch-test", "--tts-test",
+        "--ring-test", "--clip-guard-test", "--sidechain-test", "--align-test",
+        "--route-test", "--device-test", "--monitor-test", "--graph-test",
+        "--fanout-test", "--sessions", "--delay-test", "--latency-test",
+        "--record-test", "--web-test", "--selftest", "--bench",
+        "--vst3-bench-test", "--vst3-editor-test", "--vst3-isolated-test",
+        "--vst3-route-test", "--vst3-scan-test", "--vst3-test",
+        "--transcription-test", "--translation-e2e-test", "--cable-test",
+        "--capture-match", "--output-match", "--render-match",
+    };
+
     private Mutex? _instanceMutex;
     private EventWaitHandle? _activateEvent;
     private RegisteredWaitHandle? _activateRegistration;
@@ -119,9 +137,12 @@ public partial class App : Application
             return;
         }
 
-        // Diagnostic and probe modes are intentionally allowed to run alongside
-        // the app; only a normal launch claims the single-instance slot.
-        if (e.Args.Length == 0 && !TryClaimInstance())
+        // Headless probes/tests may run alongside the app. Every interactive
+        // launch, including --gpu/demo/live-demo and unknown flags, must claim
+        // the single-instance slot so two instances cannot share settings,
+        // sessions and devices.
+        bool headless = e.Args.Any(HeadlessModes.Contains);
+        if (!headless && !TryClaimInstance())
         {
             Shutdown();
             return;
@@ -247,7 +268,8 @@ public partial class App : Application
         }
 
         int ttsTestIndex = Array.FindIndex(e.Args, a => a.Equals("--tts-test", StringComparison.OrdinalIgnoreCase));
-        if (ttsTestIndex >= 0 && ttsTestIndex + 3 < e.Args.Length)
+        if (ttsTestIndex >= 0 && ttsTestIndex + 3 < e.Args.Length &&
+            TtsModels.Find(e.Args[ttsTestIndex + 1])?.Family is "kokoro-sharp" or "piper")
         {
             try
             {
@@ -261,6 +283,24 @@ public partial class App : Application
             catch (Exception ex)
             {
                 File.WriteAllText(e.Args[ttsTestIndex + 3] + ".txt", "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
+        int ttsBatchIndex = Array.FindIndex(e.Args, a => a.Equals("--tts-batch-test", StringComparison.OrdinalIgnoreCase));
+        if (ttsBatchIndex >= 0 && ttsBatchIndex + 3 < e.Args.Length)
+        {
+            try
+            {
+                string line = TtsPipelineTest.RunBatchAsync(
+                    e.Args[ttsBatchIndex + 1],
+                    e.Args[ttsBatchIndex + 2]).GetAwaiter().GetResult();
+                File.WriteAllText(e.Args[ttsBatchIndex + 3], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[ttsBatchIndex + 3], "FAILED: " + ex);
                 Environment.Exit(3);
             }
         }

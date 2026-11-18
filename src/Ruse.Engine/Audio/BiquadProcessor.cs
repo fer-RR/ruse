@@ -5,6 +5,8 @@ public enum BiquadKind
 {
     HighPass,
     LowPass,
+    BandPass,
+    AllPass,
     Peak,
     LowShelf,
     HighShelf,
@@ -159,6 +161,24 @@ public sealed class BiquadProcessor : IAudioProcessor, IParameterizedProcessor
                 b0 = (1.0 - cosW) / 2.0;
                 b1 = 1.0 - cosW;
                 b2 = (1.0 - cosW) / 2.0;
+                a1 = -2.0 * cosW;
+                a2 = 1.0 - alpha;
+                break;
+
+            case BiquadKind.BandPass:
+                a0 = 1.0 + alpha;
+                b0 = alpha;
+                b1 = 0.0;
+                b2 = -alpha;
+                a1 = -2.0 * cosW;
+                a2 = 1.0 - alpha;
+                break;
+
+            case BiquadKind.AllPass:
+                a0 = 1.0 + alpha;
+                b0 = 1.0 - alpha;
+                b1 = -2.0 * cosW;
+                b2 = 1.0 + alpha;
                 a1 = -2.0 * cosW;
                 a2 = 1.0 - alpha;
                 break;

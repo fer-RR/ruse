@@ -41,7 +41,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 
 ### Processing
 
-- **61 built-in effects**, including EQ, filters, dynamics, hearing profiles, gates, saturation, pitch, auto-tune, vocoder, delays, reverbs, convolution and character effects.
+- **63 built-in effects**, including EQ, filters, dynamics, hearing profiles, gates, saturation, pitch, auto-tune, vocoder, delays, reverbs, convolution and character effects.
 - VST3 hosting in an isolated child process.
 - Effect chains, saved chains, frame templates, per-effect bypass and mixer groups with independent gain/mute/solo.
 - Freeze a file or sample source through its routed effects into a rendered proxy, then bypass the original route. Generated proxies are removed when their source node is deleted or its file is replaced.
@@ -71,7 +71,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 - Optional local Whisper transcription, translation and text-to-speech.
 - Local control API for scripts and automation, off by default.
 - Five UI themes: Dark, Light, Blueprint, Studio '74 and Receiver.
-- Keyboard shortcuts, reduced-motion support and screen-reader labels.
+- Keyboard shortcuts, an in-app motion setting that can override Windows' reduce-motion preference and screen-reader labels.
 - English, German, Spanish, French, Italian, Japanese, Korean, Portuguese (Brazil) and Chinese (Simplified) UI.
 
 ## How it works
@@ -131,6 +131,20 @@ The first-run tour and the `?` help buttons explain the main workflows.
 | Keep music out of a call | Music app → Headphones only; microphone → call output |
 | Add a VST3 effect | Source → VST3 node → destination; open the plugin editor in the node |
 | Make TV or games easier to hear | App or system audio -> Hearing profile -> Headphones |
+
+## Folders
+
+Ruse keeps user content together in `Documents\Ruse`:
+
+- `Presets` — saved routing presets (`.ruse.json`).
+- `Recordings` — recorder and timeline recordings.
+- `Samples` — imported samples and files used by the file player and timeline.
+- `Exports` — timeline bounces, consolidated clips and transcript exports.
+
+Settings, session, effect chains, frame templates, logs and downloaded models
+stay in `%APPDATA%\Ruse`. Settings > Info shows these locations and opens the
+user folder. Existing `Music\Ruse Samples` and `Music\Ruse Recordings` folders
+are still read so older presets and recordings keep working.
 
 ## Audiogram import
 

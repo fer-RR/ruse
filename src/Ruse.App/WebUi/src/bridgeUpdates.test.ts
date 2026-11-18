@@ -75,9 +75,19 @@ describe('bridge updates', () => {
 
   it('updates graph node state without rebuilding unrelated nodes', () => {
     const current = graph();
-    const next = applyNodeStateToGraph(current, { id: 'a', muted: true, accent: '#fff' });
+    const next = applyNodeStateToGraph(current, {
+      id: 'a',
+      muted: true,
+      accent: '#fff',
+      groupGain: 0.75,
+      groupMuted: true,
+      groupSolo: false,
+    });
     expect(next.nodes[0].muted).toBe(true);
     expect(next.nodes[0].accent).toBe('#fff');
+    expect(next.nodes[0].groupGain).toBe(0.75);
+    expect(next.nodes[0].groupMuted).toBe(true);
+    expect(next.nodes[0].groupSolo).toBe(false);
     expect(next.nodes[1]).toBe(current.nodes[1]);
   });
 

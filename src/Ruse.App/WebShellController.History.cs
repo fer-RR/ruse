@@ -8,6 +8,52 @@ internal sealed partial class WebShellController
 {
     private readonly List<HistoryEntry> _undoHistory = new();
     private readonly List<HistoryEntry> _redoHistory = new();
+    private int _undoHistoryLimit = 100;
+    private int _timelineUndoSteps = 50;
+    private long _timelineUndoBytes = 512L * 1024 * 1024;
+    private bool _historyWarningPending;
+    private string _historyWarningText = "";
+
+    private const long LowMemoryThresholdBytes = 1536L * 1024 * 1024;
+
+    internal void ConfigureHistoryLimits()
+    {
+        long available = SystemMemory.AvailablePhysicalBytes;
+        bool low = available > 0 && available < LowMemoryThresholdBytes;
+        SetUndoHistoryLimit(low ? 25 : 100);
+        _timelineUndoSteps = low ? 25 : 50;
+        _timelineUndoBytes = low ? 256L * 1024 * 1024 : 512L * 1024 * 1024;
+        if (low)
+        {
+            _historyWarningPending = true;
+            _historyWarningText =
+                "Low available memory: undo history is limited to 25 steps and 256 MB.";
+        }
+    }
+
+    private void WarnIfHistoryLimited()
+    {
+        if (!_historyWarningPending) return;
+        _historyWarningPending = false;
+        AppLog.Warning(_historyWarningText);
+        ShowToast(_historyWarningText);
+    }
+
+    internal void SetUndoHistoryLimit(int limit)
+    {
+        _undoHistoryLimit = Math.Clamp(limit, 1, 500);
+        bool changed = false;
+        while (_undoHistory.Count > _undoHistoryLimit)
+        {
+            _undoHistory.RemoveAt(0);
+            changed = true;
+        }
+
+        if (changed)
+        {
+            PublishHistory();
+        }
+    }
 
     private sealed class HistoryEntry
     {
@@ -105,7 +151,7 @@ internal sealed partial class WebShellController
             Structural = structural,
         });
 
-        if (_undoHistory.Count > 200)
+        if (_undoHistory.Count > _undoHistoryLimit)
         {
             _undoHistory.RemoveAt(0);
         }

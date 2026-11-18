@@ -74,6 +74,7 @@ export const demoSettings: SettingsModel = {
   uiLanguage: 'en',
   theme: 'dark',
   uiScale: 1,
+  motionMode: 'system',
   startRoutingOnLaunch: false,
   highlightMutedNodes: true,
   signalGlow: true,

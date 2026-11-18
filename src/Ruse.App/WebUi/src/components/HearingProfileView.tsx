@@ -384,6 +384,8 @@ export default function HearingProfileView({ nodeId, parameters, accent }: {
 
   const loudness = find('Loudness match');
   const loudnessEnabled = (loudness?.value ?? 0) >= 0.5;
+  const gate = find('Noise gate');
+  const gateEnabled = (gate?.value ?? 0) >= 0.5;
   const limiter = find('Safety limiter');
   const limiterEnabled = (limiter?.value ?? 0) >= 0.5;
 
@@ -428,6 +430,8 @@ export default function HearingProfileView({ nodeId, parameters, accent }: {
 
       <div className="hearing-profile-controls">
         <ProfileSlider label="Monitor delay" parameter={find('Monitor delay')} onChange={value => sendValue('Monitor delay', value)} />
+        <ProfileToggle label="Noise gate" parameter={gate} onChange={value => sendValue('Noise gate', value)} />
+        <ProfileSlider label="Gate threshold" parameter={find('Gate threshold')} onChange={value => sendValue('Gate threshold', value)} disabled={!gateEnabled} />
         <ProfileToggle label="Loudness match" parameter={loudness} onChange={value => sendValue('Loudness match', value)} />
         <ProfileSlider label="Target loudness" parameter={find('Target loudness')} onChange={value => sendValue('Target loudness', value)} disabled={!loudnessEnabled} />
         <ProfileSlider label="Max boost" parameter={find('Max boost')} onChange={value => sendValue('Max boost', value)} disabled={!loudnessEnabled} />
@@ -436,7 +440,7 @@ export default function HearingProfileView({ nodeId, parameters, accent }: {
       </div>
 
       <p className="hearing-profile-note">
-        Place this last before the hearing output. The ear slider adds overall gain to the curve. Delays the mix to match video. Not a medical device; start at a low volume.
+        Place this last before the hearing output. The ear slider adds overall gain to the curve. Delays the mix to match video. The noise gate mutes residual hiss when the input is silent; lower its threshold if quiet speech is cut. Not a medical device; start at a low volume.
       </p>
 
       {pendingImport && createPortal(

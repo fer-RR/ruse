@@ -68,6 +68,7 @@ export interface TimelineCanvasParams {
   automationTargets: TimelineAutomationTarget[];
   markers: TimelineMarkerModel[];
   playheadX: number;
+  drawPlayhead?: boolean;
   audioClipLabel: string;
 }
 
@@ -98,6 +99,7 @@ export function drawTimeline(canvas: HTMLCanvasElement, params: TimelineCanvasPa
     automationTargets,
     markers,
     playheadX,
+    drawPlayhead = true,
     audioClipLabel,
   } = params;
 
@@ -401,16 +403,18 @@ export function drawTimeline(canvas: HTMLCanvasElement, params: TimelineCanvasPa
     ctx.font = '9px Consolas, monospace';
     ctx.fillText(marker.name, startX + 8, 12);
   }
-  ctx.fillStyle = palette.playhead;
-  ctx.beginPath();
-  ctx.moveTo(playheadX - 5, 0);
-  ctx.lineTo(playheadX + 5, 0);
-  ctx.lineTo(playheadX, 8);
-  ctx.fill();
-  ctx.strokeStyle = palette.playhead;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(playheadX, 0);
-  ctx.lineTo(playheadX, height);
-  ctx.stroke();
+  if (drawPlayhead) {
+    ctx.fillStyle = palette.playhead;
+    ctx.beginPath();
+    ctx.moveTo(playheadX - 5, 0);
+    ctx.lineTo(playheadX + 5, 0);
+    ctx.lineTo(playheadX, 8);
+    ctx.fill();
+    ctx.strokeStyle = palette.playhead;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(playheadX, 0);
+    ctx.lineTo(playheadX, height);
+    ctx.stroke();
+  }
 }

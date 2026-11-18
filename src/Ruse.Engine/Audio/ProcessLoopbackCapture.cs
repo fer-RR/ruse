@@ -21,11 +21,13 @@ public sealed class ProcessLoopbackCapture : IDisposable
     private volatile bool _running;
 
     // Formats offered to the engine, in order of preference. The process
-    // loopback endpoint accepts a plain 16-bit PCM WAVEFORMATEX; 48 kHz matches
-    // the engine's internal rate, 44.1 kHz is the format the Microsoft sample
-    // documents as always safe.
+    // loopback endpoint accepts a plain PCM WAVEFORMATEX; 32-bit keeps the
+    // float mix from being dithered down to 16-bit when an app is silent,
+    // which otherwise leaves an audible -90 dBFS hiss after a hearing-profile
+    // boost. 16-bit and 44.1 kHz remain fallbacks for stricter endpoints.
     private static readonly WaveFormat[] CaptureFormatCandidates =
     {
+        new WaveFormat(48000, 32, 2),
         new WaveFormat(48000, 16, 2),
         new WaveFormat(44100, 16, 2),
     };
@@ -132,6 +134,13 @@ public sealed class ProcessLoopbackCapture : IDisposable
                 }
 
                 WaveFormat = candidate;
+                if (candidate.BitsPerSample < 32)
+                {
+                    Ruse.App.Diagnostics.AppLog.Info(
+                        $"Process loopback fell back to {candidate.BitsPerSample}-bit PCM; " +
+                        "32-bit capture was unavailable, so silent apps may have a low dither floor.");
+                }
+
                 CaptureLoop(audioClient, candidate);
                 return;
             }

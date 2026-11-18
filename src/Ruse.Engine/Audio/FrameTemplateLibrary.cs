@@ -51,13 +51,9 @@ public static class FrameTemplateLibrary
 
     public static void Save()
     {
-        try
+        if (!AtomicFile.TryWriteAllText(LibraryPath, JsonSerializer.Serialize(_templates, Options), out string error))
         {
-            Directory.CreateDirectory(AppSettings.Directory);
-            File.WriteAllText(LibraryPath, JsonSerializer.Serialize(_templates, Options));
-        }
-        catch
-        {
+            Ruse.App.Diagnostics.AppLog.Warning("Could not save frame templates: " + error);
         }
     }
 

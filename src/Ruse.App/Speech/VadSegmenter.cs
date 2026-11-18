@@ -33,6 +33,7 @@ internal sealed class VadSegmenter : IDisposable
     private int _silentFrames;
     private bool _speaking;
     private float _noiseFloor = 0.0001f;
+    private long _tapGeneration;
 
     public VadSegmenter(int tapId, SileroVad? silero = null)
     {
@@ -40,6 +41,7 @@ internal sealed class VadSegmenter : IDisposable
             ? tap
             : SpeechTapRegistry.GetOrAdd(tapId);
         _silero = silero;
+        _tapGeneration = _tap.Generation;
     }
 
     public event Action? SpeechStarted;
@@ -50,6 +52,12 @@ internal sealed class VadSegmenter : IDisposable
     {
         while (!token.IsCancellationRequested)
         {
+            if (_tap.Generation != _tapGeneration)
+            {
+                _tapGeneration = _tap.Generation;
+                Reset();
+            }
+
             while (_frameFill < FrameSamples)
             {
                 int read = _tap.Read(_frame.AsSpan(_frameFill, FrameSamples - _frameFill));
@@ -189,6 +197,7 @@ internal sealed class VadSegmenter : IDisposable
         _preRoll.Clear();
         _segment.Clear();
         _silero?.Reset();
+        _tapGeneration = _tap.Generation;
     }
 
     public void Dispose() => _silero?.Dispose();

@@ -34,6 +34,15 @@ internal static class ModelIntegrity
     public static string Finish(IncrementalHash hash) =>
         Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
 
+    public static async Task<string> ComputeFileSha256Async(
+        string path, CancellationToken cancellationToken = default)
+    {
+        await using var stream = new FileStream(
+            path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
+        byte[] hash = await SHA256.HashDataAsync(stream, cancellationToken).ConfigureAwait(false);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
     public static void Verify(string actual, string? expected, string name)
     {
         if (!string.IsNullOrEmpty(expected) &&

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Activity, AudioLines, Cable, Check, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, Keyboard, LayoutGrid, Plus, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
+import { Activity, AudioLines, Cable, Check, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, Keyboard, LayoutGrid, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { TRANSLATION_TARGETS } from '../languages';
@@ -132,15 +132,17 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }:
   );
 }
 
-export function TrayPromptDialog({ onKeep, onQuit }: {
+export function TrayPromptDialog({ onKeep, onQuit, onCancel }: {
   onKeep: () => void;
   onQuit: () => void;
+  onCancel: () => void;
 }) {
   const { t } = useI18n();
   return (
-    <Modal title={t('Close to tray')} onClose={onQuit} className="small-modal">
+    <Modal title={t('Close to tray')} onClose={onCancel} className="small-modal">
       <p className="modal-copy">{t('Keep Ruse running in the notification area when the window is closed? Audio keeps routing while it is hidden. You can change this later in Settings.')}</p>
       <div className="modal-actions">
+        <button className="tool-button" onClick={onCancel}>{t('Cancel')}</button>
         <button className="tool-button" onClick={onQuit}>{t('Quit Ruse')}</button>
         <button className="primary-button" onClick={onKeep}>{t('Keep in tray')}</button>
       </div>
@@ -348,11 +350,13 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [gpuAtOpen] = useState(settings.useGpu);
   const [showToken, setShowToken] = useState(false);
+  const [glossaryDraft, setGlossaryDraft] = useState(settings.translationGlossary ?? '');
   const updates = useUpdates();
   const optimizer = useAudioOptimizer();
   const optimizerBusy = optimizer.state.status === 'running';
   const updateBusy = updates.state.status === 'checking' || updates.state.status === 'downloading' || updates.state.status === 'applying';
   useEffect(() => setTab(initialTab), [initialTab]);
+  useEffect(() => setGlossaryDraft(settings.translationGlossary ?? ''), [settings.translationGlossary]);
   const installed = settings.transcriberModels.filter(model => model.installed);
   const selectedModel = installed.some(model => model.id === settings.transcriberModel)
     ? settings.transcriberModel
@@ -450,7 +454,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               </label>
               <label className="setting-row setting-row-stack">
                 <span><strong>{t('Glossary')}</strong><small>{t('One source=target term per line. Qwen translations preserve these terms.')}</small></span>
-                <textarea className="settings-textarea" rows={3} maxLength={4000} value={settings.translationGlossary ?? ''} onChange={event => onChange({ ...settings, translationGlossary: event.target.value })} />
+                <textarea className="settings-textarea" rows={3} maxLength={4000} value={glossaryDraft} onChange={event => setGlossaryDraft(event.target.value)} onBlur={() => { if (glossaryDraft !== (settings.translationGlossary ?? '')) onChange({ ...settings, translationGlossary: glossaryDraft }); }} />
               </label>
               <ToggleSetting
                 label={t('Translation memory')}
@@ -854,6 +858,14 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                   {UI_SCALE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
                 </select>
               </label>
+              <label className="setting-row">
+                <span><strong>{t('Motion')}</strong><small>{t('Use the Windows animation setting, or override it for Ruse only.')}</small></span>
+                <select value={settings.motionMode ?? 'system'} onChange={event => onChange({ ...settings, motionMode: event.target.value as SettingsModel['motionMode'] })}>
+                  <option value="system">{t('Follow Windows')}</option>
+                  <option value="reduced">{t('Reduce motion')}</option>
+                  <option value="full">{t('Full motion')}</option>
+                </select>
+              </label>
             </SettingsSection>
             <SettingsSection title="Visual feedback">
               <ToggleSetting label={t('Signal glow')} description={t('Glow active nodes and matching library items while sound is flowing.')} checked={settings.signalGlow} onChange={value => onChange({ ...settings, signalGlow: value })} />
@@ -898,6 +910,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 <div><dt>{t('Models')}</dt><dd>{settings.installedModelsCount ?? 0} / {settings.installedModelsSize ?? '0 MB'}</dd></div>
                 <div className="wide"><dt>{t('Data folder')}</dt><dd title={settings.dataFolder}>{settings.dataFolder || '-'}</dd></div>
                 <div className="wide"><dt>{t('Models folder')}</dt><dd title={settings.modelsFolder}>{settings.modelsFolder || '-'}</dd></div>
+                <div className="wide"><dt>{t('User folder')}</dt><dd title={settings.userFolder}>{settings.userFolder || '-'}</dd></div>
               </dl>
             </SettingsSection>
             <SettingsSection title="Updates" summary={updates.state.latestVersion ? `v${updates.state.latestVersion}` : undefined}>
@@ -973,7 +986,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <div className="settings-actions">
                 <button className="tool-button" onClick={() => send('open-log')}><FileText size={14} /> {t('Open log')}</button>
                 <button className="tool-button" onClick={() => send('open-log-folder')}><FolderOpen size={14} /> {t('Open data folder')}</button>
-                <button className="tool-button" onClick={() => send('create-desktop-shortcut')}><Plus size={14} /> {t('Add desktop shortcut')}</button>
+                <button className="tool-button" onClick={() => send('open-user-folder')}><FolderOpen size={14} /> {t('Open user folder')}</button>
                 <button className="tool-button" onClick={() => send('copy-diagnostics')}><Copy size={14} /> {t('Copy diagnostics')}</button>
               </div>
             </SettingsSection>

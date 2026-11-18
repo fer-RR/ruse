@@ -66,7 +66,7 @@ internal static class ModelProbe
         try
         {
             var info = new FileInfo(path);
-            return $"{path}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
+            return $"{path}|{info.Length}|{info.LastWriteTimeUtc.Ticks}|gpu={ModelRuntime.UseGpu}";
         }
         catch
         {
@@ -89,6 +89,10 @@ internal static class ModelProbe
         start.ArgumentList.Add("--model-probe");
         start.ArgumentList.Add(path);
         start.ArgumentList.Add(resultPath);
+        if (ModelRuntime.UseGpu)
+        {
+            start.ArgumentList.Add("--gpu");
+        }
 
         Process? process;
         try

@@ -136,4 +136,12 @@ describe('drawTimeline', () => {
     expect(canvas.width).toBe(1600);
     expect(canvas.height).toBe(400);
   });
+
+  it('can skip the playhead for the static canvas layer', () => {
+    const { canvas, calls } = fakeCanvas();
+    drawTimeline(canvas, params({ drawPlayhead: false }));
+    const drawsPlayhead = calls.some(call =>
+      call.method === 'lineTo' && call.args[0] === 50 && call.args[1] === 8);
+    expect(drawsPlayhead).toBe(false);
+  });
 });

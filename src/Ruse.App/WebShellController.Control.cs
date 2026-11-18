@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Windows.Threading;
 using Ruse.App.Audio;
 using Ruse.App.Diagnostics;
@@ -9,6 +10,7 @@ namespace Ruse.App;
 internal sealed partial class WebShellController
 {
     private static readonly JsonSerializerOptions ControlJson = new(JsonSerializerDefaults.Web);
+    private readonly SemaphoreSlim _controlServerGate = new(1, 1);
     private ControlServer? _controlServer;
     private bool _controlDirty;
     private readonly HashSet<(string NodeId, int ProcessorIndex, int ParameterIndex)> _controlParameterChanges = new();
@@ -19,6 +21,19 @@ internal sealed partial class WebShellController
     internal Dispatcher Dispatcher => _window.Dispatcher;
 
     internal async Task StartControlServerAsync()
+    {
+        await _controlServerGate.WaitAsync();
+        try
+        {
+            await StartControlServerCoreAsync();
+        }
+        finally
+        {
+            _controlServerGate.Release();
+        }
+    }
+
+    private async Task StartControlServerCoreAsync()
     {
         if (!_settings.ControlApiEnabled)
         {
@@ -53,13 +68,21 @@ internal sealed partial class WebShellController
 
     private async Task RestartControlServerAsync()
     {
-        StopControlServer();
-        if (_settings.ControlApiEnabled)
+        await _controlServerGate.WaitAsync();
+        try
         {
-            await StartControlServerAsync();
-        }
+            StopControlServer();
+            if (_settings.ControlApiEnabled)
+            {
+                await StartControlServerCoreAsync();
+            }
 
-        PublishSettings();
+            PublishSettings();
+        }
+        finally
+        {
+            _controlServerGate.Release();
+        }
     }
 
     private void StopControlServer()

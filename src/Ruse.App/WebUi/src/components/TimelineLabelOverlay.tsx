@@ -1,3 +1,5 @@
+import { memo } from 'react';
+
 export interface TimelineStickyLabel {
   id: string;
   top: number;
@@ -7,7 +9,7 @@ export interface TimelineStickyLabel {
   solo?: boolean;
 }
 
-export default function TimelineLabelOverlay({ labels }: { labels: TimelineStickyLabel[] }) {
+function TimelineLabelOverlay({ labels }: { labels: TimelineStickyLabel[] }) {
   return (
     <div className="timeline-sticky-labels" aria-hidden="true">
       {labels.map(label => (
@@ -25,3 +27,5 @@ export default function TimelineLabelOverlay({ labels }: { labels: TimelineStick
     </div>
   );
 }
+
+export default memo(TimelineLabelOverlay);

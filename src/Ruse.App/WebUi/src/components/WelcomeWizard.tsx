@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { MonitorDown } from 'lucide-react';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import type { SettingsModel } from '../types';
 import { Modal } from './Dialogs';
@@ -6,10 +7,11 @@ import WelcomeConnectAnimation from './WelcomeConnectAnimation';
 import WelcomeDragAnimation from './WelcomeDragAnimation';
 import WelcomeExamplesAnimation from './WelcomeExamplesAnimation';
 
-export default function WelcomeWizard({ settings, onChange, onClose }: {
+export default function WelcomeWizard({ settings, onChange, onClose, onCreateDesktopShortcut }: {
   settings: SettingsModel;
   onChange: (settings: SettingsModel) => void;
   onClose: () => void;
+  onCreateDesktopShortcut: () => void;
 }) {
   const { t } = useI18n();
   const [step, setStep] = useState<0 | 1 | 2>(0);
@@ -25,9 +27,14 @@ export default function WelcomeWizard({ settings, onChange, onClose }: {
             : <WelcomeExamplesAnimation />}
 
         <div className="welcome-tour-nav">
-          {step === 0
-            ? <button className="tool-button" onClick={onClose}>{t('Explore on my own')}</button>
-            : <button className="tool-button" onClick={() => setStep((step - 1) as 0 | 1)}>{t('Back')}</button>}
+          <div className="welcome-tour-actions">
+            {step === 0
+              ? <>
+                  <button className="tool-button" onClick={onClose}>{t('Explore on my own')}</button>
+                  <button className="tool-button" onClick={onCreateDesktopShortcut}><MonitorDown size={14} /> {t('Add desktop shortcut')}</button>
+                </>
+              : <button className="tool-button" onClick={() => setStep((step - 1) as 0 | 1)}>{t('Back')}</button>}
+          </div>
           <button
             className="primary-button"
             onClick={step === 2 ? onClose : () => setStep((step + 1) as 1 | 2)}

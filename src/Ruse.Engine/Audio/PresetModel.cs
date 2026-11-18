@@ -407,7 +407,7 @@ public static class PresetSerializer
         var created = AudioProcessorCatalog.Create(entry.TypeId);
         if (created is IImpulseResponseProcessor impulseResponse &&
             !string.IsNullOrWhiteSpace(entry.IrPath) &&
-            IsTrustedExternalAudioPath(entry.IrPath))
+            TrustedPath.IsLocalFile(entry.IrPath))
         {
             try
             {
@@ -421,7 +421,7 @@ public static class PresetSerializer
 
         if (created is INoiseProfileProcessor noiseProfile &&
             !string.IsNullOrWhiteSpace(entry.NoiseProfilePath) &&
-            IsTrustedExternalAudioPath(entry.NoiseProfilePath))
+            TrustedPath.IsLocalFile(entry.NoiseProfilePath))
         {
             try
             {
@@ -452,9 +452,4 @@ public static class PresetSerializer
 
         return created;
     }
-
-    private static bool IsTrustedExternalAudioPath(string path) =>
-        Path.IsPathFullyQualified(path) &&
-        !path.StartsWith(@"\\", StringComparison.Ordinal) &&
-        !path.StartsWith("//", StringComparison.Ordinal);
 }

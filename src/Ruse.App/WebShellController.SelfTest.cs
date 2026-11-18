@@ -24,6 +24,7 @@ internal sealed partial class WebShellController
         Check("network packet reorder", LatencySelfTest.TestNetworkPacketReorder());
         Check("mixer node pan/mute/solo/crossfade/auto gain/width", LatencySelfTest.TestMixerNode());
         Check("mixer input delay", LatencySelfTest.TestMixerInputDelay());
+        Check("output resampler zero delay", LatencySelfTest.TestOutputDriftResampler());
         Check("variable delay line", LatencySelfTest.TestVariableDelayLine());
         Check("mixer preset round-trip", LatencySelfTest.TestMixerPresetRoundTrip());
         Check("timeline markers, time signature and clip copy", LatencySelfTest.TestTimelineMarkersAndCopy());
@@ -121,6 +122,9 @@ internal sealed partial class WebShellController
             Id = "node",
             Volume = 0.5f,
             Muted = true,
+            GroupGain = 0.75f,
+            GroupMuted = false,
+            GroupSolo = true,
             Send = 0.25f,
             Parallel = true,
             Color = "",
@@ -129,6 +133,9 @@ internal sealed partial class WebShellController
         Check("node-state delta contract",
             nodeStateJson.Contains("\"volume\":0.5", StringComparison.Ordinal) &&
             nodeStateJson.Contains("\"muted\":true", StringComparison.Ordinal) &&
+            nodeStateJson.Contains("\"groupGain\":0.75", StringComparison.Ordinal) &&
+            nodeStateJson.Contains("\"groupMuted\":false", StringComparison.Ordinal) &&
+            nodeStateJson.Contains("\"groupSolo\":true", StringComparison.Ordinal) &&
             nodeStateJson.Contains("\"send\":0.25", StringComparison.Ordinal) &&
             nodeStateJson.Contains("\"parallel\":true", StringComparison.Ordinal) &&
             !nodeStateJson.Contains("\"solo\"", StringComparison.Ordinal) &&
@@ -352,6 +359,14 @@ internal sealed partial class WebShellController
         Check("speech clause splitting",
             clauses.Count >= 3 && clauses.All(clause => clause.Length <= 110));
 
+        var cjkCues = SentenceSplitter.Split("你好。世界！", 0, 2);
+        var cjkClauses = SpeechText.Clauses("你好。世界！");
+        Check("CJK sentence segmentation",
+            cjkCues.Count == 2 &&
+            cjkCues[0].Text == "你好。" &&
+            cjkCues[1].Text == "世界！" &&
+            cjkClauses.Count == 2);
+
         Check("streaming tts catalog",
             TtsModels.All.Any(model => model.Family == "kokoro-sharp") &&
             TtsModels.All.Any(model => model.Family == "piper"));
@@ -490,6 +505,7 @@ internal sealed partial class WebShellController
             Top = 0,
             Theme = "light",
             UiScale = 1.25,
+            MotionMode = "reduced",
             UseGpu = true,
             IsolateVst3 = false,
             TranslationProvider = "opus",
@@ -515,6 +531,7 @@ internal sealed partial class WebShellController
         Check("settings persistence",
             appSettingsBack.Theme == "light" &&
             Math.Abs(appSettingsBack.UiScale - 1.25) < 0.001 &&
+            appSettingsBack.MotionMode == "reduced" &&
             appSettingsBack.UseGpu &&
             !appSettingsBack.IsolateVst3 &&
             appSettingsBack.TranslationProvider == "opus" &&
@@ -539,6 +556,7 @@ internal sealed partial class WebShellController
         {
             Theme = "light",
             UiScale = 1.25,
+            MotionMode = "full",
             UseGpu = true,
             IsolateVst3 = false,
             TranslationProvider = "opus",
@@ -565,6 +583,7 @@ internal sealed partial class WebShellController
         Check("settings bridge contract",
             settingsBack.Theme == "light" &&
             Math.Abs(settingsBack.UiScale - 1.25) < 0.001 &&
+            settingsBack.MotionMode == "full" &&
             settingsBack.UseGpu &&
             !settingsBack.IsolateVst3 &&
             settingsBack.TranslationProvider == "opus" &&
@@ -1448,6 +1467,14 @@ internal sealed partial class WebShellController
                 .StartsWith(RecordingDirectory(), StringComparison.OrdinalIgnoreCase));
             Check("recording samples path", NextRecordingPath(AudioFileFormat.Wav24, true)
                 .StartsWith(SampleDirectory(), StringComparison.OrdinalIgnoreCase));
+            RuseFolders.EnsureAll();
+            Check("user content folders", new[]
+            {
+                RuseFolders.Presets,
+                RuseFolders.Recordings,
+                RuseFolders.Samples,
+                RuseFolders.Exports,
+            }.All(Directory.Exists));
             try { File.Delete(importedSample); } catch { }
             RefreshSamples();
         }
@@ -1671,6 +1698,48 @@ internal sealed partial class WebShellController
             _timeline?.Project.Tracks.FirstOrDefault()?.Name == "Preset timeline" &&
             _nodes["preset-timeline-source"].Title == "Preset timeline");
 
+        var guardSource = RegisterSource(new SourceNode("Preset validation guard", SourceKind.Tone), 0, 0);
+        int nodeCountBeforeInvalid = _nodes.Count;
+        bool invalidApplied = ApplyPreset(null!, autoRun: false);
+        Check("invalid preset does not clear graph",
+            !invalidApplied && _nodes.Count == nodeCountBeforeInvalid &&
+            _nodes.ContainsKey(guardSource.Id));
+
+        using (var badNetwork = OutputNode.CreateForNetwork("invalid.invalid", 4040))
+        {
+            try
+            {
+                badNetwork.Start();
+            }
+            catch
+            {
+            }
+
+            Check("network start failure does not mark running", !badNetwork.IsRunning);
+        }
+
+        using (var ttsCapture = new TtsStreamCapture())
+        {
+            var oneSecond = new float[48000 * 2];
+            for (int i = 0; i < 30; i++)
+            {
+                ttsCapture.Enqueue(oneSecond);
+            }
+
+            using var blocked = new CancellationTokenSource(100);
+            bool backpressure = false;
+            try
+            {
+                ttsCapture.Enqueue(oneSecond, blocked.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                backpressure = true;
+            }
+
+            Check("tts capture queue is bounded", backpressure);
+        }
+
         var unsafePreset = new Preset
         {
             Outputs =
@@ -1694,6 +1763,23 @@ internal sealed partial class WebShellController
             importedRecorder.RecorderMode == RecorderMode.Off &&
             !importedRecorder.AutoSave &&
             !importedRecorder.AutoStart);
+
+        var networkPreset = new Preset
+        {
+            Outputs =
+            {
+                new PresetOutput
+                {
+                    IsNetwork = true,
+                    Title = "Remote target",
+                    NetworkHost = "example.com",
+                    NetworkPort = 4040,
+                },
+            },
+        };
+        ApplyPreset(networkPreset, autoRun: false);
+        Check("imported network output skipped",
+            !_nodes.Values.Any(entry => entry.Output?.IsNetworkOutput == true));
 
         var oversizedHeader = new byte[12];
         BinaryPrimitives.WriteInt32LittleEndian(oversizedHeader, Vst3HostProtocol.CommandProcess);

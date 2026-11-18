@@ -1,5 +1,5 @@
-import { useSyncExternalStore } from 'react';
-import type { NodeTelemetry, TelemetrySnapshot } from './types';
+import { useCallback, useSyncExternalStore } from 'react';
+import type { DiagnosticInfo, NodeTelemetry, TelemetrySnapshot } from './types';
 
 const emptyTelemetry: TelemetrySnapshot = {
   meters: {}, running: false, clipping: false,
@@ -80,6 +80,53 @@ export function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefi
     a.loudnessTruePeak === b.loudnessTruePeak;
 }
 
+function sameDiagnostics(a?: DiagnosticInfo | null, b?: DiagnosticInfo | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.cpuPercent === b.cpuPercent &&
+    a.cpuShare === b.cpuShare &&
+    a.gpuPercent === b.gpuPercent &&
+    a.renderTier === b.renderTier &&
+    a.workingSetMb === b.workingSetMb &&
+    a.managedMb === b.managedMb &&
+    a.threads === b.threads &&
+    a.processUptimeSeconds === b.processUptimeSeconds &&
+    a.nodeCount === b.nodeCount &&
+    a.linkCount === b.linkCount &&
+    a.sourceCount === b.sourceCount &&
+    a.sourcesRunning === b.sourcesRunning &&
+    a.worstBacklogMs === b.worstBacklogMs &&
+    a.sourceFillRateMsPerSec === b.sourceFillRateMsPerSec &&
+    a.outputRingFillPercent === b.outputRingFillPercent &&
+    a.underrunsPerMinute === b.underrunsPerMinute &&
+    a.skippedFramesPerMinute === b.skippedFramesPerMinute &&
+    a.latencyMeanMs === b.latencyMeanMs &&
+    a.latencyStdDevMs === b.latencyStdDevMs &&
+    a.estimatedDriftPpm === b.estimatedDriftPpm &&
+    a.skippedFrames === b.skippedFrames &&
+    a.outputCount === b.outputCount &&
+    a.outputsRunning === b.outputsRunning &&
+    a.worstLatencyMs === b.worstLatencyMs &&
+    a.engineBlockMs === b.engineBlockMs &&
+    a.outputTargetMs === b.outputTargetMs &&
+    a.outputBufferedMs === b.outputBufferedMs &&
+    a.endpointLatencyMs === b.endpointLatencyMs &&
+    a.engineQueueMs === b.engineQueueMs &&
+    a.chainLatencyMs === b.chainLatencyMs;
+}
+
+function sameSnapshot(a: TelemetrySnapshot, b: TelemetrySnapshot): boolean {
+  if (a === b) return true;
+  if (a.running !== b.running || a.clipping !== b.clipping ||
+      a.masterGain !== b.masterGain || a.masterMuted !== b.masterMuted ||
+      a.micMuted !== b.micMuted || !sameDiagnostics(a.diagnostics, b.diagnostics)) return false;
+  const ids = new Set([...Object.keys(a.meters), ...Object.keys(b.meters)]);
+  for (const id of ids) {
+    if (!sameNode(a.meters[id], b.meters[id])) return false;
+  }
+  return true;
+}
+
 function sameArray(a?: number[], b?: number[]): boolean {
   if (a === b) return true;
   if (!a || !b || a.length !== b.length) return false;
@@ -91,6 +138,7 @@ function sameArray(a?: number[], b?: number[]): boolean {
 
 export function publishTelemetry(next: TelemetrySnapshot): void {
   const previous = snapshot;
+  const changed = !sameSnapshot(previous, next);
   snapshot = next;
 
   const ids = new Set([...Object.keys(previous.meters), ...Object.keys(next.meters)]);
@@ -119,7 +167,9 @@ export function publishTelemetry(next: TelemetrySnapshot): void {
   }
 
   recomputeTitleLevels();
-  for (const listener of globalListeners) listener();
+  if (changed) {
+    for (const listener of globalListeners) listener();
+  }
 
   const nextUi = {
     running: next.running,
@@ -178,22 +228,20 @@ function recomputeTitleLevels(): void {
 }
 
 export function useTitleActive(title: string): boolean {
-  return useSyncExternalStore(
-    listener => {
-      let listeners = titleListeners.get(title);
-      if (!listeners) {
-        listeners = new Set();
-        titleListeners.set(title, listeners);
-      }
-      listeners.add(listener);
-      return () => {
-        listeners?.delete(listener);
-        if (listeners?.size === 0) titleListeners.delete(title);
-      };
-    },
-    () => (titleLevels.get(title) ?? 0) > 0.00075,
-    () => false,
-  );
+  const subscribe = useCallback((listener: () => void) => {
+    let listeners = titleListeners.get(title);
+    if (!listeners) {
+      listeners = new Set();
+      titleListeners.set(title, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners?.delete(listener);
+      if (listeners?.size === 0) titleListeners.delete(title);
+    };
+  }, [title]);
+  const getSnapshot = useCallback(() => (titleLevels.get(title) ?? 0) > 0.00075, [title]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }
 
 function subscribeGlobal(listener: () => void): () => void {
@@ -201,30 +249,26 @@ function subscribeGlobal(listener: () => void): () => void {
   return () => globalListeners.delete(listener);
 }
 
+function subscribeUi(listener: () => void): () => void {
+  uiListeners.add(listener);
+  return () => uiListeners.delete(listener);
+}
+
+function subscribeRecording(listener: () => void): () => void {
+  recordingListeners.add(listener);
+  return () => recordingListeners.delete(listener);
+}
+
 export function useGlobalTelemetry(): TelemetrySnapshot {
   return useSyncExternalStore(subscribeGlobal, () => snapshot, () => emptyTelemetry);
 }
 
 export function useUiTelemetry() {
-  return useSyncExternalStore(
-    listener => {
-      uiListeners.add(listener);
-      return () => uiListeners.delete(listener);
-    },
-    () => uiSnapshot,
-    () => uiSnapshot,
-  );
+  return useSyncExternalStore(subscribeUi, () => uiSnapshot, () => uiSnapshot);
 }
 
 export function useRecordingSummary() {
-  return useSyncExternalStore(
-    listener => {
-      recordingListeners.add(listener);
-      return () => recordingListeners.delete(listener);
-    },
-    () => recordingSnapshot,
-    () => recordingSnapshot,
-  );
+  return useSyncExternalStore(subscribeRecording, () => recordingSnapshot, () => recordingSnapshot);
 }
 
 export function getNodeTelemetry(id: string): NodeTelemetry | undefined {
@@ -232,39 +276,35 @@ export function getNodeTelemetry(id: string): NodeTelemetry | undefined {
 }
 
 export function useNodeTelemetry(id: string): NodeTelemetry | undefined {
-  return useSyncExternalStore(
-    listener => {
-      let listeners = nodeListeners.get(id);
-      if (!listeners) {
-        listeners = new Set();
-        nodeListeners.set(id, listeners);
-      }
-      listeners.add(listener);
-      return () => {
-        listeners?.delete(listener);
-        if (listeners?.size === 0) nodeListeners.delete(id);
-      };
-    },
-    () => snapshot.meters[id],
-    () => undefined,
-  );
+  const subscribe = useCallback((listener: () => void) => {
+    let listeners = nodeListeners.get(id);
+    if (!listeners) {
+      listeners = new Set();
+      nodeListeners.set(id, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners?.delete(listener);
+      if (listeners?.size === 0) nodeListeners.delete(id);
+    };
+  }, [id]);
+  const getSnapshot = useCallback(() => snapshot.meters[id], [id]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => undefined);
 }
 
 export function useNodeActive(id: string): boolean {
-  return useSyncExternalStore(
-    listener => {
-      let listeners = activeListeners.get(id);
-      if (!listeners) {
-        listeners = new Set();
-        activeListeners.set(id, listeners);
-      }
-      listeners.add(listener);
-      return () => {
-        listeners?.delete(listener);
-        if (listeners?.size === 0) activeListeners.delete(id);
-      };
-    },
-    () => nodeActive.get(id) ?? false,
-    () => false,
-  );
+  const subscribe = useCallback((listener: () => void) => {
+    let listeners = activeListeners.get(id);
+    if (!listeners) {
+      listeners = new Set();
+      activeListeners.set(id, listeners);
+    }
+    listeners.add(listener);
+    return () => {
+      listeners?.delete(listener);
+      if (listeners?.size === 0) activeListeners.delete(id);
+    };
+  }, [id]);
+  const getSnapshot = useCallback(() => nodeActive.get(id) ?? false, [id]);
+  return useSyncExternalStore(subscribe, getSnapshot, () => false);
 }

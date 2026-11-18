@@ -47,6 +47,27 @@ export interface CatalogSnapshot {
   perAppCaptureMessage?: string;
 }
 
+export interface MediaFolderModel {
+  path: string;
+  name: string;
+  exists: boolean;
+}
+
+export interface MediaFileModel {
+  path: string;
+  name: string;
+  folder: string;
+  extension: string;
+  sizeBytes: number;
+  modifiedUtc: string;
+}
+
+export interface MediaListModel {
+  folders: MediaFolderModel[];
+  files: MediaFileModel[];
+  error?: string | null;
+}
+
 export interface ParameterModel {
   processorIndex: number;
   parameterIndex: number;
@@ -62,6 +83,33 @@ export interface ParameterModel {
   options: string[];
   midiBinding?: string;
   midiLearning?: boolean;
+}
+
+export interface FileAnalysis {
+  fileName: string;
+  extension: string;
+  fileSizeBytes: number;
+  lastModifiedUtc?: string | null;
+  durationSeconds: number;
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+  encoding: string;
+  bitrateKbps: number;
+  frameCount: number;
+  peakDb: number;
+  truePeakDb: number;
+  rmsDb: number;
+  crestFactorDb: number;
+  integratedLufs: number;
+  loudnessRange: number;
+  dcOffsetLeft: number;
+  dcOffsetRight: number;
+  stereoCorrelation: number;
+  stereoBalanceDb: number;
+  silencePercent: number;
+  clippedSamples: number;
+  analyzedUtc: string;
 }
 
 export interface NodeModel {
@@ -125,6 +173,8 @@ export interface NodeModel {
   fileOutputs?: Array<{ id: string; name: string }>;
   fileLoop?: boolean;
   fileSpeed?: number;
+  fileAnalysis?: FileAnalysis | null;
+  fileAnalysisError?: string;
   isMetronome?: boolean;
   metronomeBpm?: number;
   metronomeBeatsPerBar?: number;
@@ -490,6 +540,7 @@ export interface SettingsModel {
   uiLanguage: string;
   theme: 'dark' | 'light' | 'blueprint' | 'studio74' | 'receiver';
   uiScale: number;
+  motionMode: 'system' | 'reduced' | 'full';
   startRoutingOnLaunch: boolean;
   highlightMutedNodes: boolean;
   signalGlow: boolean;
@@ -566,6 +617,7 @@ export interface SettingsModel {
   renderTier?: number;
   dataFolder?: string;
   modelsFolder?: string;
+  userFolder?: string;
 }
 
 export interface StatusMessage {

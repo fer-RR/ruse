@@ -38,6 +38,57 @@ public sealed class AudioGraph : IDisposable
     /// <summary>Rebuilds the renderer snapshot after latency-affecting mixer changes.</summary>
     public void RefreshEngine() => InvalidateEngine();
 
+    /// <summary>
+    /// Points each source converter at its device clock when the source reaches
+    /// exactly one real output. Fan-out sources keep the shared clock fallback.
+    /// </summary>
+    public void UpdateSourceClocks()
+    {
+        var targets = new Dictionary<SourceNode, List<OutputNode>>();
+        var needsResampler = new Dictionary<OutputNode, bool>();
+
+        foreach (var source in Sources)
+        {
+            var list = new List<OutputNode>();
+            foreach (var output in Outputs)
+            {
+                if (output.IsFileRecorder || output.IsNetworkOutput || output.IsNativePassthrough)
+                {
+                    continue;
+                }
+
+                if (DirectlyConnected(source, output) || ReachesThroughModifier(source, output))
+                {
+                    list.Add(output);
+                }
+            }
+
+            targets[source] = list;
+            if (list.Count > 1)
+            {
+                foreach (var output in list)
+                {
+                    needsResampler[output] = true;
+                }
+            }
+        }
+
+        foreach (var source in Sources)
+        {
+            var list = targets[source];
+            bool coveredByOutputResampler = list.Any(output => needsResampler.TryGetValue(output, out bool needed) && needed);
+            source.SetOutputClockPpm(
+                list.Count == 1 && !coveredByOutputResampler && list[0].ClockPpmReady
+                    ? list[0].ClockPpm
+                    : 0.0);
+        }
+
+        foreach (var output in Outputs)
+        {
+            output.SetOutputClockResampler(needsResampler.TryGetValue(output, out bool needed) && needed);
+        }
+    }
+
     /// <summary>Updates one live mixer input without rebuilding the graph.</summary>
     public void UpdateMixerInput(ModifierNode mixer, SourceNode? source, ModifierNode? upstream,
         ModifierNode.MixerInputSettings settings)
@@ -265,7 +316,9 @@ public sealed class AudioGraph : IDisposable
         }
         else
         {
-            source.Dispose();
+            // Even when no route changed, a renderer lease may still hold the
+            // old source snapshot. Defer disposal until that snapshot is done.
+            InvalidateEngine(source.Dispose);
         }
     }
 

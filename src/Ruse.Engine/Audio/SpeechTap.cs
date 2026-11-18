@@ -28,11 +28,13 @@ public sealed class SpeechTap
     private float _z2B;
     private float _level;
     private long _totalSamples;
+    private long _generation;
     private long _lastAudioTick;
     private long _lastWriteTick;
 
     public float Level => Volatile.Read(ref _level);
     public long TotalSamples => Volatile.Read(ref _totalSamples);
+    public long Generation => Volatile.Read(ref _generation);
     public long LastAudioTick => Volatile.Read(ref _lastAudioTick);
     public long LastWriteTick => Volatile.Read(ref _lastWriteTick);
     public int Available { get { lock (_lock) return _count; } }
@@ -151,6 +153,7 @@ public sealed class SpeechTap
             _phase = 0;
             _z1A = _z2A = _z1B = _z2B = 0;
             _totalSamples = 0;
+            _generation++;
             Volatile.Write(ref _level, 0f);
             Volatile.Write(ref _lastAudioTick, 0L);
             Volatile.Write(ref _lastWriteTick, 0L);

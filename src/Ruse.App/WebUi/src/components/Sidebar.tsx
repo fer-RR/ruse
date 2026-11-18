@@ -1,7 +1,7 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, ReactNode, RefObject } from 'react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, Combine, Eye, EyeOff, FileAudio, FolderOpen, GripVertical, Headphones, MessageSquare,
+  AppWindow, AudioLines, Check, ChevronDown, Combine, Eye, EyeOff, FileAudio, Folder, FolderOpen, GripVertical, Headphones, MessageSquare,
   Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, RefreshCw, Search, SlidersHorizontal, Speaker, Timer, Trash2, Upload, X,
 } from 'lucide-react';
 import {
@@ -13,11 +13,12 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useI18n } from '../i18n';
+import { useReducedMotion } from '../useReducedMotion';
 import { catalogKey } from '../library';
 import { send } from '../bridge';
 import { useTitleActive } from '../telemetry';
-import type { CatalogItem, CatalogSnapshot } from '../types';
-
+import type { CatalogItem, CatalogSnapshot, MediaListModel } from '../types';
+import { ConfirmDialog } from './Dialogs';
 const systemItem: CatalogItem = {
   id: 'system', kind: 'system', name: 'System audio', subtitle: 'Windows loopback',
   details: 'Capture everything playing through the default output',
@@ -192,8 +193,8 @@ function loadHiddenItems(): Set<string> {
   return new Set();
 }
 const DEFAULT_SECTION_ORDER = [
-  'applications', 'generators', 'samples', 'network', 'physicalOutputs', 'physicalInputs',
-  'recording', 'virtualBuses', 'virtualInputs', 'effects',
+  'applications', 'generators', 'samples', 'media', 'network', 'physicalOutputs', 'physicalInputs',
+  'applications', 'generators', 'media', 'network', 'physicalOutputs', 'physicalInputs',
   'plugins', 'chains', 'templates',
 ] as const;
 
@@ -286,12 +287,311 @@ const VIEWS: ReadonlyArray<{ id: View; label: string }> = [
   { id: 'destinations', label: 'Destinations' },
   { id: 'processing', label: 'Processing' },
 ];
+function formatMediaSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${Math.round(bytes)} B`;
+}
 
-function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, onDelete, onNewChain, onEditChain, onRescanPlugins }: {
+function mediaWaveformPath(peaks?: number[]): string {
+  if (!peaks || peaks.length === 0) return '';
+  const width = 64;
+  const middle = 9;
+  return peaks.map((peak, index) => {
+    const x = ((index + 0.5) * width / peaks.length).toFixed(2);
+    const half = Math.max(0.4, Math.min(1, peak) * 8);
+    return `M${x} ${(middle - half).toFixed(2)}V${(middle + half).toFixed(2)}`;
+  }).join(' ');
+}
+
+function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveforms: Record<string, number[]>; query: string }) {
+  const { t } = useI18n();
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
+    try {
+      const parsed: unknown = JSON.parse(localStorage.getItem('ruse.mediaCollapsed') ?? '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? Object.fromEntries(Object.entries(parsed as Record<string, unknown>).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'))
+        : {};
+    } catch {
+      return {};
+    }
+  });
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState('');
+  const [draggingFolder, setDraggingFolder] = useState<string | null>(null);
+  const [dropFolder, setDropFolder] = useState<string | null>(null);
+  const [sort, setSort] = useState<'name' | 'modified' | 'size' | 'type'>('name');
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: MediaListModel['files'][number] } | null>(null);
+  const [pendingRemoveFolder, setPendingRemoveFolder] = useState<MediaListModel['folders'][number] | null>(null);
+  const renameCommitted = useRef(false);
+  const requestedWaveforms = useRef<Set<string>>(new Set());
+  const normalized = query.trim().toLowerCase();
+
+  useEffect(() => {
+    const missing: string[] = [];
+    for (const folder of media.folders) {
+      if (!normalized && collapsed[folder.path]) continue;
+      for (const file of media.files) {
+        if (file.folder !== folder.path) continue;
+        if (waveforms[file.path] || requestedWaveforms.current.has(file.path)) continue;
+        requestedWaveforms.current.add(file.path);
+        missing.push(file.path);
+        if (missing.length >= 8) break;
+      }
+
+      if (missing.length >= 8) break;
+    }
+
+    for (const path of missing) send('media-waveform', { path });
+  }, [collapsed, media.files, media.folders, normalized, waveforms]);
+
+  const fileMatches = (file: MediaListModel['files'][number]) =>
+    !normalized ||
+    file.name.toLowerCase().includes(normalized) ||
+    file.extension.toLowerCase().includes(normalized);
+
+  useEffect(() => { localStorage.setItem('ruse.mediaCollapsed', JSON.stringify(collapsed)); }, [collapsed]);
+
+  const sortFiles = (files: MediaListModel['files']) => [...files].sort((a, b) => {
+    if (sort === 'modified') return b.modifiedUtc.localeCompare(a.modifiedUtc);
+    if (sort === 'size') return b.sizeBytes - a.sizeBytes;
+    if (sort === 'type') return a.extension.localeCompare(b.extension) || a.name.localeCompare(b.name);
+    return a.name.localeCompare(b.name);
+  });
+  useEffect(() => { const refresh = () => send('media-scan'); window.addEventListener('focus', refresh); return () => window.removeEventListener('focus', refresh); }, []);
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') close(); };
+    window.addEventListener('pointerdown', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('pointerdown', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [contextMenu]);
+
+  const startRename = (path: string, name: string) => {
+    renameCommitted.current = false;
+    setRenaming(path);
+    setDraft(name);
+  };
+
+  const commitRename = () => {
+    if (!renaming || renameCommitted.current) return;
+    renameCommitted.current = true;
+    const name = draft.trim();
+    if (name && name !== media.files.find(file => file.path === renaming)?.name) {
+      send('media-rename', { path: renaming, name });
+    }
+    setRenaming(null);
+  };
+
+  const reorderFolders = (from: string, to: string) => {
+    if (!from || !to || from === to) return;
+    const paths = media.folders.map(folder => folder.path);
+    const fromIndex = paths.indexOf(from);
+    const toIndex = paths.indexOf(to);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const [moved] = paths.splice(fromIndex, 1);
+    paths.splice(toIndex, 0, moved);
+    send('media-reorder-folders', { paths });
+  };
+
+  return (
+    <div className="media-bin">
+      <div className="library-section-actions media-actions">
+        <button type="button" className="library-action" onClick={() => send('samples-open-folder')} title={t('Open samples folder')}>
+          <FolderOpen size={13} /> {t('Open folder')}
+        </button>
+        <button type="button" className="library-action" onClick={() => send('samples-import')} title={t('Add sample files')}>
+          <Upload size={13} /> {t('Add samples')}
+        </button>
+        <button type="button" className="library-action" onClick={() => send('media-add-folder')}>
+          <FolderOpen size={13} /> {t('Add folder')}
+        </button>
+        <select
+          className="media-sort"
+          value={sort}
+          onChange={event => setSort(event.target.value as typeof sort)}
+          aria-label={t('Sort media')}
+          title={t('Sort media')}
+        >
+          <option value="name">{t('Name')}</option>
+          <option value="modified">{t('Date')}</option>
+          <option value="size">{t('Size')}</option>
+          <option value="type">{t('Type')}</option>
+        </select>
+        <button type="button" className="library-action" onClick={() => send('media-scan')} title={t('Refresh')}>
+          <RefreshCw size={13} /> {t('Refresh')}
+        </button>
+      </div>
+      {media.error && <p className="library-empty error-text">{media.error}</p>}
+      {media.folders.length === 0 && <p className="library-empty">{t('Add a project folder to collect the files you use here.')}</p>}
+      <div className="media-groups">
+        {media.folders.map(folder => {
+          const files = sortFiles(media.files.filter(file => file.folder === folder.path && fileMatches(file)));
+          if (normalized && files.length === 0) return null;
+          const open = normalized.length > 0 || !collapsed[folder.path];
+          return (
+            <section
+              key={folder.path}
+              className={`media-group ${folder.exists ? '' : 'missing'} ${dropFolder === folder.path ? 'drop-target' : ''}`}
+              onDragOver={event => {
+                if (!draggingFolder) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = 'move';
+                setDropFolder(folder.path);
+              }}
+              onDragLeave={() => setDropFolder(current => current === folder.path ? null : current)}
+              onDrop={event => {
+                event.preventDefault();
+                const from = event.dataTransfer.getData('application/ruse-media-folder') || draggingFolder;
+                setDropFolder(null);
+                setDraggingFolder(null);
+                if (from) reorderFolders(from, folder.path);
+              }}
+            >
+              <div className="media-group-head">
+                <span
+                  className="media-folder-drag"
+                  draggable
+                  title={t('Drag to reorder folders')}
+                  aria-label={t('Drag to reorder folders')}
+                  onDragStart={event => {
+                    setDraggingFolder(folder.path);
+                    event.dataTransfer.setData('application/ruse-media-folder', folder.path);
+                    event.dataTransfer.effectAllowed = 'move';
+                  }}
+                  onDragEnd={() => {
+                    setDraggingFolder(null);
+                    setDropFolder(null);
+                  }}
+                ><GripVertical size={12} /></span>
+                <button
+                  type="button"
+                  className="media-group-toggle"
+                  onClick={() => setCollapsed(current => ({ ...current, [folder.path]: !current[folder.path] }))}
+                  aria-expanded={open}
+                >
+                  <ChevronDown size={12} className={open ? '' : 'collapsed'} />
+                  <Folder size={13} />
+                  <strong>{folder.name}</strong>
+                  <span>{files.length}</span>
+                </button>
+                <button type="button" className="icon-button compact" title={t('Open folder')} aria-label={t('Open folder')} onClick={() => send('media-open-folder', { path: folder.path })}>
+                  <FolderOpen size={12} />
+                </button>
+                <button type="button" className="icon-button compact danger-text" title={t('Remove folder')} aria-label={t('Remove folder')} onClick={() => setPendingRemoveFolder(folder)}>
+                  <X size={12} />
+                </button>
+              </div>
+              {open && (
+                files.length > 0 ? (
+                  <div className="media-group-items">
+                    {files.map(file => (
+                      <div
+                        key={file.path}
+                        className={`media-item ${renaming === file.path ? 'editing' : ''}`}
+                        draggable={renaming !== file.path}
+                        tabIndex={0}
+                        onContextMenu={event => {
+                          event.preventDefault();
+                          setContextMenu({ x: event.clientX, y: event.clientY, file });
+                        }}
+                        onKeyDown={event => {
+                          if (event.target !== event.currentTarget) return;
+                          if (event.key === 'F2') {
+                            event.preventDefault();
+                            startRename(file.path, file.name);
+                          } else if (event.key === 'Enter') {
+                            event.preventDefault();
+                            send('add-file-player', { path: file.path });
+                          }
+                        }}
+                        onDragStart={event => {
+                          if (renaming === file.path) {
+                            event.preventDefault();
+                            return;
+                          }
+                          event.dataTransfer.setData('application/ruse-recording', file.path);
+                          event.dataTransfer.setData('application/ruse-media', file.path);
+                          event.dataTransfer.effectAllowed = 'copy';
+                        }}
+                        onDoubleClick={() => send('add-file-player', { path: file.path })}
+                        title={file.path + ' · ' + t('Drag to the timeline, double-click to add a file player')}
+                      >
+                        <FileAudio size={13} aria-hidden="true" />
+                        <span className="media-item-text">
+                          {renaming === file.path ? (
+                            <input
+                              autoFocus
+                              value={draft}
+                              onChange={event => setDraft(event.target.value)}
+                              onBlur={commitRename}
+                              onKeyDown={event => {
+                                if (event.key === 'Enter') { event.preventDefault(); commitRename(); }
+                                if (event.key === 'Escape') { event.preventDefault(); setRenaming(null); }
+                              }}
+                            />
+                          ) : <strong>{file.name}</strong>}
+                          <small>{file.extension} � {formatMediaSize(file.sizeBytes)} � {new Date(file.modifiedUtc).toLocaleDateString()}</small>
+                        </span>
+                        <svg className="media-waveform" viewBox="0 0 64 18" aria-hidden="true">
+                          <path d={mediaWaveformPath(waveforms[file.path])} />
+                        </svg>
+                        <button type="button" className="icon-button compact" title={t('Rename')} aria-label={t('Rename')} onClick={() => startRename(file.path, file.name)}><Pencil size={12} /></button>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="media-folder-empty">{t('No media files in these folders.')}</p>
+              )}
+            </section>
+          );
+        })}
+      </div>
+      {contextMenu && (
+        <div
+          className="media-context-menu"
+          role="menu"
+          style={{
+            left: Math.min(contextMenu.x, window.innerWidth - 200),
+            top: Math.min(contextMenu.y, window.innerHeight - 190),
+          }}
+          onPointerDown={event => event.stopPropagation()}
+        >
+          <button type="button" role="menuitem" onClick={() => { send('add-file-player', { path: contextMenu.file.path }); setContextMenu(null); }}>{t('Add to canvas')}</button>
+          <button type="button" role="menuitem" onClick={() => { send('media-add-to-timeline', { path: contextMenu.file.path }); setContextMenu(null); }}>{t('Add to timeline')}</button>
+          <button type="button" role="menuitem" onClick={() => { startRename(contextMenu.file.path, contextMenu.file.name); setContextMenu(null); }}>{t('Rename')}</button>
+          <button type="button" role="menuitem" onClick={() => { send('media-reveal', { path: contextMenu.file.path }); setContextMenu(null); }}>{t('Reveal in Explorer')}</button>
+          <button type="button" role="menuitem" onClick={() => { void navigator.clipboard?.writeText(contextMenu.file.path); setContextMenu(null); }}>{t('Copy path')}</button>
+        </div>
+      )}
+      {pendingRemoveFolder && (
+        <ConfirmDialog
+          title={t('Remove folder')}
+          body={t('Remove “{name}” from Media & Samples? The files on disk are not deleted.', { name: pendingRemoveFolder.name })}
+          confirmLabel={t('Remove')}
+          onConfirm={() => {
+            send('media-remove-folder', { path: pendingRemoveFolder.path });
+            setPendingRemoveFolder(null);
+          }}
+          onClose={() => setPendingRemoveFolder(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, media, waveforms, onAdd, onRename, onDelete, onNewChain, onEditChain, onRescanPlugins }: {
   catalog: CatalogSnapshot;
   searchRef: RefObject<HTMLInputElement | null>;
   aliases: Record<string, string>;
   usedDeviceIds: Set<string>;
+  media: MediaListModel;
+  waveforms: Record<string, number[]>;
   onAdd: (item: CatalogItem) => void;
   onRename: (item: CatalogItem) => void;
   onDelete: (item: CatalogItem) => void;
@@ -300,9 +600,12 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   onRescanPlugins: () => void;
 }) {
   const { t } = useI18n();
+  const reducedMotion = useReducedMotion();
+
   const [query, setQuery] = useState('');
   const [view, setView] = useState<View>('all');
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
   const [searching, setSearching] = useState(false);
   const [sectionOrder, setSectionOrder] = useState<string[]>(loadSectionOrder);
   const [sampleDropActive, setSampleDropActive] = useState(false);
@@ -323,10 +626,12 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   useEffect(() => {
     localStorage.setItem(LIBRARY_ORDER_KEY, JSON.stringify(sectionOrder));
   }, [sectionOrder]);
+  useEffect(() => { send('media-scan'); }, []);
 
   useEffect(() => {
     localStorage.setItem(LIBRARY_HIDDEN_KEY, JSON.stringify([...hiddenKeys]));
   }, [hiddenKeys]);
+
 
   const toggleSectionHidden = useCallback((id: string) => {
     setRevealedSections(current => {
@@ -376,7 +681,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
       generators: { id: 'generators', label: 'Miscellaneous', items: [metronomeItem, toneItem, synthItem, ttsItem, ...hearing] },
       physicalInputs: { id: 'physicalInputs', label: 'Microphones & inputs', items: physicalInputs },
       recording: { id: 'recording', label: 'Record & Play', items: [recorderItem, filePlayerItem] },
-      samples: { id: 'samples', label: 'Samples', items: catalog.samples ?? [] },
+      media: { id: 'media', label: 'Media & Samples', items: [] },
       virtualBuses: { id: 'virtualBuses', label: 'Virtual buses', items: virtualInputs },
       virtualInputs: { id: 'virtualInputs', label: 'Virtual inputs', items: catalog.virtuals },
       effects: { id: 'effects', label: 'Effects', items: effects },
@@ -392,8 +697,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
       sections: ordered([
         catalogSections.applications,
         catalogSections.generators,
-        catalogSections.samples,
-        catalogSections.network,
+        catalogSections.media,
         catalogSections.physicalInputs,
         catalogSections.virtualBuses,
       ]),
@@ -415,7 +719,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
   const allSections = useMemo(() => ordered([
     catalogSections.applications,
     catalogSections.generators,
-    catalogSections.samples,
+    catalogSections.media,
     catalogSections.network,
     catalogSections.physicalOutputs,
     catalogSections.physicalInputs,
@@ -431,8 +735,8 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
     const items = revealedSections.has(section.id)
       ? section.items
       : section.items.filter(item => !hiddenKeys.has(catalogKey(item)));
-    return { ...section, items, total: section.items.length, hiddenCount };
-  }).filter(section => section.items.length > 0 || section.hiddenCount > 0 || section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins'), [catalogSections, ordered, hiddenKeys, revealedSections]);
+    return { ...section, items, total: section.id === 'media' ? media.files.length : section.items.length, hiddenCount };
+  }).filter(section => section.id === 'media' || section.items.length > 0 || section.hiddenCount > 0 || section.label === 'Saved chains' || section.id === 'plugins'), [catalogSections, media.files.length, ordered, hiddenKeys, revealedSections]);
 
   useEffect(() => {
     const focusSection = (event: Event) => {
@@ -446,13 +750,13 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
       setExpanded(current => ({ ...current, [target.id]: true }));
       requestAnimationFrame(() => requestAnimationFrame(() => {
         document.querySelector(`[data-section-label="${target.label}"]`)
-          ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          ?.scrollIntoView({ block: 'nearest', behavior: reducedMotion ? 'auto' : 'smooth' });
       }));
     };
 
     window.addEventListener('ruse-focus-section', focusSection);
     return () => window.removeEventListener('ruse-focus-section', focusSection);
-  }, [groups]);
+  }, [groups, reducedMotion]);
 
   const displayName = (item: CatalogItem) => aliases[catalogKey(item)]?.trim() || t(item.name);
   const deferredQuery = useDeferredValue(query);
@@ -468,9 +772,9 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
       const items = revealedSections.has(section.id)
         ? searched
         : searched.filter(item => !hiddenKeys.has(catalogKey(item)));
-      return { ...section, items, total: section.items.length, hiddenCount };
-    }).filter(section => section.items.length > 0 || (!normalized && (section.hiddenCount > 0 || section.label === 'Saved chains' || section.id === 'samples' || section.id === 'plugins'))),
-  })), [aliases, groups, hiddenKeys, normalized, revealedSections, t]);
+      return { ...section, items, total: section.id === 'media' ? media.files.length : section.items.length, hiddenCount };
+    }).filter(section => (section.id === 'media' && (!normalized || media.files.some(file => `${file.name} ${file.extension} ${file.folder}`.toLowerCase().includes(normalized)))) || section.items.length > 0 || (!normalized && (section.hiddenCount > 0 || section.label === 'Saved chains' || section.id === 'plugins'))),
+  })), [aliases, groups, hiddenKeys, media.files.length, normalized, revealedSections, t]);
 
   const visible = useMemo(() => normalized
     ? filtered.filter(group => group.sections.length > 0)
@@ -634,6 +938,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, onAdd, onRename, 
                           <span className="sample-hint">{t('Drop audio files here or open the folder.')}</span>
                         </div>
                       )}
+                      {section.id === 'media' && <MediaBin media={media} waveforms={waveforms} query={deferredQuery} />}
                       {section.label === 'Saved chains' && (
                         <div className="library-section-actions">
                           <button type="button" className="library-action" onClick={onNewChain}>

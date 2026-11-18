@@ -115,6 +115,18 @@ public static class AudioProcessorCatalog
             () => new BiquadProcessor(BiquadKind.LowPass, "lowpass", "Low-pass", 8000f, "Cutoff", hasQ: true)));
 
         Register(new Descriptor(
+            "bandpass",
+            "Band-pass",
+            "Keeps a band of frequencies around the centre and removes the rest.",
+            () => new BiquadProcessor(BiquadKind.BandPass, "bandpass", "Band-pass", 1000f, "Frequency", hasQ: true, defaultQ: 1f)));
+
+        Register(new Descriptor(
+            "allpass",
+            "All-pass",
+            "Passes all frequencies but shifts their phase around the centre.",
+            () => new BiquadProcessor(BiquadKind.AllPass, "allpass", "All-pass", 1000f, "Frequency", hasQ: true)));
+
+        Register(new Descriptor(
             "eq-bell",
             "EQ bell",
             "Boosts or cuts a band of frequencies around the centre.",

@@ -184,11 +184,6 @@ internal sealed class ControlServer : IDisposable
 
     public void PublishGraph(int version, bool running, List<ControlNodeDto> nodes)
     {
-        if (_clients.IsEmpty)
-        {
-            return;
-        }
-
         _graphVersion = version;
         string json = JsonSerializer.Serialize(new
         {
@@ -198,6 +193,12 @@ internal sealed class ControlServer : IDisposable
             nodes,
         }, Json);
         _lastGraphJson = json;
+
+        if (_clients.IsEmpty)
+        {
+            return;
+        }
+
         Broadcast(json, reliable: true);
     }
 

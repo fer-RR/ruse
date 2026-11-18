@@ -18,6 +18,8 @@ public sealed class HearingProfileProcessor : IAudioProcessor, IParameterizedPro
     private const int LoudnessSegmentFrames = SampleRate / 10;
     private const float SilenceLufs = -120f;
     private const float MinLufs = -70f;
+    private const double GateAttackMs = 5.0;
+    private const double GateReleaseMs = 250.0;
 
     private static readonly float[] BandFrequencies =
     {
@@ -41,7 +43,10 @@ public sealed class HearingProfileProcessor : IAudioProcessor, IParameterizedPro
     private volatile float _maxBoostDb = 12f;
     private volatile bool _limiterEnabled = true;
     private volatile float _limiterCeilingDb = -1f;
+    private volatile bool _gateEnabled;
+    private volatile float _gateThresholdDb = -60f;
     private volatile bool _eqDirty;
+    private float _gateGain = 1f;
 
     private float[] _left = new float[8192];
     private float[] _right = new float[8192];
@@ -186,6 +191,29 @@ public sealed class HearingProfileProcessor : IAudioProcessor, IParameterizedPro
 
         parameters.Add(new AudioParameter
         {
+            Name = "Noise gate",
+            Min = 0f,
+            Max = 1f,
+            Default = 0f,
+            IsToggle = true,
+            Get = () => _gateEnabled ? 1f : 0f,
+            Set = value => _gateEnabled = value >= 0.5f,
+        });
+
+        parameters.Add(new AudioParameter
+        {
+            Name = "Gate threshold",
+            Min = -90f,
+            Max = -20f,
+            Default = -60f,
+            Unit = "dBFS",
+            IsInteger = true,
+            Get = () => _gateThresholdDb,
+            Set = value => _gateThresholdDb = Math.Clamp(value, -90f, -20f),
+        });
+
+        parameters.Add(new AudioParameter
+        {
             Name = "Safety limiter",
             Min = 0f,
             Max = 1f,
@@ -218,8 +246,9 @@ public sealed class HearingProfileProcessor : IAudioProcessor, IParameterizedPro
     public IReadOnlyList<AudioParameter> Parameters { get; }
 
     // The monitor delay is an intentional output delay, not effect latency, so
-    // route alignment must not try to compensate it.
-    public int LatencySamples => _limiterGuard.LatencySamples;
+    // route alignment must not try to compensate it. Only report limiter
+    // look-ahead while the limiter is actually in the chain.
+    public int LatencySamples => _limiterEnabled ? _limiterGuard.LatencySamples : 0;
 
     public void Process(Span<float> samples, int frames)
     {
@@ -273,6 +302,8 @@ public sealed class HearingProfileProcessor : IAudioProcessor, IParameterizedPro
             _eqDirty = false;
         }
 
+        bool gateOpen = !_gateEnabled || InputRms(frames) >= DbToLinear(_gateThresholdDb);
+
         _leftEqualizer.Process(_left.AsSpan(0, frames));
         _rightEqualizer.Process(_right.AsSpan(0, frames));
 
@@ -305,6 +336,11 @@ public sealed class HearingProfileProcessor : IAudioProcessor, IParameterizedPro
         _delay.SetDelayFrames(DelayFrames());
         _delay.Process(samples, channels);
 
+        if (_gateEnabled || _gateGain < 0.999f)
+        {
+            ApplyGate(samples, frames, channels, gateOpen);
+        }
+
         if (_limiterEnabled)
         {
             _limiterGuard.Process(samples, frames);
@@ -314,6 +350,36 @@ public sealed class HearingProfileProcessor : IAudioProcessor, IParameterizedPro
         {
             _limiterGuard.Reset();
             _limiterWasEnabled = false;
+        }
+    }
+
+    private float InputRms(int frames)
+    {
+        double sum = 0;
+        for (int frame = 0; frame < frames; frame++)
+        {
+            float left = _left[frame];
+            float right = _right[frame];
+            sum += (left * left) + (right * right);
+        }
+
+        return MathF.Sqrt((float)(sum / Math.Max(1, frames * 2)));
+    }
+
+    private void ApplyGate(Span<float> samples, int frames, int channels, bool open)
+    {
+        float target = open ? 1f : 0f;
+        double milliseconds = open ? GateAttackMs : GateReleaseMs;
+        float coefficient = (float)(1.0 - Math.Exp(-1.0 / (milliseconds / 1000.0 * SampleRate)));
+        for (int frame = 0; frame < frames; frame++)
+        {
+            _gateGain += (target - _gateGain) * coefficient;
+            int index = frame * channels;
+            samples[index] *= _gateGain;
+            if (channels > 1)
+            {
+                samples[index + 1] *= _gateGain;
+            }
         }
     }
 
@@ -420,6 +486,7 @@ public sealed class HearingProfileProcessor : IAudioProcessor, IParameterizedPro
         _loudnessPower = 0;
         _loudnessPowerReady = false;
         _loudnessGainDb = 0;
+        _gateGain = 1f;
         _limiterWasEnabled = true;
         _z1AL = _z2AL = _z1BL = _z2BL = 0;
         _z1AR = _z2AR = _z1BR = _z2BR = 0;

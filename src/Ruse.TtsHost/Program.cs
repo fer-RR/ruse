@@ -11,6 +11,8 @@ internal sealed class TtsRequest
     public float Speed { get; set; } = 1f;
     public int Voice { get; set; }
     public string OutputPath { get; set; } = "";
+    public List<string> Texts { get; set; } = new();
+    public List<string> OutputPaths { get; set; } = new();
 }
 
 internal static class Program
@@ -27,7 +29,18 @@ internal static class Program
         {
             var request = JsonSerializer.Deserialize<TtsRequest>(File.ReadAllText(args[1]))
                 ?? throw new InvalidDataException("The TTS request is empty.");
-            if (string.IsNullOrWhiteSpace(request.Text))
+            var texts = request.Texts.Count > 0
+                ? request.Texts
+                : new List<string> { request.Text };
+            var outputPaths = request.OutputPaths.Count > 0
+                ? request.OutputPaths
+                : new List<string> { request.OutputPath };
+            if (texts.Count == 0 || outputPaths.Count != texts.Count)
+            {
+                throw new InvalidDataException("The TTS request has mismatched text and output lists.");
+            }
+
+            if (texts.Any(string.IsNullOrWhiteSpace))
             {
                 throw new InvalidDataException("The TTS text is empty.");
             }
@@ -66,29 +79,36 @@ internal static class Program
             }
 
             using var tts = new OfflineTts(config);
-            var audio = tts.Generate(
-                request.Text,
-                Math.Clamp(request.Speed <= 0 ? 1f : request.Speed, 0.5f, 2f),
-                Math.Max(0, request.Voice));
-            try
+            for (int index = 0; index < texts.Count; index++)
             {
-                if (audio.NumSamples <= 0)
+                var audio = tts.Generate(
+                    texts[index],
+                    Math.Clamp(request.Speed <= 0 ? 1f : request.Speed, 0.5f, 2f),
+                    Math.Max(0, request.Voice));
+                try
                 {
-                    throw new InvalidDataException("The TTS model returned no audio.");
-                }
+                    if (audio.NumSamples <= 0)
+                    {
+                        throw new InvalidDataException("The TTS model returned no audio.");
+                    }
 
-                Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(request.OutputPath))!);
-                if (!audio.SaveToWaveFile(request.OutputPath))
+                    string outputPath = outputPaths[index];
+                    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(outputPath))!);
+                    if (!audio.SaveToWaveFile(outputPath))
+                    {
+                        throw new IOException("The TTS host could not write the generated audio.");
+                    }
+
+                    Console.Out.WriteLine("OK " + index);
+                    Console.Out.Flush();
+                }
+                finally
                 {
-                    throw new IOException("The TTS host could not write the generated audio.");
+                    audio.Dispose();
                 }
+            }
 
-                return 0;
-            }
-            finally
-            {
-                audio.Dispose();
-            }
+            return 0;
         }
         catch (Exception ex)
         {

@@ -2,15 +2,27 @@ using System.IO;
 using System.Windows;
 using NAudio.Wave;
 using Ruse.App.Audio;
+using Ruse.App.Diagnostics;
 
 namespace Ruse.App;
 
 internal sealed partial class WebShellController
 {
     private TimelineService? _timeline;
-    private readonly HashSet<(string NodeId, int ProcessorIndex, int ParameterIndex)> _timelineParameterChanges = new();
-    private readonly object _timelineParameterLock = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<
+        (string NodeId, int ProcessorIndex, int ParameterIndex), byte> _timelineParameterChanges = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<(string NodeId, int ProcessorIndex, int ParameterIndex), AudioParameter> _timelineAutomationTargets = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SourceNode> _generatorSources = new();
+    private readonly System.Threading.Channels.Channel<TimelineAutomationWrite> _timelineAutomationQueue =
+        System.Threading.Channels.Channel.CreateBounded<TimelineAutomationWrite>(
+            new System.Threading.Channels.BoundedChannelOptions(256)
+            {
+                SingleReader = true,
+                SingleWriter = false,
+                FullMode = System.Threading.Channels.BoundedChannelFullMode.DropOldest,
+            });
+    private CancellationTokenSource? _timelineAutomationCancel;
+    private Task? _timelineAutomationWorker;
     private volatile AudioFileRecorder? _timelineRecorder;
     private string? _timelineRecordingPath;
     private volatile OutputNode? _timelineRecordingOutput;
@@ -26,8 +38,10 @@ internal sealed partial class WebShellController
     private bool _timelineCountInActive;
     private bool _timelineCountInWasMetronome;
     private int _timelineCountInBeats = 4;
-    private long _lastSourceStatePublish;
     private CancellationTokenSource? _timelineCountInCancel;
+
+    private readonly record struct TimelineAutomationWrite(
+        string NodeId, int ProcessorIndex, int ParameterIndex, float Value);
 
     private void EnsureTimeline()
     {
@@ -37,16 +51,56 @@ internal sealed partial class WebShellController
         }
 
         _timeline = new TimelineService();
+        _timeline.SetHistoryLimits(_timelineUndoSteps, _timelineUndoBytes);
         _timeline.ApplyAutomation = ApplyTimelineAutomation;
         _timeline.ApplyGeneratorGate = ApplyGeneratorGate;
         _graph.Timeline = _timeline;
+        StartTimelineAutomationWorker();
+    }
+
+    private void StartTimelineAutomationWorker()
+    {
+        if (_timelineAutomationWorker != null)
+        {
+            return;
+        }
+
+        _timelineAutomationCancel = new CancellationTokenSource();
+        CancellationToken token = _timelineAutomationCancel.Token;
+        _timelineAutomationWorker = Task.Run(async () =>
+        {
+            try
+            {
+                while (await _timelineAutomationQueue.Reader.WaitToReadAsync(token).ConfigureAwait(false))
+                {
+                    while (_timelineAutomationQueue.Reader.TryRead(out var write))
+                    {
+                        ApplyTimelineAutomationNow(write);
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning("Timeline automation worker stopped: " + ex.Message);
+            }
+        });
+    }
+
+    private void StopTimelineAutomationWorker()
+    {
+        _timelineAutomationQueue.Writer.TryComplete();
+        _timelineAutomationCancel?.Cancel();
+        _timelineAutomationCancel?.Dispose();
+        _timelineAutomationCancel = null;
+        _timelineAutomationWorker = null;
     }
 
     private void ApplyGeneratorGate(string nodeId, float gain)
     {
-        if (_nodes.TryGetValue(nodeId, out var entry) &&
-            entry.Source is { } source &&
-            (source.IsMetronome || source.Kind is SourceKind.Tone or SourceKind.Synth))
+        if (_generatorSources.TryGetValue(nodeId, out var source))
         {
             source.TimelineGate = Math.Clamp(gain, 0f, 1f);
         }
@@ -54,23 +108,25 @@ internal sealed partial class WebShellController
 
     private void ApplyTimelineAutomation(string nodeId, int processorIndex, int parameterIndex, float value)
     {
-        if (!_timelineAutomationTargets.TryGetValue((nodeId, processorIndex, parameterIndex), out var parameter))
+        // Called from the graph render thread. Never touch a processor or the
+        // WebView here: isolated VST3 parameter writes can block on a pipe.
+        _timelineAutomationQueue.Writer.TryWrite(
+            new TimelineAutomationWrite(nodeId, processorIndex, parameterIndex, value));
+    }
+
+    private void ApplyTimelineAutomationNow(TimelineAutomationWrite write)
+    {
+        if (!_timelineAutomationTargets.TryGetValue(
+                (write.NodeId, write.ProcessorIndex, write.ParameterIndex), out var parameter))
         {
             return;
         }
 
         try
         {
-            parameter.Set(Math.Clamp(value, parameter.Min, parameter.Max));
-            if (processorIndex == -1 && Environment.TickCount64 - _lastSourceStatePublish >= 100)
-            {
-                _lastSourceStatePublish = Environment.TickCount64;
-                PublishSourceState(nodeId);
-            }
-            lock (_timelineParameterLock)
-            {
-                _timelineParameterChanges.Add((nodeId, processorIndex, parameterIndex));
-            }
+            parameter.Set(Math.Clamp(write.Value, parameter.Min, parameter.Max));
+            _timelineParameterChanges[
+                (write.NodeId, write.ProcessorIndex, write.ParameterIndex)] = 0;
         }
         catch
         {
@@ -108,21 +164,20 @@ internal sealed partial class WebShellController
 
     private void FlushTimelineParameterChanges()
     {
-        (string NodeId, int ProcessorIndex, int ParameterIndex)[] changes;
-        lock (_timelineParameterLock)
+        if (_timelineParameterChanges.IsEmpty)
         {
-            if (_timelineParameterChanges.Count == 0)
-            {
-                return;
-            }
-
-            changes = _timelineParameterChanges.ToArray();
-            _timelineParameterChanges.Clear();
+            return;
         }
 
+        var changes = _timelineParameterChanges.Keys.ToArray();
         foreach (var change in changes)
         {
+            _timelineParameterChanges.TryRemove(change, out _);
             PublishParameterChange(change.NodeId, change.ProcessorIndex, change.ParameterIndex);
+            if (change.ProcessorIndex == -1)
+            {
+                PublishSourceState(change.NodeId);
+            }
         }
     }
 
@@ -137,7 +192,8 @@ internal sealed partial class WebShellController
         EnsureTimeline();
         var track = _timeline!.AddTrack(name);
         var source = new SourceNode(track.Name, SourceKind.Timeline);
-        var entry = RegisterSource(source, 80, 160 + _timeline.Project.Tracks.Count * 120);
+        var position = FindFreeNodePosition(80, 160 + _timeline.Project.Tracks.Count * 120, 220, 160);
+        var entry = RegisterSource(source, position.X, position.Y);
         _timeline.AttachSource(track.Id, source);
 
         var output = _nodes.Values.FirstOrDefault(item =>
@@ -176,6 +232,7 @@ internal sealed partial class WebShellController
             Title = "Import timeline clip",
             Filter = "Audio files (*.wav;*.mp3;*.flac;*.m4a;*.aac;*.ogg)|*.wav;*.mp3;*.flac;*.m4a;*.aac;*.ogg|All files (*.*)|*.*",
             CheckFileExists = true,
+            InitialDirectory = RuseFolders.Ensure(RuseFolders.Samples),
         };
         if (dialog.ShowDialog() != true)
         {
@@ -968,7 +1025,7 @@ internal sealed partial class WebShellController
             }
         }
 
-        string recordingDirectory = RecordingDirectory();
+        string recordingDirectory = RuseFolders.Ensure(RuseFolders.Exports);
         Directory.CreateDirectory(recordingDirectory);
         var dialog = new Microsoft.Win32.SaveFileDialog
         {
@@ -1267,7 +1324,7 @@ internal sealed partial class WebShellController
         }
     }
 
-    private void PasteTimelineClips(BridgeMessage message)
+    private void SnapshotTimelineClips(BridgeMessage message)
     {
         if (_timeline == null ||
             !message.Payload.TryGetProperty("clips", out var clips) ||
@@ -1276,23 +1333,43 @@ internal sealed partial class WebShellController
             return;
         }
 
-        var copies = new List<(string TrackId, string ClipId, long StartSample)>();
+        var items = new List<(string TrackId, string ClipId)>();
         foreach (var item in clips.EnumerateArray())
         {
-            if (!item.TryGetProperty("trackId", out var trackValue) ||
-                !item.TryGetProperty("clipId", out var clipValue) ||
-                !item.TryGetProperty("startSample", out var startValue) ||
-                trackValue.GetString() is not { } trackId ||
-                clipValue.GetString() is not { } clipId ||
-                !startValue.TryGetDouble(out double start))
+            if (item.TryGetProperty("trackId", out var trackValue) &&
+                item.TryGetProperty("clipId", out var clipValue) &&
+                trackValue.GetString() is { } trackId &&
+                clipValue.GetString() is { } clipId)
             {
-                continue;
+                items.Add((trackId, clipId));
             }
-
-            copies.Add((trackId, clipId, (long)start));
         }
 
-        if (_timeline.CopyClips(copies))
+        _timeline.SnapshotClips(items);
+    }
+
+    private void PasteTimelineClips(BridgeMessage message)
+    {
+        if (_timeline == null ||
+            !message.Payload.TryGetProperty("placements", out var placements) ||
+            placements.ValueKind != System.Text.Json.JsonValueKind.Array)
+        {
+            return;
+        }
+
+        var target = new List<(string TrackId, long StartSample)>();
+        foreach (var item in placements.EnumerateArray())
+        {
+            if (item.TryGetProperty("trackId", out var trackValue) &&
+                item.TryGetProperty("startSample", out var startValue) &&
+                trackValue.GetString() is { } trackId &&
+                startValue.TryGetDouble(out double start))
+            {
+                target.Add((trackId, (long)start));
+            }
+        }
+
+        if (_timeline.PasteClipboard(target))
         {
             PublishTimeline(false);
         }

@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 
 namespace Ruse.App;
 
@@ -11,7 +11,7 @@ internal static class SpeechText
     private const int MinChars = 18;
     private const int MaxChars = 110;
 
-    private static readonly Regex Boundary = new(@"(?<=[.!?,;:…])\s+", RegexOptions.Compiled);
+    private static readonly Regex Boundary = new(@"(?<=[.!?,;:.])\s+|(?<=[。！？，；：、])", RegexOptions.Compiled);
 
     public static List<string> Clauses(string text)
     {
@@ -27,7 +27,7 @@ internal static class SpeechText
                 string value = part.Trim();
                 if (value.Length == 0) continue;
                 buffer = buffer.Length == 0 ? value : buffer + " " + value;
-                if (buffer.Length >= MinChars || buffer.EndsWith('.') || buffer.EndsWith('!') || buffer.EndsWith('?'))
+                if (buffer.Length >= MinChars || EndsSentence(buffer))
                 {
                     Flush(buffer);
                     buffer = "";
@@ -53,4 +53,8 @@ internal static class SpeechText
             if (value.Length > 0) result.Add(value);
         }
     }
+
+    private static bool EndsSentence(string value) =>
+        value.EndsWith('.') || value.EndsWith('!') || value.EndsWith('?') ||
+        value.EndsWith('。') || value.EndsWith('！') || value.EndsWith('？');
 }

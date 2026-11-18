@@ -96,21 +96,21 @@ export default function RuseEdge({
       )}
       {keyed && (
         <EdgeLabelRenderer>
-          <div ref={keyLabelRef} className="edge-key-label" style={physics ? undefined : { transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
+          <div ref={keyLabelRef} className="edge-key-label" style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
             KEY
           </div>
         </EdgeLabelRenderer>
       )}
       {native && (
         <EdgeLabelRenderer>
-          <div ref={nativeLabelRef} className="edge-gain-label" style={physics ? { color: 'var(--cyan)', display: 'flex', alignItems: 'center', gap: 3 } : { transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY - 14}px)`, color: 'var(--cyan)', display: 'flex', alignItems: 'center', gap: 3 }}>
+          <div ref={nativeLabelRef} className="edge-gain-label" style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY - 14}px)`, color: 'var(--cyan)', display: 'flex', alignItems: 'center', gap: 3 }}>
             <Lock size={9} /> {nativeRate ? `${(nativeRate / 1000).toFixed(nativeRate % 1000 === 0 ? 0 : 1)} kHz` : 'NATIVE'}
           </div>
         </EdgeLabelRenderer>
       )}
       {label && (
         <EdgeLabelRenderer>
-          <div ref={labelRef} className="edge-gain-label" style={physics ? undefined : { transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
+          <div ref={labelRef} className="edge-gain-label" style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}>
             {label}
           </div>
         </EdgeLabelRenderer>

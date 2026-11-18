@@ -26,49 +26,61 @@ internal static class TranslationModelCache
             {
                 return null;
             }
+        }
 
+        LLamaWeights? loaded = null;
+        bool gpu = ModelRuntime.UseGpu;
+        try
+        {
+            int threads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
             try
             {
-                int threads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
-                bool gpu = ModelRuntime.UseGpu;
-                LLamaWeights weights;
-                try
-                {
-                    weights = LLamaWeights.LoadFromFile(
-                        ModelRuntime.TranslationParams(path, 256, null, threads));
-                }
-                catch (Exception gpuError) when (gpu)
-                {
-                    AppLog.Warning(
-                        $"GPU load failed for translation model '{modelId}'; falling back to CPU. " +
-                        gpuError.GetBaseException().Message);
-                    ModelRuntime.ReportGpuFallback(
-                        $"Translation model '{modelId}': {gpuError.GetBaseException().Message}");
-                    gpu = false;
-                    weights = LLamaWeights.LoadFromFile(new ModelParams(path)
-                    {
-                        GpuLayerCount = 0,
-                        Threads = threads,
-                        BatchSize = 256,
-                    });
-                }
-
-                if (token.IsCancellationRequested)
-                {
-                    weights.Dispose();
-                    return null;
-                }
-
-                Models[modelId] = (weights, 1, gpu);
-                AppLog.Info($"Translation model '{modelId}' loaded.");
-                return weights;
+                loaded = LLamaWeights.LoadFromFile(
+                    ModelRuntime.TranslationParams(path, 256, null, threads));
             }
-            catch (Exception ex)
+            catch (Exception gpuError) when (gpu)
             {
-                AppLog.Error($"Could not load translation model '{modelId}'.", ex);
-                return null;
+                AppLog.Warning(
+                    $"GPU load failed for translation model '{modelId}'; falling back to CPU. " +
+                    gpuError.GetBaseException().Message);
+                ModelRuntime.ReportGpuFallback(
+                    $"Translation model '{modelId}': {gpuError.GetBaseException().Message}");
+                gpu = false;
+                loaded = LLamaWeights.LoadFromFile(new ModelParams(path)
+                {
+                    GpuLayerCount = 0,
+                    Threads = threads,
+                    BatchSize = 256,
+                });
             }
         }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Could not load translation model '{modelId}'.", ex);
+            return null;
+        }
+
+        lock (Lock)
+        {
+            if (Models.TryGetValue(modelId, out var existing))
+            {
+                PendingDrops.Remove(modelId);
+                Models[modelId] = (existing.Weights, existing.References + 1, existing.Gpu);
+                loaded.Dispose();
+                return existing.Weights;
+            }
+
+            if (token.IsCancellationRequested || PendingDrops.Contains(modelId))
+            {
+                loaded.Dispose();
+                return null;
+            }
+
+            Models[modelId] = (loaded, 1, gpu);
+        }
+
+        AppLog.Info($"Translation model '{modelId}' loaded.");
+        return loaded;
     }
 
     public static bool IsGpu(string modelId)
@@ -81,6 +93,7 @@ internal static class TranslationModelCache
 
     public static void Release(string modelId)
     {
+        LLamaWeights? dispose = null;
         lock (Lock)
         {
             if (!Models.TryGetValue(modelId, out var entry)) return;
@@ -92,8 +105,10 @@ internal static class TranslationModelCache
 
             Models.Remove(modelId);
             PendingDrops.Remove(modelId);
-            entry.Weights.Dispose();
+            dispose = entry.Weights;
         }
+
+        dispose.Dispose();
     }
 
     public static void Drop(string modelId)

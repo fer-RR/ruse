@@ -14,21 +14,7 @@ internal sealed partial class WebShellController
     internal bool HasActiveRecording =>
         _nodes.Values.Any(entry => entry.Output?.IsRecording == true);
 
-    private static string RecordingDirectory()
-    {
-        string root = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            root = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        }
-
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            root = AppSettings.Directory;
-        }
-
-        return Path.Combine(root, "Ruse Recordings");
-    }
+    private static string RecordingDirectory() => RuseFolders.Recordings;
 
     private static string NextRecordingPath(AudioFileFormat format, bool saveToSamples = false)
     {
@@ -82,7 +68,7 @@ internal sealed partial class WebShellController
         }
     }
 
-    private bool StartRecorder(NodeEntry entry, OutputNode output)
+    private bool StartRecorder(NodeEntry entry, OutputNode output, bool autoStarted = false)
     {
         if (output.IsRecording)
         {
@@ -100,6 +86,27 @@ internal sealed partial class WebShellController
         {
             SetStatus("Choose a recording file or enable auto save first.", isError: true);
             return false;
+        }
+        else if (autoStarted && File.Exists(output.RecordingPath) &&
+                 new FileInfo(output.RecordingPath!).Length > 0)
+        {
+            // An armed/fixed-path recorder must not overwrite an older take.
+            string path = output.RecordingPath!;
+            string directory = Path.GetDirectoryName(path) ?? RecordingDirectory();
+            Directory.CreateDirectory(directory);
+            string stem = Path.GetFileNameWithoutExtension(path);
+            string extension = Path.GetExtension(path);
+            string candidate = Path.Combine(directory,
+                $"{stem}-{DateTime.Now:yyyy-MM-dd_HH-mm-ss}{extension}");
+            for (int suffix = 2; File.Exists(candidate); suffix++)
+            {
+                candidate = Path.Combine(directory,
+                    $"{stem}-{DateTime.Now:yyyy-MM-dd_HH-mm-ss}-{suffix}{extension}");
+            }
+
+            output.SetRecordingDestination(candidate, output.RecordingFormat);
+            entry.Title = output.Title;
+            SetStatus($"Existing recording kept; new take saved as {Path.GetFileName(candidate)}.");
         }
 
         output.Start();
@@ -143,7 +150,7 @@ internal sealed partial class WebShellController
                 continue;
             }
 
-            if (StartRecorder(entry, output))
+            if (StartRecorder(entry, output, autoStarted: true))
             {
                 changed = true;
             }
@@ -191,7 +198,7 @@ internal sealed partial class WebShellController
         {
             if (_graph.AutoRun)
             {
-                if (StartRecorder(entry, output)) SetStatus("Recording started.");
+                if (StartRecorder(entry, output, autoStarted: true)) SetStatus("Recording started.");
             }
             else
             {
@@ -247,7 +254,7 @@ internal sealed partial class WebShellController
         output.AutoSave = value;
         if (value && output.RecorderMode == RecorderMode.On && _graph.AutoRun)
         {
-            StartRecorder(entry, output);
+            StartRecorder(entry, output, autoStarted: true);
         }
 
         SetStatus(value

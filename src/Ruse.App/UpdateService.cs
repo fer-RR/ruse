@@ -46,7 +46,8 @@ internal sealed class UpdateService : IDisposable
     private readonly UpdateState _state;
     private readonly string _updatesRoot;
     private ReleaseInfo? _release;
-    private string? _sourceDirectory;
+    private string? _zipPath;
+    private string? _zipSha256;
     private int _busy;
     private long _lastProgressTick;
 
@@ -342,7 +343,8 @@ internal sealed class UpdateService : IDisposable
                 }
             }
 
-            _sourceDirectory = sourceDirectory;
+            _zipPath = zipPath;
+            _zipSha256 = expectedHash;
             SetState(state =>
             {
                 state.Status = "ready";
@@ -368,23 +370,71 @@ internal sealed class UpdateService : IDisposable
             return;
         }
 
+        _ = ApplyCoreAsync();
+    }
+
+    private async Task ApplyCoreAsync()
+    {
+        string? verifyDirectory = null;
         try
         {
-            string? sourceDirectory = _sourceDirectory;
+            string? zipPath;
+            string? expectedHash;
             lock (_gate)
             {
-                if (_state.Status != "ready" || sourceDirectory == null)
+                if (_state.Status != "ready" || _zipPath == null || _zipSha256 == null)
                 {
+                    Interlocked.Exchange(ref _busy, 0);
                     return;
+                }
+
+                zipPath = _zipPath;
+                expectedHash = _zipSha256;
+            }
+
+            SetState(state =>
+            {
+                state.Status = "applying";
+                state.Error = null;
+                state.CanApply = false;
+            });
+
+            // Re-verify and re-extract from the verified archive instead of
+            // trusting the staged files that may have changed since download.
+            // Holding the file with FileShare.Read prevents a writer swapping it
+            // while the hash and extraction are in progress.
+            using var zipStream = new FileStream(
+                zipPath, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, useAsync: true);
+            byte[] hash = await SHA256.HashDataAsync(zipStream);
+            string actualHash = Convert.ToHexString(hash).ToLowerInvariant();
+            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidDataException("The downloaded package changed after verification.");
+            }
+
+            zipStream.Position = 0;
+            verifyDirectory = Path.Combine(
+                Path.GetDirectoryName(zipPath)!,
+                "stage-verify-" + Guid.NewGuid().ToString("N"));
+            using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: true))
+            {
+                archive.ExtractToDirectory(verifyDirectory, overwriteFiles: true);
+            }
+
+            string sourceDirectory = Path.Combine(verifyDirectory, "Ruse");
+            if (!File.Exists(Path.Combine(sourceDirectory, "Ruse.exe")))
+            {
+                if (File.Exists(Path.Combine(verifyDirectory, "Ruse.exe")))
+                {
+                    sourceDirectory = verifyDirectory;
+                }
+                else
+                {
+                    throw new InvalidDataException("The update package does not contain Ruse.exe.");
                 }
             }
 
             string executable = Path.Combine(sourceDirectory, "Ruse.exe");
-            if (!File.Exists(executable))
-            {
-                throw new FileNotFoundException("The staged update is missing Ruse.exe.", executable);
-            }
-
             string installDirectory = AppContext.BaseDirectory
                 .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             if (!IsWritableDirectory(installDirectory))
@@ -417,15 +467,24 @@ internal sealed class UpdateService : IDisposable
                 throw new InvalidOperationException("The update helper could not be started.");
             }
 
-            SetState(state =>
-            {
-                state.Status = "applying";
-                state.CanApply = false;
-            });
             _owner.ShutdownForUpdate();
         }
         catch (Exception ex)
         {
+            if (verifyDirectory != null)
+            {
+                try
+                {
+                    if (Directory.Exists(verifyDirectory))
+                    {
+                        Directory.Delete(verifyDirectory, recursive: true);
+                    }
+                }
+                catch
+                {
+                }
+            }
+
             Fail($"The update could not be started. {ex.Message}");
             Interlocked.Exchange(ref _busy, 0);
         }

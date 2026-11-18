@@ -295,6 +295,15 @@ internal sealed class NodeStateDto
     public bool? Solo { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public float? GroupGain { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? GroupMuted { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? GroupSolo { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public bool? Enabled { get; set; }
 
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -561,6 +570,7 @@ internal sealed class SettingsDto
     public string UiLanguage { get; set; } = "en";
     public string Theme { get; set; } = "dark";
     public double UiScale { get; set; } = 1.0;
+    public string MotionMode { get; set; } = "system";
     public bool StartRoutingOnLaunch { get; set; }
     public bool HighlightMutedNodes { get; set; } = true;
     public bool SignalGlow { get; set; } = true;
@@ -637,6 +647,7 @@ internal sealed class SettingsDto
     public int RenderTier { get; set; }
     public string DataFolder { get; set; } = "";
     public string ModelsFolder { get; set; } = "";
+    public string UserFolder { get; set; } = "";
 }
 
 internal sealed class MidiInputDto
@@ -740,6 +751,30 @@ internal sealed class HistoryDto
     public bool CanRedo { get; set; }
     public string UndoLabel { get; set; } = "";
     public string RedoLabel { get; set; } = "";
+}
+
+internal sealed class MediaFolderDto
+{
+    public string Path { get; set; } = "";
+    public string Name { get; set; } = "";
+    public bool Exists { get; set; }
+}
+
+internal sealed class MediaFileDto
+{
+    public string Path { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string Folder { get; set; } = "";
+    public string Extension { get; set; } = "";
+    public long SizeBytes { get; set; }
+    public DateTime ModifiedUtc { get; set; }
+}
+
+internal sealed class MediaListDto
+{
+    public List<MediaFolderDto> Folders { get; set; } = new();
+    public List<MediaFileDto> Files { get; set; } = new();
+    public string? Error { get; set; }
 }
 
 internal sealed class BridgeMessage

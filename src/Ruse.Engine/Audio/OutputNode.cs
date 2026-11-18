@@ -83,7 +83,14 @@ public sealed class OutputNode : IDisposable
     private float[] _nativeScratch = Array.Empty<float>();
     private float _nativeAppliedGain = float.NaN;
     private IAudioProcessor[] _nativeProcessors = Array.Empty<IAudioProcessor>();
+    private IAudioProcessor[] _nativeTemplates = Array.Empty<IAudioProcessor>();
+    private Route.ParameterBinding[] _nativeBindings = Array.Empty<Route.ParameterBinding>();
+    private readonly List<IAudioProcessor> _retiredNativeProcessors = new();
     private bool _nativeFaultReported;
+    private int _pumpFaultStreak;
+    private bool _pumpFaultReported;
+    private int _disposeRetryQueued;
+    private int _resourcesDisposed;
 
     /// <summary>File sample rate used by this recorder; 48 kHz by default.</summary>
     public int RecorderSampleRate => _recorderSampleRate;
@@ -127,6 +134,8 @@ public sealed class OutputNode : IDisposable
     private int _engineTrimFade;
     private float _engineLastLeft;
     private float _engineLastRight;
+    private readonly OutputDriftResampler _outputResampler = new();
+    private bool _outputClockResampler;
 
     internal int ElasticTargetFrames { get; set; }
     internal int ElasticVersion { get; set; } = -1;
@@ -141,6 +150,17 @@ public sealed class OutputNode : IDisposable
         _engineBuffer.AvailableToRead / (48000.0 * 2 * EngineRingSeconds) * 100.0;
 
     internal void SubmitEngineBlock(ReadOnlySpan<float> block) => _engineBuffer.Write(block);
+
+    public void SetOutputClockResampler(bool enabled)
+    {
+        if (_outputClockResampler == enabled)
+        {
+            return;
+        }
+
+        _outputClockResampler = enabled;
+        _outputResampler.RequestReset();
+    }
 
     internal void ClearEngineAudio()
     {
@@ -297,8 +317,9 @@ public sealed class OutputNode : IDisposable
         // Take each route's copy of its source straight away, so a route hears
         // the source from the moment it is connected rather than from its
         // first render. The graph renderer reads each source once and fans it
-        // out internally, so it does not need per-route copies.
-        if (!UseGraphEngine)
+        // out internally, so it does not need per-route copies. A native
+        // passthrough output uses its own native subscription instead.
+        if (!UseGraphEngine && _nativeSource == null)
         {
             for (int i = 0; i < routes.Length; i++)
             {
@@ -346,9 +367,9 @@ public sealed class OutputNode : IDisposable
             return false;
         }
 
-        if (source.Kind == SourceKind.Timeline)
+        if (source.Kind == SourceKind.Timeline || source.IsMetronome)
         {
-            reason = "Timeline tracks play through the graph at 48 kHz; native passthrough is not available.";
+            reason = "Timeline tracks and the metronome are gated by the timeline; native passthrough is not available.";
             return false;
         }
 
@@ -416,9 +437,25 @@ public sealed class OutputNode : IDisposable
     /// <summary>Selects the source and native-rate processor chain.</summary>
     public void SetNativeChain(SourceNode? source, IAudioProcessor[] processors)
     {
-        var chain = processors ?? Array.Empty<IAudioProcessor>();
+        var templates = processors ?? Array.Empty<IAudioProcessor>();
+        var instances = new IAudioProcessor[templates.Length];
+        for (int i = 0; i < templates.Length; i++)
+        {
+            // Native taps and shared plugins stay attached to their owners;
+            // ordinary processors get a private instance so native rate/state
+            // never leaks into the 48 kHz graph chain.
+            instances[i] = templates[i] is ISharedProcessor or ITapProcessor
+                ? templates[i]
+                : Route.Clone(templates[i]);
+        }
+
+        var bindings = Route.BuildBindings(templates, instances);
+        IAudioProcessor[] oldInstances = _nativeProcessors;
+        _nativeTemplates = templates;
+        _nativeProcessors = instances;
+        _nativeBindings = bindings;
+
         bool sameSource = ReferenceEquals(_nativeSource, source);
-        _nativeProcessors = chain;
         if (!sameSource)
         {
             _nativeSubscription?.Dispose();
@@ -436,11 +473,55 @@ public sealed class OutputNode : IDisposable
 
         if (_nativeSampleRate > 0)
         {
-            for (int i = 0; i < chain.Length; i++)
+            for (int i = 0; i < instances.Length; i++)
             {
-                (chain[i] as INativeProcessor)?.ConfigureNative(_nativeSampleRate, 2);
+                (instances[i] as INativeProcessor)?.ConfigureNative(_nativeSampleRate, 2);
             }
         }
+
+        RetireNativeInstances(oldInstances, instances);
+    }
+
+    private void RetireNativeInstances(IAudioProcessor[] oldInstances, IAudioProcessor[] current)
+    {
+        if (oldInstances.Length == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < oldInstances.Length; i++)
+        {
+            var instance = oldInstances[i];
+            if (instance == null || instance is ISharedProcessor or ITapProcessor ||
+                current.Contains(instance))
+            {
+                continue;
+            }
+
+            if (IsRunning)
+            {
+                _retiredNativeProcessors.Add(instance);
+            }
+            else
+            {
+                (instance as IDisposable)?.Dispose();
+            }
+        }
+    }
+
+    private void DisposeRetiredNativeInstances()
+    {
+        if (_retiredNativeProcessors.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var instance in _retiredNativeProcessors)
+        {
+            (instance as IDisposable)?.Dispose();
+        }
+
+        _retiredNativeProcessors.Clear();
     }
 
     /// <summary>Creates a device-less output that pushes mixed frames to a sink.</summary>
@@ -603,8 +684,10 @@ public sealed class OutputNode : IDisposable
 
         _outputSampleRate = IsFileRecorder ? recordRate : pumpRate;
         _stopRequested = false;
-        _running = true;
         Underruns = 0;
+        NativeSkippedFrames = 0;
+        _outputPpm = 0;
+        _outputPpmReady = false;
         _renderedOnce = false;
         _outputClock.Restart();
         _outputClockFrames = 0;
@@ -615,9 +698,15 @@ public sealed class OutputNode : IDisposable
         _latencyDowngrades = 0;
         _latencyPenaltyMs = 0;
         ClearEngineAudio();
+        _outputResampler.Reset();
         _clipGuard.Reset();
         _nativeAppliedGain = float.NaN;
         ClipGuardActive = false;
+        _pumpFaultStreak = 0;
+        _pumpFaultReported = false;
+
+        try
+        {
         if (IsNetworkOutput)
         {
             _networkSender?.Dispose();
@@ -626,8 +715,6 @@ public sealed class OutputNode : IDisposable
             _outputLatencyMs = 0;
         }
 
-        try
-        {
         if (IsFileRecorder)
         {
             _lastRecordedSeconds = 0;
@@ -713,6 +800,7 @@ public sealed class OutputNode : IDisposable
 
         _watchdog = AudioThreadWatchdog.Register($"OutputPump-{Title}", TimeSpan.FromSeconds(5),
             () => NotifyStalled("The output pump stopped responding."));
+        _running = true;
         _pumpThread = new Thread(() => PumpLoop(pumpRate, pumpChannels))
         {
             IsBackground = true,
@@ -732,6 +820,16 @@ public sealed class OutputNode : IDisposable
     {
         _stopRequested = true;
         _running = false;
+        var watchdog = _watchdog;
+        _watchdog = null;
+        watchdog?.Dispose();
+        if (IsNetworkOutput)
+        {
+            _networkSender?.Dispose();
+            _networkSender = null;
+            _testSink = null;
+        }
+
         var wasapi = _wasapiOut;
         _wasapiOut = null;
         if (wasapi != null)
@@ -778,7 +876,7 @@ public sealed class OutputNode : IDisposable
                 long due = (long)(clock.Elapsed.TotalSeconds * sampleRate);
                 if (produced < due)
                 {
-                    RenderOrDrainChunk(mix, temp, byteBuffer, channels);
+                    RenderChunkSafely(mix, temp, byteBuffer, channels);
                     produced += framesPerChunk;
                 }
                 else
@@ -804,7 +902,7 @@ public sealed class OutputNode : IDisposable
                     long due = (long)(clock.Elapsed.TotalSeconds * sampleRate);
                     if (produced < due)
                     {
-                        RenderOrDrainChunk(mix, temp, byteBuffer, channels);
+                        RenderChunkSafely(mix, temp, byteBuffer, channels);
                         produced += framesPerChunk;
                     }
                     else
@@ -821,7 +919,7 @@ public sealed class OutputNode : IDisposable
                 while (_running)
                 {
                     _watchdog?.Beat();
-                    RenderOrDrainChunk(mix, temp, byteBuffer, channels);
+                    RenderChunkSafely(mix, temp, byteBuffer, channels);
                 }
 
                 return;
@@ -830,7 +928,7 @@ public sealed class OutputNode : IDisposable
             while (_running)
             {
                 _watchdog?.Beat();
-                RenderOrDrainChunk(mix, temp, byteBuffer, channels);
+                RenderChunkSafely(mix, temp, byteBuffer, channels);
                 Thread.Sleep(3);
             }
 
@@ -858,7 +956,7 @@ public sealed class OutputNode : IDisposable
                         Underruns++;
                     }
 
-                    RenderOrDrainChunk(mix, temp, byteBuffer, channels);
+                    RenderChunkSafely(mix, temp, byteBuffer, channels);
                     _renderedOnce = true;
                 }
                 else
@@ -1003,6 +1101,8 @@ public sealed class OutputNode : IDisposable
 
     private bool _renderedOnce;
     private readonly System.Diagnostics.Stopwatch _outputClock = new();
+    private double _outputPpm;
+    private bool _outputPpmReady;
     private long _outputClockFrames;
     private long _outputClockLastTicks;
     private long _startedAt;
@@ -1040,6 +1140,53 @@ public sealed class OutputNode : IDisposable
         RenderChunk(mix, temp, byteBuffer, channels);
     }
 
+    /// <summary>
+    /// Renders one block for the pump. A failing effect or device must silence
+    /// this block, not kill the pump thread (and with it the whole process).
+    /// </summary>
+    private void RenderChunkSafely(float[] mix, float[] temp, byte[] byteBuffer, int channels)
+    {
+        try
+        {
+            RenderOrDrainChunk(mix, temp, byteBuffer, channels);
+            _pumpFaultStreak = 0;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            AudioFaultLog.ReportOutputPumpFault(Title, ex);
+            Array.Clear(mix, 0, mix.Length);
+            WriteSilence(mix, byteBuffer, channels);
+
+            if (++_pumpFaultStreak >= 50 && !_pumpFaultReported)
+            {
+                _pumpFaultReported = true;
+                _stopRequested = true;
+                _running = false;
+                Faulted?.Invoke(this, "The output pump hit repeated errors and was stopped.");
+            }
+        }
+    }
+
+    private void WriteSilence(float[] mix, byte[] byteBuffer, int channels)
+    {
+        if (_recorder != null || _testSink != null || _buffer == null)
+        {
+            return;
+        }
+
+        try
+        {
+            Buffer.BlockCopy(mix, 0, byteBuffer, 0, byteBuffer.Length);
+            _buffer.Write(byteBuffer, 0, byteBuffer.Length);
+            BytesWritten += byteBuffer.Length;
+            ReportOutputClock(byteBuffer.Length, channels);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // The device path is already failing; keep the pump alive and retry.
+        }
+    }
+
     /// <summary>Copies native-rate source audio straight to the endpoint.</summary>
     private void RenderNativeChunk(float[] mix, byte[] byteBuffer, int channels)
     {
@@ -1062,6 +1209,19 @@ public sealed class OutputNode : IDisposable
 
         int sourceChannels = _nativeChannels;
         int outFrames = mix.Length / Math.Max(1, channels);
+        if (subscription.BufferedMs > 200 && subscription.SampleRate > 0)
+        {
+            // A native path has no resampler, so let a lagging endpoint trim
+            // the backlog instead of growing latency forever.
+            int bufferedFrames = (int)(subscription.BufferedMs * subscription.SampleRate / 1000.0);
+            int keepFrames = (int)(80.0 * subscription.SampleRate / 1000.0);
+            int excess = bufferedFrames - keepFrames;
+            if (excess > 0)
+            {
+                NativeSkippedFrames += subscription.Skip(excess);
+            }
+        }
+
         if (sourceChannels == channels)
         {
             int read = subscription.Read(mix);
@@ -1108,9 +1268,19 @@ public sealed class OutputNode : IDisposable
         }
 
         var processors = _nativeProcessors;
+        Route.SyncParameters(_nativeBindings);
         for (int i = 0; i < processors.Length; i++)
         {
-            processors[i].Process(mix.AsSpan(0, mix.Length), outFrames);
+            try
+            {
+                processors[i].Process(mix.AsSpan(0, mix.Length), outFrames);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                AudioFaultLog.ReportEffectFault(processors[i].DisplayName, ex);
+                Array.Clear(mix);
+                break;
+            }
         }
 
         bool sourceSoloSuppressed = MixerGroupBus.AnySourceSolo &&
@@ -1192,6 +1362,28 @@ public sealed class OutputNode : IDisposable
             {
                 _engineTrimFade = EngineTrimFadeFrames;
             }
+        }
+
+        if (_outputClockResampler && _outputPpmReady && Math.Abs(_outputPpm) > 5)
+        {
+            _outputResampler.Process(
+                _engineBuffer, mix, channels, 1.0 + (_outputPpm * 1e-6));
+            _renderedOnce = true;
+            WriteSink(mix, byteBuffer, channels);
+
+            var resamplerWake = _engineWake;
+            if (resamplerWake != null)
+            {
+                try
+                {
+                    resamplerWake();
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }
+
+            return;
         }
 
         int read = _engineBuffer.Read(mix);
@@ -1358,7 +1550,9 @@ public sealed class OutputNode : IDisposable
         double rate = _outputClockFrames / seconds;
         int bufferRate = _buffer?.WaveFormat.SampleRate ?? 48000;
         double ppm = (rate / Math.Max(1, bufferRate) - 1.0) * 1_000_000.0;
-        AudioClock.ReportOutputPpm(ppm);
+        _outputPpm = _outputPpmReady ? _outputPpm * 0.9 + ppm * 0.1 : ppm;
+        _outputPpmReady = true;
+        AudioClock.ReportOutputPpm(_outputPpm);
         _outputClock.Restart();
         _outputClockFrames = 0;
         _outputClockLastTicks = 0;
@@ -1403,6 +1597,11 @@ public sealed class OutputNode : IDisposable
         for (int r = 0; r < routes.Length; r++)
         {
             var route = routes[r];
+            if (route.IsDisposed)
+            {
+                continue;
+            }
+
             if (route.Source == null || route.Source.Muted ||
                 MixerGroupBus.Muted(route.Source.GroupKey) ||
                 (anySoloSource && !route.Source.Solo &&
@@ -1411,7 +1610,23 @@ public sealed class OutputNode : IDisposable
                 continue;
             }
 
-            int read = route.Subscription.Read(temp);
+            var subscription = route.Subscription;
+            if (subscription == null)
+            {
+                continue;
+            }
+
+            int read;
+            try
+            {
+                read = subscription.Read(temp);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                AudioFaultLog.ReportEffectFault(route.Source.Title, ex);
+                continue;
+            }
+
             if (read < temp.Length)
             {
                 // Pad a short/empty read with silence instead of stalling: the
@@ -1425,7 +1640,15 @@ public sealed class OutputNode : IDisposable
             // Run any modifier effects (and alignment delay) on the freshly
             // pulled block before it joins the mix. The chain is a snapshot so
             // this stays allocation- and lock-free on the render thread.
-            route.Process(temp.AsSpan(0, read), read / channels, channels);
+            try
+            {
+                route.Process(temp.AsSpan(0, read), read / channels, channels);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                AudioFaultLog.ReportEffectFault(route.Source.Title, ex);
+                Array.Clear(temp, 0, read);
+            }
 
             float gain = route.Gain * route.Source.Gain *
                          MixerGroupBus.Gain(route.Source.GroupKey);
@@ -1508,6 +1731,13 @@ public sealed class OutputNode : IDisposable
     /// <summary>Total bytes handed to the render endpoint (diagnostics).</summary>
     public long BytesWritten { get; private set; }
 
+    /// <summary>Native frames dropped to keep a lagging endpoint close to live.</summary>
+    public long NativeSkippedFrames { get; private set; }
+
+    /// <summary>Filtered clock error measured for this device, in ppm.</summary>
+    public double ClockPpm => _outputPpm;
+    public bool ClockPpmReady => _outputPpmReady;
+
     /// <summary>How much audio is queued in the render buffer right now, in ms.</summary>
     public double BufferedMs => _buffer?.BufferedDuration.TotalMilliseconds ?? 0;
 
@@ -1565,9 +1795,11 @@ public sealed class OutputNode : IDisposable
         _pumpThread = null;
         _nativeSubscription?.Dispose();
         _nativeSubscription = null;
+        DisposeRetiredNativeInstances();
         _recorderConverter = null;
         _recorderConverted.Clear();
         ClearEngineAudio();
+        _outputResampler.Reset();
         _clipGuard.Reset();
         ClipGuardActive = false;
 
@@ -1637,10 +1869,48 @@ public sealed class OutputNode : IDisposable
     {
         if (!Stop())
         {
-            // The pump still owns the device/buffer/routes. Tearing them down
-            // here would race the audio thread, so keep them for this process.
+            // Retry teardown in the background instead of leaking the device
+            // and routes forever when a driver thread is slow to exit.
+            if (Interlocked.Exchange(ref _disposeRetryQueued, 1) == 0)
+            {
+                ThreadPool.QueueUserWorkItem(_ => RetryDispose());
+                Ruse.App.Diagnostics.AppLog.Warning(
+                    $"Output '{Title}' pump did not stop; retrying resource teardown in the background.");
+            }
+
+            return;
+        }
+
+        DisposeResources();
+    }
+
+    private void RetryDispose()
+    {
+        try
+        {
+            for (int attempt = 0; attempt < 30; attempt++)
+            {
+                Thread.Sleep(1000);
+                if (Stop())
+                {
+                    DisposeResources();
+                    return;
+                }
+            }
+
             Ruse.App.Diagnostics.AppLog.Warning(
-                $"Output '{Title}' was disposed while its pump was still alive; resources are kept.");
+                $"Output '{Title}' pump never stopped; its resources remain for this process.");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _disposeRetryQueued, 0);
+        }
+    }
+
+    private void DisposeResources()
+    {
+        if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
+        {
             return;
         }
 
@@ -1673,14 +1943,51 @@ public sealed class OutputNode : IDisposable
         /// outputs would take turns pulling from the same queue and each would
         /// hear only part of the signal.
         /// </summary>
-        private SourceNode.Subscription? _subscription;
+        private readonly object _subscriptionGate = new();
+        private volatile SourceNode.Subscription? _subscription;
+        private int _disposed;
 
-        public SourceNode.Subscription Subscription => _subscription ??= Source.Subscribe();
+        public bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
+        /// <summary>
+        /// Null after <see cref="Dispose"/>: a dead route must never lazily
+        /// recreate a subscription, or it would steal audio from the source.
+        /// </summary>
+        public SourceNode.Subscription? Subscription
+        {
+            get
+            {
+                var subscription = _subscription;
+                if (subscription != null)
+                {
+                    return subscription;
+                }
+
+                lock (_subscriptionGate)
+                {
+                    if (Volatile.Read(ref _disposed) != 0)
+                    {
+                        return null;
+                    }
+
+                    return _subscription ??= Source.Subscribe();
+                }
+            }
+        }
 
         public void Dispose()
         {
-            SourceNode.Subscription? subscription = _subscription;
-            _subscription = null;
+            SourceNode.Subscription? subscription;
+            lock (_subscriptionGate)
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                {
+                    return;
+                }
+
+                subscription = _subscription;
+                _subscription = null;
+            }
 
             RouteChain empty = new(
                 Array.Empty<IAudioProcessor>(),
@@ -1822,7 +2129,7 @@ public sealed class OutputNode : IDisposable
 
         // Parameters are edited on the template, so mirror values that changed
         // across the block boundary — allocation-free and only on real edits.
-        private static void SyncParameters(ParameterBinding[] bindings)
+        internal static void SyncParameters(ParameterBinding[] bindings)
         {
             for (int i = 0; i < bindings.Length; i++)
             {
@@ -1847,7 +2154,7 @@ public sealed class OutputNode : IDisposable
             return total;
         }
 
-        private static IAudioProcessor Clone(IAudioProcessor template)
+        internal static IAudioProcessor Clone(IAudioProcessor template)
         {
             try
             {
@@ -1880,7 +2187,7 @@ public sealed class OutputNode : IDisposable
             }
         }
 
-        private static ParameterBinding[] BuildBindings(IAudioProcessor[] templates, IAudioProcessor[] instances)
+        internal static ParameterBinding[] BuildBindings(IAudioProcessor[] templates, IAudioProcessor[] instances)
         {
             var bindings = new List<ParameterBinding>();
             for (int i = 0; i < templates.Length && i < instances.Length; i++)
@@ -1973,7 +2280,7 @@ public sealed class OutputNode : IDisposable
             }
         }
 
-        private sealed class ParameterBinding
+        internal sealed class ParameterBinding
         {
             public required AudioParameter Source { get; init; }
             public required AudioParameter Target { get; init; }

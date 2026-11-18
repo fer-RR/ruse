@@ -25,6 +25,13 @@ internal static class UpdateApplier
             }
         }
 
+        string localRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Ruse");
+        if (!IsSubPath(logPath, localRoot))
+        {
+            logPath = Path.Combine(localRoot, "update.log");
+        }
+
         string? restart = null;
         try
         {
@@ -41,6 +48,10 @@ internal static class UpdateApplier
                 return 2;
             }
 
+            string updatesRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Ruse", "updates");
+
             string target = Normalize(targetArg);
             string source = Normalize(sourceArg);
             restart = Normalize(restartArg);
@@ -49,10 +60,17 @@ internal static class UpdateApplier
                 restart = Path.Combine(target, "Ruse.exe");
             }
 
+            if (!File.Exists(Path.Combine(target, "Ruse.exe")) ||
+                !IsSubPath(source, updatesRoot) ||
+                !File.Exists(Path.Combine(source, "Ruse.exe")))
+            {
+                Log("The install, staging or restart folder is not valid.");
+                return 2;
+            }
+
             if (string.Equals(source, target, StringComparison.OrdinalIgnoreCase) ||
                 IsSubPath(source, target) ||
-                IsSubPath(target, source) ||
-                !File.Exists(Path.Combine(source, "Ruse.exe")))
+                IsSubPath(target, source))
             {
                 Log("The staging or target folder is not valid.");
                 return 2;

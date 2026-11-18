@@ -11,21 +11,7 @@ internal sealed partial class WebShellController
         ".wav", ".mp3", ".flac", ".aif", ".aiff", ".m4a", ".aac", ".ogg", ".wma",
     };
 
-    private static string SampleDirectory()
-    {
-        string root = Environment.GetFolderPath(Environment.SpecialFolder.MyMusic);
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            root = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        }
-
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            root = AppSettings.Directory;
-        }
-
-        return Path.Combine(root, "Ruse Samples");
-    }
+    private static string SampleDirectory() => RuseFolders.Samples;
 
     private void RefreshSamples()
     {
@@ -34,7 +20,13 @@ internal sealed partial class WebShellController
             string directory = SampleDirectory();
             Directory.CreateDirectory(directory);
             _catalog.SampleDirectory = directory;
-            _catalog.Samples = Directory.EnumerateFiles(directory)
+            var directories = (AppSettings.OverrideDirectory == null
+                    ? new[] { directory, RuseFolders.LegacySamples }
+                    : new[] { directory })
+                .Where(scan => Directory.Exists(scan))
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+            _catalog.Samples = directories
+                .SelectMany(scan => Directory.EnumerateFiles(scan))
                 .Where(IsSampleAudio)
                 .OrderBy(path => Path.GetFileName(path), StringComparer.OrdinalIgnoreCase)
                 .Select(path => new CatalogItemDto
@@ -86,6 +78,7 @@ internal sealed partial class WebShellController
             Filter = "Audio samples|*.wav;*.mp3;*.flac;*.aif;*.aiff;*.m4a;*.aac;*.ogg;*.wma|All files|*.*",
             CheckFileExists = true,
             Multiselect = true,
+            InitialDirectory = RuseFolders.Ensure(RuseFolders.Samples),
         };
         if (dialog.ShowDialog(_window) != true)
         {

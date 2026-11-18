@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 
 namespace Ruse.App;
@@ -12,6 +13,8 @@ internal sealed class TtsRequest
     public float Speed { get; set; } = 1f;
     public int Voice { get; set; }
     public string OutputPath { get; set; } = "";
+    public List<string> Texts { get; set; } = new();
+    public List<string> OutputPaths { get; set; } = new();
 }
 
 /// <summary>
@@ -126,10 +129,148 @@ internal static class TtsSynthesis
         }
     }
 
-    private static string Quote(string value) =>
-        "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
+    /// <summary>
+    /// Synthesizes several clauses through one host process, yielding each WAV
+    /// as soon as the host writes it. Loading the model once per text avoids a
+    /// process and model load per clause.
+    /// </summary>
+    public static async IAsyncEnumerable<string> SynthesizeClausesAsync(
+        string modelId,
+        IReadOnlyList<string> texts,
+        float speed,
+        int voice,
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var cleaned = texts
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .Select(text => text.Trim())
+            .ToList();
+        if (cleaned.Count == 0)
+        {
+            throw new InvalidOperationException("There is no text to speak.");
+        }
 
-    private static void TryKill(Process process)
+        var model = TtsModels.Find(modelId) ?? throw new InvalidOperationException("Choose a text-to-speech model first.");
+        if (!TtsModels.IsInstalled(model.Id))
+        {
+            throw new InvalidOperationException("Install a text-to-speech model in Settings > Speech & translation first.");
+        }
+
+        string host = Path.Combine(AppContext.BaseDirectory, "tts-host", "Ruse.TtsHost.exe");
+        if (!File.Exists(host))
+        {
+            host = Path.Combine(AppContext.BaseDirectory, "Ruse.TtsHost.exe");
+        }
+
+        if (!File.Exists(host))
+        {
+            throw new FileNotFoundException("The text-to-speech host is missing from this build.", host);
+        }
+
+        string folder = Path.Combine(Path.GetTempPath(), "Ruse", "tts");
+        Directory.CreateDirectory(folder);
+        string id = Guid.NewGuid().ToString("N");
+        string requestPath = Path.Combine(folder, id + ".json");
+        var outputPaths = Enumerable.Range(0, cleaned.Count)
+            .Select(index => Path.Combine(folder, id + "-" + index + ".wav"))
+            .ToList();
+        var request = new TtsRequest
+        {
+            Family = model.Family,
+            ModelDir = TtsModels.GetInstalledPath(model.Id),
+            Speed = Math.Clamp(speed <= 0 ? 1f : speed, 0.5f, 2f),
+            Voice = Math.Max(0, voice),
+            Texts = cleaned,
+            OutputPaths = outputPaths,
+        };
+        await File.WriteAllTextAsync(requestPath, JsonSerializer.Serialize(request, JsonOptions), cancellationToken)
+            .ConfigureAwait(false);
+
+        var info = new ProcessStartInfo
+        {
+            FileName = host,
+            Arguments = "--request " + Quote(requestPath),
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = Path.GetDirectoryName(host)!,
+        };
+
+        using var process = new Process { StartInfo = info };
+        int produced = 0;
+        try
+        {
+            if (!process.Start())
+            {
+                throw new InvalidOperationException("The text-to-speech host did not start.");
+            }
+
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromMinutes(5));
+            var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
+            while (true)
+            {
+                string? line = await process.StandardOutput.ReadLineAsync(timeout.Token).ConfigureAwait(false);
+                if (line == null)
+                {
+                    break;
+                }
+
+                if (line.StartsWith("OK ", StringComparison.Ordinal) &&
+                    int.TryParse(line.AsSpan(3), out int index) &&
+                    index >= produced && index < outputPaths.Count &&
+                    File.Exists(outputPaths[index]))
+                {
+                    produced = index + 1;
+                    yield return outputPaths[index];
+                }
+            }
+
+            await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            string error = (await stderr.ConfigureAwait(false)).Trim();
+            if (process.ExitCode != 0)
+            {
+                throw new InvalidOperationException(
+                    string.IsNullOrWhiteSpace(error)
+                        ? "The text-to-speech model could not generate audio."
+                        : error);
+            }
+
+            if (produced != outputPaths.Count)
+            {
+                throw new InvalidOperationException("The text-to-speech host did not generate every clause.");
+            }
+        }
+        finally
+        {
+            TryKill(process);
+            try
+            {
+                File.Delete(requestPath);
+            }
+            catch
+            {
+            }
+
+            for (int index = produced; index < outputPaths.Count; index++)
+            {
+                try
+                {
+                    if (File.Exists(outputPaths[index]))
+                    {
+                        File.Delete(outputPaths[index]);
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+    }
+
+    private static string Quote(string value) =>
+        "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";    private static void TryKill(Process process)
     {
         try
         {

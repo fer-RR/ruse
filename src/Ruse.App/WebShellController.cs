@@ -45,6 +45,7 @@ internal sealed partial class WebShellController : IDisposable
     private readonly Dictionary<string, long> _spectrogramCursors = new();
     private readonly Dictionary<string, string> _nativeFallbackSources = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _telemetryTimer;
+    private int _clockRefreshTick;
     private readonly DispatcherTimer _appsTimer;
     private readonly DispatcherTimer _devicesTimer;
     private readonly DispatcherTimer _updateTimer;
@@ -85,12 +86,14 @@ internal sealed partial class WebShellController : IDisposable
     private CancellationTokenSource? _voskDownloadCancel;
     private long _lastBargeInTick;
     private readonly HashSet<int> _speechTaps = new();
-    private Action<bool>? _trayDecision;
+    private Action<bool?>? _trayDecision;
 
     public WebShellController(WebMainWindow window)
     {
         _window = window;
         _settings = AppSettings.Load();
+        RuseFolders.EnsureAll();
+        EnsureDefaultMediaFolders();
         StreamingAsrOptions.Enabled = _settings.StreamingAsrEnabled;
         SpeechActivityHub.SpeechStarted += OnSpeechStarted;
         SpeechActivityHub.SpeechEnded += OnSpeechEnded;
@@ -106,6 +109,7 @@ internal sealed partial class WebShellController : IDisposable
         };
         MixerGroupBus.Configure(_settings.MixerGroups);
         TranslationSettings.Update(_settings.TranslationGlossary, _settings.TranslationMemoryEnabled);
+        ConfigureHistoryLimits();
         _updates = new UpdateService(this);
         ModelRuntime.UseGpu = _settings.UseGpu;
         Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
@@ -114,7 +118,21 @@ internal sealed partial class WebShellController : IDisposable
         OutputNode.LowLatencyWasapi = _settings.LowLatencyWasapi;
         ConfigureAudioEngine();
         _telemetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
-        _telemetryTimer.Tick += (_, _) => { CheckArmedRecorders(); CheckRecorderSilence(); PublishTelemetry(); FlushMidiParameterChanges(); FlushControlParameterChanges(); FlushTimelineParameterChanges(); PublishTimelinePlayhead(); };
+        _telemetryTimer.Tick += (_, _) =>
+        {
+            CheckArmedRecorders();
+            CheckRecorderSilence();
+            if (++_clockRefreshTick % 10 == 0)
+            {
+                _graph.UpdateSourceClocks();
+            }
+
+            PublishTelemetry();
+            FlushMidiParameterChanges();
+            FlushControlParameterChanges();
+            FlushTimelineParameterChanges();
+            PublishTimelinePlayhead();
+        };
         _appsTimer = new DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(_settings.FollowPlayingApps ? 750 : 4000),
@@ -163,7 +181,8 @@ internal sealed partial class WebShellController : IDisposable
         _core.NewWindowRequested += OnCoreNewWindowRequested;
 
         string webRoot = Path.Combine(AppContext.BaseDirectory, "WebUi");
-        if (!File.Exists(Path.Combine(webRoot, "index.html")))
+        string indexPath = Path.Combine(webRoot, "index.html");
+        if (!File.Exists(indexPath))
         {
             throw new FileNotFoundException("The Web UI assets are missing. Run 'npm run build' in src/Ruse.App/WebUi.");
         }
@@ -172,7 +191,8 @@ internal sealed partial class WebShellController : IDisposable
             "ui.ruse", webRoot, CoreWebView2HostResourceAccessKind.Allow);
 
         RestoreWindowBounds();
-        _core.Navigate("https://ui.ruse/index.html");
+        long buildStamp = File.GetLastWriteTimeUtc(indexPath).Ticks;
+        _core.Navigate($"https://ui.ruse/index.html?v={buildStamp}");
         _telemetryTimer.Start();
         _appsTimer.Start();
 
@@ -241,6 +261,7 @@ internal sealed partial class WebShellController : IDisposable
         PublishAll();
         PostStartupProgress(1, "Ready");
         Post("startup-complete", new { });
+        WarnIfHistoryLimited();
         _updateTimer.Start();
         _ = _updates.MaybeAutoCheckAsync();
         if (!App.DemoMode && !App.LiveDemoMode && _settings.ShowWelcomeScreen)
@@ -291,7 +312,7 @@ internal sealed partial class WebShellController : IDisposable
                     .ToList();
                 if (paths.Count > 0)
                 {
-                    AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), paths[0]);
+                    AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), paths[0], String(message, "connectTo"));
                 }
 
                 return;
@@ -362,6 +383,15 @@ internal sealed partial class WebShellController : IDisposable
             case "samples-import": ChooseSamples(); break;
             case "samples-refresh": RefreshSamples(); Post("catalog", _catalog); SetStatus("Samples refreshed."); break;
             case "sample-import-path": ImportSamplePath(String(message, "path")); break;
+            case "media-scan": RefreshMediaLibrary(); break;
+            case "media-add-folder": AddMediaFolder(); break;
+            case "media-remove-folder": RemoveMediaFolder(String(message, "path")); break;
+            case "media-open-folder": OpenMediaFolder(String(message, "path")); break;
+            case "media-rename": RenameMediaFile(String(message, "path"), String(message, "name")); break;
+            case "media-reveal": RevealMediaFile(String(message, "path")); break;
+            case "media-add-to-timeline": AddMediaFileToTimeline(String(message, "path")); break;
+            case "media-reorder-folders": ReorderMediaFolders(message); break;
+            case "media-waveform": LoadMediaWaveform(String(message, "path")); break;
             case "update-status": _updates.PublishState(); break;
             case "check-updates": _ = _updates.CheckAsync(); break;
             case "download-update": _ = _updates.DownloadAsync(); break;
@@ -403,7 +433,8 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-marker-add": AddTimelineMarker(message); break;
             case "timeline-marker-update": UpdateTimelineMarker(message); break;
             case "timeline-marker-remove": RemoveTimelineMarker(String(message, "id")); break;
-            case "timeline-copy-clips": PasteTimelineClips(message); break;
+            case "timeline-copy-clips": SnapshotTimelineClips(message); break;
+            case "timeline-paste-clipboard": PasteTimelineClips(message); break;
             case "timeline-normalize-clip": NormalizeTimelineClip(String(message, "trackId"), String(message, "clipId")); break;
             case "timeline-reverse-clip": ReverseTimelineClip(String(message, "trackId"), String(message, "clipId")); break;
             case "timeline-consolidate": ConsolidateTimeline(message); break;
@@ -414,9 +445,7 @@ internal sealed partial class WebShellController : IDisposable
             case "audio-optimizer-run": StartAudioOptimizer(); break;
             case "add": AddFromMessage(message); break;
             case "route-check-test-tone": AddRouteCheckTestTone(); break;
-            case "add-file-player": AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), String(message, "path")); break;
-            case "file-player-file": ChooseFilePlayerFile(String(message, "id")); break;
-            case "file-player-loop": SetFilePlayerLoop(String(message, "id"), Bool(message, "value")); break;
+            case "add-file-player": AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), String(message, "path"), String(message, "connectTo")); break;
             case "file-player-speed": SetFilePlayerSpeed(String(message, "id"), (float)Number(message, "value", 1)); break;
             case "file-player-output": SetFilePlayerOutput(String(message, "id"), String(message, "outputId")); break;
             case "file-player-start": StartFilePlayer(String(message, "id")); break;
@@ -562,9 +591,21 @@ internal sealed partial class WebShellController : IDisposable
             case "chain-delete": DeleteChain(String(message, "name")); break;
             case "chain-open": OpenChainForNode(String(message, "id")); break;
             case "settings": ApplySettings(Payload<SettingsDto>(message) ?? new SettingsDto()); break;
-            case "close-to-tray-result": ResolveTrayDecision(Bool(message, "keep")); break;
+            case "close-to-tray-result":
+                ResolveTrayDecision(Bool(message, "cancel") ? null : Bool(message, "keep"));
+                break;
             case "open-log": AppLog.OpenLog(); break;
             case "open-log-folder": AppLog.OpenLogFolder(); break;
+            case "open-user-folder":
+                try
+                {
+                    RuseFolders.OpenUserFolder();
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Could not open the user folder: " + ex.Message, isError: true);
+                }
+                break;
             case "copy-diagnostics": CopyDiagnostics(); break;
             case "window": HandleWindowCommand(String(message, "action")); break;
         }
@@ -749,6 +790,14 @@ internal sealed partial class WebShellController : IDisposable
             state.Enabled = entry.Modifier.Enabled;
             state.Send = entry.Modifier.Send;
             state.Parallel = entry.Modifier.Parallel;
+        }
+
+        string? groupKey = entry.Source?.GroupKey ?? entry.Output?.GroupKey;
+        if (!string.IsNullOrWhiteSpace(groupKey))
+        {
+            state.GroupGain = MixerGroupBus.Gain(groupKey);
+            state.GroupMuted = MixerGroupBus.Muted(groupKey);
+            state.GroupSolo = MixerGroupBus.Solo(groupKey);
         }
 
         Post("node-state", state);
@@ -974,6 +1023,7 @@ internal sealed partial class WebShellController : IDisposable
             UiLanguage = _settings.UiLanguage,
             Theme = _settings.Theme,
             UiScale = _settings.UiScale,
+            MotionMode = _settings.MotionMode,
             StartRoutingOnLaunch = _settings.StartRoutingOnLaunch,
             HighlightMutedNodes = _settings.HighlightMutedNodes,
             SignalGlow = _settings.SignalGlow,
@@ -1084,6 +1134,7 @@ internal sealed partial class WebShellController : IDisposable
             RenderTier = System.Windows.Media.RenderCapability.Tier >> 16,
             DataFolder = AppSettings.Directory,
             ModelsFolder = TranscriptionModels.Root,
+            UserFolder = RuseFolders.UserRoot,
         });
     }
 
@@ -1624,8 +1675,8 @@ internal sealed partial class WebShellController : IDisposable
         PublishSettings();
     }
 
-    /// <summary>Asks the web UI for the first-close tray choice.</summary>
-    internal bool RequestTrayDecision(Action<bool> response)
+    /// <summary>Asks the web UI for the first-close tray choice. Null cancels.</summary>
+    internal bool RequestTrayDecision(Action<bool?> response)
     {
         if (_disposed || _core == null)
         {
@@ -1637,7 +1688,7 @@ internal sealed partial class WebShellController : IDisposable
         return true;
     }
 
-    private void ResolveTrayDecision(bool keep)
+    private void ResolveTrayDecision(bool? keep)
     {
         var response = _trayDecision;
         _trayDecision = null;
@@ -1698,11 +1749,10 @@ internal sealed partial class WebShellController : IDisposable
             _settings.Save();
             if (!App.LiveDemoMode)
             {
-                if (_nodes.Count == 0 && _frames.Count == 0)
-                {
-                    DeleteSession();
-                }
-                else
+                // An empty graph does not mean the session is disposable: a
+                // restore can fail, or the user may have launched with session
+                // restore disabled. Only the explicit Clear action deletes it.
+                if (_nodes.Count > 0 || _frames.Count > 0)
                 {
                     SaveSession();
                 }
@@ -1741,6 +1791,13 @@ internal sealed partial class WebShellController : IDisposable
         StopNoiseCalibration();
         _appsTimer.Stop();
         _devicesTimer.Stop();
+        foreach (var entry in _nodes.Values)
+        {
+            entry.TtsGenerationCancel?.Cancel();
+        }
+
+        _timelineCountInCancel?.Cancel();
+        _timelineBounceCancel?.Cancel();
         _modelDownloadCancel?.Cancel();
         _modelDownloadCancel?.Dispose();
         _translationDownloadCancel?.Cancel();
@@ -1760,6 +1817,7 @@ internal sealed partial class WebShellController : IDisposable
         StopControlServer();
         DisposeInactiveOutputs();
         StopTimelineMetronome();
+        StopTimelineAutomationWorker();
         FrozenProxyStore.CleanupTrash();
         _timeline?.Dispose();
         _graph.Dispose();

@@ -1,6 +1,7 @@
 using Ruse.App.Audio;
 using Ruse.App.Diagnostics;
 using System.Text;
+using System.Threading.Channels;
 using Whisper.net;
 
 namespace Ruse.App;
@@ -33,6 +34,7 @@ internal sealed class TranscriptionSession : IDisposable
     private bool _modelReady;
     private bool _gpuActive;
     private bool _processing;
+    private long _generation;
     private int _disposed;
 
     public TranscriptionSession(int tapId, string modelId)
@@ -76,11 +78,14 @@ internal sealed class TranscriptionSession : IDisposable
         TranscriptionProcessor.ClearTap(_tapId);
         lock (_textLock)
         {
+            _generation++;
             _transcript = "";
             _partial = "";
             _error = null;
             _detectedLanguage = null;
             _segments.Clear();
+            _processing = false;
+            _baseStatus = "Listening";
         }
     }
 
@@ -155,6 +160,12 @@ internal sealed class TranscriptionSession : IDisposable
 
     private async Task RunRecognitionAsync(WhisperProcessor processor)
     {
+        long generation;
+        lock (_textLock)
+        {
+            generation = _generation;
+        }
+
         using var silero = SileroVad.TryCreate();
         using var vad = new VadSegmenter(_tapId, silero);
         using var vosk = StreamingAsrOptions.Enabled ? VoskStreamingRecognizer.TryCreate() : null;
@@ -173,22 +184,70 @@ internal sealed class TranscriptionSession : IDisposable
             if (++partialFrames < 15) return;
             partialFrames = 0;
             string partial = vosk.Partial();
-            if (partial.Length > 0) SetPartial(partial);
+            if (partial.Length > 0) SetPartial(partial, generation);
         };
-        while (!_cancel.IsCancellationRequested)
+
+        // Keep reading the tap while Whisper is inferring. A blocked VAD loop
+        // lets the shared 20 s tap overflow and silently drops speech.
+        var segments = Channel.CreateBounded<SpeechSegment>(new BoundedChannelOptions(4)
         {
-            var segment = await vad.ReadAsync(_cancel.Token);
-            if (segment != null)
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.DropOldest,
+        });
+
+        async Task ConsumeAsync()
+        {
+            try
             {
-                await TranscribeAsync(processor, segment.Samples, segment.StartSeconds);
+                await foreach (var segment in segments.Reader.ReadAllAsync(_cancel.Token))
+                {
+                    await TranscribeAsync(processor, segment.Samples, segment.StartSeconds, generation);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Speech chunk consumer failed.", ex);
+            }
+        }
+
+        Task consumer = ConsumeAsync();
+        try
+        {
+            while (!_cancel.IsCancellationRequested)
+            {
+                var segment = await vad.ReadAsync(_cancel.Token);
+                if (segment != null)
+                {
+                    segments.Writer.TryWrite(segment);
+                }
+            }
+        }
+        finally
+        {
+            segments.Writer.TryComplete();
+            try
+            {
+                await consumer;
+            }
+            catch (OperationCanceledException)
+            {
             }
         }
     }
 
-    private async Task TranscribeAsync(WhisperProcessor processor, float[] chunk, double chunkStart)
+    private async Task TranscribeAsync(WhisperProcessor processor, float[] chunk, double chunkStart, long generation)
     {
         lock (_textLock)
         {
+            if (generation != _generation)
+            {
+                return;
+            }
+
             _processing = true;
             _partial = "\u2026";
             _baseStatus = "Transcribing";
@@ -225,25 +284,39 @@ internal sealed class TranscriptionSession : IDisposable
         {
             lock (_textLock)
             {
-                _processing = false;
-                _partial = "";
-                _baseStatus = "Listening";
+                if (generation == _generation)
+                {
+                    _processing = false;
+                    _partial = "";
+                    _baseStatus = "Listening";
+                }
             }
         }
 
-        AppendFinal(text.ToString(), cues, detected);
+        AppendFinal(text.ToString(), cues, detected, generation);
     }
 
-    private void SetPartial(string text)
+    private void SetPartial(string text, long generation)
     {
-        lock (_textLock) _partial = text;
+        lock (_textLock)
+        {
+            if (generation == _generation)
+            {
+                _partial = text;
+            }
+        }
     }
 
-    private void AppendFinal(string text, List<SubtitleCue> cues, string? detected)
+    private void AppendFinal(string text, List<SubtitleCue> cues, string? detected, long generation)
     {
         text = text.Trim();
         lock (_textLock)
         {
+            if (generation != _generation)
+            {
+                return;
+            }
+
             if (text.Length > 0)
             {
                 _transcript = _transcript.Length == 0 ? text : _transcript + " " + text;
@@ -276,15 +349,21 @@ internal sealed class TranscriptionSession : IDisposable
         }
 
         _cancel.Cancel();
+        bool finished = false;
         try
         {
-            _worker.Wait(TimeSpan.FromMilliseconds(1500));
+            finished = _worker.Wait(TimeSpan.FromMilliseconds(1500));
         }
         catch
         {
         }
 
-        _cancel.Dispose();
+        // Leave the token alive if the worker is still unwinding; disposing it
+        // under a native inference call turns cancellation into a crash.
+        if (finished)
+        {
+            _cancel.Dispose();
+        }
     }
 }
 
@@ -312,17 +391,21 @@ internal static class TranscriptionRegistry
 
                 previous = current;
                 Sessions.Remove(tapId);
-                TranscriptionProcessor.ClearTap(tapId);
-            }
-            else
-            {
-                TranscriptionProcessor.ClearTap(tapId);
             }
 
-            Sessions[tapId] = new TranscriptionSession(tapId, modelId);
+            TranscriptionProcessor.ClearTap(tapId);
         }
 
+        // Stop the old reader before the replacement starts draining the tap.
         previous?.Dispose();
+
+        lock (Lock)
+        {
+            if (!Sessions.ContainsKey(tapId))
+            {
+                Sessions[tapId] = new TranscriptionSession(tapId, modelId);
+            }
+        }
     }
 
     public static TranscriptionSnapshot? Snapshot(int tapId, bool includeCues = false)
@@ -410,44 +493,56 @@ internal static class SpeechModelCache
             {
                 return null;
             }
+        }
 
+        WhisperFactory? loaded = null;
+        bool gpu = ModelRuntime.UseGpu;
+        try
+        {
             try
             {
-                WhisperFactory factory;
-                bool gpu = ModelRuntime.UseGpu;
-                try
+                loaded = WhisperFactory.FromPath(path, new WhisperFactoryOptions
                 {
-                    factory = WhisperFactory.FromPath(path, new WhisperFactoryOptions
-                    {
-                        UseGpu = gpu,
-                    });
-                }
-                catch (Exception gpuError) when (gpu)
-                {
-                    AppLog.Warning(
-                        $"GPU load failed for speech model '{modelId}'; falling back to CPU. " +
-                        gpuError.GetBaseException().Message);
-                    ModelRuntime.ReportGpuFallback(
-                        $"Speech model '{modelId}': {gpuError.GetBaseException().Message}");
-                    gpu = false;
-                    factory = WhisperFactory.FromPath(path);
-                }
-
-                if (token.IsCancellationRequested)
-                {
-                    factory.Dispose();
-                    return null;
-                }
-
-                Models[modelId] = (factory, 1, gpu);
-                return factory;
+                    UseGpu = gpu,
+                });
             }
-            catch (Exception ex)
+            catch (Exception gpuError) when (gpu)
             {
-                AppLog.Error($"Could not load speech model '{modelId}'.", ex);
-                return null;
+                AppLog.Warning(
+                    $"GPU load failed for speech model '{modelId}'; falling back to CPU. " +
+                    gpuError.GetBaseException().Message);
+                ModelRuntime.ReportGpuFallback(
+                    $"Speech model '{modelId}': {gpuError.GetBaseException().Message}");
+                gpu = false;
+                loaded = WhisperFactory.FromPath(path);
             }
         }
+        catch (Exception ex)
+        {
+            AppLog.Error($"Could not load speech model '{modelId}'.", ex);
+            return null;
+        }
+
+        lock (Lock)
+        {
+            if (Models.TryGetValue(modelId, out var existing))
+            {
+                PendingDrops.Remove(modelId);
+                Models[modelId] = (existing.Factory, existing.References + 1, existing.Gpu);
+                loaded.Dispose();
+                return existing.Factory;
+            }
+
+            if (token.IsCancellationRequested || PendingDrops.Contains(modelId))
+            {
+                loaded.Dispose();
+                return null;
+            }
+
+            Models[modelId] = (loaded, 1, gpu);
+        }
+
+        return loaded;
     }
 
     public static bool IsGpu(string modelId)
@@ -460,6 +555,7 @@ internal static class SpeechModelCache
 
     public static void Release(string modelId)
     {
+        WhisperFactory? dispose = null;
         lock (Lock)
         {
             if (!Models.TryGetValue(modelId, out var entry)) return;
@@ -471,8 +567,10 @@ internal static class SpeechModelCache
 
             Models.Remove(modelId);
             PendingDrops.Remove(modelId);
-            entry.Factory.Dispose();
+            dispose = entry.Factory;
         }
+
+        dispose.Dispose();
     }
 
     public static void Drop(string modelId)

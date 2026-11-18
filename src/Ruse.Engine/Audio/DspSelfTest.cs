@@ -65,6 +65,47 @@ public static class DspSelfTest
         Check("low-pass", lowPassPass > 0.15 && lowPassStop < 0.02,
             $"200 Hz {lowPassPass:0.###}, 2 kHz {lowPassStop:0.###}");
 
+        var bandPass = new BiquadProcessor(
+            BiquadKind.BandPass, "dsp-bandpass", "DSP band-pass", 1000f, "Frequency",
+            hasQ: true, defaultQ: 2f);
+        double bandPassPass = Rms(Process(bandPass, Tone(1000.0, 0.25, TestFrames)),
+            AnalysisStart, AnalysisFrames);
+        var bandPassStopProcessor = new BiquadProcessor(
+            BiquadKind.BandPass, "dsp-bandpass", "DSP band-pass", 1000f, "Frequency",
+            hasQ: true, defaultQ: 2f);
+        double bandPassStop = Rms(Process(bandPassStopProcessor, Tone(200.0, 0.25, TestFrames)),
+            AnalysisStart, AnalysisFrames);
+        Check("band-pass", bandPassPass > 0.15 && bandPassStop < 0.03,
+            $"1 kHz {bandPassPass:0.###}, 200 Hz {bandPassStop:0.###}");
+
+        var allPass = new BiquadProcessor(
+            BiquadKind.AllPass, "dsp-allpass", "DSP all-pass", 1000f, "Frequency", hasQ: true);
+        double allPassLow = Rms(Process(allPass, Tone(250.0, 0.25, TestFrames)),
+            AnalysisStart, AnalysisFrames);
+        var allPassHighProcessor = new BiquadProcessor(
+            BiquadKind.AllPass, "dsp-allpass", "DSP all-pass", 1000f, "Frequency", hasQ: true);
+        double allPassHigh = Rms(Process(allPassHighProcessor, Tone(4000.0, 0.25, TestFrames)),
+            AnalysisStart, AnalysisFrames);
+        Check("all-pass flat magnitude",
+            Math.Abs(allPassLow - allPassHigh) < 0.002,
+            $"250 Hz {allPassLow:0.####}, 4 kHz {allPassHigh:0.####}");
+
+        var allPassCenter = new BiquadProcessor(
+            BiquadKind.AllPass, "dsp-allpass", "DSP all-pass", 1000f, "Frequency", hasQ: true);
+        var allPassInput = Tone(1000.0, 0.25, TestFrames);
+        var allPassOutput = Process(allPassCenter, allPassInput);
+        var allPassDifference = new float[allPassInput.Length];
+        for (int i = 0; i < allPassDifference.Length; i++)
+        {
+            allPassDifference[i] = allPassOutput[i] - allPassInput[i];
+        }
+
+        double allPassCenterRms = Rms(allPassOutput, AnalysisStart, AnalysisFrames);
+        double allPassPhase = Rms(allPassDifference, AnalysisStart, AnalysisFrames);
+        Check("all-pass phase shift",
+            allPassCenterRms > 0.15 && allPassPhase > 0.01,
+            $"1 kHz RMS {allPassCenterRms:0.###}, phase difference {allPassPhase:0.###}");
+
         var eq = new BiquadProcessor(
             BiquadKind.Peak, "dsp-eq", "DSP EQ", 1000f, "Frequency",
             hasGain: true, defaultGainDb: 12f, hasQ: true, defaultQ: 1f);
@@ -429,6 +470,34 @@ public static class DspSelfTest
         finally
         {
             try { File.Delete(noisePath); } catch { }
+        }
+
+        string analysisPath = Path.Combine(
+            Path.GetTempPath(), $"ruse-analysis-{Guid.NewGuid():N}.wav");
+        try
+        {
+            var tone = Tone(1000.0, 0.5, TestFrames);
+            using (var writer = new WaveFileWriter(
+                analysisPath, WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels)))
+            {
+                writer.WriteSamples(tone, 0, tone.Length);
+            }
+
+            var analysis = AudioFileAnalysis.Analyze(analysisPath, CancellationToken.None);
+            Check("file analysis",
+                analysis.SampleRate == SampleRate &&
+                analysis.Channels == Channels &&
+                Math.Abs(analysis.DurationSeconds - 1.0) < 0.02 &&
+                analysis.FrameCount >= TestFrames - 1 &&
+                analysis.PeakDb is > -7f and < -5f &&
+                analysis.RmsDb is > -10f and < -8f &&
+                float.IsFinite(analysis.TruePeakDb),
+                $"{analysis.SampleRate} Hz, {analysis.Channels} ch, " +
+                $"peak {analysis.PeakDb:0.#} dB, RMS {analysis.RmsDb:0.#} dB");
+        }
+        finally
+        {
+            try { File.Delete(analysisPath); } catch { }
         }
 
         string summary = failures.Count == 0

@@ -21,6 +21,7 @@ internal static class AudioFaultLog
         public string Title;
         public Exception? Exception;
         public bool Warning;
+        public bool OutputPump;
     }
 
     public static void ReportEffectFault(string title, Exception exception) =>
@@ -28,6 +29,9 @@ internal static class AudioFaultLog
 
     public static void ReportEffectWarning(string title) =>
         Enqueue(new Entry { Title = title, Warning = true });
+
+    public static void ReportOutputPumpFault(string title, Exception exception) =>
+        Enqueue(new Entry { Title = title, Exception = exception, OutputPump = true });
 
     private static void Enqueue(Entry entry)
     {
@@ -72,6 +76,12 @@ internal static class AudioFaultLog
                 if (entry.Warning)
                 {
                     AppLog.Warning($"Effect chain '{entry.Title}' produced non-finite samples; state was reset.");
+                }
+                else if (entry.OutputPump)
+                {
+                    AppLog.Error(
+                        $"Output '{entry.Title}' pump failed; the block was silenced.",
+                        entry.Exception);
                 }
                 else
                 {

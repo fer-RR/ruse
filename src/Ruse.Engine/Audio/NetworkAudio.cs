@@ -180,7 +180,10 @@ public sealed class NetworkPcmCapture : IDisposable
     }
 
     public event EventHandler<AudioPacketEventArgs>? DataAvailable;
-    public bool IsRunning => _receiver is { IsAlive: true } && !_stop;
+    public bool IsRunning =>
+        _receiver is { IsAlive: true } &&
+        _pump is { IsAlive: true } &&
+        !_stop;
     public string? LastError { get { lock (_errorLock) return _lastError; } }
     public long Packets => Interlocked.Read(ref _packets);
     public long LostPackets => Interlocked.Read(ref _lostPackets);
@@ -190,9 +193,21 @@ public sealed class NetworkPcmCapture : IDisposable
 
     public void Start()
     {
-        if (_receiver is { IsAlive: true })
+        if (IsRunning)
         {
             return;
+        }
+
+        if (_receiver is { IsAlive: true } || _pump is { IsAlive: true })
+        {
+            // A previous stop may have timed out. Retry before resetting _stop,
+            // otherwise the old threads would be revived alongside the new ones.
+            Stop();
+            if (_receiver is { IsAlive: true } || _pump is { IsAlive: true })
+            {
+                SetError("The previous network input is still stopping.");
+                return;
+            }
         }
 
         _receiver = null;

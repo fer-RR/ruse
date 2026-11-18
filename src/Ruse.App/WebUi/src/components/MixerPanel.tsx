@@ -1,6 +1,6 @@
 import { Profiler, memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowUpDown, GripVertical, SlidersHorizontal, Volume2, VolumeX, X } from 'lucide-react';
+import { ArrowUpDown, GripVertical, Link2, SlidersHorizontal, Volume2, VolumeX, X } from 'lucide-react';
 import { send } from '../bridge';
 import { formatGainDb, nextVolumeValue } from '../gain';
 import { useI18n } from '../i18n';
@@ -198,7 +198,10 @@ function SendRowImpl({ source, output, inserts, links }: {
             aria-label={t('{name} volume', { name: output.title })}
             aria-valuetext={formatGainDb(gain)}
             onChange={event => setGain(Number(event.target.value))}
-            onDoubleClick={() => setGain(1)}
+            onDoubleClick={() => {
+              setGain(1);
+              if (active) send('link-gain', { id: active.id, value: 1 });
+            }}
             onKeyDown={event => {
               const next = nextVolumeValue(event, gain);
               if (next !== null) {
@@ -219,19 +222,21 @@ function SendRowImpl({ source, output, inserts, links }: {
 
 const SendRow = memo(SendRowImpl);
 
-function MixerStrip({ node, outputs, links, inserts, vertical, groupColors, onFocusNode }: {
+function MixerStrip({ node, outputs, links, inserts, vertical, groupColors, groupTargets, onFocusNode }: {
   node: NodeModel;
   outputs: NodeModel[];
   links: LinkModel[];
   inserts: NodeModel[];
   vertical: boolean;
   groupColors?: string[];
+  groupTargets: NodeModel[];
   onFocusNode: (id: string) => void;
 }) {
   const { t } = useI18n();
   const telemetry = useNodeTelemetry(node.id);
   const [volume, setVolume] = useState(node.volume);
   const [dropTarget, setDropTarget] = useState(false);
+  const [groupMenuOpen, setGroupMenuOpen] = useState(false);
   useEffect(() => setVolume(node.volume), [node.volume]);
 
   const dragStart = (event: DragEvent<HTMLElement>) => {
@@ -279,6 +284,47 @@ function MixerStrip({ node, outputs, links, inserts, vertical, groupColors, onFo
           aria-label={t('Group')}
           onDragStart={dragStart}
         ><GripVertical size={12} /></span>
+        <span className="mixer-group-pick-wrap">
+          <button
+            type="button"
+            className="mixer-group-pick"
+            title={t('Group with...')}
+            aria-label={t('Group with...')}
+            aria-expanded={groupMenuOpen}
+            onClick={event => {
+              event.stopPropagation();
+              setGroupMenuOpen(open => !open);
+            }}
+            onPointerDown={event => event.stopPropagation()}
+          ><Link2 size={11} /></button>
+          {groupMenuOpen && (
+            <span className="mixer-group-menu" role="menu"
+              onKeyDown={event => {
+                if (event.key === 'Escape') {
+                  event.stopPropagation();
+                  setGroupMenuOpen(false);
+                }
+              }}
+            >
+              {groupTargets.filter(target => target.groupId !== node.groupId).length === 0
+                ? <span className="mixer-group-menu-empty">{t('No other channels')}</span>
+                : groupTargets
+                  .filter(target => target.groupId !== node.groupId)
+                  .map(target => (
+                    <button
+                      key={target.id}
+                      type="button"
+                      role="menuitem"
+                      onClick={event => {
+                        event.stopPropagation();
+                        send('mixer-group', { from: node.id, to: target.id });
+                        setGroupMenuOpen(false);
+                      }}
+                    >{target.title}</button>
+                  ))}
+            </span>
+          )}
+        </span>
         <input
           className="mixer-color"
           type="color"
@@ -515,6 +561,34 @@ function MixerGroupTools({ items, label, groupKey }: { items: NodeModel[]; label
   const [gain, setGain] = useState(grouped ? groupGain : average);
   const dragging = useRef(false);
   const start = useRef<{ gain: number; values: Map<string, number> } | null>(null);
+  const pendingGain = useRef<number | null>(null);
+  const sendFrame = useRef<number | null>(null);
+
+  const flush = () => {
+    if (sendFrame.current !== null) {
+      cancelAnimationFrame(sendFrame.current);
+      sendFrame.current = null;
+    }
+    const next = pendingGain.current;
+    pendingGain.current = null;
+    if (next === null) return;
+
+    if (grouped) {
+      send('group-gain', { key: groupKey, value: next });
+      return;
+    }
+
+    const from = start.current ?? { gain, values: new Map(items.map(node => [node.id, node.volume])) };
+    const ratio = next / Math.max(0.0001, from.gain);
+    for (const node of items) {
+      const value = Math.max(0, Math.min(1.5, (from.values.get(node.id) ?? node.volume) * ratio));
+      send('gain', { id: node.id, value });
+    }
+  };
+
+  useEffect(() => () => {
+    if (sendFrame.current !== null) cancelAnimationFrame(sendFrame.current);
+  }, []);
 
   useEffect(() => {
     if (!dragging.current) setGain(grouped ? groupGain : average);
@@ -526,25 +600,19 @@ function MixerGroupTools({ items, label, groupKey }: { items: NodeModel[]; label
   };
 
   const change = (next: number) => {
-    if (grouped) {
-      send('group-gain', { key: groupKey, value: next });
-      setGain(next);
-      return;
-    }
-
-    const from = start.current ?? { gain, values: new Map(items.map(node => [node.id, node.volume])) };
-    const ratio = next / Math.max(0.0001, from.gain);
-    for (const node of items) {
-      const value = Math.max(0, Math.min(1.5, (from.values.get(node.id) ?? node.volume) * ratio));
-      send('gain', { id: node.id, value });
-    }
     setGain(next);
+    pendingGain.current = next;
+    if (sendFrame.current === null) {
+      sendFrame.current = requestAnimationFrame(flush);
+    }
   };
 
   const end = () => {
+    flush();
     dragging.current = false;
     start.current = null;
   };
+
 
   const allMuted = items.length > 0 && items.every(node => grouped ? node.groupMuted : node.muted);
   const allSolo = items.length > 0 && items.every(node => grouped ? node.groupSolo : node.solo);
@@ -674,6 +742,7 @@ function MixerPanel({ sources, outputs, modifiers, links, onClose, onExplain, on
                         inserts={sourceInserts.get(node.id) ?? EMPTY_INSERTS}
                         vertical={vertical}
                         groupColors={group.colors}
+                        groupTargets={sources.filter(item => item.id !== node.id)}
                         onFocusNode={onFocusNode}
                       />)}
                     </div>
@@ -721,6 +790,7 @@ function MixerPanel({ sources, outputs, modifiers, links, onClose, onExplain, on
                         inserts={outputInserts.get(node.id) ?? EMPTY_INSERTS}
                         vertical={vertical}
                         groupColors={group.colors}
+                        groupTargets={outputs.filter(item => item.id !== node.id)}
                         onFocusNode={onFocusNode}
                       />)}
                     </div>

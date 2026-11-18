@@ -119,6 +119,12 @@ internal sealed partial class WebShellController
 
         try
         {
+            if (_ttsDownload != null &&
+                string.Equals(_ttsDownload.Id, modelId, StringComparison.OrdinalIgnoreCase))
+            {
+                _ttsDownloadCancel?.Cancel();
+            }
+
             TtsModels.Delete(modelId);
             if (string.Equals(_settings.TtsModel, modelId, StringComparison.OrdinalIgnoreCase))
             {
@@ -129,6 +135,9 @@ internal sealed partial class WebShellController
             foreach (var entry in _nodes.Values.Where(entry => entry.Source?.Kind == SourceKind.Tts &&
                          string.Equals(entry.TtsModel, modelId, StringComparison.OrdinalIgnoreCase)))
             {
+                entry.TtsGenerationCancel?.Cancel();
+                entry.TtsGenerating = false;
+                entry.Source?.Stop();
                 entry.TtsStatus = "No model installed";
             }
 
@@ -346,7 +355,13 @@ internal sealed partial class WebShellController
                         {
                             return;
                         }
-                        current.Source.EnqueueTtsSamples(samples.AsSpan(0, frames * 2));
+                        try
+                        {
+                            current.Source.EnqueueTtsSamples(samples.AsSpan(0, frames * 2), cancel.Token);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                        }
                     },
                     cancel.Token);
             }
@@ -375,7 +390,19 @@ internal sealed partial class WebShellController
         }
         finally
         {
-            if (ReferenceEquals(entry.TtsGenerationCancel, cancel)) entry.TtsGenerationCancel = null;
+            bool current = ReferenceEquals(entry.TtsGenerationCancel, cancel);
+            if (current)
+            {
+                entry.TtsGenerationCancel = null;
+            }
+
+            if (current && cancel.IsCancellationRequested && _nodes.TryGetValue(entry.Id, out var stopped))
+            {
+                stopped.TtsGenerating = false;
+                stopped.Source?.Stop();
+                PublishGraph();
+            }
+
             cancel.Dispose();
         }
     }
@@ -429,60 +456,57 @@ internal sealed partial class WebShellController
         PublishGraph();
         try
         {
-            string firstPath = await TtsSynthesis.SynthesizeAsync(
-                modelId,
-                clauses[0],
-                speed,
-                entry.TtsVoice,
-                cancel.Token);
-            if (_disposed || !_nodes.TryGetValue(entry.Id, out var current) || current.Source == null)
+            bool started = false;
+            await foreach (string path in TtsSynthesis.SynthesizeClausesAsync(
+                modelId, clauses, speed, entry.TtsVoice, cancel.Token))
             {
-                TryDelete(firstPath);
-                return;
-            }
-
-            current.Source.Stop();
-            current.Source.SetTtsAudio(firstPath);
-            current.Source.Start();
-            current.TtsAudioPath = firstPath;
-            current.TtsStatus = "Speaking";
-            PublishGraph();
-            PublishTelemetry(force: true);
-
-            for (int index = 1; index < clauses.Count; index++)
-            {
-                // Keep one sentence buffered: synthesize the next sentence while
-                // the previous one is playing, but do not run the whole text
-                // ahead of the playback queue.
-                while (current.Source.TtsQueuedFiles > 0)
-                {
-                    cancel.Token.ThrowIfCancellationRequested();
-                    await Task.Delay(20, cancel.Token);
-                }
-
-                cancel.Token.ThrowIfCancellationRequested();
-                string path = await TtsSynthesis.SynthesizeAsync(
-                    modelId,
-                    clauses[index],
-                    speed,
-                    entry.TtsVoice,
-                    cancel.Token);
                 if (cancel.IsCancellationRequested ||
                     _disposed ||
-                    !_nodes.TryGetValue(entry.Id, out current) ||
+                    !_nodes.TryGetValue(entry.Id, out var current) ||
                     current.Source == null)
                 {
                     TryDelete(path);
                     return;
                 }
 
-                current.Source.EnqueueTtsAudio(path);
-                current.TtsAudioPath = path;
+                if (!started)
+                {
+                    current.Source.Stop();
+                    current.Source.SetTtsAudio(path);
+                    current.Source.Start();
+                    current.TtsAudioPath = path;
+                    current.TtsStatus = "Speaking";
+                    started = true;
+                    PublishGraph();
+                    PublishTelemetry(force: true);
+                }
+                else
+                {
+                    // Keep one sentence buffered: the host may synthesize ahead,
+                    // but playback only receives the next file once the previous
+                    // one is consumed.
+                    while (current.Source.TtsQueuedFiles > 0)
+                    {
+                        cancel.Token.ThrowIfCancellationRequested();
+                        await Task.Delay(20, cancel.Token);
+                    }
+
+                    current.Source.EnqueueTtsAudio(path);
+                    current.TtsAudioPath = path;
+                }
             }
 
-            current.Source.CompleteTtsAudio();
-            current.TtsGenerating = false;
-            PublishGraph();
+            if (!started)
+            {
+                throw new InvalidOperationException("The text-to-speech model returned no audio.");
+            }
+
+            if (_nodes.TryGetValue(entry.Id, out var done) && done.Source != null)
+            {
+                done.Source.CompleteTtsAudio();
+                done.TtsGenerating = false;
+                PublishGraph();
+            }
         }
         catch (OperationCanceledException)
         {
@@ -500,9 +524,17 @@ internal sealed partial class WebShellController
         }
         finally
         {
-            if (ReferenceEquals(entry.TtsGenerationCancel, cancel))
+            bool current = ReferenceEquals(entry.TtsGenerationCancel, cancel);
+            if (current)
             {
                 entry.TtsGenerationCancel = null;
+            }
+
+            if (current && cancel.IsCancellationRequested && _nodes.TryGetValue(entry.Id, out var stopped))
+            {
+                stopped.TtsGenerating = false;
+                stopped.Source?.Stop();
+                PublishGraph();
             }
 
             cancel.Dispose();
@@ -576,14 +608,14 @@ internal sealed partial class WebShellController
 
         if (producer.Modifier.Processors.OfType<TranscriptionProcessor>().FirstOrDefault() is { } transcriber)
         {
-            var snapshot = TranscriptionRegistry.Snapshot(transcriber.TapId, includeCues: true);
+            var snapshot = TranscriptionRegistry.Snapshot(transcriber.TapId);
             if (snapshot == null) return null;
             return new TtsSourceState(snapshot.Transcript);
         }
 
         if (producer.Modifier.Processors.OfType<TranslatorProcessor>().FirstOrDefault() is { } translator)
         {
-            var snapshot = TranslationRegistry.Snapshot(translator.TapId, includeCues: true);
+            var snapshot = TranslationRegistry.Snapshot(translator.TapId);
             if (snapshot == null) return null;
             return new TtsSourceState(snapshot.TranslatedText);
         }
@@ -716,6 +748,7 @@ internal sealed partial class WebShellController
     {
         try
         {
+            _voskDownloadCancel?.Cancel();
             VoskModels.Delete();
             PublishSettings();
             SetStatus("Vosk model deleted.");

@@ -53,24 +53,33 @@ internal sealed class OpusMtEngine
     public static void Drop(string id)
     {
         OpusModel? model;
-        lock (CacheLock)
+        lock (Gate)
         {
-            if (!Cache.Remove(id, out model)) return;
-        }
+            lock (CacheLock)
+            {
+                if (!Cache.Remove(id, out model))
+                {
+                    return;
+                }
+            }
 
-        model.Dispose();
+            model.Dispose();
+        }
     }
 
     public static void DropAll()
     {
-        List<OpusModel> models;
-        lock (CacheLock)
+        lock (Gate)
         {
-            models = Cache.Values.ToList();
-            Cache.Clear();
-        }
+            List<OpusModel> models;
+            lock (CacheLock)
+            {
+                models = Cache.Values.ToList();
+                Cache.Clear();
+            }
 
-        foreach (var model in models) model.Dispose();
+            foreach (var model in models) model.Dispose();
+        }
     }
 
     private static OpusModel GetModel(string id)

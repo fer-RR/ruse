@@ -1,4 +1,5 @@
 using System.Text;
+using System.Threading.Channels;
 using LLama;
 using LLama.Common;
 using LLama.Sampling;
@@ -271,6 +272,10 @@ internal sealed class TranslationSession : IDisposable
         }
         finally
         {
+            (_translator as IDisposable)?.Dispose();
+            _translator = null;
+            _opus = null;
+
             if (speechAcquired)
             {
                 SpeechModelCache.Release(_speechModelId);
@@ -308,12 +313,53 @@ internal sealed class TranslationSession : IDisposable
                 lock (_textLock) _sourcePartial = partial;
             }
         };
-        while (!_cancel.IsCancellationRequested)
+
+        var segments = Channel.CreateBounded<SpeechSegment>(new BoundedChannelOptions(4)
         {
-            var segment = await vad.ReadAsync(_cancel.Token);
-            if (segment != null)
+            SingleReader = true,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.DropOldest,
+        });
+
+        async Task ConsumeAsync()
+        {
+            try
             {
-                await TranslateChunkAsync(processor, segment.Samples, segment.StartSeconds);
+                await foreach (var item in segments.Reader.ReadAllAsync(_cancel.Token))
+                {
+                    await TranslateChunkAsync(processor, item.Samples, item.StartSeconds);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Translation chunk consumer failed.", ex);
+            }
+        }
+
+        Task consumer = ConsumeAsync();
+        try
+        {
+            while (!_cancel.IsCancellationRequested)
+            {
+                var segment = await vad.ReadAsync(_cancel.Token);
+                if (segment != null)
+                {
+                    segments.Writer.TryWrite(segment);
+                }
+            }
+        }
+        finally
+        {
+            segments.Writer.TryComplete();
+            try
+            {
+                await consumer;
+            }
+            catch (OperationCanceledException)
+            {
             }
         }
     }
@@ -428,7 +474,7 @@ internal sealed class TranslationSession : IDisposable
             lock (_textLock)
             {
                 _baseStatus = "Translating";
-                _translatedPartial = "…";
+                _translatedPartial = "â€¦";
             }
 
             try
@@ -505,7 +551,7 @@ internal sealed class TranslationSession : IDisposable
         text = text.Trim();
         if (text.Length == 0) return text;
 
-        foreach (string prefix in new[] { "Translation:", "Translation :", "Tradução:", "Traduccion:" })
+        foreach (string prefix in new[] { "Translation:", "Translation :", "TraduÃ§Ã£o:", "Traduccion:" })
         {
             if (text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             {
@@ -515,7 +561,7 @@ internal sealed class TranslationSession : IDisposable
         }
 
         if (text.Length >= 2 &&
-            ((text[0] == '"' && text[^1] == '"') || (text[0] == '“' && text[^1] == '”')))
+            ((text[0] == '"' && text[^1] == '"') || (text[0] == '\u201C' && text[^1] == '\u201D') || (text[0] == '\u2018' && text[^1] == '\u2019')))
         {
             text = text[1..^1];
         }
@@ -620,18 +666,22 @@ internal static class TranslationRegistry
 
                 previous = current;
                 Sessions.Remove(tapId);
-                TranscriptionProcessor.ClearTap(tapId);
-            }
-            else
-            {
-                TranscriptionProcessor.ClearTap(tapId);
             }
 
-            Sessions[tapId] = new TranslationSession(
-                tapId, speechModelId, translationModelId, targetCode, translationProvider);
+            TranscriptionProcessor.ClearTap(tapId);
         }
 
+        // Stop the old reader before the replacement starts draining the tap.
         previous?.Dispose();
+
+        lock (Lock)
+        {
+            if (!Sessions.ContainsKey(tapId))
+            {
+                Sessions[tapId] = new TranslationSession(
+                    tapId, speechModelId, translationModelId, targetCode, translationProvider);
+            }
+        }
     }
 
     public static TranslationSnapshot? Snapshot(int tapId, bool includeCues = false)

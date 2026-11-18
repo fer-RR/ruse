@@ -302,7 +302,7 @@ internal sealed partial class WebShellController
 
     private static void RestoreFrozenProxyPath(string? path)
     {
-        if (!string.IsNullOrWhiteSpace(path))
+        if (!string.IsNullOrWhiteSpace(path) && TrustedPath.IsLocalFile(path))
         {
             FrozenProxyStore.Restore(path);
         }
