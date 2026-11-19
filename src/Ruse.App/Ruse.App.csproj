@@ -9,9 +9,9 @@
     <AssemblyName>Ruse</AssemblyName>
     <RootNamespace>Ruse.App</RootNamespace>
     <ApplicationIcon>Assets\ruse.ico</ApplicationIcon>
-    <Version>0.9.15</Version>
-    <AssemblyVersion>0.9.15.0</AssemblyVersion>
-    <FileVersion>0.9.15.0</FileVersion>
+    <Version>0.9.16</Version>
+    <AssemblyVersion>0.9.16.0</AssemblyVersion>
+    <FileVersion>0.9.16.0</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,7 +22,7 @@
   <ItemGroup>
     <Resource Include="Assets\ruse.ico" />
     <Content Include="Assets\silero_vad.onnx" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
-    <Content Include="Assets\vad_speech.wav" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\vad_speech.wav" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

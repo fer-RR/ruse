@@ -7,13 +7,18 @@ namespace Ruse.App;
 
 internal static class TranslationMemory
 {
+    private const int CompactAfterEntries = 2000;
     private static readonly object Lock = new();
     private static readonly object WriteLock = new();
+    private static readonly Dictionary<string, string> Pending = new(StringComparer.Ordinal);
     private static Dictionary<string, string>? _entries;
     private static bool _dirty;
     private static bool _saving;
+    private static bool _saveScheduled;
+    private static int _journalEntries;
 
     private static string FilePath => Path.Combine(AppSettings.Directory, "translation-memory.json");
+    private static string JournalPath => Path.Combine(AppSettings.Directory, "translation-memory.log");
 
     public static string? TryGet(string provider, string model, string target, string? sourceLanguage, string text)
     {
@@ -42,85 +47,178 @@ internal static class TranslationMemory
             if (_entries!.Count >= 20000) return;
             string key = Key(provider, model, target, sourceLanguage, source);
             if (_entries.ContainsKey(key)) return;
-            _entries[key] = translated.Trim();
+            string value = translated.Trim();
+            _entries[key] = value;
+            Pending[key] = value;
             _dirty = true;
         }
 
         SaveSoon();
     }
 
-    /// <summary>Writes pending entries synchronously, for application shutdown.</summary>
+    /// <summary>Flushes pending entries and compacts the journal for shutdown.</summary>
     public static void Flush()
     {
-        Dictionary<string, string> snapshot;
-        lock (Lock)
+        for (int pass = 0; pass < 3; pass++)
         {
-            LoadLocked();
-            snapshot = new Dictionary<string, string>(_entries!);
-            _dirty = false;
-        }
+            Dictionary<string, string> snapshot;
+            lock (Lock)
+            {
+                LoadLocked();
+                snapshot = new Dictionary<string, string>(_entries!);
+                Pending.Clear();
+                _dirty = false;
+            }
 
-        WriteSnapshot(snapshot);
+            WriteBase(snapshot);
+            lock (Lock)
+            {
+                if (!_dirty && Pending.Count == 0)
+                {
+                    return;
+                }
+            }
+        }
     }
 
     private static void LoadLocked()
     {
         if (_entries != null) return;
+        var entries = new Dictionary<string, string>(StringComparer.Ordinal);
         try
         {
             if (File.Exists(FilePath))
             {
-                _entries = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(FilePath))
-                    ?? new Dictionary<string, string>(StringComparer.Ordinal);
-            }
-            else
-            {
-                _entries = new Dictionary<string, string>(StringComparer.Ordinal);
+                var loaded = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(FilePath));
+                if (loaded != null)
+                {
+                    foreach (var pair in loaded) entries[pair.Key] = pair.Value;
+                }
             }
         }
         catch
         {
-            _entries = new Dictionary<string, string>(StringComparer.Ordinal);
         }
+
+        try
+        {
+            if (File.Exists(JournalPath))
+            {
+                foreach (string line in File.ReadLines(JournalPath))
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    try
+                    {
+                        var entry = JsonSerializer.Deserialize<JournalEntry>(line);
+                        if (entry != null && !string.IsNullOrWhiteSpace(entry.Key))
+                        {
+                            entries[entry.Key] = entry.Value;
+                            _journalEntries++;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        _entries = entries;
     }
 
     private static void SaveSoon()
     {
         lock (Lock)
         {
-            if (_saving) return;
-            _saving = true;
-            _dirty = false;
+            if (_saving || _saveScheduled) return;
+            _saveScheduled = true;
         }
 
-        _ = Task.Run(() =>
+        _ = Task.Run(async () =>
         {
+            Dictionary<string, string>? pending = null;
+            bool failed = false;
             try
             {
-                Dictionary<string, string> snapshot;
+                await Task.Delay(750);
                 lock (Lock)
                 {
+                    _saveScheduled = false;
+                    _saving = true;
                     LoadLocked();
-                    snapshot = new Dictionary<string, string>(_entries!);
+                    pending = new Dictionary<string, string>(Pending, StringComparer.Ordinal);
+                    Pending.Clear();
                 }
 
-                WriteSnapshot(snapshot);
+                if (pending.Count > 0)
+                {
+                    AppendJournal(pending);
+                    pending = null;
+                }
+
+                if (_journalEntries >= CompactAfterEntries)
+                {
+                    Compact();
+                }
             }
             catch
             {
+                failed = true;
+                if (pending != null)
+                {
+                    lock (Lock)
+                    {
+                        foreach (var pair in pending) Pending[pair.Key] = pair.Value;
+                        _dirty = true;
+                    }
+                }
             }
             finally
             {
                 lock (Lock)
                 {
+                    _saveScheduled = false;
                     _saving = false;
-                    if (_dirty) SaveSoon();
+                    _dirty = Pending.Count > 0;
+                    if (_dirty && !failed) SaveSoon();
                 }
             }
         });
     }
 
-    private static void WriteSnapshot(Dictionary<string, string> snapshot)
+    private static void AppendJournal(Dictionary<string, string> pending)
+    {
+        lock (WriteLock)
+        {
+            Directory.CreateDirectory(AppSettings.Directory);
+            var lines = new string[pending.Count];
+            int index = 0;
+            foreach (var pair in pending)
+            {
+                lines[index++] = JsonSerializer.Serialize(new JournalEntry(pair.Key, pair.Value));
+            }
+
+            File.AppendAllLines(JournalPath, lines, new UTF8Encoding(false));
+            _journalEntries += lines.Length;
+        }
+    }
+
+    private static void Compact()
+    {
+        Dictionary<string, string> snapshot;
+        lock (Lock)
+        {
+            LoadLocked();
+            snapshot = new Dictionary<string, string>(_entries!);
+        }
+
+        WriteBase(snapshot);
+    }
+
+    private static void WriteBase(Dictionary<string, string> snapshot)
     {
         lock (WriteLock)
         {
@@ -128,6 +226,19 @@ internal static class TranslationMemory
             Directory.CreateDirectory(AppSettings.Directory);
             File.WriteAllText(temp, JsonSerializer.Serialize(snapshot));
             File.Move(temp, FilePath, overwrite: true);
+            TryDelete(JournalPath);
+            _journalEntries = 0;
+        }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch
+        {
         }
     }
 
@@ -136,4 +247,6 @@ internal static class TranslationMemory
         string raw = $"{provider}\n{model}\n{target}\n{sourceLanguage ?? ""}\n{text.Trim()}";
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(raw)));
     }
+
+    private sealed record JournalEntry(string Key, string Value);
 }

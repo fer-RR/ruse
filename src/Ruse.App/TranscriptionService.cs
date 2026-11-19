@@ -24,10 +24,12 @@ internal sealed class TranscriptionSession : IDisposable
     private readonly CancellationTokenSource _cancel = new();
     private readonly object _textLock = new();
     private readonly List<SubtitleCue> _segments = new();
+    private readonly StringBuilder _transcriptBuilder = new();
     private readonly Task _worker;
     private readonly long _startedAt = Environment.TickCount64;
     private string _baseStatus = "Starting";
     private string _transcript = "";
+    private bool _transcriptDirty;
     private string _partial = "";
     private string? _error;
     private string? _detectedLanguage;
@@ -54,6 +56,12 @@ internal sealed class TranscriptionSession : IDisposable
 
         lock (_textLock)
         {
+            if (_transcriptDirty)
+            {
+                _transcript = _transcriptBuilder.ToString();
+                _transcriptDirty = false;
+            }
+
             string status = _error != null
                 ? "Error"
                 : !_modelReady
@@ -80,6 +88,8 @@ internal sealed class TranscriptionSession : IDisposable
         {
             _generation++;
             _transcript = "";
+            _transcriptBuilder.Clear();
+            _transcriptDirty = false;
             _partial = "";
             _error = null;
             _detectedLanguage = null;
@@ -166,9 +176,8 @@ internal sealed class TranscriptionSession : IDisposable
             generation = _generation;
         }
 
-        using var silero = SileroVad.TryCreate();
-        using var vad = new VadSegmenter(_tapId, silero);
-        using var vosk = StreamingAsrOptions.Enabled ? VoskStreamingRecognizer.TryCreate() : null;
+        using var vad = new VadSegmenter(_tapId, SileroVad.TryCreate());
+        using var vosk = StreamingAsrOptions.SupportsEnglishPartials(ModelId) ? VoskStreamingRecognizer.TryCreate() : null;
         int partialFrames = 0;
         vad.SpeechStarted += () => SpeechActivityHub.PublishSpeechStarted(_tapId);
         vad.SpeechEnded += () =>
@@ -319,7 +328,9 @@ internal sealed class TranscriptionSession : IDisposable
 
             if (text.Length > 0)
             {
-                _transcript = _transcript.Length == 0 ? text : _transcript + " " + text;
+                if (_transcriptBuilder.Length > 0) _transcriptBuilder.Append(' ');
+                _transcriptBuilder.Append(text);
+                _transcriptDirty = true;
             }
 
             if (cues.Count > 0)

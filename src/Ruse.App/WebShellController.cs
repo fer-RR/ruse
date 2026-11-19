@@ -42,9 +42,17 @@ internal sealed partial class WebShellController : IDisposable
     private readonly HashSet<string> _telemetrySeenIds = new();
     private readonly List<string> _telemetryStaleIds = new();
     private readonly Dictionary<string, long> _nodeClipHoldUntil = new();
+    private readonly Dictionary<string, TelemetryTextCache> _telemetryText = new();
     private readonly Dictionary<string, long> _spectrogramCursors = new();
     private readonly Dictionary<string, string> _nativeFallbackSources = new(StringComparer.Ordinal);
     private readonly DispatcherTimer _telemetryTimer;
+    private sealed class TelemetryTextCache
+    {
+        public string? Transcript;
+        public string? PartialTranscript;
+        public string? TranslatedTranscript;
+        public string? TranslatedPartial;
+    }
     private int _clockRefreshTick;
     private readonly DispatcherTimer _appsTimer;
     private readonly DispatcherTimer _devicesTimer;
@@ -93,6 +101,7 @@ internal sealed partial class WebShellController : IDisposable
         _window = window;
         _settings = AppSettings.Load();
         RuseFolders.EnsureAll();
+        ModelStorage.Ensure();
         EnsureDefaultMediaFolders();
         StreamingAsrOptions.Enabled = _settings.StreamingAsrEnabled;
         SpeechActivityHub.SpeechStarted += OnSpeechStarted;
@@ -401,6 +410,7 @@ internal sealed partial class WebShellController : IDisposable
             case "timeline-add-track": AddTimelineTrack(); break;
             case "timeline-add-clip": AddTimelineClip(String(message, "trackId")); break;
             case "timeline-add-clip-path": AddTimelineClipPath(String(message, "trackId"), String(message, "path"), (long)Number(message, "startSample")); break;
+            case "timeline-add-clip-paths": AddTimelineClipPaths(String(message, "trackId"), Strings(message, "paths"), OptionalLong(message, "startSample")); break;
             case "timeline-add-generator": AddTimelineGenerator(String(message, "nodeId"), String(message, "trackId"), (long)Number(message, "startSample", 0)); break;
             case "timeline-remove-track": RemoveTimelineTrack(String(message, "trackId")); break;
             case "timeline-show-node": ShowTimelineTrackNode(String(message, "trackId")); break;
@@ -446,6 +456,9 @@ internal sealed partial class WebShellController : IDisposable
             case "add": AddFromMessage(message); break;
             case "route-check-test-tone": AddRouteCheckTestTone(); break;
             case "add-file-player": AddFilePlayer(Number(message, "x", 80), Number(message, "y", 120), String(message, "path"), String(message, "connectTo")); break;
+            case "file-player-file": ChooseFilePlayerFile(String(message, "id")); break;
+            case "file-player-loop": SetFilePlayerLoop(String(message, "id"), Bool(message, "value")); break;
+            case "file-player-analyze": AnalyzeFilePlayer(String(message, "id")); break;
             case "file-player-speed": SetFilePlayerSpeed(String(message, "id"), (float)Number(message, "value", 1)); break;
             case "file-player-output": SetFilePlayerOutput(String(message, "id"), String(message, "outputId")); break;
             case "file-player-start": StartFilePlayer(String(message, "id")); break;
@@ -661,6 +674,22 @@ internal sealed partial class WebShellController : IDisposable
         }
 
         return value.ValueKind == JsonValueKind.True;
+    }
+
+    private static string[] Strings(BridgeMessage message, string name)
+    {
+        if (!message.Payload.TryGetProperty(name, out var value) ||
+            value.ValueKind != JsonValueKind.Array)
+        {
+            return Array.Empty<string>();
+        }
+
+        return value.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString())
+            .Where(item => !string.IsNullOrWhiteSpace(item))
+            .Select(item => item!)
+            .ToArray();
     }
 
     private void Post(string type, object payload)
@@ -1379,11 +1408,43 @@ internal sealed partial class WebShellController : IDisposable
                         else
                         {
                             var snapshot = TranslationRegistry.Snapshot(translator.TapId);
+                            if (!_telemetryText.TryGetValue(entry.Id, out var textCache))
+                            {
+                                textCache = new TelemetryTextCache();
+                                _telemetryText[entry.Id] = textCache;
+                            }
+
                             meter.TranscriptionStatus = snapshot?.Status ?? "Starting";
-                            meter.Transcript = snapshot?.SourceText;
-                            meter.PartialTranscript = snapshot?.SourcePartial;
-                            meter.TranslatedTranscript = snapshot?.TranslatedText;
-                            meter.TranslatedPartial = snapshot?.TranslatedPartial;
+                            if (snapshot != null)
+                            {
+                                if (!string.Equals(textCache.Transcript, snapshot.SourceText, StringComparison.Ordinal))
+                                {
+                                    textCache.Transcript = snapshot.SourceText;
+                                    meter.Transcript = snapshot.SourceText;
+                                }
+                                if (!string.Equals(textCache.PartialTranscript, snapshot.SourcePartial, StringComparison.Ordinal))
+                                {
+                                    textCache.PartialTranscript = snapshot.SourcePartial;
+                                    meter.PartialTranscript = snapshot.SourcePartial;
+                                }
+                                if (!string.Equals(textCache.TranslatedTranscript, snapshot.TranslatedText, StringComparison.Ordinal))
+                                {
+                                    textCache.TranslatedTranscript = snapshot.TranslatedText;
+                                    meter.TranslatedTranscript = snapshot.TranslatedText;
+                                }
+                                if (!string.Equals(textCache.TranslatedPartial, snapshot.TranslatedPartial, StringComparison.Ordinal))
+                                {
+                                    textCache.TranslatedPartial = snapshot.TranslatedPartial;
+                                    meter.TranslatedPartial = snapshot.TranslatedPartial;
+                                }
+                            }
+                            else
+                            {
+                                if (textCache.Transcript != null) { textCache.Transcript = ""; meter.Transcript = ""; }
+                                if (textCache.PartialTranscript != null) { textCache.PartialTranscript = ""; meter.PartialTranscript = ""; }
+                                if (textCache.TranslatedTranscript != null) { textCache.TranslatedTranscript = ""; meter.TranslatedTranscript = ""; }
+                                if (textCache.TranslatedPartial != null) { textCache.TranslatedPartial = ""; meter.TranslatedPartial = ""; }
+                            }
                             meter.DetectedLanguage = snapshot?.DetectedLanguage;
                             meter.TranscriptionError = snapshot?.Error;
                             meter.TranscriptionElapsed = snapshot?.ElapsedSeconds;
@@ -1403,9 +1464,31 @@ internal sealed partial class WebShellController : IDisposable
                         else
                         {
                             var snapshot = TranscriptionRegistry.Snapshot(transcriber.TapId);
+                            if (!_telemetryText.TryGetValue(entry.Id, out var textCache))
+                            {
+                                textCache = new TelemetryTextCache();
+                                _telemetryText[entry.Id] = textCache;
+                            }
+
                             meter.TranscriptionStatus = snapshot?.Status ?? "Starting";
-                            meter.Transcript = snapshot?.Transcript;
-                            meter.PartialTranscript = snapshot?.Partial;
+                            if (snapshot != null)
+                            {
+                                if (!string.Equals(textCache.Transcript, snapshot.Transcript, StringComparison.Ordinal))
+                                {
+                                    textCache.Transcript = snapshot.Transcript;
+                                    meter.Transcript = snapshot.Transcript;
+                                }
+                                if (!string.Equals(textCache.PartialTranscript, snapshot.Partial, StringComparison.Ordinal))
+                                {
+                                    textCache.PartialTranscript = snapshot.Partial;
+                                    meter.PartialTranscript = snapshot.Partial;
+                                }
+                            }
+                            else
+                            {
+                                if (textCache.Transcript != null) { textCache.Transcript = ""; meter.Transcript = ""; }
+                                if (textCache.PartialTranscript != null) { textCache.PartialTranscript = ""; meter.PartialTranscript = ""; }
+                            }
                             meter.TranscriptionError = snapshot?.Error;
                             meter.TranscriptionElapsed = snapshot?.ElapsedSeconds;
                             meter.UsesGpu = snapshot?.GpuActive;
@@ -1435,6 +1518,7 @@ internal sealed partial class WebShellController : IDisposable
         foreach (var id in stale)
         {
             telemetry.Meters.Remove(id);
+            _telemetryText.Remove(id);
         }
 
         _running = telemetry.Running;

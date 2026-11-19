@@ -80,6 +80,21 @@ export function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefi
     a.loudnessTruePeak === b.loudnessTruePeak;
 }
 
+function mergeNodeText(previous: NodeTelemetry | undefined, next: NodeTelemetry): NodeTelemetry {
+  if (!previous) return next;
+  const merged = { ...next };
+  let changed = false;
+  const keys = ['transcript', 'partialTranscript', 'translatedTranscript', 'translatedPartial'] as const;
+  for (const key of keys) {
+    const prior = previous[key];
+    if (next[key] == null && prior != null) {
+      merged[key] = prior;
+      changed = true;
+    }
+  }
+  return changed ? merged : next;
+}
+
 function sameDiagnostics(a?: DiagnosticInfo | null, b?: DiagnosticInfo | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
@@ -138,6 +153,15 @@ function sameArray(a?: number[], b?: number[]): boolean {
 
 export function publishTelemetry(next: TelemetrySnapshot): void {
   const previous = snapshot;
+  let meters: Record<string, NodeTelemetry> | null = null;
+  for (const [id, meter] of Object.entries(next.meters)) {
+    const merged = mergeNodeText(previous.meters[id], meter);
+    if (merged !== meter) {
+      meters ??= { ...next.meters };
+      meters[id] = merged;
+    }
+  }
+  if (meters) next = { ...next, meters };
   const changed = !sameSnapshot(previous, next);
   snapshot = next;
 

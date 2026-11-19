@@ -112,7 +112,7 @@ internal static class TtsModels
     }
     
     public static string DefaultId => All[0].Id;
-    public static string Root => Path.Combine(AppSettings.Directory, "models", "tts");
+    public static string Root => Path.Combine(ModelStorage.Root, "tts");
 
     public static TtsModel? Find(string? id) =>
         All.FirstOrDefault(model => string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase));
@@ -192,7 +192,7 @@ internal static class TtsModels
             return;
         }
 
-        ModelPreflight.Check(Root, model.SizeMb);
+        ModelPreflight.Check(Root, model.SizeMb, diskMultiplier: 3.0);
 
         await Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         string archivePath = Path.Combine(Root, model.Id + ".tar.bz2.part");
@@ -234,7 +234,7 @@ internal static class TtsModels
 
             progress?.Report(new TtsModelProgress(model.Id, "installing", 0.86));
             Directory.CreateDirectory(extractPath);
-            ExtractArchive(archivePath, extractPath);
+            ExtractArchive(archivePath, extractPath, cancellationToken);
             string source = Path.Combine(extractPath, model.ArchiveRoot);
             if (!Directory.Exists(source))
             {
@@ -298,7 +298,7 @@ internal static class TtsModels
         }
     }
 
-    private static void ExtractArchive(string archivePath, string destination)
+    private static void ExtractArchive(string archivePath, string destination, CancellationToken token)
     {
         Directory.CreateDirectory(destination);
         string root = Path.GetFullPath(destination);
@@ -309,12 +309,19 @@ internal static class TtsModels
             using (var bzip = BZip2Stream.Create(file, CompressionMode.Decompress, false, leaveOpen: true))
             using (var tar = File.Create(tarPath))
             {
-                bzip.CopyTo(tar);
+                var copy = new byte[81920];
+                int read;
+                while ((read = bzip.Read(copy, 0, copy.Length)) > 0)
+                {
+                    token.ThrowIfCancellationRequested();
+                    tar.Write(copy, 0, read);
+                }
             }
 
             using var archive = ArchiveFactory.OpenArchive(tarPath, new ReaderOptions());
             foreach (var entry in archive.Entries)
             {
+                token.ThrowIfCancellationRequested();
                 if (entry.IsDirectory || string.IsNullOrEmpty(entry.Key))
                 {
                     continue;
@@ -335,7 +342,13 @@ internal static class TtsModels
                 Directory.CreateDirectory(Path.GetDirectoryName(path)!);
                 using var input = entry.OpenEntryStream();
                 using var output = File.Create(path);
-                input.CopyTo(output);
+                var buffer = new byte[81920];
+                int read;
+                while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    token.ThrowIfCancellationRequested();
+                    output.Write(buffer, 0, read);
+                }
             }
         }
         finally

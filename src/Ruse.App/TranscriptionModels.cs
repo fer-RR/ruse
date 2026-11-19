@@ -56,7 +56,7 @@ internal static class TranscriptionModels
 
     public static string DefaultId => "whisper-small.en";
 
-    public static string Root => Path.Combine(AppSettings.Directory, "models");
+    public static string Root => ModelStorage.Root;
 
     public static TranscriberModel? Find(string? id) =>
         All.FirstOrDefault(model => string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase));

@@ -149,7 +149,6 @@ export default function App() {
   }, [timelineOpen]);
   const [timelineIntroVisible, setTimelineIntroVisible] = useState(false);
   const dismissTimelineIntro = useCallback(() => setTimelineIntroVisible(false), []);
-  const [timelineReady, setTimelineReady] = useState(false);
   const [timeline, setTimeline] = useState<TimelineState>({
     project: {
       version: 1,
@@ -969,7 +968,7 @@ export default function App() {
     });
   }, [flow, reducedMotion, setNodes]);
 
-  const findFreeSpot = useCallback((position: { x: number; y: number }) => {
+  const findFreeSpot = useCallback((position: { x: number; y: number }, width = 204, height = 140) => {
     const others = nodesRef.current.map(node => ({
       id: node.id,
       x: node.position.x,
@@ -977,7 +976,7 @@ export default function App() {
       width: node.measured?.width ?? 204,
       height: node.measured?.height ?? 140,
     }));
-    return nearestFreePosition({ id: 'new', x: position.x, y: position.y, width: 204, height: 140 }, others);
+    return nearestFreePosition({ id: 'new', x: position.x, y: position.y, width, height }, others);
   }, []);
 
   const quickAdd = useCallback((item: CatalogItem) => {
@@ -995,7 +994,8 @@ export default function App() {
       return;
     }
 
-    sendAdd(item, findFreeSpot({ x: position.x - 102, y: position.y - 60 }));
+    const width = item.kind === 'vst3' ? 340 : 204;
+    sendAdd(item, findFreeSpot({ x: position.x - width / 2, y: position.y - 60 }, width));
   }, [flow, sendAdd, findFreeSpot]);
 
   const newChain = useCallback(
@@ -1032,21 +1032,23 @@ export default function App() {
 
 
   const openTimeline = useCallback(() => {
-    setTimelineReady(false);
     setTimelineOpen(true);
     send('timeline-open');
   }, [send]);
 
+  const closeTimeline = useCallback(() => {
+    send('timeline-stop');
+    setTimelineOpen(false);
+  }, [send]);
+
   const toggleTimeline = useCallback(() => {
     if (timelineOpen) {
-      if (timelineReady) setTimelineOpen(false);
+      closeTimeline();
       return;
     }
 
     openTimeline();
-  }, [openTimeline, timelineOpen, timelineReady]);
-
-  const readyTimeline = useCallback(() => setTimelineReady(true), []);
+  }, [closeTimeline, openTimeline, timelineOpen]);
 
 
   const duplicateSelected = () => {
@@ -1711,8 +1713,22 @@ export default function App() {
               return;
             }
 
+            const mediaListRaw = event.dataTransfer.getData('application/ruse-media-list');
             const mediaPath = event.dataTransfer.getData('application/ruse-media');
-            if (mediaPath) {
+            let mediaPaths: string[] = [];
+            if (mediaListRaw) {
+              try {
+                const parsed: unknown = JSON.parse(mediaListRaw);
+                if (Array.isArray(parsed)) {
+                  mediaPaths = parsed.filter((path): path is string => typeof path === 'string' && path.length > 0);
+                }
+              } catch {
+                mediaPaths = [];
+              }
+            } else if (mediaPath) {
+              mediaPaths = [mediaPath];
+            }
+            if (mediaPaths.length > 0) {
               const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
               const output = nodesRef.current.find(node => {
                 if (node.data.kind !== 'output') return false;
@@ -1724,11 +1740,13 @@ export default function App() {
               const spot = output
                 ? { x: Math.max(0, output.position.x - 240), y: output.position.y }
                 : findFreeSpot({ x: position.x - 102, y: position.y - 60 });
-              send('add-file-player', {
-                path: mediaPath,
-                x: spot.x,
-                y: spot.y,
-                connectTo: output?.id,
+              mediaPaths.forEach((path, index) => {
+                send('add-file-player', {
+                  path,
+                  x: output ? Math.max(0, spot.x - (index % 3) * 220) : spot.x + (index % 3) * 220,
+                  y: spot.y + Math.floor(index / 3) * 170,
+                  connectTo: output?.id,
+                });
               });
               return;
             }
@@ -1751,7 +1769,7 @@ export default function App() {
             const halfWidth = item.kind === 'vst3' ? 170 : 102;
             let addPosition = linkId
               ? { x: position.x - halfWidth, y: position.y - 60 }
-              : findFreeSpot({ x: position.x, y: position.y });
+              : findFreeSpot({ x: position.x, y: position.y }, halfWidth * 2);
             let connectTo = '';
             if (item.kind === 'sample' && item.filePath) {
               const output = nodesRef.current.find(node => {
@@ -1919,7 +1937,7 @@ export default function App() {
         />}
         {timelineOpen && (
           <Suspense fallback={<div className="timeline-loading">{t('Loading timeline...')}</div>}>
-            <TimelineBoundary onClose={() => setTimelineOpen(false)} onError={readyTimeline}>
+            <TimelineBoundary onClose={closeTimeline} onError={closeTimeline}>
             <TimelinePanel
               state={timeline}
               automationTargets={timelineAutomationTargets}
@@ -1934,6 +1952,7 @@ export default function App() {
               onImport={() => send('timeline-add-clip', { trackId: timeline.project.tracks[0]?.id ?? '' })}
               onSeek={sample => send('timeline-seek', { sample })}
               onAddClipPath={(trackId, path, startSample) => send('timeline-add-clip-path', { trackId, path, startSample })}
+              onAddClipPaths={(trackId, paths, startSample) => send('timeline-add-clip-paths', { trackId, paths, startSample })}
               onAddGenerator={(trackId, nodeId, startSample) => send('timeline-add-generator', { trackId, nodeId, startSample })}
               onMoveClip={(trackId, clipId, startSample) => send('timeline-move-clip', { trackId, clipId, startSample })}
               onMoveClipToTrack={(fromTrackId, toTrackId, clipId, startSample) => send('timeline-move-clip-track', { fromTrackId, toTrackId, clipId, startSample })}
@@ -1986,8 +2005,7 @@ export default function App() {
               }}
               onUndo={() => send('timeline-undo')}
               onRedo={() => send('timeline-redo')}
-              onReady={readyTimeline}
-              onClose={() => setTimelineOpen(false)}
+              onClose={closeTimeline}
             />
             </TimelineBoundary>
           </Suspense>

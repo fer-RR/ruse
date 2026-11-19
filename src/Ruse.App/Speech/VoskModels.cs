@@ -1,5 +1,4 @@
-﻿using System.IO;
-using System.IO.Compression;
+using System.IO;
 using System.Net.Http;
 using System.Security.Cryptography;
 using Ruse.App.Diagnostics;
@@ -21,7 +20,7 @@ internal static class VoskModels
     private static readonly SemaphoreSlim Gate = new(1, 1);
     private static readonly HttpClient Http = new();
 
-    public static string Root => Path.Combine(AppSettings.Directory, "models", "vosk");
+    public static string Root => Path.Combine(ModelStorage.Root, "vosk");
     public static string PathFor => Path.Combine(Root, ArchiveRoot);
 
     public static bool IsInstalled =>
@@ -52,7 +51,7 @@ internal static class VoskModels
             return;
         }
 
-        ModelPreflight.Check(Root, SizeMb);
+        ModelPreflight.Check(Root, SizeMb, diskMultiplier: 2.0);
         await Gate.WaitAsync(token).ConfigureAwait(false);
         string archive = Path.Combine(Root, ArchiveRoot + ".zip.part");
         string extract = Path.Combine(Root, ".extract-" + Guid.NewGuid().ToString("N"));
@@ -89,7 +88,7 @@ internal static class VoskModels
 
             progress?.Report(new VoskModelProgress(Id, "installing", 0.86));
             Directory.CreateDirectory(extract);
-            ZipFile.ExtractToDirectory(archive, extract);
+            SafeZip.ExtractToDirectory(archive, extract, token);
             string source = Path.Combine(extract, ArchiveRoot);
             if (!Directory.Exists(source))
             {

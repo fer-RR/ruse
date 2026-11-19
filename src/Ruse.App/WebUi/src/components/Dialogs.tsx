@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Activity, AudioLines, Cable, Check, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, Keyboard, LayoutGrid, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
+import { Activity, AudioLines, Cable, Check, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, Keyboard, LayoutGrid, MonitorDown, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { TRANSLATION_TARGETS } from '../languages';
@@ -617,6 +617,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
             <SettingsSection title="Help">
               <div className="settings-actions">
                 <button className="tool-button" onClick={() => send('show-splash')}>{t('Show welcome screen')}</button>
+                <button className="tool-button" onClick={() => send('create-desktop-shortcut')}><MonitorDown size={14} /> {t('Add desktop shortcut')}</button>
                 <button className="tool-button" onClick={() => send('open-sound-settings')}>{t('Open Windows sound settings')}</button>
               </div>
               <p className="settings-note">{t('If you hear the same sound twice, the source is already playing on the output device. The warning banner explains how to avoid it.')}</p>

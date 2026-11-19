@@ -12,6 +12,7 @@ internal sealed class VoskStreamingRecognizer : IDisposable
 {
     private readonly Model? _model;
     private readonly VoskRecognizer? _recognizer;
+    private float[] _frame = Array.Empty<float>();
     private bool _disposed;
 
     private VoskStreamingRecognizer(Model model)
@@ -41,10 +42,11 @@ internal sealed class VoskStreamingRecognizer : IDisposable
     public void Accept(ReadOnlySpan<float> samples)
     {
         if (_recognizer == null || _disposed || samples.IsEmpty) return;
-        float[] frame = samples.ToArray();
+        if (_frame.Length < samples.Length) _frame = new float[samples.Length];
+        samples.CopyTo(_frame);
         try
         {
-            if (_recognizer.AcceptWaveform(frame, frame.Length))
+            if (_recognizer.AcceptWaveform(_frame, samples.Length))
             {
                 // Vosk saw its own endpoint. Consume the final result so the
                 // next partial starts cleanly; Whisper still owns the final text.
@@ -153,4 +155,11 @@ internal static class VoskModelCache
 internal static class StreamingAsrOptions
 {
     public static bool Enabled { get; set; }
+
+    public static bool SupportsEnglishPartials(string? speechModelId) =>
+        Enabled &&
+        string.Equals(
+            TranscriptionModels.Find(speechModelId)?.Language,
+            "English",
+            StringComparison.OrdinalIgnoreCase);
 }

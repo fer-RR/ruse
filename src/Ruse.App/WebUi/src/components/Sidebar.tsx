@@ -1,5 +1,5 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import type { DragEvent, ReactNode, RefObject } from 'react';
+import type { DragEvent, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react';
 import {
   AppWindow, AudioLines, Check, ChevronDown, Combine, Eye, EyeOff, FileAudio, Folder, FolderOpen, GripVertical, Headphones, MessageSquare,
   Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, RefreshCw, Search, SlidersHorizontal, Speaker, Timer, Trash2, Upload, X,
@@ -178,6 +178,21 @@ interface Section {
 
 const LIBRARY_ORDER_KEY = 'ruse.librarySectionOrder.v3';
 const LIBRARY_HIDDEN_KEY = 'ruse.libraryHidden.v1';
+const LIBRARY_EXPANDED_KEY = 'ruse.libraryExpanded.v1';
+
+function loadExpandedSections(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(LIBRARY_EXPANDED_KEY);
+    const parsed = raw ? JSON.parse(raw) as unknown : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return Object.fromEntries(Object.entries(parsed as Record<string, unknown>)
+        .filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean'));
+    }
+  } catch {
+  }
+
+  return {};
+}
 
 function loadHiddenItems(): Set<string> {
   try {
@@ -323,9 +338,11 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
   const [draggingFolder, setDraggingFolder] = useState<string | null>(null);
   const [dropFolder, setDropFolder] = useState<string | null>(null);
   const [sort, setSort] = useState<'name' | 'modified' | 'size' | 'type'>('name');
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(() => new Set());
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: MediaListModel['files'][number] } | null>(null);
   const [pendingRemoveFolder, setPendingRemoveFolder] = useState<MediaListModel['folders'][number] | null>(null);
   const renameCommitted = useRef(false);
+  const selectionAnchor = useRef<string | null>(null);
   const requestedWaveforms = useRef<Set<string>>(new Set());
   const normalized = query.trim().toLowerCase();
 
@@ -351,6 +368,70 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
     !normalized ||
     file.name.toLowerCase().includes(normalized) ||
     file.extension.toLowerCase().includes(normalized);
+
+  useEffect(() => {
+    const available = new Set(media.files.map(file => file.path));
+    setSelectedPaths(current => {
+      if ([...current].every(path => available.has(path))) return current;
+      return new Set([...current].filter(path => available.has(path)));
+    });
+  }, [media.files]);
+
+  const toggleSelected = (path: string) => {
+    setSelectedPaths(current => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    selectionAnchor.current = path;
+  };
+
+  const selectFile = (event: ReactMouseEvent, file: MediaListModel['files'][number], files: MediaListModel['files']) => {
+    if ((event.target as Element).closest('button, input')) return;
+    const current = selectedPaths;
+    if (event.shiftKey && selectionAnchor.current) {
+      const anchor = files.findIndex(item => item.path === selectionAnchor.current);
+      const target = files.findIndex(item => item.path === file.path);
+      if (anchor >= 0 && target >= 0) {
+        const next = event.ctrlKey || event.metaKey ? new Set(current) : new Set<string>();
+        const [start, end] = anchor < target ? [anchor, target] : [target, anchor];
+        for (const item of files.slice(start, end + 1)) next.add(item.path);
+        setSelectedPaths(next);
+        return;
+      }
+    }
+
+    if (event.ctrlKey || event.metaKey) {
+      toggleSelected(file.path);
+      return;
+    }
+
+    setSelectedPaths(new Set([file.path]));
+    selectionAnchor.current = file.path;
+  };
+
+  const selectedFiles = (fallback: MediaListModel['files'][number]) => {
+    const selected = media.files.filter(file => selectedPaths.has(file.path));
+    return selected.length > 0 && selectedPaths.has(fallback.path) ? selected : [fallback];
+  };
+
+  const addFilesToCanvas = (files: MediaListModel['files']) => {
+    files.forEach((file, index) => {
+      send('add-file-player', {
+        path: file.path,
+        x: 80 + (index % 3) * 220,
+        y: 120 + Math.floor(index / 3) * 170,
+      });
+    });
+  };
+
+  const addFilesToTimeline = (files: MediaListModel['files']) => {
+    send('timeline-add-clip-paths', { paths: files.map(file => file.path) });
+  };
+
+  const menuFiles = contextMenu ? selectedFiles(contextMenu.file) : [];
+  const menuCount = menuFiles.length;
 
   useEffect(() => { localStorage.setItem('ruse.mediaCollapsed', JSON.stringify(collapsed)); }, [collapsed]);
 
@@ -427,6 +508,11 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
         <button type="button" className="library-action" onClick={() => send('media-scan')} title={t('Refresh')}>
           <RefreshCw size={13} /> {t('Refresh')}
         </button>
+        {selectedPaths.size > 0 && (
+          <button type="button" className="library-action media-selection" onClick={() => setSelectedPaths(new Set())} title={t('Clear')} aria-label={t('Clear')}>
+            <X size={13} /> {selectedPaths.size}
+          </button>
+        )}
       </div>
       {media.error && <p className="library-empty error-text">{media.error}</p>}
       {media.folders.length === 0 && <p className="library-empty">{t('Add a project folder to collect the files you use here.')}</p>}
@@ -490,15 +576,24 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
               </div>
               {open && (
                 files.length > 0 ? (
-                  <div className="media-group-items">
-                    {files.map(file => (
+                  <div className="media-group-items" role="listbox" aria-multiselectable="true">
+                    {files.map(file => {
+                      const selected = selectedPaths.has(file.path);
+                      return (
                       <div
                         key={file.path}
-                        className={`media-item ${renaming === file.path ? 'editing' : ''}`}
+                        className={`media-item ${renaming === file.path ? 'editing' : ''} ${selected ? 'selected' : ''}`}
                         draggable={renaming !== file.path}
+                        role="option"
+                        aria-selected={selected}
                         tabIndex={0}
+                        onClick={event => selectFile(event, file, files)}
                         onContextMenu={event => {
                           event.preventDefault();
+                          if (!selected) {
+                            setSelectedPaths(new Set([file.path]));
+                            selectionAnchor.current = file.path;
+                          }
                           setContextMenu({ x: event.clientX, y: event.clientY, file });
                         }}
                         onKeyDown={event => {
@@ -509,6 +604,9 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
                           } else if (event.key === 'Enter') {
                             event.preventDefault();
                             send('add-file-player', { path: file.path });
+                          } else if (event.key === ' ') {
+                            event.preventDefault();
+                            toggleSelected(file.path);
                           }
                         }}
                         onDragStart={event => {
@@ -516,13 +614,28 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
                             event.preventDefault();
                             return;
                           }
-                          event.dataTransfer.setData('application/ruse-recording', file.path);
-                          event.dataTransfer.setData('application/ruse-media', file.path);
+                          const paths = (selected && selectedPaths.size > 1
+                            ? media.files.filter(item => selectedPaths.has(item.path))
+                            : [file]).map(item => item.path);
+                          if (paths.length > 1) {
+                            event.dataTransfer.setData('application/ruse-media-list', JSON.stringify(paths));
+                          }
+                          event.dataTransfer.setData('application/ruse-recording', paths[0]);
+                          event.dataTransfer.setData('application/ruse-media', paths[0]);
                           event.dataTransfer.effectAllowed = 'copy';
                         }}
                         onDoubleClick={() => send('add-file-player', { path: file.path })}
                         title={file.path + ' · ' + t('Drag to the timeline, double-click to add a file player')}
                       >
+                        <input
+                          type="checkbox"
+                          className="media-select-box"
+                          checked={selected}
+                          aria-label={file.name}
+                          onPointerDown={event => event.stopPropagation()}
+                          onClick={event => event.stopPropagation()}
+                          onChange={() => toggleSelected(file.path)}
+                        />
                         <FileAudio size={13} aria-hidden="true" />
                         <span className="media-item-text">
                           {renaming === file.path ? (
@@ -544,7 +657,8 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
                         </svg>
                         <button type="button" className="icon-button compact" title={t('Rename')} aria-label={t('Rename')} onClick={() => startRename(file.path, file.name)}><Pencil size={12} /></button>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : <p className="media-folder-empty">{t('No media files in these folders.')}</p>
               )}
@@ -562,11 +676,11 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
           }}
           onPointerDown={event => event.stopPropagation()}
         >
-          <button type="button" role="menuitem" onClick={() => { send('add-file-player', { path: contextMenu.file.path }); setContextMenu(null); }}>{t('Add to canvas')}</button>
-          <button type="button" role="menuitem" onClick={() => { send('media-add-to-timeline', { path: contextMenu.file.path }); setContextMenu(null); }}>{t('Add to timeline')}</button>
-          <button type="button" role="menuitem" onClick={() => { startRename(contextMenu.file.path, contextMenu.file.name); setContextMenu(null); }}>{t('Rename')}</button>
-          <button type="button" role="menuitem" onClick={() => { send('media-reveal', { path: contextMenu.file.path }); setContextMenu(null); }}>{t('Reveal in Explorer')}</button>
-          <button type="button" role="menuitem" onClick={() => { void navigator.clipboard?.writeText(contextMenu.file.path); setContextMenu(null); }}>{t('Copy path')}</button>
+          <button type="button" role="menuitem" onClick={() => { addFilesToCanvas(menuFiles); setContextMenu(null); }}>{t('Add to canvas')}{menuCount > 1 && <span className="media-menu-count">{menuCount}</span>}</button>
+          <button type="button" role="menuitem" onClick={() => { addFilesToTimeline(menuFiles); setContextMenu(null); }}>{t('Add to timeline')}{menuCount > 1 && <span className="media-menu-count">{menuCount}</span>}</button>
+          {menuCount === 1 && <button type="button" role="menuitem" onClick={() => { startRename(contextMenu.file.path, contextMenu.file.name); setContextMenu(null); }}>{t('Rename')}</button>}
+          <button type="button" role="menuitem" onClick={() => { send('media-reveal', { path: menuFiles[0].path }); setContextMenu(null); }}>{t('Reveal in Explorer')}</button>
+          <button type="button" role="menuitem" onClick={() => { void navigator.clipboard?.writeText(menuFiles.map(file => file.path).join('\r\n')); setContextMenu(null); }}>{t('Copy path')}{menuCount > 1 && <span className="media-menu-count">{menuCount}</span>}</button>
         </div>
       )}
       {pendingRemoveFolder && (
@@ -604,7 +718,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, media, waveforms,
 
   const [query, setQuery] = useState('');
   const [view, setView] = useState<View>('all');
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>(loadExpandedSections);
 
   const [searching, setSearching] = useState(false);
   const [sectionOrder, setSectionOrder] = useState<string[]>(loadSectionOrder);
@@ -626,6 +740,9 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, media, waveforms,
   useEffect(() => {
     localStorage.setItem(LIBRARY_ORDER_KEY, JSON.stringify(sectionOrder));
   }, [sectionOrder]);
+  useEffect(() => {
+    localStorage.setItem(LIBRARY_EXPANDED_KEY, JSON.stringify(expanded));
+  }, [expanded]);
   useEffect(() => { send('media-scan'); }, []);
 
   useEffect(() => {
@@ -905,9 +1022,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, media, waveforms,
                 {group.title && <div className="group-title">{t(group.title)}</div>}
                 {group.sections.map(section => {
                   const key = section.id;
-                  const isCollapsed = section.id === 'samples'
-                    ? !normalized && expanded[key] === false
-                    : !expanded[key] && !normalized;
+                  const isCollapsed = !normalized && expanded[key] === false;
                   return (
                     <SortableSection
                       key={section.id}

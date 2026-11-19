@@ -61,6 +61,7 @@ export default function TimelinePanel({
   onImport,
   onSeek,
   onAddClipPath,
+  onAddClipPaths,
   onAddGenerator,
   onMoveClip,
   onMoveClipToTrack,
@@ -98,7 +99,6 @@ export default function TimelinePanel({
   onShowTrackNode,
   onUndo,
   onRedo,
-  onReady,
   onClose,
 }: {
   state: TimelineState;
@@ -114,6 +114,7 @@ export default function TimelinePanel({
   onImport: () => void;
   onSeek: (sample: number) => void;
   onAddClipPath: (trackId: string, path: string, startSample: number) => void;
+  onAddClipPaths: (trackId: string, paths: string[], startSample: number) => void;
   onAddGenerator: (trackId: string, nodeId: string, startSample: number) => void;
   onMoveClip: (trackId: string, clipId: string, startSample: number) => void;
   onMoveClipToTrack: (fromTrackId: string, toTrackId: string, clipId: string, startSample: number) => void;
@@ -151,7 +152,6 @@ export default function TimelinePanel({
   onShowTrackNode: (trackId: string, sourceNodeId?: string) => void;
   onUndo: () => void;
   onRedo: () => void;
-  onReady?: () => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -168,10 +168,6 @@ export default function TimelinePanel({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [showIntro, onDismissIntro]);
 
-
-  useEffect(() => {
-    onReady?.();
-  }, [onReady]);
   useEffect(() => {
     const root = document.documentElement;
     const update = () => setPalette(readTimelinePalette());
@@ -185,8 +181,9 @@ export default function TimelinePanel({
   const panRef = useRef<{ clientX: number; clientY: number; scrollLeft: number; scrollTop: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [rowZoom, setRowZoom] = useState(() => {
-    const saved = Number(localStorage.getItem('ruse.timelineRowZoom'));
-    return Number.isFinite(saved) ? Math.max(0.5, Math.min(2, saved)) : 1;
+    const raw = localStorage.getItem('ruse.timelineRowZoom');
+    const saved = Number(raw);
+    return raw != null && Number.isFinite(saved) ? Math.max(0.5, Math.min(2, saved)) : 1;
   });
   const [palette, setPalette] = useState(readTimelinePalette);
   const [panning, setPanning] = useState(false);
@@ -1154,6 +1151,7 @@ export default function TimelinePanel({
           const types = Array.from(event.dataTransfer.types);
           if (types.includes('Files') || types.includes('application/ruse-item') ||
               types.includes('application/ruse-recording') ||
+              types.includes('application/ruse-media-list') ||
               types.includes('application/ruse-generator')) {
             event.preventDefault();
             event.dataTransfer.dropEffect = 'copy';
@@ -1185,6 +1183,19 @@ export default function TimelinePanel({
               { type: 'timeline-file-drop', payload: { trackId, startSample: sample } },
               files,
             );
+            return;
+          }
+
+          const mediaListRaw = event.dataTransfer.getData('application/ruse-media-list');
+          if (mediaListRaw) {
+            try {
+              const parsed: unknown = JSON.parse(mediaListRaw);
+              if (Array.isArray(parsed)) {
+                const paths = parsed.filter((path): path is string => typeof path === 'string' && path.length > 0);
+                if (paths.length > 0) onAddClipPaths(trackId, paths, sample);
+              }
+            } catch {
+            }
             return;
           }
 

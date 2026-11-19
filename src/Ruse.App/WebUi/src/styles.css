@@ -34,7 +34,7 @@
   --control-h: 34px;
   --control-sm: 28px;
   --icon-size: 32px;
-  --icon-size-compact: 25px;
+  --icon-size-compact: 28px;
   --hit-min: 40px;
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --dur-fast: 140ms;
@@ -355,6 +355,8 @@ h1, h2, h3 { text-wrap: balance; }
 @media (pointer: coarse) {
   .icon-button:not(.compact), .toolbar-icon, .tool-button,
   .primary-button, .danger-button { min-height: var(--hit-min); }
+  .icon-button.compact { width: 32px; height: 32px; }
+  .small-button, .library-action, .media-item { min-height: 32px; }
 }
 @media (prefers-reduced-motion: reduce) {
   :root:not([data-motion="full"]) *,
@@ -604,7 +606,7 @@ h1, h2, h3 { text-wrap: balance; }
 .media-tool-button:hover { border-color: rgba(101, 214, 208, 0.4); background: var(--surface-2); color: var(--cyan); }
 .media-tool-button.icon { width: 32px; padding: 0; }
 .media-groups { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 3px; padding-right: 2px; }
-.media-sort { height: 32px; max-width: 82px; padding: 0 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--inset); color: var(--text-2); font-size: 9px; } .media-context-menu { position: fixed; z-index: 80; min-width: 190px; display: flex; flex-direction: column; padding: 4px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-1); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.38); } .media-context-menu button { min-height: 27px; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); font-size: 10px; text-align: left; } .media-context-menu button:hover, .media-context-menu button:focus-visible { background: var(--surface-2); color: var(--text); }
+.media-sort { height: 32px; max-width: 82px; padding: 0 4px; border: 1px solid var(--line); border-radius: 7px; background: var(--inset); color: var(--text-2); font-size: 9px; } .media-context-menu { position: fixed; z-index: 80; min-width: 190px; display: flex; flex-direction: column; padding: 4px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface-1); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.38); } .media-context-menu button { min-height: 27px; display: flex; align-items: center; padding: 4px 8px; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); font-size: 10px; text-align: left; } .media-context-menu button:hover, .media-context-menu button:focus-visible { background: var(--surface-2); color: var(--text); }
 .library-section .media-bin { padding: 0 2px 4px; }
 .media-group { border: 1px solid transparent; border-radius: 7px; }
 .media-group:hover { border-color: var(--line); background: var(--surface-1); }
@@ -623,8 +625,13 @@ h1, h2, h3 { text-wrap: balance; }
 .media-folder-empty { margin: 2px 0 6px 20px; color: var(--text-3); font-size: 9px; }
 .media-item { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 5px; border: 1px solid transparent; border-radius: 6px; color: var(--text-2); cursor: grab; }
 .media-item:hover { border-color: var(--line); background: var(--surface-1); }
+.media-item.selected { border-color: color-mix(in srgb, var(--cyan) 35%, var(--line)); background: color-mix(in srgb, var(--cyan) 8%, transparent); }
+.media-item.selected .media-item-text strong { color: var(--text); }
 .media-item:active { cursor: grabbing; }
 .media-item > svg { flex: 0 0 auto; color: var(--text-3); }
+.media-select-box { width: 12px; height: 12px; flex: 0 0 12px; margin: 0; accent-color: var(--cyan); opacity: 0.55; }
+.media-item:hover .media-select-box, .media-item.selected .media-select-box, .media-item:focus-within .media-select-box { opacity: 1; }
+.media-menu-count { min-width: 18px; margin-left: auto; padding-left: 10px; color: var(--cyan); font: 9px Consolas, monospace; text-align: right; }
 .media-item-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .media-item-text strong { overflow: hidden; color: var(--text-2); font-size: 10px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .media-item-text small { overflow: hidden; color: var(--text-3); font: 8px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
@@ -667,7 +674,7 @@ h1, h2, h3 { text-wrap: balance; }
 .library-section:hover .section-drag { opacity: 1; }
 .section-toggle { flex: 1; min-width: 0; height: 29px; display: flex; align-items: center; gap: 7px; padding: 0 5px; border: 0; background: transparent; color: var(--text-2); text-align: left; font-size: 11px; }
 .section-toggle:hover { color: var(--text); }
-.section-expand { width: 20px; height: 29px; flex: 0 0 20px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-3); }
+.section-expand { width: 24px; height: 29px; flex: 0 0 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-3); }
 .section-expand:hover, .section-expand:focus-visible { background: var(--surface-2); color: var(--text); }
 .section-expand svg { transition: transform 120ms ease; }
 .section-expand svg.collapsed { transform: rotate(-90deg); }
@@ -677,6 +684,7 @@ h1, h2, h3 { text-wrap: balance; }
 .library-action { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; max-width: 100%; min-height: 28px; padding: 0 9px; overflow: hidden; border: 1px solid var(--line); border-radius: 6px; background: var(--surface-2); color: var(--text-2); font-size: 9.5px; text-overflow: ellipsis; white-space: nowrap; }
 .library-action:hover { border-color: var(--line-strong); background: var(--surface-3); color: var(--text); }
 .library-action:active { transform: scale(0.98); }
+.media-selection { border-color: color-mix(in srgb, var(--cyan) 40%, var(--line)); color: var(--cyan); }
 .sample-hint { flex-basis: 100%; color: var(--text-3); font-size: 9px; line-height: 1.4; }
 .library-item { --item-accent: var(--blue); position: relative; min-width: 0; min-height: 47px; display: flex; align-items: center; gap: 9px; padding: 6px 7px; border: 1px solid transparent; border-radius: 8px; color: var(--text-2); cursor: grab; overflow: hidden; content-visibility: auto; contain-intrinsic-size: auto 47px; }
 .library-item:hover, .library-item:focus-visible { background: var(--surface-2); border-color: var(--line); color: var(--text); }

@@ -1,13 +1,13 @@
-﻿using System.IO;
+using System.IO;
 
 namespace Ruse.App;
 
 internal static class ModelPreflight
 {
-    public static void Check(string directory, double sizeMb, double ramMultiplier = 2.0)
+    public static void Check(string directory, double sizeMb, double ramMultiplier = 2.0, double diskMultiplier = 1.0)
     {
         long downloadBytes = (long)Math.Ceiling(Math.Max(0, sizeMb) * 1024 * 1024);
-        long required = downloadBytes + (64L * 1024 * 1024);
+        long required = (long)Math.Ceiling(downloadBytes * Math.Max(1.0, diskMultiplier)) + (64L * 1024 * 1024);
 
         try
         {

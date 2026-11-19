@@ -1,5 +1,4 @@
 using System.IO;
-using System.IO.Compression;
 using KokoroSharp;
 using KokoroSharp.Core;
 using KokoroSharp.Processing;
@@ -55,7 +54,7 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
 
     private const string ModelSha256 = "0cfd5e79aab70a3d8c1a57dc639835110ddb32c9f5ff4fdd1f4db202ea43bb05";
 
-    public static string Root => Path.Combine(AppSettings.Directory, "models", "kokoro-streaming");
+    public static string Root => Path.Combine(ModelStorage.Root, "kokoro-streaming");
     public static string ModelPath => Path.Combine(Root, "kokoro.onnx");
     public static bool IsInstalled => File.Exists(ModelPath);
 
@@ -308,7 +307,7 @@ internal sealed class PiperStreamingProvider : IStreamingTtsProvider
         }
     }
 
-    public static string Root => Path.Combine(AppSettings.Directory, "models", "piper");
+    public static string Root => Path.Combine(ModelStorage.Root, "piper");
     public static bool IsInstalled => File.Exists(Path.Combine(Root, ".installed"));
 
     public static long InstalledSize
@@ -346,7 +345,7 @@ internal sealed class PiperStreamingProvider : IStreamingTtsProvider
             ModelIntegrity.Verify(
                 await ModelIntegrity.ComputeFileSha256Async(archive, token).ConfigureAwait(false),
                 PiperZipSha256, "Piper executable");
-            ZipFile.ExtractToDirectory(archive, Root, overwriteFiles: true);
+            SafeZip.ExtractToDirectory(archive, Root, token);
             try { File.Delete(archive); } catch { }
 
             var model = await PiperDownloader.GetModelByKey(VoiceKey).ConfigureAwait(false)

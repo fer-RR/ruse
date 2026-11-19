@@ -4,9 +4,10 @@ using System.IO;
 namespace Ruse.App;
 
 /// <summary>
-/// User-facing content folders. Settings, models and logs stay in
-/// <see cref="AppSettings.Directory"/>; presets, recordings, samples and exports
-/// live together in Documents\Ruse so they are easy to find and browse.
+/// User-facing content folders. Settings and logs stay in
+/// <see cref="AppSettings.Directory"/>; downloaded models live under
+/// LocalAppData; presets, recordings, samples and exports live together in
+/// Documents\Ruse so they are easy to find and browse.
 /// </summary>
 internal static class RuseFolders
 {

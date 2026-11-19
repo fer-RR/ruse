@@ -1173,8 +1173,18 @@ internal sealed partial class WebShellController
             _window.SyncTrayIcon();
         }
 
+        bool graphSettingsChanged =
+            !string.Equals(oldModel, newModel, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(oldTranslatorModel, newTranslatorModel, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(oldTranslatorTarget, newTranslatorTarget, StringComparison.OrdinalIgnoreCase) ||
+            providerChanged ||
+            !string.Equals(oldTtsModel, newTtsModel, StringComparison.OrdinalIgnoreCase);
+
         PublishSettings();
-        PublishGraph();
+        if (graphSettingsChanged)
+        {
+            PublishGraph();
+        }
         if (controlApiChanged)
         {
             _ = RestartControlServerAsync();

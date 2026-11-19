@@ -39,6 +39,8 @@ internal sealed class TranslationSession : IDisposable
     private readonly object _textLock = new();
     private readonly List<SubtitleCue> _sourceCues = new();
     private readonly List<SubtitleCue> _translatedCues = new();
+    private readonly StringBuilder _sourceTextBuilder = new();
+    private readonly StringBuilder _translatedTextBuilder = new();
     private readonly Task _worker;
     private readonly long _startedAt = Environment.TickCount64;
 
@@ -49,6 +51,8 @@ internal sealed class TranslationSession : IDisposable
     private string _sourcePartial = "";
     private string _translatedText = "";
     private string _translatedPartial = "";
+    private bool _sourceTextDirty;
+    private bool _translatedTextDirty;
     private string? _error;
     private string? _detectedLanguage;
     private bool _modelReady;
@@ -80,6 +84,18 @@ internal sealed class TranslationSession : IDisposable
 
         lock (_textLock)
         {
+            if (_sourceTextDirty)
+            {
+                _sourceText = _sourceTextBuilder.ToString();
+                _sourceTextDirty = false;
+            }
+
+            if (_translatedTextDirty)
+            {
+                _translatedText = _translatedTextBuilder.ToString();
+                _translatedTextDirty = false;
+            }
+
             string status = !_modelReady
                 ? _baseStatus
                 : _processing ? _baseStatus : "Listening";
@@ -106,8 +122,12 @@ internal sealed class TranslationSession : IDisposable
         lock (_textLock)
         {
             _sourceText = "";
+            _sourceTextBuilder.Clear();
+            _sourceTextDirty = false;
             _sourcePartial = "";
             _translatedText = "";
+            _translatedTextBuilder.Clear();
+            _translatedTextDirty = false;
             _translatedPartial = "";
             _error = null;
             _detectedLanguage = null;
@@ -290,9 +310,8 @@ internal sealed class TranslationSession : IDisposable
 
     private async Task RunRecognitionAsync(WhisperProcessor processor)
     {
-        using var silero = SileroVad.TryCreate();
-        using var vad = new VadSegmenter(_tapId, silero);
-        using var vosk = StreamingAsrOptions.Enabled ? VoskStreamingRecognizer.TryCreate() : null;
+        using var vad = new VadSegmenter(_tapId, SileroVad.TryCreate());
+        using var vosk = StreamingAsrOptions.SupportsEnglishPartials(_speechModelId) ? VoskStreamingRecognizer.TryCreate() : null;
         int partialFrames = 0;
         vad.SpeechStarted += () => SpeechActivityHub.PublishSpeechStarted(_tapId);
         vad.SpeechEnded += () =>
@@ -573,7 +592,9 @@ internal sealed class TranslationSession : IDisposable
     {
         lock (_textLock)
         {
-            _sourceText = _sourceText.Length == 0 ? text : _sourceText + " " + text;
+            if (_sourceTextBuilder.Length > 0) _sourceTextBuilder.Append(' ');
+            _sourceTextBuilder.Append(text);
+            _sourceTextDirty = true;
             if (cues.Count > 0)
             {
                 _sourceCues.AddRange(cues);
@@ -593,9 +614,9 @@ internal sealed class TranslationSession : IDisposable
 
         lock (_textLock)
         {
-            _translatedText = _translatedText.Length == 0
-                ? text
-                : _translatedText + " " + text;
+            if (_translatedTextBuilder.Length > 0) _translatedTextBuilder.Append(' ');
+            _translatedTextBuilder.Append(text);
+            _translatedTextDirty = true;
             if (cues.Count > 0)
             {
                 _translatedCues.AddRange(cues);

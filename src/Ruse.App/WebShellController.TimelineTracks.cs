@@ -97,6 +97,91 @@ internal sealed partial class WebShellController
         PublishTimeline();
     }
 
+    private async void AddTimelineClipPaths(string trackId, string[] paths, long? startSample)
+    {
+        EnsureTimeline();
+        if (_timeline == null || paths.Length == 0)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(trackId) || _timeline.Project.Tracks.All(track => track.Id != trackId))
+        {
+            trackId = _timeline.Project.Tracks.FirstOrDefault()?.Id ?? "";
+        }
+
+        if (string.IsNullOrWhiteSpace(trackId))
+        {
+            AddTimelineTrack();
+            trackId = _timeline.Project.Tracks.LastOrDefault()?.Id ?? "";
+        }
+
+        if (string.IsNullOrWhiteSpace(trackId))
+        {
+            SetStatus("Could not add the dropped audio.", isError: true);
+            return;
+        }
+
+        TimelineService timeline = _timeline;
+        long cursor = Math.Max(0, startSample ?? _timeline.PlayheadSample);
+        int added = 0;
+        int skipped = 0;
+        string lastError = "";
+        foreach (string raw in paths.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!TrustedPath.TryNormalize(raw, out string path) || !File.Exists(path) ||
+                !IsInsideMediaFolder(path))
+            {
+                skipped++;
+                continue;
+            }
+
+            bool ok;
+            string error;
+            try
+            {
+                (ok, error) = await Task.Run(() =>
+                {
+                    bool success = timeline.AddClip(trackId, path, out string message, cursor);
+                    return (success, message);
+                });
+            }
+            catch (Exception ex)
+            {
+                ok = false;
+                error = ex.Message;
+            }
+
+            if (!ok)
+            {
+                lastError = error;
+                skipped++;
+                continue;
+            }
+
+            var clip = timeline.Project.Tracks
+                .FirstOrDefault(track => track.Id == trackId)?.Clips.LastOrDefault();
+            if (clip != null)
+            {
+                cursor = Math.Max(cursor, clip.StartSample + clip.LengthSamples);
+            }
+
+            added++;
+        }
+
+        if (added > 0)
+        {
+            PublishTimeline();
+            SetStatus(skipped == 0
+                ? $"Added {added} files to the timeline."
+                : $"Added {added} files to the timeline; skipped {skipped}.");
+        }
+        else if (!string.IsNullOrWhiteSpace(lastError))
+        {
+            SetStatus(lastError, isError: true);
+        }
+    }
+
     private void EnsureTimelineSourceRoute(SourceNode source)
     {
         var entry = _nodes.Values.FirstOrDefault(item => ReferenceEquals(item.Source, source));

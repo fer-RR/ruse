@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Windows.Threading;
 using Ruse.App.Audio;
 
@@ -242,13 +243,20 @@ internal sealed partial class WebShellController
 
         try
         {
-            string text = File.ReadAllText(dialog.FileName);
-            if (text.Length > 20000)
+            const int maxChars = 20000;
+            var text = new StringBuilder(maxChars);
+            using (var reader = new StreamReader(dialog.FileName, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
             {
-                text = text[..20000];
+                var buffer = new char[8192];
+                while (text.Length < maxChars)
+                {
+                    int read = reader.Read(buffer, 0, Math.Min(buffer.Length, maxChars - text.Length));
+                    if (read <= 0) break;
+                    text.Append(buffer, 0, read);
+                }
             }
 
-            entry.TtsText = text;
+            entry.TtsText = text.ToString();
             entry.TtsSpokenLength = 0;
             entry.TtsStatus = TtsModels.IsInstalled(entry.TtsModel ?? _settings.TtsModel) ? "Ready" : "No model installed";
             PublishGraph();

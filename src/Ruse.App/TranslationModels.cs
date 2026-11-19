@@ -49,7 +49,7 @@ internal static class TranslationModels
 
     public static string DefaultId => "qwen2.5-1.5b-instruct-q4_k_m";
 
-    public static string Root => Path.Combine(AppSettings.Directory, "models", "translation");
+    public static string Root => Path.Combine(ModelStorage.Root, "translation");
 
     public static TranslationModel? Find(string? id) =>
         All.FirstOrDefault(model => string.Equals(model.Id, id, StringComparison.OrdinalIgnoreCase));
