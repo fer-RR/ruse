@@ -125,6 +125,7 @@ internal sealed partial class WebShellController : IDisposable
         OutputNode.AggressiveCushion = _settings.AggressiveOutputCushion;
         OutputNode.ClipGuardEnabled = _settings.ClipGuard;
         OutputNode.LowLatencyWasapi = _settings.LowLatencyWasapi;
+        OutputNode.ExclusiveMode = _settings.ExclusiveOutput;
         ConfigureAudioEngine();
         _telemetryTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _telemetryTimer.Tick += (_, _) =>
@@ -728,7 +729,20 @@ internal sealed partial class WebShellController : IDisposable
     private void PublishGraph()
     {
         var warnings = BuildGraphWarnings();
-        var nodes = _nodes.Values.Select(CreateNodeDto).ToList();
+        var activeEndpoints = ActiveEndpoints();
+        var nodes = new List<NodeDto>(_nodes.Count);
+        foreach (var entry in _nodes.Values)
+        {
+            var node = CreateNodeDto(entry);
+            if (TryGetNodeInvalidReason(entry, activeEndpoints, out string invalidReason))
+            {
+                node.Invalid = true;
+                node.InvalidReason = invalidReason;
+            }
+
+            nodes.Add(node);
+        }
+
         foreach (var node in nodes)
         {
             var warning = warnings
@@ -768,6 +782,7 @@ internal sealed partial class WebShellController : IDisposable
                 NativeRate = link.Native && _nodes.TryGetValue(link.From, out var nativeFrom)
                     ? nativeFrom.Source?.SampleRate ?? 0
                     : 0,
+                NativeBlockedReason = NativeBlockedReason(link),
             }).ToList(),
             Frames = _frames.Select(frame => new FrameDto
             {
@@ -857,6 +872,7 @@ internal sealed partial class WebShellController : IDisposable
             NativeRate = link.Native && _nodes.TryGetValue(link.From, out var nativeFrom)
                 ? nativeFrom.Source?.SampleRate ?? 0
                 : 0,
+            NativeBlockedReason = NativeBlockedReason(link),
         };
         Post("link-state", state);
         _controlServer?.PublishLinkState(state);
@@ -1079,6 +1095,8 @@ internal sealed partial class WebShellController : IDisposable
             AggressiveOutputCushion = _settings.AggressiveOutputCushion,
             ClipGuard = _settings.ClipGuard,
             LowLatencyWasapi = _settings.LowLatencyWasapi,
+            ExclusiveOutput = _settings.ExclusiveOutput,
+            PreferNativePassthrough = _settings.PreferNativePassthrough,
             AudioAutoMode = _settings.AudioAutoMode,
             LowLatencyMode = _settings.LowLatencyMode,
             AudioBlockSizeMs = _settings.AudioBlockSizeMs,
@@ -1252,9 +1270,12 @@ internal sealed partial class WebShellController : IDisposable
                 meter.FilePaused = entry.Source.Kind == SourceKind.File && entry.Source.FilePaused;
                 meter.FilePositionSeconds = entry.Source.Kind == SourceKind.File ? entry.Source.FilePositionSeconds : 0;
                 meter.FileDurationSeconds = entry.Source.Kind == SourceKind.File ? entry.Source.FileDurationSeconds : 0;
+                meter.InputSampleRate = entry.Source.SampleRate;
+                meter.InputResampling = entry.Source.IsResampling;
                 if (_settings.ShowDiagnostics)
                 {
                     meter.InputLatencyMs = Finite(entry.Source.CaptureLatencyMs + entry.Source.BufferedMs);
+                    meter.InputResamplerLatencyMs = Finite(entry.Source.ResamplerLatencyMs);
                 }
             }
             else if (entry.Output != null)
@@ -1272,6 +1293,8 @@ internal sealed partial class WebShellController : IDisposable
                     meter.RecordingSeconds = Finite(entry.Output.RecordedSeconds);
                     meter.RecordingError = entry.Output.RecordingError;
                 }
+                meter.OutputSampleRate = entry.Output.EndpointSampleRate;
+                meter.OutputResampling = entry.Output.IsEndpointResampling;
                 if (_settings.ShowDiagnostics)
                 {
                     meter.OutputLatencyMs = Finite(entry.Output.EstimatedLatencyMs);
@@ -1961,5 +1984,6 @@ internal sealed partial class WebShellController : IDisposable
         public bool BusB { get; set; }
         public bool Inverted { get; set; }
         public bool Native { get; set; }
+        public bool? NativePreference { get; set; }
     }
 }

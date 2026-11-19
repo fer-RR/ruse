@@ -2131,7 +2131,7 @@ export default function App() {
           </>}
           {canvasMenu.kind === 'edge' && menuLink && <>
             {menuLink.kind === 'direct' && <>
-              <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.native === true} onClick={() => { send('link-native', { id: menuLink.id, value: menuLink.native !== true }); setCanvasMenu(null); } }><Zap size={14} /> <span className="menu-label">{t('Native passthrough')}{menuLink.native === true ? ' ✓' : ''}</span></button>
+              <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.native === true} title={menuLink.nativeBlockedReason || undefined} onClick={() => { send('link-native', { id: menuLink.id, value: menuLink.native !== true }); setCanvasMenu(null); } }><Zap size={14} /> <span className="menu-label">{t('Native passthrough')}{menuLink.native === true ? ' ✓' : ''}</span></button>
               {menuLink.nativeFallback && <button role="menuitem" tabIndex={-1} onClick={() => { send('link-native-cancel-restore', { id: menuLink.id }); setCanvasMenu(null); } }><Zap size={14} /> <span className="menu-label">{t('Cancel native restore')}</span></button>}
               <button role="menuitem" tabIndex={-1} onClick={() => { openExplainer('native'); setCanvasMenu(null); } }><Info size={14} /> <span className="menu-label">{t('About native passthrough')}</span></button>
             </>}

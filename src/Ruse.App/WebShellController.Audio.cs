@@ -33,5 +33,6 @@ internal sealed partial class WebShellController
         OutputNode.ClipGuardLookaheadFrames = !auto && (lowLatency || block <= AudioEngineConfig.MinBlockFrames) ? 32 : 64;
         AudioEngineConfig.ElasticRing = !auto && (lowLatency || _settings.ElasticRing);
         OutputNode.AggressiveCushion = !auto && (lowLatency || mode == "low");
+        OutputNode.DirectGraphOutput = !auto && lowLatency;
     }
 }

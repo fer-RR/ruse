@@ -22,6 +22,11 @@ public sealed class DeviceCapture : IDisposable
     /// <summary>True when the endpoint is actually running in IAudioClient3 low-latency mode.</summary>
     public bool LowLatencyActive => _capture.LowLatencyActive;
 
+    public double LatencyMilliseconds => _capture.LatencyMilliseconds;
+    public double AverageLatencyMilliseconds => _capture.AverageLatency.TotalMilliseconds;
+    public double CurrentLatencyMilliseconds => _capture.CurrentLatency.TotalMilliseconds;
+    public string? LowLatencyUnavailableReason => _capture.LowLatencyUnavailableReason;
+
     public DeviceCapture(string deviceId)
     {
         DeviceId = deviceId;
@@ -93,6 +98,7 @@ public sealed class DeviceCapture : IDisposable
             .WithEventSync()
             .WithBufferLength(10)
             .WithLowLatency()
+            .WithMmcssThreadPriority("Pro Audio")
             .Build();
     }
 

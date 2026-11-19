@@ -123,30 +123,48 @@ public sealed class ProcessLoopbackCapture : IDisposable
 
         foreach (var candidate in CaptureFormatCandidates)
         {
-            var audioClient = ActivateClient();
-            try
+            for (int periodAttempt = 0; periodAttempt < 2; periodAttempt++)
             {
-                int hr = InitializeClient(audioClient, candidate);
-                if (hr < 0)
+                var audioClient = ActivateClient();
+                try
                 {
-                    lastError = new InvalidOperationException($"IAudioClient.Initialize failed (0x{hr:X8}).");
-                    continue;
-                }
+                    long bufferDuration = 0;
+                    if (periodAttempt == 0 &&
+                        audioClient.GetDevicePeriod(out _, out long minimumDevicePeriod) >= 0 &&
+                        minimumDevicePeriod > 0)
+                    {
+                        bufferDuration = minimumDevicePeriod;
+                    }
+                    else if (periodAttempt == 0)
+                    {
+                        continue;
+                    }
 
-                WaveFormat = candidate;
-                if (candidate.BitsPerSample < 32)
-                {
+                    int hr = InitializeClient(audioClient, candidate, bufferDuration);
+                    if (hr < 0)
+                    {
+                        lastError = new InvalidOperationException($"IAudioClient.Initialize failed (0x{hr:X8}).");
+                        continue;
+                    }
+
+                    WaveFormat = candidate;
                     Ruse.App.Diagnostics.AppLog.Info(
-                        $"Process loopback fell back to {candidate.BitsPerSample}-bit PCM; " +
-                        "32-bit capture was unavailable, so silent apps may have a low dither floor.");
-                }
+                        $"Process loopback: {candidate.SampleRate} Hz/{candidate.BitsPerSample}-bit, " +
+                        $"buffer={(bufferDuration == 0 ? "default" : (bufferDuration / 10000.0).ToString("0.0") + " ms")}.");
+                    if (candidate.BitsPerSample < 32)
+                    {
+                        Ruse.App.Diagnostics.AppLog.Info(
+                            $"Process loopback fell back to {candidate.BitsPerSample}-bit PCM; " +
+                            "32-bit capture was unavailable, so silent apps may have a low dither floor.");
+                    }
 
-                CaptureLoop(audioClient, candidate);
-                return;
-            }
-            finally
-            {
-                Marshal.ReleaseComObject(audioClient);
+                    CaptureLoop(audioClient, candidate);
+                    return;
+                }
+                finally
+                {
+                    Marshal.ReleaseComObject(audioClient);
+                }
             }
         }
 
@@ -201,7 +219,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
         }
     }
 
-    private static int InitializeClient(IAudioClient audioClient, WaveFormat format)
+    private static int InitializeClient(IAudioClient audioClient, WaveFormat format, long bufferDuration)
     {
         IntPtr formatPtr = AllocWaveFormat(format);
         try
@@ -214,7 +232,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
                 | AudclntStreamflagEventCallback
                 | AudclntStreamflagAutoConvertPcm;
 
-            return audioClient.Initialize(AudclntShareModeShared, streamFlags, 0, 0, formatPtr, IntPtr.Zero);
+            return audioClient.Initialize(AudclntShareModeShared, streamFlags, bufferDuration, 0, formatPtr, IntPtr.Zero);
         }
         finally
         {

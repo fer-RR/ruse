@@ -14,11 +14,18 @@ internal sealed partial class WebShellController
         var sourceIndex = new Dictionary<string, int>();
         var outputIndex = new Dictionary<string, int>();
         var modifierIndex = new Dictionary<string, int>();
+        var activeEndpoints = ReadActiveEndpointIds();
 
         foreach (var entry in _nodes.Values)
         {
             if (included != null && !included.Contains(entry.Id))
             {
+                continue;
+            }
+
+            if (TryGetNodeInvalidReason(entry, activeEndpoints, out string invalidReason))
+            {
+                AppLog.Warning($"Skipped invalid node '{entry.Title}' while saving: {invalidReason}");
                 continue;
             }
 
@@ -73,7 +80,7 @@ internal sealed partial class WebShellController
                     Y = entry.Y + offsetY,
                     Width = entry.Width,
                     Height = entry.Height,
-                    Volume = entry.Source.Gain,
+                    Volume = Finite(entry.Source.Gain, 1f),
                     Muted = entry.Source.Muted,
                 });
             }
@@ -105,7 +112,7 @@ internal sealed partial class WebShellController
                     Y = entry.Y + offsetY,
                     Width = entry.Width,
                     Height = entry.Height,
-                    Volume = entry.Output.Volume,
+                    Volume = Finite(entry.Output.Volume, 1f),
                     Muted = entry.Output.Muted,
                 });
             }
@@ -118,11 +125,11 @@ internal sealed partial class WebShellController
                     ControlId = entry.ControlId,
                     Enabled = entry.Modifier.Enabled,
                     Parallel = entry.Modifier.Parallel,
-                    Send = entry.Modifier.Send,
+                    Send = Finite(entry.Modifier.Send, 0.5f),
                     IsMixer = entry.Modifier.IsMixer,
-                    MixerWidth = entry.Modifier.MixerWidth,
+                    MixerWidth = Finite(entry.Modifier.MixerWidth, 1f),
                     MixerAutoGain = entry.Modifier.MixerAutoGain,
-                    MixerCrossfade = entry.Modifier.MixerCrossfade,
+                    MixerCrossfade = Finite(entry.Modifier.MixerCrossfade, 0f),
                     Color = entry.Color,
                     TranscriberModel = entry.TranscriberModel,
                     TranslatorTarget = entry.TranslatorTarget,
@@ -159,14 +166,15 @@ internal sealed partial class WebShellController
                 {
                     SourceIndex = directSource,
                     OutputIndex = directOutput,
-                    Gain = link.Gain,
-                    Pan = link.Pan,
-                    DelayMs = link.DelayMs,
+                    Gain = Finite(link.Gain, 1f),
+                    Pan = Finite(link.Pan),
+                    DelayMs = Finite(link.DelayMs),
                     Enabled = link.Enabled,
                     Solo = link.Solo,
                     BusB = link.BusB,
                     Inverted = link.Inverted,
                     Native = link.Native,
+                    NativePreference = link.NativePreference,
                 });
             }
             else if (link.Kind == "sidechain" &&
@@ -245,9 +253,9 @@ internal sealed partial class WebShellController
                 var saved = new PresetMixerInput
                 {
                     ModifierIndex = mixerIndex,
-                    Gain = link.Gain,
-                    Pan = link.Pan,
-                    DelayMs = link.DelayMs,
+                    Gain = Finite(link.Gain, 1f),
+                    Pan = Finite(link.Pan),
+                    DelayMs = Finite(link.DelayMs),
                     Enabled = link.Enabled,
                     Solo = link.Solo,
                     BusB = link.BusB,
@@ -573,6 +581,7 @@ internal sealed partial class WebShellController
                 var link = ConnectEntries(source, output, route.Gain, publish: false);
                 link.Enabled = route.Enabled;
                 link.Native = route.Native;
+                link.NativePreference = route.NativePreference;
                 link.Pan = float.IsFinite(route.Pan) ? Math.Clamp(route.Pan, -1f, 1f) : 0f;
                 link.DelayMs = float.IsFinite(route.DelayMs)
                     ? Math.Clamp(route.DelayMs, 0f, ModifierNode.MixerMaxDelayMs)
@@ -1080,6 +1089,9 @@ internal sealed partial class WebShellController
         OutputNode.ClipGuardEnabled = _settings.ClipGuard;
         _settings.LowLatencyWasapi = settings.LowLatencyWasapi;
         OutputNode.LowLatencyWasapi = _settings.LowLatencyWasapi;
+        _settings.ExclusiveOutput = settings.ExclusiveOutput;
+        OutputNode.ExclusiveMode = _settings.ExclusiveOutput;
+        _settings.PreferNativePassthrough = settings.PreferNativePassthrough;
         bool gpuChanged = _settings.UseGpu != settings.UseGpu;
         _settings.UseGpu = settings.UseGpu;
         ModelRuntime.UseGpu = _settings.UseGpu;

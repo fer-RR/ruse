@@ -302,7 +302,7 @@ internal sealed class GraphEngine : IDisposable
     private void Loop()
     {
         TimeBeginPeriod(1);
-        using var mmcss = MmcssScope.Enter();
+        using var mmcss = MmcssScope.Enter(priority: AvrtPriority.Critical);
         try
         {
             while (_running)

@@ -186,6 +186,16 @@ public static class DspSelfTest
             lowLatencyGuard.LatencySamples == 32 && guardPeak > 0.9f && guardPeak < 1f,
             $"latency {lowLatencyGuard.LatencySamples}, peak {guardPeak:0.###}");
 
+        var nativeGuard = new ClipGuard();
+        nativeGuard.ConfigureSampleRate(96000);
+        var nativeGuardBlock = new float[BlockFrames * Channels];
+        Array.Fill(nativeGuardBlock, 2f);
+        nativeGuard.Process(nativeGuardBlock, BlockFrames);
+        float nativeGuardPeak = Peak(nativeGuardBlock, 0, BlockFrames);
+        Check("clip guard native-rate lookahead",
+            nativeGuard.LatencySamples == 128 && nativeGuardPeak > 0.9f && nativeGuardPeak < 1f,
+            $"latency {nativeGuard.LatencySamples}, peak {nativeGuardPeak:0.###}");
+
         var emptySource = new SourceNode("empty read", SourceKind.Application);
         var emptySubscription = emptySource.Subscribe();
         bool emptyReadOk;

@@ -649,6 +649,8 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
             <SettingsSection title="Audio engine" summary={settings.audioAutoMode !== false ? t('Auto audio settings') : t('Manual')}>
 
               <ToggleSetting label={t('Low-latency WASAPI')} description={t('Try Windows low-latency shared mode before falling back to normal shared mode. Takes effect the next time routing starts.')} checked={settings.lowLatencyWasapi !== false} onChange={value => onChange({ ...settings, lowLatencyWasapi: value })} />
+              <ToggleSetting label={t('Exclusive output')} description={t('Give Ruse sole access to the output device. Other applications and system sounds may stop playing; falls back to shared mode if unavailable.')} checked={settings.exclusiveOutput === true} onChange={value => onChange({ ...settings, exclusiveOutput: value })} />
+              <ToggleSetting label={t('Native passthrough')} description={t('Native passthrough sends a source straight to the device without the graph. Use it when the source already matches the output.')} checked={settings.preferNativePassthrough !== false} onChange={value => onChange({ ...settings, preferNativePassthrough: value })} />
               <ToggleSetting label={t('Auto audio settings')} description={t('Choose block size and buffer profiles automatically for the current machine.')} checked={settings.audioAutoMode !== false} onChange={value => onChange({ ...settings, audioAutoMode: value })} />
               <ToggleSetting
                 label={`${t('Low-latency mode')} (${t('Experimental')})`}

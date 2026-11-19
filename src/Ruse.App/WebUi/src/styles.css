@@ -813,6 +813,8 @@ body.sidebar-resizing *, body.mixer-resizing * { cursor: col-resize !important; 
 .ruse-node.clipping { border-color: var(--danger); }
 .ruse-node.recording { border-color: rgba(255, 139, 114, 0.75); }
 .ruse-node.disabled { opacity: 0.52; filter: grayscale(0.7); }
+.ruse-node.invalid { border-color: color-mix(in srgb, var(--danger) 55%, var(--line-strong)); }
+.ruse-node.invalid .node-header strong { color: var(--danger); }
 .node-power { width: 21px; height: 21px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); opacity: 0.8; }
 .node-power:hover { background: var(--surface-3); color: var(--text); }
 .node-power.off { color: var(--danger); opacity: 1; }

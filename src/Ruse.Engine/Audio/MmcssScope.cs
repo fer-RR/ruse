@@ -2,6 +2,14 @@ using System.Runtime.InteropServices;
 
 namespace Ruse.App.Audio;
 
+internal enum AvrtPriority
+{
+    Low = -1,
+    Normal = 0,
+    High = 1,
+    Critical = 2,
+}
+
 /// <summary>
 /// Places the current thread in the Windows MMCSS "Pro Audio" class for the
 /// lifetime of the scope. Audio threads get a protected CPU share, which keeps
@@ -13,12 +21,23 @@ internal sealed class MmcssScope : IDisposable
 
     private MmcssScope(IntPtr handle) => _handle = handle;
 
-    public static MmcssScope Enter(string taskName = "Pro Audio")
+    public static MmcssScope Enter(string taskName = "Pro Audio", AvrtPriority priority = AvrtPriority.High)
     {
         uint taskIndex = 0;
         try
         {
             IntPtr handle = AvSetMmThreadCharacteristicsW(taskName, ref taskIndex);
+            if (handle != IntPtr.Zero)
+            {
+                try
+                {
+                    AvSetMmThreadPriority(handle, (int)priority);
+                }
+                catch
+                {
+                }
+            }
+
             return new MmcssScope(handle);
         }
         catch
@@ -50,4 +69,7 @@ internal sealed class MmcssScope : IDisposable
 
     [DllImport("avrt.dll")]
     private static extern bool AvRevertMmThreadCharacteristics(IntPtr handle);
+
+    [DllImport("avrt.dll")]
+    private static extern bool AvSetMmThreadPriority(IntPtr handle, int priority);
 }

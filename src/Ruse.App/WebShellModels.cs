@@ -210,6 +210,8 @@ internal sealed class NodeDto
     public bool DuplicateRisk { get; set; }
     public string? DuplicateWarning { get; set; }
     public string? WarningSeverity { get; set; }
+    public bool Invalid { get; set; }
+    public string? InvalidReason { get; set; }
 }
 
 internal sealed class MixerStateDto
@@ -278,6 +280,7 @@ internal sealed class LinkDto
     public bool Native { get; set; }
     public bool NativeFallback { get; set; }
     public int NativeRate { get; set; }
+    public string? NativeBlockedReason { get; set; }
 }
 
 /// <summary>Lightweight update for one node's live state; never triggers a full graph rebuild.</summary>
@@ -330,6 +333,7 @@ internal sealed class LinkStateDto
     public bool Native { get; set; }
     public bool NativeFallback { get; set; }
     public int NativeRate { get; set; }
+    public string? NativeBlockedReason { get; set; }
 }
 
 internal sealed class FrameDto
@@ -444,6 +448,11 @@ internal sealed class NodeTelemetryDto
     public bool NoteActive { get; set; }
     public double? InputLatencyMs { get; set; }
     public double? OutputLatencyMs { get; set; }
+    public int? InputSampleRate { get; set; }
+    public bool? InputResampling { get; set; }
+    public double? InputResamplerLatencyMs { get; set; }
+    public int? OutputSampleRate { get; set; }
+    public bool? OutputResampling { get; set; }
 
     public void Reset()
     {
@@ -502,6 +511,11 @@ internal sealed class NodeTelemetryDto
         NoteActive = false;
         InputLatencyMs = null;
         OutputLatencyMs = null;
+        InputSampleRate = null;
+        InputResampling = null;
+        InputResamplerLatencyMs = null;
+        OutputSampleRate = null;
+        OutputResampling = null;
     }
 }
 
@@ -595,6 +609,8 @@ internal sealed class SettingsDto
     public bool AggressiveOutputCushion { get; set; }
     public bool ClipGuard { get; set; } = true;
     public bool LowLatencyWasapi { get; set; } = true;
+    public bool ExclusiveOutput { get; set; }
+    public bool PreferNativePassthrough { get; set; } = true;
     public bool AudioAutoMode { get; set; } = true;
     public bool LowLatencyMode { get; set; }
     public double AudioBlockSizeMs { get; set; } = 5.0;

@@ -587,6 +587,8 @@ export const ja: Record<string, string> = {
   "Clip guard active": "クリップガード作動中",
   "Audio engine": "オーディオエンジン",
   "Low-latency WASAPI": "低遅延 WASAPI",
+  "Exclusive output": "排他出力",
+  "Give Ruse sole access to the output device. Other applications and system sounds may stop playing; falls back to shared mode if unavailable.": "Ruse に出力デバイスへの排他的アクセスを許可します。他のアプリやシステム音が停止する場合があります。利用できない場合は共有モードに戻ります。",
   "Try Windows low-latency shared mode before falling back to normal shared mode. Takes effect the next time routing starts.": "Windows の低遅延共有モードを試し、利用できない場合は通常の共有モードに戻します。次回ルーティング開始時に反映されます。",
   "Source fill": "ソース充填",
   "Output ring": "出力リング",

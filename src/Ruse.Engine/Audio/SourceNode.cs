@@ -122,6 +122,8 @@ public sealed class SourceNode : IDisposable
 
     public int Channels => _sourceChannels;
     public int SampleRate => _sourceSampleRate;
+    public bool IsResampling => _converter?.IsResampling == true;
+    public double ResamplerLatencyMs => _converter?.LatencyMilliseconds ?? 0;
     public int BitsPerSample => _sourceBitsPerSample;
 
     /// <summary>True when a device capture is actually using IAudioClient3 low-latency mode.</summary>
@@ -158,7 +160,7 @@ public sealed class SourceNode : IDisposable
 
     public double CaptureLatencyMs => Kind switch
     {
-        SourceKind.Device => 10.0,
+        SourceKind.Device => (_capture as DeviceCapture)?.LatencyMilliseconds ?? 10.0,
         SourceKind.Application or SourceKind.SystemLoopback => 10.0,
         SourceKind.Network => NetworkPcm.DefaultBufferMs,
         SourceKind.Tone or SourceKind.Synth or SourceKind.File or SourceKind.Tts => PrebufferMs,
@@ -479,6 +481,7 @@ public sealed class SourceNode : IDisposable
         public int Channels { get; }
         public bool Invalidated => _invalidated;
         public double BufferedMs => _buffer.AvailableToRead / (double)Math.Max(1, Channels) * 1000.0 / SampleRate;
+        internal FloatRingBuffer Buffer => _buffer;
 
         internal void Write(ReadOnlySpan<float> samples) => _buffer.Write(samples);
 
@@ -927,6 +930,7 @@ public sealed class SourceNode : IDisposable
                     .WithEventSync()
                     .WithBufferLength(bufferMs)
                     .WithLoopbackCapture()
+                    .WithMmcssThreadPriority("Pro Audio")
                     .Build();
 
                 _loopbackBuffer = new byte[Math.Max(16384, capture.WaveFormat.AverageBytesPerSecond / 5)];

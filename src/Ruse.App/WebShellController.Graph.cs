@@ -2294,6 +2294,7 @@ internal sealed partial class WebShellController
             DisableNativeOnSharedOutput(to.Output);
         }
 
+        if (_running) AutoEnableNativeRoutes();
         if (publish) PublishGraph();
         return link;
     }
@@ -2799,6 +2800,7 @@ internal sealed partial class WebShellController
                     "Retry routing", "retry-routing");
             }
         }
+        AutoEnableNativeRoutes();
         ActivateNativeRoutes();
         _graph.StartEngine();
         _running = _graph.AutoRun;

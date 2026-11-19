@@ -869,6 +869,27 @@ internal sealed partial class WebShellController
             _graph.AutoRun = warningAutoRun;
         }
 
+        bool invalidNodeAutoRun = _graph.AutoRun;
+        _graph.AutoRun = false;
+        try
+        {
+            var invalidSource = RegisterSource(
+                new SourceNode(
+                    "Missing input device",
+                    SourceKind.Device,
+                    deviceId: "{0.0.1.00000000}.{00000000-0000-0000-0000-000000000000}"),
+                40,
+                700);
+            var savedWithoutInvalid = BuildPreset();
+            Check("invalid device node skipped on save",
+                savedWithoutInvalid.Sources.All(source => source.Id != invalidSource.Id));
+            RemoveEntryInternal(invalidSource.Id);
+        }
+        finally
+        {
+            _graph.AutoRun = invalidNodeAutoRun;
+        }
+
         bool freezeAutoRun = _graph.AutoRun;
         _graph.AutoRun = false;
         string freezeInput = Path.Combine(Path.GetTempPath(), $"ruse-freeze-in-{Guid.NewGuid():N}.wav");

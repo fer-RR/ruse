@@ -587,6 +587,8 @@ export const ko: Record<string, string> = {
   "Clip guard active": "클립 가드 작동 중",
   "Audio engine": "오디오 엔진",
   "Low-latency WASAPI": "저지연 WASAPI",
+  "Exclusive output": "독점 출력",
+  "Give Ruse sole access to the output device. Other applications and system sounds may stop playing; falls back to shared mode if unavailable.": "Ruse에 출력 장치에 대한 단독 액세스 권한을 부여합니다. 다른 앱과 시스템 소리가 중지될 수 있으며, 사용할 수 없으면 공유 모드로 돌아갑니다.",
   "Try Windows low-latency shared mode before falling back to normal shared mode. Takes effect the next time routing starts.": "Windows 저지연 공유 모드를 시도한 뒤 일반 공유 모드로 대체합니다. 다음 라우팅 시작 시 적용됩니다.",
   "Source fill": "소스 채움",
   "Output ring": "출력 링",

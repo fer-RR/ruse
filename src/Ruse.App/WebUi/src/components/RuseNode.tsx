@@ -851,6 +851,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     !data.isTranscriber && !data.isTranslator && !data.isVst3 && !data.isGraphicEq && !isHearingProfile && !data.isMixer;
   const dbVertical = isDbMeter && (telemetry?.dbMeterVertical ?? true);
   const enabled = data.enabled !== false;
+  const invalid = data.invalid === true;
   const recording = telemetry?.recordingStatus === 'REC';
   const installedModels = data.transcriberModels?.filter(model => model.installed) ?? [];
   const selectedModel = installedModels.some(model => model.id === data.transcriberModel)
@@ -865,7 +866,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   const formatRateValue = data.sampleRate && data.sampleRate > 0 ? data.sampleRate : 48000;
   const formatBits = data.bitsPerSample ?? 32;
   const latency = data.kind === 'source' ? telemetry?.inputLatencyMs : data.kind === 'output' ? telemetry?.outputLatencyMs : undefined;
-  const flowing = enabled && active;
+  const flowing = enabled && !invalid && active;
   const hasDiagnostics = Boolean(data.showDiagnostics && (data.kind === 'source' || data.kind === 'output'));
   const hasBadges = !enabled || recording || data.duplicateRisk || telemetry?.clipping ||
     telemetry?.clipGuardActive || (data.isTts && data.ttsUsesGpu !== true) ||
@@ -905,18 +906,19 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isConvolutionReverb ? 'convolution-node' : '',
     isDbMeter ? (dbVertical ? 'db-meter-node db-meter-vertical' : 'db-meter-node db-meter-horizontal') : '',
     isLoudness ? 'loudness-node' : '',
-    enabled ? '' : 'disabled',
+    enabled && !invalid ? '' : 'disabled',
+    invalid ? 'invalid' : '',
   ].filter(Boolean).join(' ');
 
   return (
-    <div className={classes} style={{ '--accent': data.accent, ...(data.width ? { width: `${data.width}px`, minWidth: `${data.width}px`, maxWidth: `${data.width}px` } : {}) } as CSSProperties} role="group" aria-label={`${data.title}. ${t(data.subtitle)}`}>
+    <div className={classes} style={{ '--accent': data.accent, ...(data.width ? { width: `${data.width}px`, minWidth: `${data.width}px`, maxWidth: `${data.width}px` } : {}) } as CSSProperties} role="group" aria-label={`${data.title}. ${t(data.subtitle)}${invalid && data.invalidReason ? `. ${data.invalidReason}` : ''}`}>
       {data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
       {data.isTts && <Handle id="barge" type="target" position={Position.Left} className="ruse-handle sidechain-handle" style={{ top: '82%' }} />}
       {data.supportsSidechain && <Handle id="sidechain" type="target" position={Position.Left} className="ruse-handle sidechain-handle" style={{ top: '72%' }} />}
       <header className="node-header">
         <span className="node-icon"><FlavorIcon flavor={data.flavor} /></span>
         <strong
-          title={data.title}
+          title={invalid && data.invalidReason ? `${data.title} — ${data.invalidReason}` : data.title}
           onDoubleClick={event => {
             event.stopPropagation();
             window.dispatchEvent(new CustomEvent('ruse-rename-node', { detail: { id: data.id, title: data.title, chain: data.flavor === 'chain' } }));
@@ -941,6 +943,16 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         ) : null}
         {data.showDiagnostics && (data.kind === 'source' || data.kind === 'output') && typeof latency === 'number' && Number.isFinite(latency) ? (
           <span className="node-badge latency-badge" title={t('Latency')}>{data.kind === 'source' ? 'IN' : 'OUT'} {latency.toFixed(1)} ms</span>
+        ) : null}
+        {data.showDiagnostics && data.kind === 'source' && telemetry?.inputResampling && telemetry.inputSampleRate ? (
+          <span className="node-badge latency-badge" title={`SRC ${telemetry.inputResamplerLatencyMs?.toFixed(1) ?? '0.0'} ms`}>
+            SRC {formatRate(telemetry.inputSampleRate)} → 48k
+          </span>
+        ) : null}
+        {data.showDiagnostics && data.kind === 'output' && telemetry?.outputResampling && telemetry.outputSampleRate ? (
+          <span className="node-badge latency-badge" title="SRC">
+            SRC 48k → {formatRate(telemetry.outputSampleRate)}
+          </span>
         ) : null}
         {data.isMetronome || data.isToneGenerator || data.isSynthGenerator || (data.isFilePlayer && data.filePath) ? (
           <span

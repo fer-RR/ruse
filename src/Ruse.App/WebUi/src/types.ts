@@ -246,6 +246,8 @@ export interface NodeModel {
   duplicateRisk?: boolean;
   duplicateWarning?: string;
   warningSeverity?: 'warning' | 'info' | string;
+  invalid?: boolean;
+  invalidReason?: string;
 }
 
 export interface NodeStateUpdate {
@@ -317,6 +319,7 @@ export interface LinkModel {
   native?: boolean;
   nativeFallback?: boolean;
   nativeRate?: number;
+  nativeBlockedReason?: string;
 }
 
 export interface GraphWarning {
@@ -409,6 +412,11 @@ export interface NodeTelemetry {
   noteActive?: boolean;
   inputLatencyMs?: number;
   outputLatencyMs?: number;
+  inputSampleRate?: number;
+  inputResampling?: boolean;
+  inputResamplerLatencyMs?: number;
+  outputSampleRate?: number;
+  outputResampling?: boolean;
 }
 
 export interface DiagnosticInfo {
@@ -565,6 +573,8 @@ export interface SettingsModel {
   aggressiveOutputCushion: boolean;
   clipGuard?: boolean;
   lowLatencyWasapi?: boolean;
+  exclusiveOutput?: boolean;
+  preferNativePassthrough?: boolean;
   audioAutoMode?: boolean;
   lowLatencyMode?: boolean;
   audioBlockSizeMs?: number;

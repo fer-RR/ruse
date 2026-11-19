@@ -587,6 +587,8 @@ export const de: Record<string, string> = {
   "Clip guard active": "Clip Guard aktiv",
   "Audio engine": "Audio-Engine",
   "Low-latency WASAPI": "WASAPI mit niedriger Latenz",
+  "Exclusive output": "Exklusive Ausgabe",
+  "Give Ruse sole access to the output device. Other applications and system sounds may stop playing; falls back to shared mode if unavailable.": "Ruse exklusiven Zugriff auf das Ausgabegerät geben. Andere Anwendungen und Systemtöne werden möglicherweise stummgeschaltet; falls nicht verfügbar, wird auf den Shared-Modus zurückgefallen.",
   "Try Windows low-latency shared mode before falling back to normal shared mode. Takes effect the next time routing starts.": "Windows-Niedriglatenz-Shared-Modus versuchen, bevor auf den normalen Shared-Modus zurückgefallen wird. Wirkt beim nächsten Start des Routings.",
   "Source fill": "Quellenfüllung",
   "Output ring": "Ausgangsring",

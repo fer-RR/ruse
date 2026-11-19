@@ -31,6 +31,8 @@ internal sealed partial class WebShellController
             RefreshEffectsAndChains();
             RefreshSamples();
             Post("catalog", _catalog);
+            InvalidateActiveEndpointCache();
+            PublishGraph();
             SetStatus("Applications and devices refreshed.");
         }
         catch (Exception ex)
@@ -112,6 +114,8 @@ internal sealed partial class WebShellController
         {
             RefreshDevices();
             Post("catalog", _catalog);
+            InvalidateActiveEndpointCache();
+            PublishGraph();
             SetStatus("Audio devices refreshed.");
         }
         catch (Exception ex)

@@ -587,6 +587,8 @@ export const zhCN: Record<string, string> = {
   "Clip guard active": "削波保护已启用",
   "Audio engine": "音频引擎",
   "Low-latency WASAPI": "低延迟 WASAPI",
+  "Exclusive output": "独占输出",
+  "Give Ruse sole access to the output device. Other applications and system sounds may stop playing; falls back to shared mode if unavailable.": "授予 Ruse 对输出设备的独占访问权限。其他应用和系统声音可能会停止；不可用时回退到共享模式。",
   "Try Windows low-latency shared mode before falling back to normal shared mode. Takes effect the next time routing starts.": "先尝试 Windows 低延迟共享模式，失败后回退到普通共享模式。下次开始路由时生效。",
   "Source fill": "源填充",
   "Output ring": "输出环形缓冲",

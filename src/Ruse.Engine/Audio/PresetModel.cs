@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Ruse.App.Diagnostics;
 
 namespace Ruse.App.Audio;
@@ -46,6 +47,7 @@ public sealed class Preset
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
 
     public string ToJson() => JsonSerializer.Serialize(this, Options);
@@ -144,6 +146,7 @@ public sealed class PresetRoute
     public bool BusB { get; set; }
     public bool Inverted { get; set; }
     public bool Native { get; set; }
+    public bool? NativePreference { get; set; }
 }
 
 /// <summary>A modifier node placed on the canvas, with its effect chain.</summary>
@@ -279,14 +282,15 @@ public static class PresetSerializer
     {
         if (processor is IVst3Processor vst)
         {
-            return new PresetProcessor
+            var vstEntry = new PresetProcessor
             {
                 TypeId = Vst3Processor.Id,
                 Name = vst.DisplayName,
                 PluginPath = vst.Identifier,
                 PluginState = vst.CaptureStateBase64(),
-                Parameters = vst.Parameters.ToDictionary(parameter => parameter.Name, parameter => parameter.Get()),
             };
+            AddFiniteParameters(vstEntry.Parameters, vst.Parameters);
+            return vstEntry;
         }
 
         if (processor is ChainProcessor chain)
@@ -308,10 +312,7 @@ public static class PresetSerializer
             };
             if (processor is IParameterizedProcessor irParameters)
             {
-                foreach (var parameter in irParameters.Parameters)
-                {
-                    irEntry.Parameters[parameter.Name] = parameter.Get();
-                }
+                AddFiniteParameters(irEntry.Parameters, irParameters.Parameters);
             }
 
             return irEntry;
@@ -331,10 +332,7 @@ public static class PresetSerializer
         var entry = new PresetProcessor { TypeId = processor.TypeId };
         if (processor is IParameterizedProcessor parameterized)
         {
-            foreach (var parameter in parameterized.Parameters)
-            {
-                entry.Parameters[parameter.Name] = parameter.Get();
-            }
+            AddFiniteParameters(entry.Parameters, parameterized.Parameters);
         }
 
         if (processor is INoiseProfileProcessor noiseProfile)
@@ -343,6 +341,24 @@ public static class PresetSerializer
         }
 
         return entry;
+    }
+
+    /// <summary>
+    /// Skips non-finite values so a broken VST3/parameter cannot make the whole
+    /// session or preset fail to serialize.
+    /// </summary>
+    private static void AddFiniteParameters(
+        Dictionary<string, float> target,
+        IReadOnlyList<AudioParameter> parameters)
+    {
+        foreach (var parameter in parameters)
+        {
+            float value = parameter.Get();
+            if (float.IsFinite(value))
+            {
+                target[parameter.Name] = value;
+            }
+        }
     }
 
     /// <summary>

@@ -9,6 +9,9 @@ public sealed class OutputNode : IDisposable
     private readonly MMDevice _device;
     private WasapiPlayer? _wasapiOut;
     private OutputWaveBuffer? _buffer;
+    private DirectGraphProvider? _directProvider;
+    private float[] _directMix = Array.Empty<float>();
+    private byte[] _directBytes = Array.Empty<byte>();
     private Thread? _pumpThread;
     private volatile bool _running;
     private AudioWatchdogToken? _watchdog;
@@ -46,6 +49,12 @@ public sealed class OutputNode : IDisposable
     /// <summary>Try IAudioClient3 low-latency shared mode before normal shared mode.</summary>
     public static volatile bool LowLatencyWasapi = true;
 
+    /// <summary>Render graph blocks directly in the WASAPI callback (low-latency mode).</summary>
+    public static volatile bool DirectGraphOutput;
+
+    /// <summary>Try exclusive-mode WASAPI when possible.</summary>
+    public static volatile bool ExclusiveMode;
+
     /// <summary>Look-ahead frames used by the master clip guard.</summary>
     public static volatile int ClipGuardLookaheadFrames = 64;
 
@@ -55,6 +64,7 @@ public sealed class OutputNode : IDisposable
     internal bool BypassClipGuardForTest { get; set; }
 
     private readonly ClipGuard _clipGuard = new();
+    private readonly ClipGuard _nativeClipGuard = new();
     private const int SampleRate = 48000;
 
     /// <summary>True when this output records to a file rather than a device.</summary>
@@ -135,6 +145,8 @@ public sealed class OutputNode : IDisposable
     private float _engineLastLeft;
     private float _engineLastRight;
     private readonly OutputDriftResampler _outputResampler = new();
+    private readonly OutputDriftResampler _nativeDriftResampler = new();
+    private bool _nativeDriftActive;
     private bool _outputClockResampler;
 
     internal int ElasticTargetFrames { get; set; }
@@ -267,9 +279,13 @@ public sealed class OutputNode : IDisposable
         get
         {
             double queued = _buffer?.BufferedDuration.TotalMilliseconds ?? 0;
-            double guard = _nativeSource == null && ClipGuardEnabled && !BypassClipGuardForTest
-                ? _clipGuard.LatencySamples * 1000.0 / SampleRate
-                : 0;
+            double guard = 0;
+            if (ClipGuardEnabled && !BypassClipGuardForTest)
+            {
+                guard = _nativeSource != null
+                    ? _nativeClipGuard.LatencySamples * 1000.0 / Math.Max(1, _nativeSampleRate)
+                    : _clipGuard.LatencySamples * 1000.0 / SampleRate;
+            }
             return _outputLatencyMs + queued + _chainLatencyMs + guard +
                    (UseGraphEngine ? EngineBufferedMs : 0);
         }
@@ -680,6 +696,12 @@ public sealed class OutputNode : IDisposable
             }
 
             _nativeFaultReported = false;
+            _nativeClipGuard.ConfigureSampleRate(pumpRate);
+            _nativeClipGuard.SetLookahead(Math.Clamp(
+                (int)Math.Round(ClipGuardLookaheadFrames * pumpRate / 48000.0), 1, 256));
+            _nativeClipGuard.Reset();
+            _nativeDriftResampler.Reset();
+            _nativeDriftActive = false;
         }
 
         _outputSampleRate = IsFileRecorder ? recordRate : pumpRate;
@@ -694,6 +716,7 @@ public sealed class OutputNode : IDisposable
         _outputClockLastTicks = 0;
         _startedAt = Environment.TickCount64;
         _lastUnderrunTick = 0;
+        _lastPenaltyDecayTick = 0;
         _underrunBurst = 0;
         _latencyDowngrades = 0;
         _latencyPenaltyMs = 0;
@@ -745,34 +768,30 @@ public sealed class OutputNode : IDisposable
             // float too — a PCM32 format would reinterpret the float bit patterns
             // as integers and play noise instead of audio.
             var format = WaveFormat.CreateIeeeFloatWaveFormat(pumpRate, pumpChannels);
+            bool direct = DirectGraphOutput && UseGraphEngine && _nativeSource == null;
+            IWaveProvider provider;
 
-            // Keep only a small cushion so we don't add latency. DiscardOnBufferOverflow
-            // makes the render pull fresh audio instead of falling further behind.
-            _buffer = new OutputWaveBuffer(format, 120);
+            if (direct)
+            {
+                _directMix = new float[8192 * 2];
+                _directBytes = new byte[_directMix.Length * sizeof(float)];
+                _directProvider = new DirectGraphProvider(this, format);
+                provider = _directProvider;
+            }
+            else
+            {
+                // Keep only a small cushion so we don't add latency. DiscardOnBufferOverflow
+                // makes the render pull fresh audio instead of falling further behind.
+                _buffer = new OutputWaveBuffer(format, 120);
+                provider = _buffer;
+            }
 
             {
-                // Ask WASAPI for a low-latency shared-mode stream via IAudioClient3.
-                // If the device can't grant it, WasapiPlayer transparently falls back
-                // to standard shared mode and reports the period it actually got.
-                var builder = new WasapiPlayerBuilder()
-                    .WithDevice(_device)
-                    .WithSharedMode()
-                    .WithEventSync();
-                if (LowLatencyWasapi)
-                {
-                    builder = builder.WithLowLatency();
-                }
-
-                // Ask for the smallest period the endpoint actually supports
-                // instead of assuming 3 ms everywhere.
-                _wasapiOut = builder.WithLatency(ChooseWasapiLatencyMs()).Build();
-
+                _wasapiOut = OpenWasapiOutput(provider, ExclusiveMode);
                 _wasapiOut.PlaybackStopped += OnPlaybackStopped;
-                _wasapiOut.Init(_buffer);
-                _wasapiOut.Play();
 
                 // These reflect what the engine actually granted, so read them only
-                // after Init/Play — before that they report the requested defaults.
+                // after Init — before that they report the requested defaults.
                 if (!_wasapiOut.LowLatencyActive &&
                     _wasapiOut.LowLatencyUnavailableReason is { Length: > 0 } reason)
                 {
@@ -793,6 +812,17 @@ public sealed class OutputNode : IDisposable
                     ResetFailedStart();
                     return;
                 }
+
+                if (direct)
+                {
+                    _running = true;
+                    RefreshRoutes();
+                    Ruse.App.Diagnostics.AppLog.Info($"Output '{Title}': direct graph callback at {_outputLatencyMs:0.0} ms endpoint latency.");
+                    _wasapiOut.Play();
+                    return;
+                }
+
+                _wasapiOut.Play();
             }
         }
 
@@ -844,6 +874,9 @@ public sealed class OutputNode : IDisposable
             }
         }
         _buffer = null;
+        _directProvider = null;
+        _directMix = Array.Empty<float>();
+        _directBytes = Array.Empty<byte>();
         var recorder = _recorder;
         _recorder = null;
         _recorderSkipFrames = 0;
@@ -854,7 +887,7 @@ public sealed class OutputNode : IDisposable
 
     private void PumpLoop(int sampleRate, int channels)
     {
-        using var mmcss = MmcssScope.Enter();
+        using var mmcss = MmcssScope.Enter(priority: AvrtPriority.Critical);
         bool native = _nativeSource != null;
         int framesPerChunk = native
             ? Math.Max(1, (int)Math.Round(sampleRate * 0.005))
@@ -980,6 +1013,63 @@ public sealed class OutputNode : IDisposable
         }
     }
 
+    private WasapiPlayer OpenWasapiOutput(IWaveProvider provider, bool exclusive)
+    {
+        try
+        {
+            return Open(exclusive);
+        }
+        catch (Exception ex) when (exclusive)
+        {
+            Ruse.App.Diagnostics.AppLog.Warning(
+                $"Output '{Title}': exclusive mode unavailable; using shared mode. {ex.Message}");
+            return Open(false);
+        }
+
+        WasapiPlayer Open(bool wantExclusive)
+        {
+            var builder = new WasapiPlayerBuilder()
+                .WithDevice(_device)
+                .WithEventSync()
+                .WithMmcssThreadPriority("Pro Audio");
+
+            if (wantExclusive)
+            {
+                builder = builder
+                    .WithExclusiveMode()
+                    .WithLatency(Math.Clamp(ChooseWasapiLatencyMs(), 3, 10));
+            }
+            else
+            {
+                builder = builder.WithSharedMode();
+                if (LowLatencyWasapi)
+                {
+                    builder = builder.WithLowLatency();
+                }
+
+                builder = builder.WithLatency(ChooseWasapiLatencyMs());
+            }
+
+            WasapiPlayer player = builder.Build();
+            try
+            {
+                player.Init(provider);
+                if (wantExclusive)
+                {
+                    Ruse.App.Diagnostics.AppLog.Info(
+                        $"Output '{Title}': exclusive WASAPI stream opened at {player.LatencyMilliseconds} ms.");
+                }
+
+                return player;
+            }
+            catch
+            {
+                player.Dispose();
+                throw;
+            }
+        }
+    }
+
     private int ChooseWasapiLatencyMs()
     {
         try
@@ -1016,6 +1106,7 @@ public sealed class OutputNode : IDisposable
     {
         get
         {
+            DecayLatencyPenalty();
             int manualMs = AudioEngineConfig.OutputBufferManualMs;
             if (manualMs > 0)
             {
@@ -1107,6 +1198,7 @@ public sealed class OutputNode : IDisposable
     private long _outputClockLastTicks;
     private long _startedAt;
     private long _lastUnderrunTick;
+    private long _lastPenaltyDecayTick;
     private int _underrunBurst;
     private int _latencyDowngrades;
     private double _latencyPenaltyMs;
@@ -1222,7 +1314,24 @@ public sealed class OutputNode : IDisposable
             }
         }
 
-        if (sourceChannels == channels)
+        bool driftCorrection = sourceChannels == channels &&
+            (_nativeDriftActive || (double.IsFinite(source.DriftPpm) && Math.Abs(source.DriftPpm) > 5));
+        if (driftCorrection)
+        {
+            if (!_nativeDriftActive)
+            {
+                _nativeDriftActive = true;
+                _nativeDriftResampler.Reset();
+                ThreadPool.QueueUserWorkItem(_ =>
+                    Ruse.App.Diagnostics.AppLog.Info(
+                        $"Output '{Title}': native clock drift {source.DriftPpm:0.0} ppm; enabling drift resampler."));
+            }
+
+            double ratio = 1.0 + (Math.Clamp(source.DriftPpm, -500.0, 500.0) * 1e-6);
+            _nativeDriftResampler.Process(
+                subscription.Buffer, mix.AsSpan(0, outFrames * channels), channels, ratio);
+        }
+        else if (sourceChannels == channels)
         {
             int read = subscription.Read(mix);
             if (read < mix.Length)
@@ -1322,7 +1431,16 @@ public sealed class OutputNode : IDisposable
             }
         }
 
-        ClipGuardActive = false;
+        if (ClipGuardEnabled && !BypassClipGuardForTest)
+        {
+            _nativeClipGuard.Process(mix.AsSpan(0, outFrames * channels), outFrames);
+            ClipGuardActive = _nativeClipGuard.Engaged;
+        }
+        else
+        {
+            ClipGuardActive = false;
+        }
+
         double sumLeft = 0;
         double sumRight = 0;
         float peak = 0;
@@ -1441,6 +1559,120 @@ public sealed class OutputNode : IDisposable
         }
     }
 
+    private void ReadDirect(Span<byte> destination)
+    {
+        int frameBytes = sizeof(float) * 2;
+        int frames = destination.Length / frameBytes;
+        if (frames <= 0 || _directMix.Length < frames * 2)
+        {
+            destination.Clear();
+            return;
+        }
+
+        try
+        {
+            FillDirectMix(frames);
+            int bytes = frames * frameBytes;
+            Buffer.BlockCopy(_directMix, 0, _directBytes, 0, bytes);
+            _directBytes.AsSpan(0, bytes).CopyTo(destination[..bytes]);
+            if (destination.Length > bytes)
+            {
+                destination[bytes..].Clear();
+            }
+
+            BytesWritten += bytes;
+            ReportOutputClock(bytes, 2);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            destination.Clear();
+            ThreadPool.QueueUserWorkItem(_ =>
+                Ruse.App.Diagnostics.AppLog.Warning(
+                    $"Output '{Title}' direct callback failed: {ex.Message}"));
+        }
+    }
+
+    private void FillDirectMix(int frames)
+    {
+        const int channels = 2;
+        int sampleCount = frames * channels;
+        int availableFrames = _engineBuffer.AvailableToRead / channels;
+        int maxFrames = 48000 * MaxEngineLatencyMs / 1000;
+        if (!IsFileRecorder && availableFrames > maxFrames)
+        {
+            int keepFrames = 48000 * TrimEngineLatencyMs / 1000;
+            int dropped = _engineBuffer.Skip((availableFrames - keepFrames) * channels) / channels;
+            if (dropped > 0)
+            {
+                _engineTrimFade = EngineTrimFadeFrames;
+            }
+        }
+
+        if (_outputClockResampler && _outputPpmReady && Math.Abs(_outputPpm) > 5)
+        {
+            _outputResampler.Process(
+                _engineBuffer, _directMix.AsSpan(0, sampleCount), channels,
+                1.0 + (_outputPpm * 1e-6));
+            _renderedOnce = true;
+            WakeEngine();
+            return;
+        }
+
+        int read = _engineBuffer.Read(_directMix.AsSpan(0, sampleCount));
+        if (read < sampleCount)
+        {
+            _directMix.AsSpan(read, sampleCount - read).Clear();
+            if (_renderedOnce)
+            {
+                Underruns++;
+                RegisterUnderrun();
+            }
+
+            ShortReadFrames += (sampleCount - read) / channels;
+        }
+
+        if (_engineTrimFade > 0 && read >= channels)
+        {
+            int readFrames = read / channels;
+            int fade = Math.Min(readFrames, _engineTrimFade);
+            for (int frame = 0; frame < fade; frame++)
+            {
+                float t = 1f - ((_engineTrimFade - frame) / (float)EngineTrimFadeFrames);
+                int index = frame * channels;
+                _directMix[index] = _engineLastLeft + ((_directMix[index] - _engineLastLeft) * t);
+                _directMix[index + 1] = _engineLastRight + ((_directMix[index + 1] - _engineLastRight) * t);
+            }
+
+            _engineTrimFade -= fade;
+        }
+
+        if (read >= channels)
+        {
+            _engineLastLeft = _directMix[read - 2];
+            _engineLastRight = _directMix[read - 1];
+        }
+
+        _renderedOnce = true;
+        WakeEngine();
+    }
+
+    private void WakeEngine()
+    {
+        var wake = _engineWake;
+        if (wake == null)
+        {
+            return;
+        }
+
+        try
+        {
+            wake();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+    }
+
     private void RegisterUnderrun()
     {
         if (!UseGraphEngine || _latencyDowngrades >= 3)
@@ -1474,9 +1706,29 @@ public sealed class OutputNode : IDisposable
         _underrunBurst = 0;
         _latencyDowngrades++;
         _latencyPenaltyMs += 4;
-        Ruse.App.Diagnostics.AppLog.Info(
+        string message =
             $"Output '{Title}' is underrunning; adding 4 ms of latency cushion " +
-            $"(total +{_latencyPenaltyMs:0} ms, step {_latencyDowngrades}/3).");
+            $"(total +{_latencyPenaltyMs:0} ms, step {_latencyDowngrades}/3).";
+        ThreadPool.QueueUserWorkItem(_ => Ruse.App.Diagnostics.AppLog.Info(message));
+    }
+
+    private void DecayLatencyPenalty()
+    {
+        if (_latencyPenaltyMs <= 0)
+        {
+            return;
+        }
+
+        long now = Environment.TickCount64;
+        long stableSince = Math.Max(_startedAt, _lastUnderrunTick);
+        if (now - stableSince < 30_000 || now - _lastPenaltyDecayTick < 30_000)
+        {
+            return;
+        }
+
+        _lastPenaltyDecayTick = now;
+        _latencyPenaltyMs = Math.Max(0, _latencyPenaltyMs - 2);
+        _latencyDowngrades = Math.Max(0, _latencyDowngrades - 1);
     }
 
     private void WriteSink(float[] mix, byte[] byteBuffer, int channels)
@@ -1749,6 +2001,9 @@ public sealed class OutputNode : IDisposable
     /// <summary>Rate the endpoint renders at.</summary>
     public int EndpointSampleRate => _outputSampleRate > 0 ? _outputSampleRate : 48000;
 
+    /// <summary>True when the 48 kHz graph is being converted for the endpoint.</summary>
+    public bool IsEndpointResampling => !IsNativePassthrough && EndpointSampleRate != AudioEngineConfig.SampleRate;
+
     private void OnPlaybackStopped(object? sender, StoppedEventArgs e)
     {
         // A handle that was just replaced can raise its stop event after the
@@ -1857,6 +2112,7 @@ public sealed class OutputNode : IDisposable
         }
 
         _buffer = null;
+        _directProvider = null;
         _meterLevel = 0;
         _meterLevelLeft = 0;
         _meterLevelRight = 0;
@@ -1923,6 +2179,31 @@ public sealed class OutputNode : IDisposable
         }
 
         _routeSnapshot = Array.Empty<Route>();
+    }
+
+    private sealed class DirectGraphProvider : IWaveProvider
+    {
+        private readonly OutputNode _owner;
+
+        public DirectGraphProvider(OutputNode owner, WaveFormat format)
+        {
+            _owner = owner;
+            WaveFormat = format;
+        }
+
+        public WaveFormat WaveFormat { get; }
+
+        public int Read(byte[] buffer, int offset, int count)
+        {
+            _owner.ReadDirect(buffer.AsSpan(offset, count));
+            return count;
+        }
+
+        public int Read(Span<byte> buffer)
+        {
+            _owner.ReadDirect(buffer);
+            return buffer.Length;
+        }
     }
 
     public sealed class Route : IDisposable

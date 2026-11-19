@@ -15,6 +15,7 @@ internal sealed partial class WebShellController
 
         if (!enabled)
         {
+            link.NativePreference = false;
             DisableNativeChainForLink(link);
             return;
         }
@@ -73,6 +74,7 @@ internal sealed partial class WebShellController
         if (enabled)
         {
             link.Native = true;
+            link.NativePreference = true;
             if (to.Output != null)
             {
                 _nativeFallbackSources.Remove(to.Id);
@@ -198,19 +200,19 @@ internal sealed partial class WebShellController
         return true;
     }
 
-    private bool RefreshNativeChain(OutputNode output)
+    private bool RefreshNativeChain(OutputNode output, bool quiet = false)
     {
         if (!TryBuildNativeChain(output, out var source, out var processors,
                 out _, out string reason))
         {
-            SetStatus(reason, isError: true);
+            if (!quiet) SetStatus(reason, isError: true);
             return false;
         }
 
         string? error = _graph.SetNativePassthrough(output, source!, true, processors);
         if (error != null)
         {
-            SetStatus(error, isError: true);
+            if (!quiet) SetStatus(error, isError: true);
             return false;
         }
 
@@ -424,6 +426,7 @@ internal sealed partial class WebShellController
 
         if (!enabled)
         {
+            link.NativePreference = false;
             DisableNativeChainForLink(link);
             return;
         }
@@ -442,10 +445,91 @@ internal sealed partial class WebShellController
         }
 
         link.Native = enabled;
+        link.NativePreference = enabled;
         if (publish)
         {
             PublishLinkState(id);
             PublishTelemetry(force: true);
+        }
+    }
+
+    private string? NativeBlockedReason(LinkEntry link)
+    {
+        if (link.Native || link.Kind != "direct" || !_settings.PreferNativePassthrough)
+        {
+            return null;
+        }
+
+        if (link.NativePreference == false)
+        {
+            return "Native passthrough is disabled for this cable.";
+        }
+
+        if (!_nodes.TryGetValue(link.From, out var from) || from.Source == null ||
+            !_nodes.TryGetValue(link.To, out var to) || to.Output == null)
+        {
+            return "Native passthrough needs a source and an output.";
+        }
+
+        if (!link.Enabled)
+        {
+            return "The cable is disabled.";
+        }
+
+        if (Math.Abs(link.Gain - 1f) > 1e-4f)
+        {
+            return "The cable is not at 100% gain.";
+        }
+
+        if (_links.Count(item => item.To == link.To) != 1)
+        {
+            return "Native passthrough needs the only route to this output.";
+        }
+
+        return to.Output.CanNativePassthrough(from.Source, out string reason) ? null : reason;
+    }
+
+    private void AutoEnableNativeRoutes()
+    {
+        if (!_settings.PreferNativePassthrough)
+        {
+            return;
+        }
+
+        foreach (var outputEntry in _nodes.Values.Where(entry => entry.Output != null).ToList())
+        {
+            var output = outputEntry.Output!;
+            if (output.IsRecording)
+            {
+                continue;
+            }
+
+            var direct = _links
+                .Where(link => link.To == outputEntry.Id && link.Kind == "direct")
+                .ToList();
+            if (direct.Count != 1)
+            {
+                continue;
+            }
+
+            var link = direct[0];
+            if (link.Native || link.NativePreference == false ||
+                !link.Enabled || Math.Abs(link.Gain - 1f) > 1e-4f ||
+                !_nodes.TryGetValue(link.From, out var from) || from.Source == null)
+            {
+                continue;
+            }
+
+            if (!output.CanNativePassthrough(from.Source, out _))
+            {
+                continue;
+            }
+
+            link.Native = true;
+            if (!RefreshNativeChain(output, quiet: true))
+            {
+                link.Native = false;
+            }
         }
     }
 

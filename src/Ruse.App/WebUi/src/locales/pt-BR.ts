@@ -587,6 +587,8 @@ export const ptBR: Record<string, string> = {
   "Clip guard active": "Clip guard ativo",
   "Audio engine": "Motor de áudio",
   "Low-latency WASAPI": "WASAPI de baixa latência",
+  "Exclusive output": "Saída exclusiva",
+  "Give Ruse sole access to the output device. Other applications and system sounds may stop playing; falls back to shared mode if unavailable.": "Dar ao Ruse acesso exclusivo ao dispositivo de saída. Outros aplicativos e sons do sistema podem parar; volta ao modo compartilhado se indisponível.",
   "Try Windows low-latency shared mode before falling back to normal shared mode. Takes effect the next time routing starts.": "Tentar o modo compartilhado de baixa latência do Windows antes de voltar ao modo compartilhado normal. Vale no próximo início do roteamento.",
   "Source fill": "Preenchimento da fonte",
   "Output ring": "Anel de saída",

@@ -43,6 +43,12 @@ public sealed class FormatConverter
     /// <summary>Rate the converter produces.</summary>
     public int TargetRate { get; }
 
+    /// <summary>True when the source rate differs from the target rate.</summary>
+    public bool IsResampling => _needsResample;
+
+    /// <summary>Approximate kernel group delay in milliseconds.</summary>
+    public double LatencyMilliseconds => _needsResample ? Center * 1000.0 / Math.Max(1, _sourceRate) : 0;
+
     public FormatConverter(int sourceChannels, int sourceSampleRate, int targetSampleRate = TargetSampleRate)
     {
         _srcChannels = Math.Max(1, sourceChannels);

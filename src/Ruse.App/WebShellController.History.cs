@@ -437,6 +437,7 @@ internal sealed partial class WebShellController
         BusB = link.BusB,
         Inverted = link.Inverted,
         Native = link.Native,
+        NativePreference = link.NativePreference,
     };
 
     private void RestoreLink(LinkEntry link)

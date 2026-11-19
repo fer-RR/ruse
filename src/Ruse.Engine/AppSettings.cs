@@ -147,6 +147,12 @@ public sealed class AppSettings
     /// <summary>Ask WASAPI for an IAudioClient3 low-latency shared stream.</summary>
     public bool LowLatencyWasapi { get; set; } = true;
 
+    /// <summary>Try exclusive-mode output; falls back to shared mode.</summary>
+    public bool ExclusiveOutput { get; set; }
+
+    /// <summary>Automatically use native passthrough when the route is eligible.</summary>
+    public bool PreferNativePassthrough { get; set; } = true;
+
     /// <summary>Limit output peaks before hard clipping.</summary>
     public bool ClipGuard { get; set; } = true;
 
