@@ -71,6 +71,9 @@ public static class PresetValidator
             source.X = Finite(source.X);
             source.Y = Finite(source.Y);
             source.FileSpeed = Finite(source.FileSpeed, 1f);
+            source.FileRootNote = Math.Clamp(source.FileRootNote, 0, 127);
+            source.FileTargetNote = Math.Clamp(source.FileTargetNote, 0, 127);
+            source.FilePitchCents = (float)Math.Clamp(Finite(source.FilePitchCents), -100.0, 100.0);
             source.ToneFrequency = Finite(source.ToneFrequency, 1000f);
             source.ToneLevelDb = Finite(source.ToneLevelDb, -18f);
             source.MetronomeBpm = Finite(source.MetronomeBpm, 120f);

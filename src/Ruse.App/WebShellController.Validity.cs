@@ -84,7 +84,8 @@ internal sealed partial class WebShellController
     private static bool TryGetNodeInvalidReason(
         NodeEntry entry,
         ActiveEndpointIds active,
-        out string reason)
+        out string reason,
+        bool includeFiles = true)
     {
         reason = "";
 
@@ -97,7 +98,8 @@ internal sealed partial class WebShellController
                 return true;
             }
         }
-        else if (entry.Source is { Kind: SourceKind.File } file &&
+        else if (includeFiles &&
+                 entry.Source is { Kind: SourceKind.File } file &&
                  !string.IsNullOrWhiteSpace(file.FilePath) &&
                  !File.Exists(file.FilePath))
         {

@@ -37,7 +37,9 @@ internal sealed class ControlServer : IDisposable
     private string? _lastGraphJson;
     private long _graphVersion;
     private int _port;
-    private bool _disposed;
+    private readonly object _stopLock = new();
+    private Task? _stopTask;
+    private volatile bool _stopping;
 
     public ControlServer(WebShellController owner)
     {
@@ -255,7 +257,7 @@ internal sealed class ControlServer : IDisposable
             }, Json));
 
             var buffer = new byte[16 * 1024];
-            while (socket.State == WebSocketState.Open && !_disposed)
+            while (socket.State == WebSocketState.Open && !_stopping)
             {
                 string? text = await ReceiveTextAsync(socket, buffer, context.RequestAborted);
                 if (text == null)
@@ -490,14 +492,22 @@ internal sealed class ControlServer : IDisposable
         }
     }
 
+    public Task StopAsync()
+    {
+        lock (_stopLock)
+        {
+            return _stopTask ??= StopCoreAsync();
+        }
+    }
+
     public void Dispose()
     {
-        if (_disposed)
-        {
-            return;
-        }
+        _ = StopAsync();
+    }
 
-        _disposed = true;
+    private async Task StopCoreAsync()
+    {
+        _stopping = true;
         foreach (var client in _clients.Values)
         {
             client.Dispose();
@@ -509,9 +519,10 @@ internal sealed class ControlServer : IDisposable
         _app = null;
         if (app != null)
         {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             try
             {
-                app.StopAsync().Wait(TimeSpan.FromSeconds(2));
+                await app.StopAsync(timeout.Token).ConfigureAwait(false);
             }
             catch
             {
@@ -519,7 +530,7 @@ internal sealed class ControlServer : IDisposable
 
             try
             {
-                app.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                await app.DisposeAsync().ConfigureAwait(false);
             }
             catch
             {

@@ -109,6 +109,12 @@ internal sealed partial class WebShellController
             SetStatus($"Existing recording kept; new take saved as {Path.GetFileName(candidate)}.");
         }
 
+        if (!DiskSpace.Ensure(output.RecordingPath, DiskSpace.RecordingReserveBytes, out string spaceError))
+        {
+            SetStatus("Not enough disk space to start recording: " + spaceError, isError: true);
+            return false;
+        }
+
         output.Start();
         if (output.IsRecording)
         {

@@ -20,9 +20,22 @@ internal static class ModelStorage
                 return Path.Combine(AppSettings.OverrideDirectory, "models");
             }
 
+            if (AppSettings.ConfiguredModelsDirectory is { Length: > 0 } custom)
+            {
+                return custom;
+            }
+
+            return DefaultRoot;
+        }
+    }
+
+    public static string DefaultRoot
+    {
+        get
+        {
             string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             return string.IsNullOrWhiteSpace(local)
-                ? Path.Combine(AppSettings.Directory, "models")
+                ? Path.Combine(AppSettings.DefaultDataDirectory, "models")
                 : Path.Combine(local, "Ruse", "models");
         }
     }

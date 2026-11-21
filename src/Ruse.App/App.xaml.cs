@@ -39,7 +39,7 @@ public partial class App : Application
         "--ring-test", "--clip-guard-test", "--sidechain-test", "--align-test",
         "--route-test", "--device-test", "--monitor-test", "--graph-test",
         "--fanout-test", "--sessions", "--delay-test", "--latency-test",
-        "--record-test", "--web-test", "--selftest", "--bench",
+        "--record-test", "--web-test", "--chat-test", "--selftest", "--bench",
         "--vst3-bench-test", "--vst3-editor-test", "--vst3-isolated-test",
         "--vst3-route-test", "--vst3-scan-test", "--vst3-test",
         "--transcription-test", "--translation-e2e-test", "--cable-test",
@@ -835,6 +835,23 @@ public partial class App : Application
             var webWindow = new WebMainWindow();
             MainWindow = webWindow;
             webWindow.Show();
+            return;
+        }
+
+        if (e.Args.Contains("--chat-test", StringComparer.OrdinalIgnoreCase))
+        {
+            string result;
+            try
+            {
+                result = ChatSelfTest.Run();
+            }
+            catch (Exception ex)
+            {
+                result = "FAILED: " + ex;
+            }
+
+            WriteResult("chat-test.txt", $"Ruse chat test: {result}");
+            Shutdown();
             return;
         }
 

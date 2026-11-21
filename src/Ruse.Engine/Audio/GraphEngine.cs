@@ -33,6 +33,26 @@ internal sealed class GraphEngine : IDisposable
         }
     }
 
+    internal long TapDroppedFrames
+    {
+        get
+        {
+            var compiled = _compiled;
+            if (compiled == null)
+            {
+                return 0;
+            }
+
+            long total = 0;
+            for (int i = 0; i < compiled.TapWorkers.Count; i++)
+            {
+                total += compiled.TapWorkers[i].DroppedFrames;
+            }
+
+            return total;
+        }
+    }
+
     internal GraphEngine(AudioGraph graph)
     {
         _graph = graph;
@@ -109,6 +129,7 @@ internal sealed class GraphEngine : IDisposable
     internal bool Stop()
     {
         Thread? thread;
+        CompiledGraph? old;
         lock (_sync)
         {
             if (!_running && _thread == null)
@@ -119,7 +140,7 @@ internal sealed class GraphEngine : IDisposable
             _running = false;
             thread = _thread;
             _thread = null;
-            _compiled?.Dispose();
+            old = _compiled;
             _compiled = null;
             foreach (var output in _graph.Outputs)
             {
@@ -132,6 +153,11 @@ internal sealed class GraphEngine : IDisposable
             _wake.Set();
             _watchdog?.Dispose();
             _watchdog = null;
+        }
+
+        if (old != null)
+        {
+            RetireCompiled(old, null);
         }
 
         return thread == null || thread.Join(1000);
@@ -199,14 +225,40 @@ internal sealed class GraphEngine : IDisposable
             return;
         }
 
-        old.Dispose();
-        if (afterDrain != null)
+        RetireCompiled(old, afterDrain);
+    }
+
+    private static void RetireCompiled(CompiledGraph graph, Action? afterDrain)
+    {
+        ThreadPool.QueueUserWorkItem(_ =>
         {
-            old.Retire(afterDrain);
-        }
+            graph.Dispose();
+            if (afterDrain != null)
+            {
+                graph.Retire(afterDrain);
+            }
+        });
     }
 
     /// <summary>Serializes a graph mutation with snapshot swaps.</summary>
+    internal void RetireCurrent(Action action)
+    {
+        CompiledGraph? current;
+        lock (_sync)
+        {
+            current = _compiled;
+        }
+
+        if (current != null)
+        {
+            current.Retire(action);
+        }
+        else
+        {
+            action();
+        }
+    }
+
     internal void RunExclusive(Action action)
     {
         lock (_sync)
@@ -324,6 +376,7 @@ internal sealed class GraphEngine : IDisposable
 
                 if (!compiled.TryAcquire())
                 {
+                    Thread.Yield();
                     continue;
                 }
 
@@ -349,6 +402,10 @@ internal sealed class GraphEngine : IDisposable
                             rendered = true;
                         }
                     }
+                }
+                catch (Exception ex)
+                {
+                    AudioFaultLog.ReportGraphFault(ex);
                 }
                 finally
                 {
@@ -436,7 +493,7 @@ internal sealed class GraphEngine : IDisposable
                 return true;
             }
 
-            Interlocked.Decrement(ref _leases);
+            Release();
             return false;
         }
 
@@ -1142,6 +1199,7 @@ internal sealed class GraphEngine : IDisposable
                 _dry = new float[floats];
                 _input = new float[floats];
                 _wet = modifier.Enabled ? 1f : 0f;
+                modifier.ClearChainFault();
             }
 
             public List<NodeInput> Inputs { get; } = new();
@@ -1487,6 +1545,7 @@ internal sealed class GraphEngine : IDisposable
                         if (!_chainFaulted)
                         {
                             _chainFaulted = true;
+                            _modifier.ReportChainFault();
                             AudioFaultLog.ReportEffectFault(_modifier.Title, ex);
                         }
 
@@ -1815,6 +1874,8 @@ internal sealed class GraphEngine : IDisposable
         private readonly int[] _loudnessTaps;
         private readonly int[] _noteTaps;
         private readonly FloatRingBuffer _ring = new(SampleRate * Channels * 2);
+        private long _droppedFrames;
+        private int _trimRequested;
         private readonly Thread _thread;
         private volatile bool _running = true;
         private readonly AudioWatchdogToken _watchdog;
@@ -1868,9 +1929,22 @@ internal sealed class GraphEngine : IDisposable
             _thread.Start();
         }
 
+        public long DroppedFrames => Interlocked.Read(ref _droppedFrames);
+
         public void Feed(ReadOnlySpan<float> block)
         {
-            _ring.Write(block);
+            int written = _ring.Write(block);
+            if (written >= block.Length)
+            {
+                return;
+            }
+
+            int dropped = (block.Length - written) / Channels;
+            if (dropped > 0)
+            {
+                Interlocked.Add(ref _droppedFrames, dropped);
+                Interlocked.Exchange(ref _trimRequested, 1);
+            }
         }
 
         private void Loop()
@@ -1880,6 +1954,16 @@ internal sealed class GraphEngine : IDisposable
             while (_running)
             {
                 _watchdog.Beat();
+                if (Interlocked.Exchange(ref _trimRequested, 0) != 0)
+                {
+                    int available = _ring.AvailableToRead;
+                    int keep = Math.Min(available, BlockFloats * 2);
+                    if (available > keep)
+                    {
+                        _ring.Skip(available - keep);
+                    }
+                }
+
                 int read = _ring.Read(block);
                 if (read <= 0)
                 {

@@ -3,8 +3,8 @@ import type { CSSProperties } from 'react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
-  AppWindow, Activity, AudioLines, Check, ChevronDown, ChevronUp, Combine, Copy, FileAudio, GripVertical, Languages, Layers3, Mic, MonitorSpeaker,
-  Play, Power, Puzzle, Radio, Settings, SkipForward, SlidersHorizontal, Square, Timer, Volume2, VolumeX, X,
+  AppWindow, Activity, AudioLines, Check, ChevronDown, ChevronUp, ClipboardPaste, Combine, Copy, FileAudio, FileText, FolderOpen, GripVertical, Languages, Layers3, Mic, MonitorSpeaker,
+  Play, Power, Puzzle, Radio, Save, Settings, SkipForward, SlidersHorizontal, Square, Timer, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
 import { formatGainDb, nextVolumeValue } from '../gain';
@@ -32,6 +32,7 @@ import WaveformView from './WaveformView';
 import GraphicEqualizerView from './GraphicEqualizerView';
 import HearingProfileView from './HearingProfileView';
 import MixerControls from './MixerControls';
+import NetworkChat from './NetworkChat';
 
 const RECORD_FORMATS = [
   ['Wav24', 'WAV \u00B7 24-bit'],
@@ -41,6 +42,13 @@ const RECORD_FORMATS = [
   ['Flac', 'FLAC \u00B7 lossless'],
 ] as const;
 const RECORD_RATES = [44100, 48000, 96000] as const;
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
+const NOTE_OPTIONS = Array.from({ length: 128 }, (_, index) => index);
+
+function noteName(midi: number): string {
+  const note = Math.max(0, Math.min(127, Math.round(midi)));
+  return NOTE_NAMES[note % 12] + String(Math.floor(note / 12) - 1);
+}
 
 function FlavorIcon({ flavor }: { flavor: string }) {
   const props = { size: 14, strokeWidth: 1.8, 'aria-hidden': true } as const;
@@ -62,6 +70,7 @@ function FlavorIcon({ flavor }: { flavor: string }) {
     case 'vst3': return <Puzzle {...props} />;
     case 'analysis': return <AudioLines {...props} />;
     case 'mixer': return <Combine {...props} />;
+    case 'note': return <FileText {...props} />;
     default: return <SlidersHorizontal {...props} />;
   }
 }
@@ -128,6 +137,12 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
   const sliderValue = seekValue ?? (duration > 0 ? Math.round((position / duration) * 1000) : 0);
   const canSeek = hasFile && duration > 0 && (playing || paused);
   const analysis = node.fileAnalysis;
+  const rootNote = node.fileRootNote ?? 60;
+  const targetNote = node.fileTargetNote ?? 60;
+  const pitchCents = Math.round(node.filePitchCents ?? 0);
+  const transpose = targetNote - rootNote + pitchCents / 100;
+  const commitNote = (root: number, target: number, cents: number) =>
+    send('file-player-note', { id: node.id, root, target, cents });
   const showAnalysis = Boolean(analysis) && !analysisDismissed;
   const showAnalysisPanel = analyzing || showAnalysis || Boolean(node.fileAnalysisError);
 
@@ -239,6 +254,65 @@ function FilePlayerControls({ node, telemetry }: { node: RuseFlowNode['data']; t
           <span>{t('Loop')}</span>
         </label>
       </div>
+      <div className="file-player-note nodrag">
+        <label>
+          <span>{t('Root')}</span>
+          <select
+            value={rootNote}
+            onChange={event => {
+              const nextRoot = Number(event.target.value);
+              commitNote(nextRoot, Math.max(nextRoot - 24, Math.min(nextRoot + 24, targetNote)), pitchCents);
+            }}
+            title={t('Sample root note')}
+          >
+            {NOTE_OPTIONS.map(note => <option key={note} value={note}>{noteName(note)}</option>)}
+          </select>
+        </label>
+        <button
+          type="button"
+          className="icon-button compact"
+          title={t('Detect root note')}
+          aria-label={t('Detect root note')}
+          disabled={!hasFile}
+          onClick={() => send('file-player-detect-note', { id: node.id })}
+        ><Activity size={11} /></button>
+        <label>
+          <span>{t('Note')}</span>
+          <select
+            value={targetNote}
+            onChange={event => commitNote(rootNote, Number(event.target.value), pitchCents)}
+            title={t('Target note')}
+          >
+            {NOTE_OPTIONS
+              .filter(note => note >= rootNote - 24 && note <= rootNote + 24)
+              .map(note => <option key={note} value={note}>{noteName(note)}</option>)}
+          </select>
+        </label>
+        <label className="file-player-tape" title={t('Pitch and length follow each other')}>
+          <input
+            type="checkbox"
+            checked={node.fileTapeMode === true}
+            onChange={event => send('file-player-tape', { id: node.id, value: event.target.checked })}
+          />
+          <span>{t('Tape')}</span>
+        </label>
+        <label className="file-player-cents">
+          <span>{t('Fine')}</span>
+          <input
+            type="range"
+            min={-100}
+            max={100}
+            step={1}
+            value={pitchCents}
+            onChange={event => commitNote(rootNote, targetNote, Number(event.target.value))}
+            aria-label={t('Fine tune')}
+          />
+          <span>{pitchCents > 0 ? '+' : ''}{pitchCents}¢</span>
+        </label>
+        <span className="file-player-transpose" title={t('Transpose')}>
+          {transpose > 0.001 ? '+' : ''}{transpose.toFixed(2)} st
+        </span>
+      </div>
       {showAnalysisPanel && (
         <div className="file-analysis-panel" role="region" aria-label={t('File analysis')}>
           <div className="file-analysis-head">
@@ -326,7 +400,7 @@ function NetworkInputControls({ node }: { node: RuseFlowNode['data'] }) {
     <div className="network-controls nodrag">
       <label className="network-row">
         <span>{t('Listen IP')}</span>
-        <input value="0.0.0.0" readOnly />
+        <input className="nowheel" value="0.0.0.0" readOnly />
       </label>
       <label className="network-row">
         <span>{t('UDP port')}</span>
@@ -363,7 +437,7 @@ function NetworkOutputControls({ node }: { node: RuseFlowNode['data'] }) {
     <div className="network-controls nodrag">
       <label className="network-row">
         <span>{t('Destination IP')}</span>
-        <input value={host} onChange={event => setHost(event.target.value)} onBlur={commitHost} />
+        <input className="nowheel" value={host} onChange={event => setHost(event.target.value)} onBlur={commitHost} />
       </label>
       <label className="network-row">
         <span>{t('UDP port')}</span>
@@ -388,6 +462,186 @@ function NetworkOutputControls({ node }: { node: RuseFlowNode['data'] }) {
     </div>
   );
 }
+function TextNoteControls({ node }: { node: RuseFlowNode['data'] }) {
+  const { t } = useI18n();
+  const [text, setText] = useState(node.textContent ?? '');
+  const [copied, setCopied] = useState(false);
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (document.activeElement !== areaRef.current) {
+      setText(node.textContent ?? '');
+    }
+  }, [node.textContent]);
+
+  useEffect(() => {
+    if (text === (node.textContent ?? '')) {
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      send('text-note-text', { id: node.id, text });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [text, node.id, node.textContent]);
+
+  const commit = () => {
+    if (text !== (node.textContent ?? '')) {
+      send('text-note-text', { id: node.id, text });
+    }
+  };
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard?.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      setCopied(false);
+    }
+  };
+
+  const paste = async () => {
+    try {
+      const clipboard = await navigator.clipboard?.readText();
+      if (!clipboard) {
+        return;
+      }
+
+      const area = areaRef.current;
+      const start = area?.selectionStart ?? text.length;
+      const end = area?.selectionEnd ?? start;
+      const next = text.slice(0, start) + clipboard + text.slice(end);
+      setText(next);
+      requestAnimationFrame(() => {
+        area?.focus();
+        const position = start + clipboard.length;
+        area?.setSelectionRange(position, position);
+      });
+    } catch {
+      // Clipboard read can be denied; Ctrl+V still works.
+    }
+  };
+
+  const lines = text.length === 0 ? 1 : text.split('\n').length;
+  const words = text.trim().length === 0 ? 0 : text.trim().split(/\s+/).length;
+
+  return (
+    <>
+      <div className="text-note-body nodrag">
+        <div className="text-note-toolbar">
+          <span className="text-note-file" title={node.textFileName ?? ''}>
+            {node.textFileName || t('Unsaved note')}
+          </span>
+          <button type="button" className="icon-button compact" title={copied ? t('Copied') : t('Copy text')} aria-label={copied ? t('Copied') : t('Copy text')} onClick={copy}>
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+          </button>
+          <button type="button" className="icon-button compact" title={t('Paste text')} aria-label={t('Paste text')} onClick={paste}>
+            <ClipboardPaste size={12} />
+          </button>
+          <button type="button" className="icon-button compact" title={t('Load text')} aria-label={t('Load text')} onClick={() => send('text-note-load', { id: node.id })}>
+            <FolderOpen size={12} />
+          </button>
+          <button type="button" className="icon-button compact" title={t('Save text')} aria-label={t('Save text')} onClick={() => { commit(); send('text-note-commit', { id: node.id }); send('text-note-save', { id: node.id }); }}>
+            <Save size={12} />
+          </button>
+        </div>
+        <textarea
+          ref={areaRef}
+          className="text-note-input nowheel"
+          value={text}
+          maxLength={200000}
+          spellCheck
+          placeholder={t('Write notes, lyrics, or a script...')}
+          aria-label={t('Text note')}
+          onChange={event => setText(event.target.value)}
+          onBlur={() => { commit(); send('text-note-commit', { id: node.id }); }}
+        />
+        <div className="text-note-footer">
+          <span>{words} {t('words')}</span>
+          <span>{text.length} {t('characters')}</span>
+          <span>{lines} {t('lines')}</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function NetworkLinkControls({ node }: { node: RuseFlowNode['data'] }) {
+  const { t } = useI18n();
+  const telemetry = useNodeTelemetry(node.id);
+  const [host, setHost] = useState(node.networkHost ?? '127.0.0.1');
+  useEffect(() => setHost(node.networkHost ?? '127.0.0.1'), [node.networkHost]);
+  const commitHost = () => {
+    if (host.trim()) send('network-output-host', { id: node.id, value: host.trim() });
+  };
+  const voicePort = node.networkPort ?? 7890;
+  const textPort = node.chatPort ?? 7895;
+
+  return (
+    <div className="network-link nodrag">
+      <section className="network-card network-voice">
+        <header className="network-card-head">
+          <span className="network-card-icon"><Radio size={13} /></span>
+          <strong>{t('Voice')}</strong>
+          <span className={`network-pill ${node.muted ? '' : 'online'}`}>
+            <i />
+            {node.muted ? t('Disconnected') : t('Connected')}
+          </span>
+        </header>
+
+        <div className="network-field-grid">
+          <label className="network-field network-field-destination">
+            <span>{t('Destination IP')}</span>
+            <input className="nowheel" value={host} onChange={event => setHost(event.target.value)} onBlur={commitHost} />
+          </label>
+          <label className="network-field network-field-port">
+            <span>{t('Voice port')}</span>
+            <NumberField
+              value={voicePort}
+              min={1}
+              max={65535}
+              step={1}
+              onChange={value => send('network-voice-port', { id: node.id, value })}
+              ariaLabel={t('Voice port')}
+            />
+          </label>
+        </div>
+
+        {node.muted
+          ? <div className="network-note">{t('Disconnected')}</div>
+          : node.networkError
+            ? <div className="network-note error">{node.networkError}</div>
+            : <div className="network-note"><span className="network-note-dot" />{t('Voice in/out on UDP')} {voicePort} · {Math.round(node.networkBufferedMs ?? 0)} ms</div>}
+
+        {!node.muted && telemetry && ((telemetry.networkLostPackets ?? 0) > 0 ||
+          (telemetry.networkStreamResets ?? 0) > 0) && (
+          <div className="network-note error">
+            {t('Packets lost')} {telemetry.networkLostPackets ?? 0} · {t('Stream resets')} {telemetry.networkStreamResets ?? 0}
+          </div>
+        )}
+
+        <NetworkAddress node={node} />
+        <VolumeControl id={node.id} value={node.volume} muted={node.muted} />
+        <button
+          className={`network-connect ${node.muted ? 'off' : 'on'}`}
+          onClick={() => send('mute', { id: node.id, value: !node.muted })}
+        >
+          {node.muted ? <Volume2 size={13} /> : <VolumeX size={13} />}
+          {node.muted ? t('Connect voice') : t('Disconnect voice')}
+        </button>
+      </section>
+
+      <NetworkChat
+        nodeId={node.id}
+        port={textPort}
+        peerHost={host}
+        onPortChange={value => send('network-chat-port', { id: node.id, value })}
+      />
+    </div>
+  );
+}
+
 function NoteDetectorView({ telemetry }: { telemetry?: NodeTelemetry }) {
   const active = telemetry?.noteActive === true && telemetry.noteName;
   const cents = telemetry?.noteCents ?? 0;
@@ -438,7 +692,7 @@ function TtsControls({ node }: { node: RuseFlowNode['data'] }) {
       )}
       <textarea
         ref={textRef}
-        className="tts-text"
+        className="tts-text nowheel"
         value={text}
         placeholder={t('Type text to speak')}
         onChange={event => setText(event.target.value)}
@@ -551,6 +805,18 @@ function TranslatorControls({ node }: { node: RuseFlowNode['data'] }) {
     : installed[0]?.id ?? '';
   return (
     <div className="translator-controls nodrag">
+      <label className="translator-field">
+        <span>{t('Text source')}</span>
+        <select
+          value={node.translatorTextSourceId ?? ''}
+          onChange={event => send('translator-text-source', { id: node.id, source: event.target.value })}
+        >
+          <option value="">{t('Audio input')}</option>
+          {(node.translatorTextSources ?? []).map(source => (
+            <option key={source.id} value={source.id}>{source.title}</option>
+          ))}
+        </select>
+      </label>
       <label className="translator-field">
         <span>{t('Translate to')}</span>
         <select
@@ -840,6 +1106,8 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
   }
 
   const isModifier = data.kind === 'modifier';
+  const isNetworkLink = data.isNetworkInput === true && data.isNetworkOutput === true;
+  const isTextNote = data.isTextNote === true;
   const isDbMeter = data.isDbMeter === true;
   const isLoudness = data.isLoudness === true;
   const isSpectrum = data.isSpectrum === true;
@@ -895,6 +1163,8 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isSynthGenerator ? 'synth-node' : '',
     data.isNoteDetector ? 'note-detector-node' : '',
     data.isTts ? 'tts-node' : '',
+    isNetworkLink ? 'network-node' : '',
+    isTextNote ? 'text-note-node' : '',
     data.isRecorder ? 'recorder-node' : '',
     isSpectrum ? 'spectrum-node' : '',
     isSpectrogram ? 'spectrogram-node' : '',
@@ -906,13 +1176,12 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
     data.isConvolutionReverb ? 'convolution-node' : '',
     isDbMeter ? (dbVertical ? 'db-meter-node db-meter-vertical' : 'db-meter-node db-meter-horizontal') : '',
     isLoudness ? 'loudness-node' : '',
-    enabled && !invalid ? '' : 'disabled',
-    invalid ? 'invalid' : '',
+    invalid ? 'invalid' : enabled ? '' : 'disabled',
   ].filter(Boolean).join(' ');
 
   return (
-    <div className={classes} style={{ '--accent': data.accent, ...(data.width ? { width: `${data.width}px`, minWidth: `${data.width}px`, maxWidth: `${data.width}px` } : {}) } as CSSProperties} role="group" aria-label={`${data.title}. ${t(data.subtitle)}${invalid && data.invalidReason ? `. ${data.invalidReason}` : ''}`}>
-      {data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
+    <div className={classes} style={{ '--accent': data.accent, ...(data.width ? { width: `${data.width}px`, minWidth: `${data.width}px`, maxWidth: `${data.width}px` } : {}) } as CSSProperties} role="group" aria-label={`${data.title}. ${t(data.subtitle)}${data.faulted ? `. ${t('Effect chain faulted')}` : ''}${invalid && data.invalidReason ? `. ${data.invalidReason}` : ''}`}>
+      {!isTextNote && data.kind !== 'source' && <Handle id="in" type="target" position={Position.Left} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
       {data.isTts && <Handle id="barge" type="target" position={Position.Left} className="ruse-handle sidechain-handle" style={{ top: '82%' }} />}
       {data.supportsSidechain && <Handle id="sidechain" type="target" position={Position.Left} className="ruse-handle sidechain-handle" style={{ top: '72%' }} />}
       <header className="node-header">
@@ -925,6 +1194,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
           }}
         >{data.title}</strong>
         {!enabled && <span className="node-badge bypass-badge">BYPASS</span>}
+        {data.faulted && <span className="node-badge fault-badge" title={t('Effect chain faulted')}>FAULT</span>}
         {recording && <span className="node-badge rec-badge">REC</span>}
         {data.duplicateRisk && <span className={`node-badge ${data.warningSeverity === 'info' ? 'copy-badge' : 'warn-badge'}`} title={data.duplicateWarning}>{data.warningSeverity === 'info' ? 'COPY' : 'DUP'}</span>}
         {telemetry?.clipping && <span className="node-badge clip-badge">CLIP</span>}
@@ -1009,6 +1279,8 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         <div className="db-meter-body">
           <DbMeterView db={telemetry?.db} peakDb={telemetry?.peakDb} dbLeft={telemetry?.dbLeft} dbRight={telemetry?.dbRight} peakDbLeft={telemetry?.peakDbLeft} peakDbRight={telemetry?.peakDbRight} vertical={dbVertical} />
         </div>
+      ) : isTextNote ? (
+        <TextNoteControls node={data} />
       ) : isModifier ? (
         <div className="parameter-list">
           {data.isNoteDetector && <NoteDetectorView telemetry={telemetry} />}
@@ -1143,20 +1415,22 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
         </div>
       ) : (
         <>
-          {data.isNetworkInput && <NetworkInputControls node={data} />}
+          {isNetworkLink
+            ? <NetworkLinkControls node={data} />
+            : data.isNetworkInput && <NetworkInputControls node={data} />}
           {data.isTts && <TtsControls node={data} />}
           {data.isFilePlayer && <FilePlayerControls node={data} telemetry={telemetry} />}
           {data.isMetronome && <MetronomeControls node={data} telemetry={telemetry} />}
           {data.isToneGenerator && <ToneControls node={data} />}
           {data.isSynthGenerator && <SynthControls node={data} />}
-          <VolumeControl id={data.id} value={data.volume} muted={data.muted} />
-          {data.isNetworkOutput && <NetworkOutputControls node={data} />}
+          {!isNetworkLink && !isTextNote && <VolumeControl id={data.id} value={data.volume} muted={data.muted} />}
+          {data.isNetworkOutput && !data.isNetworkInput && <NetworkOutputControls node={data} />}
           {data.isRecorder && <RecorderControls node={data} telemetry={telemetry} />}
         </>
       )}
-      {data.isNoteDetector
+      {!isTextNote && (data.isNoteDetector
         ? <Handle id="key" type="source" position={Position.Right} className={`ruse-handle key-handle ${flowing ? 'active' : ''}`} />
-        : data.kind !== 'output' && <Handle id="out" type="source" position={Position.Right} className={`ruse-handle ${flowing ? 'active' : ''}`} />}
+        : data.kind !== 'output' && <Handle id="out" type="source" position={Position.Right} className={`ruse-handle ${flowing ? 'active' : ''}`} />)}
     </div>
   );
 }

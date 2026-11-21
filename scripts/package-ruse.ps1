@@ -40,6 +40,12 @@ try {
         throw "Publish failed."
     }
 
+    Write-Host "Auditing third-party licenses..." -ForegroundColor Cyan
+    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "audit-licenses.ps1") -Repo $repo
+    if ($LASTEXITCODE -ne 0) {
+        throw "Third-party license audit failed."
+    }
+
     $vstNative = Join-Path $repo "src\Ruse.App\bin\$Configuration\net10.0-windows\$Runtime\ownvst3.dll"
     if (-not (Test-Path -LiteralPath $vstNative)) {
         $vstNative = Join-Path $repo "src\Ruse.App\bin\$Configuration\net10.0-windows\runtimes\$Runtime\native\ownvst3.dll"
@@ -97,6 +103,15 @@ try {
         }
     }
 
+    $docsDir = Join-Path $stage "docs"
+    New-Item -ItemType Directory -Force -Path $docsDir | Out-Null
+    foreach ($document in @("BACKLOG.md", "CONTROL-API.md")) {
+        $source = Join-Path $repo "docs\$document"
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $docsDir $document)
+        }
+    }
+
     $licenseDir = Join-Path $repo "LICENSES"
     if (Test-Path -LiteralPath $licenseDir) {
         Copy-Item -LiteralPath $licenseDir -Destination (Join-Path $stage "LICENSES") -Recurse
@@ -112,7 +127,7 @@ try {
     Write-Host ""
     Write-Host "Package: $zipPath" -ForegroundColor Green
     Write-Host "SHA-256: $hash" -ForegroundColor Green
-    Write-Host "Layout:  Ruse\Ruse.exe, Ruse\Localization\<culture>, README.md, LICENSE, THIRD-PARTY-NOTICES.md, LICENSES\"
+    Write-Host "Layout:  Ruse\Ruse.exe, Ruse\Localization\<culture>, README.md, LICENSE, THIRD-PARTY-NOTICES.md, LICENSES\, docs\"
 }
 finally {
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue

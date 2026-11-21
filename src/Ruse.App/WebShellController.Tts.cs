@@ -198,6 +198,14 @@ internal sealed partial class WebShellController
             RemoveLinkInternal(link);
         }
         entry.TtsSpokenLength = 0;
+        if (entry.TtsSourceNodeId != null &&
+            _nodes.TryGetValue(entry.TtsSourceNodeId, out var producer) &&
+            (producer.Source is { Kind: SourceKind.Network } || producer.TranslatorText != null) &&
+            TextFromSource(entry.TtsSourceNodeId) is { } existing)
+        {
+            entry.TtsSpokenLength = existing.Text.Length;
+        }
+
         entry.TtsStatus = TtsModels.IsInstalled(entry.TtsModel ?? _settings.TtsModel) ? "Ready" : "No model installed";
         PublishGraph();
     }
@@ -609,9 +617,30 @@ internal sealed partial class WebShellController
 
     private TtsSourceState? TextFromSource(string nodeId)
     {
-        if (!_nodes.TryGetValue(nodeId, out var producer) || producer.Modifier == null)
+        if (!_nodes.TryGetValue(nodeId, out var producer))
         {
             return null;
+        }
+
+        if (producer.Source is { Kind: SourceKind.Network } &&
+            producer.Output is { IsNetworkOutput: true })
+        {
+            return new TtsSourceState(NetworkIncomingText(producer.Id));
+        }
+
+        if (producer.Kind == "text")
+        {
+            return new TtsSourceState(producer.TextCommittedContent);
+        }
+
+        if (producer.Modifier == null)
+        {
+            return null;
+        }
+
+        if (producer.TranslatorText != null)
+        {
+            return new TtsSourceState(producer.TranslatorText.Snapshot().TranslatedText);
         }
 
         if (producer.Modifier.Processors.OfType<TranscriptionProcessor>().FirstOrDefault() is { } transcriber)
@@ -635,13 +664,22 @@ internal sealed partial class WebShellController
     {
         return _nodes.Values
             .Where(entry => !string.Equals(entry.Id, excludeId, StringComparison.Ordinal) &&
-                            entry.Modifier?.Processors.Any(processor =>
-                                processor is TranscriptionProcessor or TranslatorProcessor) == true)
+                            (entry.Source is { Kind: SourceKind.Network } &&
+                             entry.Output is { IsNetworkOutput: true } ||
+                             entry.Kind == "text" ||
+                             entry.Modifier?.Processors.Any(processor =>
+                                 processor is TranscriptionProcessor or TranslatorProcessor) == true))
             .Select(entry => new TtsTextSourceDto
             {
                 Id = entry.Id,
                 Title = entry.Title,
-                Kind = entry.Modifier!.Processors.OfType<TranslatorProcessor>().Any() ? "translator" : "transcriber",
+                Kind = entry.Kind == "text"
+                    ? "note"
+                    : entry.Source is { Kind: SourceKind.Network }
+                        ? "network"
+                        : entry.Modifier!.Processors.OfType<TranslatorProcessor>().Any()
+                            ? "translator"
+                            : "transcriber",
             })
             .OrderBy(item => item.Title, StringComparer.OrdinalIgnoreCase)
             .ToList();

@@ -111,6 +111,21 @@ public sealed class AudioGraph : IDisposable
     /// <summary>Number of tap workers (diagnostics/self-test).</summary>
     public int TapWorkerCount => _engine?.TapWorkerCount ?? 0;
 
+    /// <summary>Frames dropped by lagging tap workers since the process started.</summary>
+    public long TapDroppedFrames => _engine?.TapDroppedFrames ?? 0;
+
+    private void RetireCurrent(Action action)
+    {
+        if (_engine != null)
+        {
+            _engine.RetireCurrent(action);
+        }
+        else
+        {
+            action();
+        }
+    }
+
     private void InvalidateEngine(Action? afterDrain = null)
     {
         if (_engine != null)
@@ -220,6 +235,7 @@ public sealed class AudioGraph : IDisposable
 
     public void RemoveModifier(ModifierNode modifier, bool invalidateEngine = true)
     {
+        RetireCurrent(modifier.Dispose);
         WithEngineLock(() =>
         {
             modifier.Inputs.Clear();
@@ -245,11 +261,7 @@ public sealed class AudioGraph : IDisposable
                 SyncOutputRoutes(output);
             }
 
-            InvalidateEngine(modifier.Dispose);
-        }
-        else
-        {
-            modifier.Dispose();
+            InvalidateEngine();
         }
     }
 
@@ -284,6 +296,7 @@ public sealed class AudioGraph : IDisposable
 
     public void RemoveSource(SourceNode source, bool invalidateEngine = true)
     {
+        RetireCurrent(source.Dispose);
         WithEngineLock(() =>
         {
             foreach (var output in Outputs)
@@ -310,15 +323,7 @@ public sealed class AudioGraph : IDisposable
                 SyncOutputRoutes(output);
             }
 
-            // The renderer may still hold a subscription until the rebuild
-            // above; dispose the source only after it has been dropped.
-            InvalidateEngine(source.Dispose);
-        }
-        else
-        {
-            // Even when no route changed, a renderer lease may still hold the
-            // old source snapshot. Defer disposal until that snapshot is done.
-            InvalidateEngine(source.Dispose);
+            InvalidateEngine();
         }
     }
 

@@ -8,7 +8,11 @@ namespace Ruse.App;
 
 internal sealed partial class WebShellController
 {
-    private Preset BuildPreset(HashSet<string>? included = null, double offsetX = 0, double offsetY = 0)
+    private Preset BuildPreset(
+        HashSet<string>? included = null,
+        double offsetX = 0,
+        double offsetY = 0,
+        List<string>? skipped = null)
     {
         var preset = new Preset { Name = "Ruse routing" };
         var sourceIndex = new Dictionary<string, int>();
@@ -23,9 +27,83 @@ internal sealed partial class WebShellController
                 continue;
             }
 
-            if (TryGetNodeInvalidReason(entry, activeEndpoints, out string invalidReason))
+            if (TryGetNodeInvalidReason(entry, activeEndpoints, out string invalidReason, includeFiles: false))
             {
-                AppLog.Warning($"Skipped invalid node '{entry.Title}' while saving: {invalidReason}");
+                AppLog.Warning($"Skipped unavailable device node '{entry.Title}' while saving: {invalidReason}");
+                skipped?.Add(entry.Title);
+                continue;
+            }
+
+            if (entry.Source is { Kind: SourceKind.File } file &&
+                !string.IsNullOrWhiteSpace(file.FilePath) &&
+                !File.Exists(file.FilePath))
+            {
+                AppLog.Warning($"Saved file node '{entry.Title}' with missing file '{file.FilePath}'.");
+            }
+
+            if (entry.Kind == "text")
+            {
+                preset.TextNotes.Add(new PresetTextNote
+                {
+                    Id = entry.Id,
+                    Title = entry.Title,
+                    ControlId = entry.ControlId,
+                    Content = entry.TextContent,
+                    FileName = entry.TextFileName,
+                    Color = entry.Color,
+                    X = entry.X + offsetX,
+                    Y = entry.Y + offsetY,
+                    Width = entry.Width,
+                    Height = entry.Height,
+                });
+                continue;
+            }
+
+            if (entry.Source is { Kind: SourceKind.Network } combinedSource &&
+                entry.Output is { IsNetworkOutput: true } combinedOutput)
+            {
+                sourceIndex[entry.Id] = preset.Sources.Count;
+                preset.Sources.Add(new PresetSource
+                {
+                    Id = entry.Id,
+                    Title = entry.Title,
+                    ControlId = entry.ControlId,
+                    Kind = SourceKind.Network.ToString(),
+                    IsCombinedNetwork = true,
+                    NetworkPort = combinedSource.NetworkPort,
+                    NetworkHost = combinedOutput.NetworkHost,
+                    ChatPort = entry.ChatPort,
+                    Color = entry.Color,
+                    GroupId = entry.GroupId,
+                    Solo = combinedSource.Solo,
+                    X = entry.X + offsetX,
+                    Y = entry.Y + offsetY,
+                    Width = entry.Width,
+                    Height = entry.Height,
+                    Volume = Finite(combinedSource.Gain, 1f),
+                    Muted = combinedSource.Muted,
+                });
+                outputIndex[entry.Id] = preset.Outputs.Count;
+                preset.Outputs.Add(new PresetOutput
+                {
+                    Id = entry.Id,
+                    DeviceId = combinedOutput.DeviceId,
+                    Title = entry.Title,
+                    ControlId = entry.ControlId,
+                    IsNetwork = true,
+                    IsCombinedNetwork = true,
+                    NetworkHost = combinedOutput.NetworkHost,
+                    NetworkPort = combinedOutput.NetworkPort,
+                    Color = entry.Color,
+                    GroupId = entry.GroupId,
+                    Solo = combinedOutput.Solo,
+                    X = entry.X + offsetX,
+                    Y = entry.Y + offsetY,
+                    Width = entry.Width,
+                    Height = entry.Height,
+                    Volume = Finite(combinedOutput.Volume, 1f),
+                    Muted = combinedOutput.Muted,
+                });
                 continue;
             }
 
@@ -53,6 +131,10 @@ internal sealed partial class WebShellController
                     Solo = entry.Source.Solo,
                     FileLoop = entry.Source.FileLoop,
                     FileSpeed = entry.Source.FileSpeed,
+                    FileRootNote = entry.Source.FileRootNote,
+                    FileTargetNote = entry.Source.FileTargetNote,
+                    FilePitchCents = entry.Source.FilePitchCents,
+                    FileTapeMode = entry.Source.FileTapeMode,
                     ToneFrequency = entry.Source.ToneFrequency,
                     ToneWaveform = entry.Source.ToneWave.ToString(),
                     ToneLevelDb = entry.Source.ToneLevelDb,
@@ -134,6 +216,7 @@ internal sealed partial class WebShellController
                     TranscriberModel = entry.TranscriberModel,
                     TranslatorTarget = entry.TranslatorTarget,
                     TranslatorModel = entry.TranslatorModel,
+                    TranslatorTextSourceId = entry.TranslatorTextSourceId,
                     X = entry.X + offsetX,
                     Y = entry.Y + offsetY,
                     Width = entry.Width,
@@ -304,6 +387,49 @@ internal sealed partial class WebShellController
         return preset;
     }
 
+    private static string DescribeSkippedNodes(IReadOnlyList<string> names) =>
+        names.Count <= 3
+            ? string.Join(", ", names)
+            : $"{string.Join(", ", names.Take(3))} +{names.Count - 3} more";
+
+    private static MMDevice ResolveRenderDevice(MMDeviceEnumerator enumerator, string? deviceId, string? title)
+    {
+        if (!string.IsNullOrWhiteSpace(deviceId))
+        {
+            try
+            {
+                var device = enumerator.GetDevice(deviceId);
+                if (device.State == DeviceState.Active)
+                {
+                    return device;
+                }
+
+                device.Dispose();
+            }
+            catch
+            {
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+            {
+                if (string.Equals(device.FriendlyName, title, StringComparison.OrdinalIgnoreCase))
+                {
+                    return device;
+                }
+
+                device.Dispose();
+            }
+        }
+
+        throw new InvalidOperationException(
+            string.IsNullOrWhiteSpace(title)
+                ? "The saved output device is not available."
+                : $"The saved output device '{title}' is not available.");
+    }
+
     private bool ApplyPreset(Preset preset, bool autoRun, bool insert = false, double offsetX = 0, double offsetY = 0, bool trustRecorderPaths = false)
     {
         var validation = PresetValidator.Validate(preset);
@@ -322,6 +448,7 @@ internal sealed partial class WebShellController
         if (insert)
         {
             bool collision = preset.Sources.Any(item => _nodes.ContainsKey(item.Id)) ||
+                preset.TextNotes.Any(item => _nodes.ContainsKey(item.Id)) ||
                 preset.Frames.Any(item => _frames.Any(frame => string.Equals(frame.Id, item.Id, StringComparison.Ordinal)));
             if (collision)
             {
@@ -416,6 +543,8 @@ internal sealed partial class WebShellController
                 }
 
                 source.SetFileSpeed(saved.FileSpeed);
+                source.SetFileNote(saved.FileRootNote, saved.FileTargetNote, saved.FilePitchCents);
+                source.SetFileTapeMode(saved.FileTapeMode);
                 source.Gain = float.IsFinite(saved.Volume) ? Math.Clamp(saved.Volume, 0f, 4f) : 1f;
                 source.Muted = saved.Muted;
                 source.Solo = saved.Solo;
@@ -434,6 +563,13 @@ internal sealed partial class WebShellController
                 }
                 sourceEntry.Width = saved.Width;
                 sourceEntry.Height = saved.Height;
+                if (saved.IsCombinedNetwork)
+                {
+                    sourceEntry.ChatPort = Math.Clamp(saved.ChatPort, 1, 65535);
+                    sourceEntry.Kind = "network";
+                    sourceEntry.Subtitle = "Voice + text";
+                }
+
                 sourceEntry.Color = NormalizeNodeColor(saved.Color);
                 sourceEntry.GroupId = string.IsNullOrWhiteSpace(saved.GroupId) ? null : saved.GroupId;
                 SyncEntryGroup(sourceEntry);
@@ -450,6 +586,42 @@ internal sealed partial class WebShellController
         {
             try
             {
+                if (saved.IsCombinedNetwork)
+                {
+                    if (!trustRecorderPaths)
+                    {
+                        outputs.Add(null);
+                        AppLog.Warning($"Skipped network link '{saved.Title}' from an imported preset.");
+                        continue;
+                    }
+
+                    if (!_nodes.TryGetValue(saved.Id, out var combinedEntry) ||
+                        combinedEntry.Source is not { Kind: SourceKind.Network })
+                    {
+                        outputs.Add(null);
+                        AppLog.Warning($"Could not attach network link '{saved.Title}'.");
+                        continue;
+                    }
+
+                    var combinedOutput = OutputNode.CreateForNetwork(
+                        saved.NetworkHost ?? "127.0.0.1", saved.NetworkPort);
+                    combinedOutput.Volume = float.IsFinite(saved.Volume)
+                        ? Math.Clamp(saved.Volume, 0f, 2f)
+                        : 1f;
+                    combinedOutput.Muted = saved.Muted;
+                    AttachNetworkOutput(
+                        combinedEntry, combinedOutput,
+                        saved.NetworkHost ?? "127.0.0.1", saved.NetworkPort,
+                        combinedEntry.ChatPort);
+                    combinedEntry.Width = saved.Width;
+                    combinedEntry.Height = saved.Height;
+                    combinedEntry.Color = NormalizeNodeColor(saved.Color);
+                    combinedEntry.GroupId = string.IsNullOrWhiteSpace(saved.GroupId) ? null : saved.GroupId;
+                    SyncEntryGroup(combinedEntry);
+                    outputs.Add(combinedEntry);
+                    continue;
+                }
+
                 OutputNode output;
                 string? micHint = null;
                 if (saved.IsNetwork)
@@ -487,7 +659,7 @@ internal sealed partial class WebShellController
                 else
                 {
                     using var enumerator = new MMDeviceEnumerator();
-                    output = new OutputNode(enumerator.GetDevice(saved.DeviceId));
+                    output = new OutputNode(ResolveRenderDevice(enumerator, saved.DeviceId, saved.Title));
                 }
 
                 output.Volume = float.IsFinite(saved.Volume) ? Math.Clamp(saved.Volume, 0f, 2f) : 1f;
@@ -525,6 +697,18 @@ internal sealed partial class WebShellController
             }
         }
 
+        foreach (var saved in preset.TextNotes)
+        {
+            var note = CreateTextNote(
+                saved.X + offsetX, saved.Y + offsetY,
+                string.IsNullOrWhiteSpace(saved.Id) ? null : saved.Id,
+                saved.ControlId, saved.Content ?? "", saved.FileName);
+            note.Title = string.IsNullOrWhiteSpace(saved.Title) ? "Text note" : saved.Title;
+            note.Width = saved.Width.HasValue ? Math.Clamp(saved.Width.Value, 240, 900) : 340;
+            note.Height = saved.Height.HasValue ? Math.Clamp(saved.Height.Value, 160, 1000) : 240;
+            note.Color = NormalizeNodeColor(saved.Color);
+        }
+
         foreach (var saved in preset.Modifiers)
         {
             var modifier = new ModifierNode(saved.Title);
@@ -557,6 +741,15 @@ internal sealed partial class WebShellController
             modifierEntry.Width = saved.Width;
             modifierEntry.Height = saved.Height;
             modifierEntry.Color = NormalizeNodeColor(saved.Color);
+            if (modifierEntry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true)
+            {
+                modifierEntry.TranslatorTextSourceId =
+                    string.IsNullOrWhiteSpace(saved.TranslatorTextSourceId)
+                        ? null
+                        : saved.TranslatorTextSourceId;
+                RestartTranslatorText(modifierEntry);
+            }
+
             SyncEntryGroup(modifierEntry);
             modifiers.Add(modifierEntry);
         }
@@ -881,7 +1074,8 @@ internal sealed partial class WebShellController
             return;
         }
 
-        if (!AtomicFile.TryWriteAllText(AppSettings.SessionPath, BuildPreset().ToJson(), out string error))
+        var skipped = new List<string>();
+        if (!AtomicFile.TryWriteAllText(AppSettings.SessionPath, BuildPreset(skipped: skipped).ToJson(), out string error))
         {
             AppLog.Warning("Could not save the session: " + error);
             SetStatus("Could not save the session: " + error, isError: true);
@@ -889,6 +1083,10 @@ internal sealed partial class WebShellController
         }
 
         MarkGeneratedTimelineFilesSaved();
+        if (skipped.Count > 0)
+        {
+            ShowToast($"Session saved without {skipped.Count} unavailable device node(s): {DescribeSkippedNodes(skipped)}.");
+        }
     }
 
     private void TryLoadSession()
@@ -962,14 +1160,21 @@ internal sealed partial class WebShellController
         };
         if (dialog.ShowDialog(_window) != true) return;
 
-        if (!AtomicFile.TryWriteAllText(dialog.FileName, BuildPreset().ToJson(), out string saveError))
+        var skipped = new List<string>();
+        if (!AtomicFile.TryWriteAllText(dialog.FileName, BuildPreset(skipped: skipped).ToJson(), out string saveError))
         {
             SetStatus("Could not save the preset: " + saveError, isError: true);
             return;
         }
 
         MarkGeneratedTimelineFilesSaved();
-        SetStatus($"Preset saved: {Path.GetFileName(dialog.FileName)}");
+        SetStatus(skipped.Count == 0
+            ? $"Preset saved: {Path.GetFileName(dialog.FileName)}"
+            : $"Preset saved without {skipped.Count} unavailable device node(s).");
+        if (skipped.Count > 0)
+        {
+            ShowToast($"Preset saved without {skipped.Count} unavailable device node(s): {DescribeSkippedNodes(skipped)}.");
+        }
     }
 
     private void LoadPresetDialog()
@@ -1024,7 +1229,8 @@ internal sealed partial class WebShellController
             "ocean" => "blueprint",
             "ember" => "studio74",
             "midnightstudy" or "midnight" or "deepdive" or "glass" => "dark",
-            "light" or "blueprint" or "studio74" or "receiver" => settings.Theme,
+            "light" or "blueprint" or "studio74" or "vesper" => settings.Theme,
+            "receiver" => "dark",
             _ => "dark",
         };
         _settings.UiScale = ClampUiScale(settings.UiScale);
@@ -1316,6 +1522,8 @@ internal sealed partial class WebShellController
                     _settings.TranslationProvider);
             }
         }
+
+        RestartTranslatorText(entry);
     }
 
     private void SetTranscriberModel(string id, string modelId)
@@ -1916,38 +2124,11 @@ internal sealed partial class WebShellController
 
     private void CopyDiagnostics()
     {
-        int installedCount = TranscriptionModels.All.Count(model => TranscriptionModels.IsInstalled(model.Id));
-        long installedBytes = TranscriptionModels.All
-            .Where(model => TranscriptionModels.IsInstalled(model.Id))
-            .Sum(model => TranscriptionModels.GetInstalledSizeBytes(model.Id));
-        int installedTranslationCount = TranslationModels.All.Count(model => TranslationModels.IsInstalled(model.Id));
-        long installedTranslationBytes = TranslationModels.All
-            .Where(model => TranslationModels.IsInstalled(model.Id))
-            .Sum(model => TranslationModels.GetInstalledSizeBytes(model.Id));
-        string version = typeof(WebShellController).Assembly.GetName().Version?.ToString(3) ?? "dev";
-        var lines = new[]
-        {
-            $"Ruse {version}",
-            $"OS: {Environment.OSVersion.VersionString}",
-            $".NET: {Environment.Version}",
-            $"WebView2: {(_webView2Version.Length == 0 ? "not initialized" : _webView2Version)}",
-            $"WPF render tier: {System.Windows.Media.RenderCapability.Tier >> 16}",
-            $"Data: {AppSettings.Directory}",
-            $"Models: {TranscriptionModels.Root}",
-            $"Installed models: {installedCount} ({TranscriptionModels.FormatSize(installedBytes)})",
-            $"Default model: {_settings.TranscriberModel}",
-            $"Translation models: {installedTranslationCount} ({TranslationModels.FormatSize(installedTranslationBytes)})",
-            $"Default translation: {_settings.TranslatorModel} -> {_settings.TranslatorTarget}",
-            $"GPU: {(ModelRuntime.GpuAvailable ? ModelRuntime.GpuDeviceName : ModelRuntime.GpuStatusError ?? "not available")}",
-            $"GPU fallback: {ModelRuntime.GpuFallbackReason ?? "none"}",
-            $"Output underruns: {_graph.Outputs.Sum(output => output.Underruns)}",
-            $"Nodes: {_nodes.Count} — links: {_links.Count} — running: {_running}",
-        };
-
         try
         {
-            System.Windows.Clipboard.SetText(string.Join(Environment.NewLine, lines));
-            SetStatus("Diagnostics copied to the clipboard.");
+            bool full = _settings.ShowDiagnostics;
+            System.Windows.Clipboard.SetText(full ? BuildDiagnosticsReport() : BuildBasicDiagnosticsReport());
+            SetStatus(full ? "Full diagnostics copied to the clipboard." : "Basic diagnostics copied to the clipboard.");
         }
         catch (Exception ex)
         {

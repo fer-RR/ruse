@@ -63,6 +63,7 @@ internal sealed partial class WebShellController : IDisposable
     private CatalogDto _catalog = new();
     private int _graphVersion;
     private bool _running;
+    private bool _routingFaultStopped;
     private bool _micMuted;
     private bool _disposed;
     private bool _shutdownSaved;
@@ -113,13 +114,14 @@ internal sealed partial class WebShellController : IDisposable
             "system" => "dark",
             "ocean" => "blueprint",
             "ember" => "studio74",
-            "midnightstudy" or "midnight" or "deepdive" or "glass" => "dark",
+            "midnightstudy" or "midnight" or "deepdive" or "glass" or "receiver" => "dark",
             var theme => theme,
         };
         MixerGroupBus.Configure(_settings.MixerGroups);
         TranslationSettings.Update(_settings.TranslationGlossary, _settings.TranslationMemoryEnabled);
         ConfigureHistoryLimits();
         _updates = new UpdateService(this);
+        InitializeChat();
         ModelRuntime.UseGpu = _settings.UseGpu;
         Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
         OutputNode.AggressiveCushion = _settings.AggressiveOutputCushion;
@@ -165,7 +167,9 @@ internal sealed partial class WebShellController : IDisposable
             "Ruse", "WebView2");
         Directory.CreateDirectory(userData);
         var environment = await CoreWebView2Environment.CreateAsync(null, userData);
+        if (_disposed) return;
         await webView.EnsureCoreWebView2Async(environment);
+        if (_disposed) return;
         _core = webView.CoreWebView2;
         _webView = webView;
         _webView2Version = environment.BrowserVersionString;
@@ -208,7 +212,9 @@ internal sealed partial class WebShellController : IDisposable
 
         PostStartupProgress(0.12, "Starting Ruse");
         await Task.WhenAny(_uiReadySignal.Task, Task.Delay(1000));
+        if (_disposed) return;
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        if (_disposed) return;
 
         _ = Task.Run(ModelRuntime.ConfigureNativeLibraries);
 
@@ -313,6 +319,13 @@ internal sealed partial class WebShellController : IDisposable
         try
         {
             var message = JsonSerializer.Deserialize<BridgeMessage>(e.WebMessageAsJson, _json);
+            if ((_routingStartTask is { IsCompleted: false } || _routingStopTask is { IsCompleted: false } || _offlinePrepareActive || _supportExporting) &&
+                message?.Type is not ("transport" or "retry-routing" or "window" or "ready" or "close-to-tray-result" or "timeline-bounce-cancel"))
+            {
+                SetStatus("Audio is busy; try again in a moment.");
+                return;
+            }
+
             if (message?.Type == "file-drop")
             {
                 var paths = e.AdditionalObjects
@@ -388,6 +401,11 @@ internal sealed partial class WebShellController : IDisposable
                 }
                 CompleteUiReady();
                 break;
+            case "chat-status": PostChatState(_chat.Snapshot()); break;
+            case "chat-host": StartChatHost(message); break;
+            case "chat-join": StartChatJoin(message); break;
+            case "chat-send": SendChatMessage(message); break;
+            case "chat-stop": StopChat(); break;
             case "refresh": RefreshCatalog(); break;
             case "samples-open-folder": OpenSamplesFolder(); break;
             case "samples-import": ChooseSamples(); break;
@@ -461,6 +479,13 @@ internal sealed partial class WebShellController : IDisposable
             case "file-player-loop": SetFilePlayerLoop(String(message, "id"), Bool(message, "value")); break;
             case "file-player-analyze": AnalyzeFilePlayer(String(message, "id")); break;
             case "file-player-speed": SetFilePlayerSpeed(String(message, "id"), (float)Number(message, "value", 1)); break;
+            case "file-player-note": SetFilePlayerNote(String(message, "id"), (int)Number(message, "root", 60), (int)Number(message, "target", 60), (float)Number(message, "cents", 0)); break;
+            case "file-player-detect-note": DetectFileRootNote(String(message, "id")); break;
+            case "file-player-tape": SetFilePlayerTapeMode(String(message, "id"), Bool(message, "value")); break;
+            case "text-note-text": SetTextNoteContent(String(message, "id"), String(message, "text")); break;
+            case "text-note-commit": CommitTextNote(String(message, "id")); break;
+            case "text-note-save": SaveTextNote(String(message, "id")); break;
+            case "text-note-load": LoadTextNote(String(message, "id")); break;
             case "file-player-output": SetFilePlayerOutput(String(message, "id"), String(message, "outputId")); break;
             case "file-player-start": StartFilePlayer(String(message, "id")); break;
             case "file-player-stop": StopFilePlayer(String(message, "id")); break;
@@ -512,11 +537,11 @@ internal sealed partial class WebShellController : IDisposable
             case "midi-refresh": _midi.RefreshDevices(); PublishSettings(); break;
             case "param": SetParameter(message); break;
             case "effect-enabled": SetEffectEnabled(String(message, "id"), Bool(message, "value")); break;
+            case "retry-effects": RetryEffectChain(String(message, "id")); break;
             case "parallel": SetModifierParallel(String(message, "id"), Bool(message, "value")); break;
             case "send": SetModifierSend(String(message, "id"), (float)Number(message, "value", 0.5)); break;
             case "tone": SetTone(String(message, "id"), (float)Number(message, "frequency", 1000), String(message, "waveform"), (float)Number(message, "level", -18)); break;
             case "metronome": SetNodeMetronome(String(message, "id"), (float)Number(message, "bpm", 120), (int)Number(message, "beats", 4)); break;
-            case "node-size": SetNodeWidth(String(message, "id"), Number(message, "width", 268)); break;
             case "synth": SetSynth(message); break;
             case "ir-file": ChooseImpulseResponse(String(message, "id")); break;
             case "ir-clear": ClearImpulseResponse(String(message, "id")); break;
@@ -536,6 +561,7 @@ internal sealed partial class WebShellController : IDisposable
             case "transcriber-open-folder": OpenTranscriberModelsFolder(); break;
             case "translator-target": SetTranslatorTarget(String(message, "id"), String(message, "target")); break;
             case "translator-model": SetTranslatorModel(String(message, "id"), String(message, "model")); break;
+            case "translator-text-source": SetTranslatorTextSource(String(message, "id"), String(message, "source")); break;
             case "translator-download": DownloadTranslationModel(String(message, "id")); break;
             case "translator-download-cancel": CancelTranslationDownload(); break;
             case "translator-delete": DeleteTranslationModel(String(message, "id")); break;
@@ -563,6 +589,8 @@ internal sealed partial class WebShellController : IDisposable
             case "network-input-port": SetNetworkInputPort(String(message, "id"), (int)Number(message, "value", NetworkPcm.DefaultPort)); break;
             case "network-output-host": SetNetworkOutputHost(String(message, "id"), String(message, "value")); break;
             case "network-output-port": SetNetworkOutputPort(String(message, "id"), (int)Number(message, "value", NetworkPcm.DefaultPort)); break;
+            case "network-voice-port": SetNetworkVoicePort(String(message, "id"), (int)Number(message, "value", NetworkPcm.DefaultPort)); break;
+            case "network-chat-port": SetNetworkChatPort(String(message, "id"), (int)Number(message, "value", ChatService.DefaultPort)); break;
             case "vst3-editor": SetVst3Editor(String(message, "id"), Bool(message, "open")); break;
             case "vst3-rescan": RescanVst3Plugins(); break;
             case "rename": RenameNode(String(message, "id"), String(message, "title")); break;
@@ -613,14 +641,39 @@ internal sealed partial class WebShellController : IDisposable
             case "open-user-folder":
                 try
                 {
-                    RuseFolders.OpenUserFolder();
+                    RuseFolders.OpenFolder(DisplayedUserFolder);
                 }
                 catch (Exception ex)
                 {
                     SetStatus("Could not open the user folder: " + ex.Message, isError: true);
                 }
                 break;
+            case "open-data-folder":
+                try
+                {
+                    RuseFolders.OpenFolder(DisplayedDataFolder);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Could not open the data folder: " + ex.Message, isError: true);
+                }
+                break;
+            case "open-models-folder":
+                try
+                {
+                    RuseFolders.OpenFolder(DisplayedModelsFolder);
+                }
+                catch (Exception ex)
+                {
+                    SetStatus("Could not open the models folder: " + ex.Message, isError: true);
+                }
+                break;
+            case "choose-storage-folder": ChooseStorageFolder(String(message, "kind")); break;
+            case "set-storage-location": _ = SetStorageLocationAsync(String(message, "kind"), String(message, "path"), Bool(message, "migrate")); break;
             case "copy-diagnostics": CopyDiagnostics(); break;
+            case "export-support-bundle": _ = ExportSupportBundleAsync(); break;
+            case "send-support-report": _ = SendSupportReportAsync(String(message, "note"), Bool(message, "includeDiagnostics")); break;
+            case "open-support-folder": OpenSupportFolder(); break;
             case "window": HandleWindowCommand(String(message, "action")); break;
         }
     }
@@ -1179,9 +1232,10 @@ internal sealed partial class WebShellController : IDisposable
             DotNetVersion = Environment.Version.ToString(),
             WebView2Version = string.IsNullOrEmpty(_webView2Version) ? "not initialized" : _webView2Version,
             RenderTier = System.Windows.Media.RenderCapability.Tier >> 16,
-            DataFolder = AppSettings.Directory,
-            ModelsFolder = TranscriptionModels.Root,
-            UserFolder = RuseFolders.UserRoot,
+            DataFolder = DisplayedDataFolder,
+            ModelsFolder = DisplayedModelsFolder,
+            UserFolder = DisplayedUserFolder,
+            StorageRestartRequired = StorageRestartRequired,
         });
     }
 
@@ -1272,6 +1326,13 @@ internal sealed partial class WebShellController : IDisposable
                 meter.FileDurationSeconds = entry.Source.Kind == SourceKind.File ? entry.Source.FileDurationSeconds : 0;
                 meter.InputSampleRate = entry.Source.SampleRate;
                 meter.InputResampling = entry.Source.IsResampling;
+                if (entry.Source.Kind == SourceKind.Network)
+                {
+                    meter.NetworkPackets = entry.Source.NetworkPackets;
+                    meter.NetworkLostPackets = entry.Source.NetworkLostPackets;
+                    meter.NetworkUnderruns = entry.Source.NetworkUnderruns;
+                    meter.NetworkStreamResets = entry.Source.NetworkStreamResets;
+                }
                 if (_settings.ShowDiagnostics)
                 {
                     meter.InputLatencyMs = Finite(entry.Source.CaptureLatencyMs + entry.Source.BufferedMs);
@@ -1420,58 +1481,86 @@ internal sealed partial class WebShellController : IDisposable
 
                     if (modifier.Enabled && translator != null)
                     {
-                        meter.TranscriptionLevel = Meter(TranscriptionProcessor.GetLevel(translator.TapId));
-                        long lastAudio = TranscriptionProcessor.GetLastAudioTick(translator.TapId);
-                        meter.TranscriptionHasAudio = lastAudio > 0 && now - lastAudio < 2500;
-
-                        if (string.IsNullOrEmpty(entry.TranscriberModel))
+                        if (!_telemetryText.TryGetValue(entry.Id, out var textCache))
                         {
-                            meter.TranscriptionStatus = "No speech model installed";
+                            textCache = new TelemetryTextCache();
+                            _telemetryText[entry.Id] = textCache;
+                        }
+
+                        NetworkTextTranslationSnapshot? textSnapshot =
+                            !string.IsNullOrWhiteSpace(entry.TranslatorTextSourceId)
+                                ? entry.TranslatorText?.Snapshot()
+                                : null;
+                        if (textSnapshot != null)
+                        {
+                            meter.TranscriptionLevel = 0;
+                            meter.TranscriptionHasAudio = false;
+                            meter.TranscriptionStatus = textSnapshot.Status;
+                            if (!string.Equals(textCache.Transcript, textSnapshot.SourceText, StringComparison.Ordinal))
+                            {
+                                textCache.Transcript = textSnapshot.SourceText;
+                                meter.Transcript = textSnapshot.SourceText;
+                            }
+                            if (!string.Equals(textCache.TranslatedTranscript, textSnapshot.TranslatedText, StringComparison.Ordinal))
+                            {
+                                textCache.TranslatedTranscript = textSnapshot.TranslatedText;
+                                meter.TranslatedTranscript = textSnapshot.TranslatedText;
+                            }
+                            if (textCache.PartialTranscript != null) { textCache.PartialTranscript = ""; meter.PartialTranscript = ""; }
+                            if (textCache.TranslatedPartial != null) { textCache.TranslatedPartial = ""; meter.TranslatedPartial = ""; }
+                            meter.TranscriptionError = textSnapshot.Error;
+                            meter.TranscriptionElapsed = 0;
+                            meter.UsesGpu = false;
                         }
                         else
                         {
-                            var snapshot = TranslationRegistry.Snapshot(translator.TapId);
-                            if (!_telemetryText.TryGetValue(entry.Id, out var textCache))
-                            {
-                                textCache = new TelemetryTextCache();
-                                _telemetryText[entry.Id] = textCache;
-                            }
+                            meter.TranscriptionLevel = Meter(TranscriptionProcessor.GetLevel(translator.TapId));
+                            long lastAudio = TranscriptionProcessor.GetLastAudioTick(translator.TapId);
+                            meter.TranscriptionHasAudio = lastAudio > 0 && now - lastAudio < 2500;
 
-                            meter.TranscriptionStatus = snapshot?.Status ?? "Starting";
-                            if (snapshot != null)
+                            if (string.IsNullOrEmpty(entry.TranscriberModel))
                             {
-                                if (!string.Equals(textCache.Transcript, snapshot.SourceText, StringComparison.Ordinal))
-                                {
-                                    textCache.Transcript = snapshot.SourceText;
-                                    meter.Transcript = snapshot.SourceText;
-                                }
-                                if (!string.Equals(textCache.PartialTranscript, snapshot.SourcePartial, StringComparison.Ordinal))
-                                {
-                                    textCache.PartialTranscript = snapshot.SourcePartial;
-                                    meter.PartialTranscript = snapshot.SourcePartial;
-                                }
-                                if (!string.Equals(textCache.TranslatedTranscript, snapshot.TranslatedText, StringComparison.Ordinal))
-                                {
-                                    textCache.TranslatedTranscript = snapshot.TranslatedText;
-                                    meter.TranslatedTranscript = snapshot.TranslatedText;
-                                }
-                                if (!string.Equals(textCache.TranslatedPartial, snapshot.TranslatedPartial, StringComparison.Ordinal))
-                                {
-                                    textCache.TranslatedPartial = snapshot.TranslatedPartial;
-                                    meter.TranslatedPartial = snapshot.TranslatedPartial;
-                                }
+                                meter.TranscriptionStatus = "No speech model installed";
                             }
                             else
                             {
-                                if (textCache.Transcript != null) { textCache.Transcript = ""; meter.Transcript = ""; }
-                                if (textCache.PartialTranscript != null) { textCache.PartialTranscript = ""; meter.PartialTranscript = ""; }
-                                if (textCache.TranslatedTranscript != null) { textCache.TranslatedTranscript = ""; meter.TranslatedTranscript = ""; }
-                                if (textCache.TranslatedPartial != null) { textCache.TranslatedPartial = ""; meter.TranslatedPartial = ""; }
+                                var snapshot = TranslationRegistry.Snapshot(translator.TapId);
+                                meter.TranscriptionStatus = snapshot?.Status ?? "Starting";
+                                if (snapshot != null)
+                                {
+                                    if (!string.Equals(textCache.Transcript, snapshot.SourceText, StringComparison.Ordinal))
+                                    {
+                                        textCache.Transcript = snapshot.SourceText;
+                                        meter.Transcript = snapshot.SourceText;
+                                    }
+                                    if (!string.Equals(textCache.PartialTranscript, snapshot.SourcePartial, StringComparison.Ordinal))
+                                    {
+                                        textCache.PartialTranscript = snapshot.SourcePartial;
+                                        meter.PartialTranscript = snapshot.SourcePartial;
+                                    }
+                                    if (!string.Equals(textCache.TranslatedTranscript, snapshot.TranslatedText, StringComparison.Ordinal))
+                                    {
+                                        textCache.TranslatedTranscript = snapshot.TranslatedText;
+                                        meter.TranslatedTranscript = snapshot.TranslatedText;
+                                    }
+                                    if (!string.Equals(textCache.TranslatedPartial, snapshot.TranslatedPartial, StringComparison.Ordinal))
+                                    {
+                                        textCache.TranslatedPartial = snapshot.TranslatedPartial;
+                                        meter.TranslatedPartial = snapshot.TranslatedPartial;
+                                    }
+                                }
+                                else
+                                {
+                                    if (textCache.Transcript != null) { textCache.Transcript = ""; meter.Transcript = ""; }
+                                    if (textCache.PartialTranscript != null) { textCache.PartialTranscript = ""; meter.PartialTranscript = ""; }
+                                    if (textCache.TranslatedTranscript != null) { textCache.TranslatedTranscript = ""; meter.TranslatedTranscript = ""; }
+                                    if (textCache.TranslatedPartial != null) { textCache.TranslatedPartial = ""; meter.TranslatedPartial = ""; }
+                                }
+                                meter.DetectedLanguage = snapshot?.DetectedLanguage;
+                                meter.TranscriptionError = snapshot?.Error;
+                                meter.TranscriptionElapsed = snapshot?.ElapsedSeconds;
+                                meter.UsesGpu = snapshot?.GpuActive;
                             }
-                            meter.DetectedLanguage = snapshot?.DetectedLanguage;
-                            meter.TranscriptionError = snapshot?.Error;
-                            meter.TranscriptionElapsed = snapshot?.ElapsedSeconds;
-                            meter.UsesGpu = snapshot?.GpuActive;
                         }
                     }
                     else if (modifier.Enabled && transcriber != null)
@@ -1528,6 +1617,29 @@ internal sealed partial class WebShellController : IDisposable
             telemetry.Meters[entry.Id] = meter;
         }
 
+        bool faultChanged = false;
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Modifier is not { } modifier)
+            {
+                continue;
+            }
+
+            bool faulted = modifier.Faulted;
+            if (entry.LastFaulted == faulted)
+            {
+                continue;
+            }
+
+            entry.LastFaulted = faulted;
+            faultChanged = true;
+        }
+
+        if (faultChanged)
+        {
+            PublishGraph();
+        }
+
         var stale = _telemetryStaleIds;
         stale.Clear();
         foreach (var id in telemetry.Meters.Keys)
@@ -1548,6 +1660,10 @@ internal sealed partial class WebShellController : IDisposable
         if (_settings.ShowDiagnostics)
         {
             telemetry.Diagnostics = BuildDiagnostics(now);
+        }
+        else
+        {
+            ResetDiagnosticsSession();
         }
 
         if (!string.Equals(_lastGpuFallbackReason, ModelRuntime.GpuFallbackReason, StringComparison.Ordinal))
@@ -1747,7 +1863,7 @@ internal sealed partial class WebShellController : IDisposable
             "light" => Color.FromRgb(0xEE, 0xF1, 0xF6),
             "blueprint" => Color.FromRgb(0x08, 0x3B, 0x78),
             "studio74" => Color.FromRgb(0x1E, 0x1D, 0x1B),
-            "receiver" => Color.FromRgb(0x1E, 0x17, 0x12),
+            "vesper" => Color.FromRgb(0x15, 0x15, 0x14),
             _ => Color.FromRgb(0x17, 0x1E, 0x29),
         };
         _window.Background = new SolidColorBrush(color);
@@ -1793,6 +1909,11 @@ internal sealed partial class WebShellController : IDisposable
         _trayDecision = response;
         Post("close-to-tray", new { });
         return true;
+    }
+
+    internal void CancelTrayDecision()
+    {
+        _trayDecision = null;
     }
 
     private void ResolveTrayDecision(bool? keep)
@@ -1881,8 +2002,11 @@ internal sealed partial class WebShellController : IDisposable
         }
 
         _disposed = true;
+        _routeTestToneTimer?.Stop();
+        _routeTestToneTimer = null;
         _updateTimer.Stop();
         _updates.Dispose();
+        _chat.Dispose();
         SpeechActivityHub.SpeechStarted -= OnSpeechStarted;
         SpeechActivityHub.SpeechEnded -= OnSpeechEnded;
         if (_core != null)
@@ -1901,6 +2025,8 @@ internal sealed partial class WebShellController : IDisposable
         foreach (var entry in _nodes.Values)
         {
             entry.TtsGenerationCancel?.Cancel();
+            entry.TranslatorText?.Dispose();
+            entry.TranslatorText = null;
         }
 
         _timelineCountInCancel?.Cancel();
@@ -1921,7 +2047,7 @@ internal sealed partial class WebShellController : IDisposable
         _midi.Dispose();
         AbortTimelineRecording();
         SetAudioPriorityBoost(false);
-        StopControlServer();
+        _ = StopControlServerAsync();
         DisposeInactiveOutputs();
         StopTimelineMetronome();
         StopTimelineAutomationWorker();
@@ -1933,8 +2059,8 @@ internal sealed partial class WebShellController : IDisposable
     internal sealed class NodeEntry
     {
         public required string Id { get; init; }
-        public required string Kind { get; init; }
-        public required string Flavor { get; init; }
+        public required string Kind { get; set; }
+        public required string Flavor { get; set; }
         public required string Title { get; set; }
         public required string Subtitle { get; set; }
         public required string Accent { get; init; }
@@ -1951,6 +2077,8 @@ internal sealed partial class WebShellController : IDisposable
         public string? TranscriberModel { get; set; }
         public string? TranslatorTarget { get; set; }
         public string? TranslatorModel { get; set; }
+        public string? TranslatorTextSourceId { get; set; }
+        public NetworkTextTranslation? TranslatorText { get; set; }
         public string? TtsText { get; set; }
         public string? TtsSourceNodeId { get; set; }
         public string? TtsModel { get; set; }
@@ -1964,8 +2092,13 @@ internal sealed partial class WebShellController : IDisposable
         public string? SourceEndpointId { get; set; }
         public string? SourceEndpointName { get; set; }
         public SourceNode? Source { get; init; }
-        public OutputNode? Output { get; init; }
+        public OutputNode? Output { get; set; }
         public ModifierNode? Modifier { get; init; }
+        public bool LastFaulted { get; set; }
+        public int ChatPort { get; set; } = ChatService.DefaultPort;
+        public string TextContent { get; set; } = "";
+        public string TextCommittedContent { get; set; } = "";
+        public string? TextFileName { get; set; }
         public int Vst3Latency { get; set; } = -1;
         public bool Vst3Ready { get; set; }
     }

@@ -25,7 +25,7 @@ internal sealed record TranscriberModelProgress(
 internal static class TranscriptionModels
 {
     private static readonly SemaphoreSlim Gate = new(1, 1);
-    private static readonly HttpClient Http = new();
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(30) };
     private static readonly IReadOnlyDictionary<string, string> Hashes = new Dictionary<string, string>
     {
         ["ggml-tiny.en.bin"] = "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",

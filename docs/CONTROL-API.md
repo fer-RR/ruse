@@ -1,4 +1,4 @@
-# Control API (WebSocket)
+# Control API
 
 When enabled, Ruse exposes a loopback-only control API for local apps. The API
 is off by default. Read the URL and token from `%APPDATA%\Ruse\control.json`:
@@ -19,7 +19,39 @@ The setting is stored as `"ControlApiEnabled"` in
 `%APPDATA%\Ruse\settings.json`; existing saved settings keep their current
 value.
 
-## Connect
+## HTTP API
+
+HTTP endpoints require `Authorization: Bearer <token>`. The query token is
+accepted only by the WebSocket endpoint. Send requests to `127.0.0.1` or
+`localhost`; other Host headers are rejected. Browser requests are allowed
+from loopback origins, and requests without an `Origin` header are allowed.
+HTTP requests are limited to 600 per minute per loopback client.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/v1/state` | Running state, node/link counts, version and status text. |
+| `GET` | `/api/v1/nodes` | Nodes, stable `controlId`s, processors and parameters. |
+| `GET` | `/api/v1/telemetry` | Source/output levels, clipping and mute state. |
+| `PATCH` | `/api/v1/nodes/{id}` | Change `gain`, `muted`, `solo`, `enabled` or `controlId`. |
+| `PATCH` | `/api/v1/nodes/{id}/parameters/{processor}/{parameter}` | Set a parameter by `value` or `normalized`. |
+| `POST` | `/api/v1/transport` | Start or stop routing with `{ "running": true }`. |
+
+`{id}` may be a node ID or a stable `controlId`. Successful writes return
+`{"ok":true}`; invalid requests return HTTP 400 with `{"error":"..."}`.
+Successful writes also broadcast the same graph/node-state events used by the
+WebSocket clients.
+
+```powershell
+$info = Get-Content "$env:APPDATA\Ruse\control.json" | ConvertFrom-Json
+$headers = @{ Authorization = "Bearer $($info.token)" }
+Invoke-RestMethod "$($info.url)/api/v1/state" -Headers $headers
+
+$body = @{ value = -30 } | ConvertTo-Json
+Invoke-RestMethod "$($info.url)/api/v1/nodes/compressor/parameters/0/0" `
+  -Method Patch -Headers $headers -ContentType "application/json" -Body $body
+```
+
+## WebSocket
 
 ```text
 ws://127.0.0.1:<port>/api/v1/events?token=<token>

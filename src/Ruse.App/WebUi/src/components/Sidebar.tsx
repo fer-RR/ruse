@@ -1,7 +1,7 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import type { DragEvent, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react';
 import {
-  AppWindow, AudioLines, Check, ChevronDown, Combine, Eye, EyeOff, FileAudio, Folder, FolderOpen, GripVertical, Headphones, MessageSquare,
+  AppWindow, AudioLines, Check, ChevronDown, Combine, Eye, EyeOff, FileAudio, FileText, Folder, FolderOpen, FolderPlus, GripVertical, Headphones, MessageSquare,
   Layers3, Mic, Network, Pencil, Plus, Puzzle, Radio, RefreshCw, Search, SlidersHorizontal, Speaker, Timer, Trash2, Upload, X,
 } from 'lucide-react';
 import {
@@ -19,6 +19,7 @@ import { send } from '../bridge';
 import { useTitleActive } from '../telemetry';
 import type { CatalogItem, CatalogSnapshot, MediaListModel } from '../types';
 import { ConfirmDialog } from './Dialogs';
+import { nextTabId } from '../tabs';
 const systemItem: CatalogItem = {
   id: 'system', kind: 'system', name: 'System audio', subtitle: 'Windows loopback',
   details: 'Capture everything playing through the default output',
@@ -43,14 +44,14 @@ const ttsItem: CatalogItem = {
   id: 'tts', kind: 'tts', name: 'Text to speech', subtitle: 'Local TTS',
   details: 'Speak typed text, a text file, or the output of a transcriber or translator',
 };
-const networkInputItem: CatalogItem = {
-  id: 'network-in', kind: 'network-in', name: 'Network input', subtitle: 'UDP PCM receiver',
-  details: 'Receive a Ruse network stream on this PC',
+const textNoteItem: CatalogItem = {
+  id: 'text-note', kind: 'text-note', name: 'Text note', subtitle: 'Notes and scripts',
+  details: 'Write or paste text, save it to a file, and use it as a source for TTS or translation.',
 };
 
-const networkOutputItem: CatalogItem = {
-  id: 'network-out', kind: 'network-out', name: 'Network output', subtitle: 'UDP PCM sender',
-  details: 'Send this route to another Ruse instance',
+const networkItem: CatalogItem = {
+  id: 'network', kind: 'network', name: 'Network link', subtitle: 'Voice + text',
+  details: 'Send and receive voice and text with another Ruse instance',
 };
 const recorderItem: CatalogItem = {
   id: 'recorder', kind: 'recorder', name: 'Record to file', subtitle: 'WAV, MP3 or FLAC',
@@ -72,7 +73,9 @@ const ItemIcon = memo(function ItemIcon({ item }: { item: CatalogItem }) {
     case 'tone': return <AudioLines {...props} />;
     case 'synth': return <SlidersHorizontal {...props} />;
     case 'tts': return <MessageSquare {...props} />;
-    case 'network-in': return <Network {...props} />;
+    case 'text-note': return <FileText {...props} />;
+    case 'network':
+    case 'network-in':
     case 'network-out': return <Network {...props} />;
     case 'input': return item.virtual ? <Radio {...props} /> : <Mic {...props} />;
     case 'output': {
@@ -302,6 +305,7 @@ const VIEWS: ReadonlyArray<{ id: View; label: string }> = [
   { id: 'destinations', label: 'Destinations' },
   { id: 'processing', label: 'Processing' },
 ];
+const LIBRARY_VIEW_IDS = VIEWS.map(({ id }) => id);
 function formatMediaSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
@@ -484,14 +488,17 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
   return (
     <div className="media-bin">
       <div className="library-section-actions media-actions">
-        <button type="button" className="library-action" onClick={() => send('samples-open-folder')} title={t('Open samples folder')}>
-          <FolderOpen size={13} /> {t('Open folder')}
-        </button>
         <button type="button" className="library-action" onClick={() => send('samples-import')} title={t('Add sample files')}>
           <Upload size={13} /> {t('Add samples')}
         </button>
         <button type="button" className="library-action" onClick={() => send('media-add-folder')}>
-          <FolderOpen size={13} /> {t('Add folder')}
+          <FolderPlus size={13} /> {t('Add folder')}
+        </button>
+        <button type="button" className="library-action" onClick={() => send('samples-open-folder')} title={t('Open samples folder')}>
+          <FolderOpen size={13} /> {t('Open folder')}
+        </button>
+        <button type="button" className="library-action" onClick={() => send('media-scan')} title={t('Refresh')}>
+          <RefreshCw size={13} /> {t('Refresh')}
         </button>
         <select
           className="media-sort"
@@ -505,9 +512,6 @@ function MediaBin({ media, waveforms, query }: { media: MediaListModel; waveform
           <option value="size">{t('Size')}</option>
           <option value="type">{t('Type')}</option>
         </select>
-        <button type="button" className="library-action" onClick={() => send('media-scan')} title={t('Refresh')}>
-          <RefreshCw size={13} /> {t('Refresh')}
-        </button>
         {selectedPaths.size > 0 && (
           <button type="button" className="library-action media-selection" onClick={() => setSelectedPaths(new Set())} title={t('Clear')} aria-label={t('Clear')}>
             <X size={13} /> {selectedPaths.size}
@@ -793,9 +797,9 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, media, waveforms,
     const effects = catalog.effects.filter(item => item.id !== 'hearing-profile');
     return {
       applications: { id: 'applications', label: 'Applications', items: [systemItem, ...catalog.apps] },
-      network: { id: 'network', label: 'Network', items: [networkInputItem, networkOutputItem] },
+      network: { id: 'network', label: 'Network', items: [networkItem] },
       physicalOutputs: { id: 'physicalOutputs', label: 'Speakers & headphones', items: physicalOutputs },
-      generators: { id: 'generators', label: 'Miscellaneous', items: [metronomeItem, toneItem, synthItem, ttsItem, ...hearing] },
+      generators: { id: 'generators', label: 'Miscellaneous', items: [metronomeItem, toneItem, synthItem, ttsItem, textNoteItem, ...hearing] },
       physicalInputs: { id: 'physicalInputs', label: 'Microphones & inputs', items: physicalInputs },
       recording: { id: 'recording', label: 'Record & Play', items: [recorderItem, filePlayerItem] },
       media: { id: 'media', label: 'Media & Samples', items: [] },
@@ -995,13 +999,27 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, media, waveforms,
           >
             {VIEWS.map(entry => <option key={entry.id} value={entry.id}>{t(entry.label)}</option>)}
           </select>
-          <div className="library-views" role="tablist" aria-label={t('Library sections')}>
+          <div
+            className="library-views"
+            role="tablist"
+            aria-label={t('Library sections')}
+            onKeyDown={event => {
+              const next = nextTabId(LIBRARY_VIEW_IDS, view, event.key);
+              if (!next) return;
+              event.preventDefault();
+              setView(next);
+              document.getElementById(`library-tab-${next}`)?.focus();
+            }}
+          >
             {VIEWS.map(entry => (
               <button
                 key={entry.id}
+                id={`library-tab-${entry.id}`}
                 type="button"
                 role="tab"
                 aria-selected={view === entry.id}
+                aria-controls="library-panel"
+                tabIndex={view === entry.id ? 0 : -1}
                 className={`library-view ${view === entry.id ? 'active' : ''}`}
                 onClick={() => setView(entry.id)}
               >
@@ -1016,7 +1034,7 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, media, waveforms,
       )}
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onSectionDragEnd}>
         <SortableContext items={visibleSectionIds} strategy={verticalListSortingStrategy}>
-          <div className="library-scroll">
+          <div className="library-scroll" id="library-panel" role="tabpanel" aria-labelledby={`library-tab-${view}`}>
             {visible.map(group => (
               <section className="library-group" key={group.title || 'all'}>
                 {group.title && <div className="group-title">{t(group.title)}</div>}
@@ -1041,11 +1059,11 @@ function Sidebar({ catalog, searchRef, aliases, usedDeviceIds, media, waveforms,
                     >
                       {section.id === 'samples' && (
                         <div className="library-section-actions">
-                          <button type="button" className="library-action" onClick={() => send('samples-open-folder')} title={t('Open samples folder')}>
-                            <FolderOpen size={13} /> {t('Open folder')}
-                          </button>
                           <button type="button" className="library-action" onClick={() => send('samples-import')} title={t('Add sample files')}>
                             <Upload size={13} /> {t('Add samples')}
+                          </button>
+                          <button type="button" className="library-action" onClick={() => send('samples-open-folder')} title={t('Open samples folder')}>
+                            <FolderOpen size={13} /> {t('Open folder')}
                           </button>
                           <button type="button" className="library-action" onClick={() => send('samples-refresh')} title={t('Refresh samples')}>
                             <RefreshCw size={13} /> {t('Refresh')}

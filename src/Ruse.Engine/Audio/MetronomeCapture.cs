@@ -66,6 +66,8 @@ public sealed class MetronomeCapture : IDisposable
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long produced = 0;
 
+        try
+        {
         while (!_stop)
         {
             long due = (long)(clock.Elapsed.TotalSeconds * SampleRate);
@@ -80,6 +82,12 @@ public sealed class MetronomeCapture : IDisposable
             _packetArgs.Set(_bytes, frames * Channels * sizeof(float));
             DataAvailable?.Invoke(this, _packetArgs);
             produced += frames;
+        }
+        }
+        catch (Exception ex)
+        {
+            AudioFaultLog.ReportOutputPumpFault("Metronome", ex);
+            _stop = true;
         }
     }
 

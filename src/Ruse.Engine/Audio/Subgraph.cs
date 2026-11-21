@@ -229,7 +229,7 @@ public static class SubgraphLibrary
 {
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
-    public static string LibraryPath { get; } = Path.Combine(AppSettings.Directory, "chains.json");
+    public static string LibraryPath => Path.Combine(AppSettings.Directory, "chains.json");
 
     private static readonly List<SubgraphDefinition> _chains = new();
 

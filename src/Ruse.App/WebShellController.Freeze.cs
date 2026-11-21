@@ -347,13 +347,25 @@ internal sealed partial class WebShellController
         NodeEntry? target = null;
         string error = "";
         string path = "";
+        _offlinePrepareActive = true;
         try
         {
-            bounce = BuildSourceFreezeGraph(id, out target, out error);
+            var prepared = await Task.Run(() =>
+            {
+                var preparedBounce = BuildSourceFreezeGraph(id, out var preparedTarget, out var preparedError);
+                return (preparedBounce, preparedTarget, preparedError);
+            }).ConfigureAwait(true);
+            bounce = prepared.preparedBounce;
+            target = prepared.preparedTarget;
+            error = prepared.preparedError;
         }
         catch (Exception ex)
         {
             error = ex.Message;
+        }
+        finally
+        {
+            _offlinePrepareActive = false;
         }
 
         if (bounce == null || target == null)

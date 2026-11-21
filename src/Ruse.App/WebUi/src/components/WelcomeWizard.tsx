@@ -2,15 +2,18 @@ import { useState } from 'react';
 import { MonitorDown } from 'lucide-react';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import type { SettingsModel } from '../types';
+import { THEME_OPTIONS, type ThemeId } from '../themes';
 import { Modal } from './Dialogs';
 import WelcomeConnectAnimation from './WelcomeConnectAnimation';
 import WelcomeDragAnimation from './WelcomeDragAnimation';
 import WelcomeExamplesAnimation from './WelcomeExamplesAnimation';
 
-export default function WelcomeWizard({ settings, onChange, onClose, onCreateDesktopShortcut }: {
+export default function WelcomeWizard({ settings, firstRun, onChange, onClose, onOpenFirstRoute, onCreateDesktopShortcut }: {
   settings: SettingsModel;
+  firstRun: boolean;
   onChange: (settings: SettingsModel) => void;
   onClose: () => void;
+  onOpenFirstRoute: () => void;
   onCreateDesktopShortcut: () => void;
 }) {
   const { t } = useI18n();
@@ -30,13 +33,14 @@ export default function WelcomeWizard({ settings, onChange, onClose, onCreateDes
           <div className="welcome-tour-actions">
             {step === 0
               ? <>
+                  {firstRun && <button className="primary-button" onClick={onOpenFirstRoute}>{t('Set up my first route')}</button>}
                   <button className="tool-button" onClick={onClose}>{t('Explore on my own')}</button>
                   <button className="tool-button" onClick={onCreateDesktopShortcut}><MonitorDown size={14} /> {t('Add desktop shortcut')}</button>
                 </>
               : <button className="tool-button" onClick={() => setStep((step - 1) as 0 | 1)}>{t('Back')}</button>}
           </div>
           <button
-            className="primary-button"
+            className={firstRun && step === 0 ? 'tool-button' : 'primary-button'}
             onClick={step === 2 ? onClose : () => setStep((step + 1) as 1 | 2)}
           >
             {step === 2 ? t('Done') : t('Next')}
@@ -68,6 +72,12 @@ export default function WelcomeWizard({ settings, onChange, onClose, onCreateDes
             <span>{t('Language')}</span>
             <select value={normalizeLanguage(settings.uiLanguage)} onChange={event => onChange({ ...settings, uiLanguage: event.target.value })}>
               {LANGUAGES.map(language => <option key={language.id} value={language.id}>{language.label}</option>)}
+            </select>
+          </label>
+          <label className="welcome-splash-language">
+            <span>{t('Theme')}</span>
+            <select value={settings.theme} onChange={event => onChange({ ...settings, theme: event.target.value as ThemeId })}>
+              {THEME_OPTIONS.map(option => <option key={option.id} value={option.id}>{option.id === 'dark' ? t('Dark') : option.id === 'light' ? t('Light') : option.label}</option>)}
             </select>
           </label>
           <label className="welcome-splash-check">

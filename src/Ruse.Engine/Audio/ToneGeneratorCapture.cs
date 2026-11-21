@@ -75,6 +75,8 @@ public sealed class ToneGeneratorCapture : IDisposable
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long produced = 0;
 
+        try
+        {
         while (!_stop)
         {
             if (_stopRequested)
@@ -100,6 +102,12 @@ public sealed class ToneGeneratorCapture : IDisposable
             _packetArgs.Set(_bytes, frames * Channels * sizeof(float));
             DataAvailable?.Invoke(this, _packetArgs);
             produced += frames;
+        }
+        }
+        catch (Exception ex)
+        {
+            AudioFaultLog.ReportOutputPumpFault("Tone generator", ex);
+            _stop = true;
         }
     }
 

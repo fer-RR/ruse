@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
-import { Activity, AudioLines, Cable, Check, ChevronRight, Copy, Download, Eye, EyeOff, FileText, FolderOpen, Gauge, Headphones, Keyboard, LayoutGrid, MonitorDown, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
+import { Activity, AudioLines, Cable, Check, ChevronRight, Copy, Download, Eye, EyeOff, Upload, FileText, FolderCog, FolderOpen, Gauge, Headphones, Keyboard, LayoutGrid, MonitorDown, RefreshCw, SlidersHorizontal, Volume2, X } from 'lucide-react';
 import { send } from '../bridge';
 import { LANGUAGES, normalizeLanguage, useI18n } from '../i18n';
 import { TRANSLATION_TARGETS } from '../languages';
 import { SHORTCUTS } from '../shortcuts';
+import { THEME_OPTIONS } from '../themes';
 import type { CatalogItem, GraphWarning, SettingsModel } from '../types';
 import ModelCatalog from './ModelCatalog';
 import NumberField from './NumberField';
@@ -13,14 +14,7 @@ import OpusModelCatalog from './OpusModelCatalog';
 import TtsModelCatalog from './TtsModelCatalog';
 import { formatBytes, useUpdates } from '../updates';
 import { useAudioOptimizer } from '../audioOptimizer';
-
-const THEME_OPTIONS = [
-  { id: 'dark', label: 'Dark' },
-  { id: 'light', label: 'Light' },
-  { id: 'blueprint', label: 'Blueprint' },
-  { id: 'studio74', label: "Studio '74" },
-  { id: 'receiver', label: 'Receiver' },
-] as const;
+import { nextTabId } from '../tabs';
 
 const UI_SCALE_OPTIONS = [
   { value: 0.8, label: '80%' },
@@ -128,6 +122,32 @@ export function ConfirmDialog({ title, body, confirmLabel, onConfirm, onClose }:
     <Modal title={title} onClose={onClose} className="small-modal">
       {body && <p className="modal-copy">{body}</p>}
       <div className="modal-actions"><button className="tool-button" onClick={onClose}>{t('Cancel')}</button><button className="danger-button" onClick={onConfirm}>{confirmLabel}</button></div>
+    </Modal>
+  );
+}
+
+export function StorageFolderDialog({ kind, path, onConfirm, onClose }: {
+  kind: 'data' | 'models' | 'user';
+  path: string;
+  onConfirm: (copyExisting: boolean) => void;
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const [copyExisting, setCopyExisting] = useState(true);
+  const title = kind === 'data' ? t('Change data folder') : kind === 'models' ? t('Change models folder') : t('Change user folder');
+  return (
+    <Modal title={title} onClose={onClose} className="small-modal">
+      <p className="modal-copy settings-note storage-warning">{t('This moves the Ruse folder to a new location. Restart Ruse after the change.')}</p>
+      <p className="modal-copy settings-path"><span title={path}>{path}</span></p>
+      <label className="settings-storage-check">
+        <input type="checkbox" checked={copyExisting} onChange={event => setCopyExisting(event.target.checked)} />
+        <span>{t('Copy existing files to the new folder')}</span>
+      </label>
+      <p className="settings-note">{t('Old files are left in place.')}</p>
+      <div className="modal-actions">
+        <button type="button" className="tool-button" onClick={onClose}>{t('Cancel')}</button>
+        <button type="button" className="primary-button" onClick={() => onConfirm(copyExisting)}>{t('Change folder')}</button>
+      </div>
     </Modal>
   );
 }
@@ -277,6 +297,7 @@ const SETTINGS_TABS = [
 ] as const;
 
 export type SettingsTab = typeof SETTINGS_TABS[number]['id'];
+const SETTINGS_TAB_IDS = SETTINGS_TABS.map(({ id }) => id);
 
 const SETTINGS_SECTIONS_KEY = 'ruse.settingsSections';
 let sectionStates: Record<string, boolean> | null = null;
@@ -335,7 +356,7 @@ function SettingsSection({ title, summary, children }: {
   );
 }
 
-export function SettingsDialog({ settings, onChange, onClose, initialTab = 'behavior', outputs, virtualInputs = [], virtualOutputs = [], vstPlugins = [], onFirstRoute }: {
+export function SettingsDialog({ settings, onChange, onClose, initialTab = 'behavior', outputs, virtualInputs = [], virtualOutputs = [], vstPlugins = [], onFirstRoute, onSendSupportReport }: {
   settings: SettingsModel;
   onChange: (settings: SettingsModel) => void;
   onClose: () => void;
@@ -345,6 +366,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
   virtualOutputs?: CatalogItem[];
   vstPlugins?: CatalogItem[];
   onFirstRoute?: () => void;
+  onSendSupportReport?: () => void;
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<SettingsTab>(initialTab);
@@ -372,13 +394,27 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
 
   return (
     <Modal title={t('Settings')} onClose={onClose} className="settings-modal" movable>
-      <div className="settings-tabs" role="tablist" aria-label={t('Settings sections')}>
+      <div
+        className="settings-tabs"
+        role="tablist"
+        aria-label={t('Settings sections')}
+        onKeyDown={event => {
+          const next = nextTabId(SETTINGS_TAB_IDS, tab, event.key);
+          if (!next) return;
+          event.preventDefault();
+          setTab(next);
+          document.getElementById(`settings-tab-${next}`)?.focus();
+        }}
+      >
         {SETTINGS_TABS.map(({ id, label, Icon }) => (
           <button
             key={id}
+            id={`settings-tab-${id}`}
             type="button"
             role="tab"
             aria-selected={tab === id}
+            aria-controls="settings-panel"
+            tabIndex={tab === id ? 0 : -1}
             className={`settings-tab ${tab === id ? 'active' : ''}`}
             onClick={() => setTab(id)}
           >
@@ -386,7 +422,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
           </button>
         ))}
       </div>
-      <div className="settings-panel" role="tabpanel">
+      <div className="settings-panel" id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${tab}`}>
         {tab === 'speech' && (
           <>
             <SettingsSection title="Hardware" summary={settings.useGpu ? 'GPU' : 'CPU'}>
@@ -841,7 +877,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                         className={`theme-choice ${selected ? 'active' : ''}`}
                         onClick={() => onChange({ ...settings, theme: option.id })}
                       >
-                        <span className={`theme-chip theme-chip-${option.id}`} aria-hidden="true" />
+                        <span className="theme-chip" style={{ background: option.chip }} aria-hidden="true" />
                         <span>{label}</span>
                         {selected && <Check size={11} aria-hidden="true" />}
                       </button>
@@ -903,6 +939,11 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 checked={settings.showDiagnostics}
                 onChange={value => onChange({ ...settings, showDiagnostics: value })}
               />
+              <div className="settings-actions">
+                <button className="tool-button" onClick={() => send('copy-diagnostics')}><Copy size={14} /> {t('Copy diagnostics')}</button>
+                <button className="tool-button" onClick={() => send('open-log')}><FileText size={14} /> {t('Open log')}</button>
+              </div>
+              <p className="settings-note">{t('Full diagnostics are copied while live diagnostics is on; otherwise a basic summary is copied.')}</p>
             </SettingsSection>
             <SettingsSection title="System" summary={settings.appVersion}>
               <dl className="diagnostics-grid">
@@ -911,10 +952,35 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                 <div><dt>WebView2</dt><dd>{settings.webView2Version ?? t('unknown')}</dd></div>
                 <div><dt>{t('WPF render tier')}</dt><dd>{settings.renderTier ?? 0}</dd></div>
                 <div><dt>{t('Models')}</dt><dd>{settings.installedModelsCount ?? 0} / {settings.installedModelsSize ?? '0 MB'}</dd></div>
-                <div className="wide"><dt>{t('Data folder')}</dt><dd title={settings.dataFolder}>{settings.dataFolder || '-'}</dd></div>
-                <div className="wide"><dt>{t('Models folder')}</dt><dd title={settings.modelsFolder}>{settings.modelsFolder || '-'}</dd></div>
-                <div className="wide"><dt>{t('User folder')}</dt><dd title={settings.userFolder}>{settings.userFolder || '-'}</dd></div>
+                <div className="wide settings-path">
+                  <dt>{t('Data folder')}</dt>
+                  <dd>
+                    <span title={settings.dataFolder}>{settings.dataFolder || '-'}</span>
+                    <button className="tool-button" disabled={!settings.dataFolder} title={t('Open folder')} aria-label={`${t('Open folder')}: ${t('Data folder')}`} onClick={() => send('open-data-folder')}><FolderOpen size={12} /></button>
+                    <button className="tool-button" disabled={!settings.dataFolder} title={t('Copy path')} aria-label={`${t('Copy path')}: ${t('Data folder')}`} onClick={() => void navigator.clipboard?.writeText(settings.dataFolder ?? '')}><Copy size={12} /></button>
+                    <button className="tool-button" disabled={!settings.dataFolder} title={t('Change folder')} aria-label={`${t('Change folder')}: ${t('Data folder')}`} onClick={() => send('choose-storage-folder', { kind: 'data' })}><FolderCog size={12} /></button>
+                  </dd>
+                </div>
+                <div className="wide settings-path">
+                  <dt>{t('Models folder')}</dt>
+                  <dd>
+                    <span title={settings.modelsFolder}>{settings.modelsFolder || '-'}</span>
+                    <button className="tool-button" disabled={!settings.modelsFolder} title={t('Open folder')} aria-label={`${t('Open folder')}: ${t('Models folder')}`} onClick={() => send('open-models-folder')}><FolderOpen size={12} /></button>
+                    <button className="tool-button" disabled={!settings.modelsFolder} title={t('Copy path')} aria-label={`${t('Copy path')}: ${t('Models folder')}`} onClick={() => void navigator.clipboard?.writeText(settings.modelsFolder ?? '')}><Copy size={12} /></button>
+                    <button className="tool-button" disabled={!settings.modelsFolder} title={t('Change folder')} aria-label={`${t('Change folder')}: ${t('Models folder')}`} onClick={() => send('choose-storage-folder', { kind: 'models' })}><FolderCog size={12} /></button>
+                  </dd>
+                </div>
+                <div className="wide settings-path">
+                  <dt>{t('User folder')}</dt>
+                  <dd>
+                    <span title={settings.userFolder}>{settings.userFolder || '-'}</span>
+                    <button className="tool-button" disabled={!settings.userFolder} title={t('Open folder')} aria-label={`${t('Open folder')}: ${t('User folder')}`} onClick={() => send('open-user-folder')}><FolderOpen size={12} /></button>
+                    <button className="tool-button" disabled={!settings.userFolder} title={t('Copy path')} aria-label={`${t('Copy path')}: ${t('User folder')}`} onClick={() => void navigator.clipboard?.writeText(settings.userFolder ?? '')}><Copy size={12} /></button>
+                    <button className="tool-button" disabled={!settings.userFolder} title={t('Change folder')} aria-label={`${t('Change folder')}: ${t('User folder')}`} onClick={() => send('choose-storage-folder', { kind: 'user' })}><FolderCog size={12} /></button>
+                  </dd>
+                </div>
               </dl>
+              {settings.storageRestartRequired && <p className="settings-note">{t('Restart Ruse to use the new folder locations.')}</p>}
             </SettingsSection>
             <SettingsSection title="Updates" summary={updates.state.latestVersion ? `v${updates.state.latestVersion}` : undefined}>
               <div className="update-summary">
@@ -985,12 +1051,21 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               {updates.state.error && <p className="settings-note update-error">{t('Update failed: {message}', { message: updates.state.error })}</p>}
               <p className="settings-note">{t('Updates are downloaded from the official GitHub release page and verified with SHA-256 before installing.')}</p>
             </SettingsSection>
-            <SettingsSection title="Actions">
+            <SettingsSection title="Support">
+              <p className="settings-note">{t('Reports are sent to the Ruse developer. No report is sent automatically.')}</p>
               <div className="settings-actions">
-                <button className="tool-button" onClick={() => send('open-log')}><FileText size={14} /> {t('Open log')}</button>
-                <button className="tool-button" onClick={() => send('open-log-folder')}><FolderOpen size={14} /> {t('Open data folder')}</button>
+                <button className="primary-button" onClick={onSendSupportReport} disabled={!onSendSupportReport}>
+                  <Upload size={14} /> {t('Send bug report')}
+                </button>
+                <button className="tool-button" onClick={() => send('export-support-bundle')}><Download size={14} /> {t('Export support bundle')}</button>
+                <button className="tool-button" onClick={() => send('open-support-folder')}><FolderOpen size={14} /> {t('Open support folder')}</button>
+              </div>
+            </SettingsSection>
+            <SettingsSection title="Data folders">
+              <div className="settings-actions">
+                <button className="tool-button" onClick={() => send('open-data-folder')}><FolderOpen size={14} /> {t('Open data folder')}</button>
+                <button className="tool-button" onClick={() => send('open-models-folder')}><FolderOpen size={14} /> {t('Open models folder')}</button>
                 <button className="tool-button" onClick={() => send('open-user-folder')}><FolderOpen size={14} /> {t('Open user folder')}</button>
-                <button className="tool-button" onClick={() => send('copy-diagnostics')}><Copy size={14} /> {t('Copy diagnostics')}</button>
               </div>
             </SettingsSection>
             <SettingsSection title="Licences" summary={LICENSES.length}>

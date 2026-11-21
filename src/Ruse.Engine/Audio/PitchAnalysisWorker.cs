@@ -122,7 +122,15 @@ internal sealed class PitchAnalysisWorker : IDisposable
                 break;
             }
 
-            Drain();
+            try
+            {
+                Drain();
+            }
+            catch (Exception ex)
+            {
+                AudioFaultLog.ReportOutputPumpFault("Pitch analysis", ex);
+                Thread.Sleep(50);
+            }
         }
     }
 

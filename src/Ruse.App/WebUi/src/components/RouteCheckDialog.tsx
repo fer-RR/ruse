@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, CircleHelp, Power, Volume2, VolumeX } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, CircleHelp, Power, RefreshCw, Trash2, Volume2, VolumeX } from 'lucide-react';
 import { send } from '../bridge';
 import { useI18n } from '../i18n';
 import { useGlobalTelemetry } from '../telemetry';
@@ -6,13 +6,14 @@ import type { GraphWarning, LinkModel } from '../types';
 import type { RuseFlowNode } from '../flow';
 import { Modal } from './Dialogs';
 
-export default function RouteCheckDialog({ nodes, links, warnings, running, onOpenFirstRoute, onOpenMixer, onClose }: {
+export default function RouteCheckDialog({ nodes, links, warnings, running, onOpenFirstRoute, onOpenMixer, onRemoveInvalid, onClose }: {
   nodes: RuseFlowNode[];
   links: LinkModel[];
   warnings?: GraphWarning[];
   running: boolean;
   onOpenFirstRoute: () => void;
   onOpenMixer: () => void;
+  onRemoveInvalid: () => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
@@ -22,15 +23,20 @@ export default function RouteCheckDialog({ nodes, links, warnings, running, onOp
   const outputs = nodes.filter(node => node.data.kind === 'output' && !node.data.diagnostics);
   const modifiers = nodes.filter(node => node.data.kind === 'modifier' && !node.data.diagnostics);
   const muted = [...sources, ...modifiers, ...outputs].filter(node => node.data.muted);
+  const invalid = [...sources, ...modifiers, ...outputs].filter(node => node.data.invalid);
+  const faulted = modifiers.filter(node => node.data.faulted);
+  const networkDown = [...sources, ...outputs].filter(node =>
+    node.data.isNetworkInput && !node.data.muted && Boolean(node.data.networkError));
   const sourceActive = sources.some(node => audible(node.data.id));
   const outputActive = outputs.some(node => audible(node.data.id));
   const noRoute = sources.length === 0 || outputs.length === 0 || links.length === 0;
   const warningsList = warnings ?? [];
-  const healthy = running && !telemetry.masterMuted && !noRoute && muted.length === 0 && !sourceActive && !outputActive
-    ? false
-    : running && !telemetry.masterMuted && !noRoute && muted.length === 0 && sourceActive && outputActive && warningsList.length === 0;
+  const healthy = running && !telemetry.masterMuted && !noRoute && muted.length === 0 &&
+    sourceActive && outputActive && warningsList.length === 0 && invalid.length === 0 &&
+    faulted.length === 0 && networkDown.length === 0;
 
   const unmute = (id: string) => send('mute', { id, value: false });
+  const retryFaulted = () => faulted.forEach(node => send('retry-effects', { id: node.data.id }));
 
   return (
     <Modal title={t('Check route')} onClose={onClose} className="wide-modal route-check-modal">
@@ -39,7 +45,7 @@ export default function RouteCheckDialog({ nodes, links, warnings, running, onOp
           <span className="route-check-summary-icon">{healthy ? <CheckCircle2 size={22} /> : <CircleHelp size={22} />}</span>
           <div>
             <strong>{healthy ? t('Good to go') : t('Check route')}</strong>
-            <small>{healthy ? t('Signal detected') : t('Check the output node volume and Windows volume.')}</small>
+            <small>{healthy ? t('Signal detected') : invalid.length || faulted.length || networkDown.length ? t('Fix the highlighted issues below.') : t('Check the output node volume and Windows volume.')}</small>
           </div>
         </div>
 
@@ -54,6 +60,46 @@ export default function RouteCheckDialog({ nodes, links, warnings, running, onOp
             <span className="route-check-dot warn" />
             <div><strong>{sources.length === 0 ? t('No sources on the canvas.') : outputs.length === 0 ? t('No outputs on the canvas.') : t('No cables yet')}</strong><small>{t('Add a source and an output, then drag from OUT to IN. Processing nodes sit between them.')}</small></div>
             <button type="button" className="tool-button" onClick={onOpenFirstRoute}>{t('Set up my first route')}</button>
+          </div>
+        )}
+
+        {invalid.length > 0 && (
+          <div className="route-check-row">
+            <span className="route-check-dot bad" />
+            <div>
+              <strong>{t('Invalid nodes')}</strong>
+              <small>{invalid.map(node => `${node.data.title}: ${node.data.invalidReason ?? t('unknown')}`).join(' · ')}</small>
+            </div>
+            <div className="route-check-actions">
+              <button type="button" className="tool-button" onClick={() => send('retry-routing')}><RefreshCw size={13} /> {t('Retry routing')}</button>
+              <button type="button" className="tool-button" onClick={onRemoveInvalid}><Trash2 size={13} /> {t('Remove invalid')}</button>
+            </div>
+          </div>
+        )}
+
+        {networkDown.length > 0 && (
+          <div className="route-check-row">
+            <span className="route-check-dot bad" />
+            <div>
+              <strong>{t('Network inputs are disconnected')}</strong>
+              <small>{networkDown.map(node => `${node.data.title}: ${node.data.networkError}`).join(' · ')}</small>
+            </div>
+            <div className="route-check-actions">
+              <button type="button" className="tool-button" onClick={() => send('retry-routing')}><RefreshCw size={13} /> {t('Retry routing')}</button>
+            </div>
+          </div>
+        )}
+
+        {faulted.length > 0 && (
+          <div className="route-check-row">
+            <span className="route-check-dot bad" />
+            <div>
+              <strong>{t('Faulted effects')}</strong>
+              <small>{faulted.map(node => node.data.title).join(' · ')}</small>
+            </div>
+            <div className="route-check-actions">
+              <button type="button" className="tool-button" onClick={retryFaulted}><RefreshCw size={13} /> {t('Retry effects')}</button>
+            </div>
           </div>
         )}
 

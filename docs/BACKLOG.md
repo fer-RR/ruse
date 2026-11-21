@@ -160,9 +160,9 @@ speech lifecycle, then UI/performance. Audit bullets below remain the full list.
 ## Before next feature work
 
 - Commit and release the post-0.9.11 work as **0.9.12**: performance/architecture
-  pass, network stop fix, UI scale, Receiver theme, timeline vertical zoom and
+  pass, network stop fix, UI scale, timeline vertical zoom and
   2D panning, translation and layout hardening.
-- Manually review the Receiver theme and interface scale (80–150%) on a live
+- Manually review the Vesper theme and interface scale (80–150%) on a live
   routed session.
 - Test timeline vertical zoom and 2D panning with many tracks and automation
   lanes.

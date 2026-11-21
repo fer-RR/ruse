@@ -22,6 +22,7 @@ public sealed partial class TimelineService : IDisposable
     private TrackPlayback[] _trackSnapshot = Array.Empty<TrackPlayback>();
     private TimelineProject _project = new();
     private long _playheadSample;
+    private int _seekGeneration;
     private volatile bool _playing;
     private volatile RenderState _renderState = new(Array.Empty<TrackPlayback>(), -1, -1);
 
@@ -2094,6 +2095,7 @@ public sealed partial class TimelineService : IDisposable
     {
         lock (_gate)
         {
+            _seekGeneration++;
             _playheadSample = Math.Max(0, sample);
             foreach (var track in _tracks.Values)
             {
@@ -2127,6 +2129,8 @@ public sealed partial class TimelineService : IDisposable
         {
             return;
         }
+
+        int seekGeneration = Volatile.Read(ref _seekGeneration);
 
         TrackPlayback[] tracks;
         long position;
@@ -2192,9 +2196,22 @@ public sealed partial class TimelineService : IDisposable
             track.Source?.PublishTimelineBlock(track.Block);
             if (track.Track.GeneratorNodeId is { } generatorNodeId)
             {
-                bool generatorActive = playing && audible && targetGain > 0.0001f &&
-                    track.Clips.Any(clip => position >= clip.StartSample &&
-                        position < clip.StartSample + clip.LengthSamples);
+                bool generatorActive = playing && audible && targetGain > 0.0001f;
+                if (generatorActive)
+                {
+                    generatorActive = false;
+                    for (int clipIndex = 0; clipIndex < track.Clips.Length; clipIndex++)
+                    {
+                        var clip = track.Clips[clipIndex];
+                        if (position >= clip.StartSample &&
+                            position < clip.StartSample + clip.LengthSamples)
+                        {
+                            generatorActive = true;
+                            break;
+                        }
+                    }
+                }
+
                 ApplyGeneratorGate?.Invoke(generatorNodeId, generatorActive ? track.Track.Gain : 0f);
             }
         }
@@ -2241,7 +2258,10 @@ public sealed partial class TimelineService : IDisposable
             return;
         }
 
-        Interlocked.Exchange(ref _playheadSample, next);
+        if (Volatile.Read(ref _seekGeneration) == seekGeneration)
+        {
+            Interlocked.Exchange(ref _playheadSample, next);
+        }
     }
 
     private static List<TimelineAutomationPoint> NormalizeAutomationPoints(

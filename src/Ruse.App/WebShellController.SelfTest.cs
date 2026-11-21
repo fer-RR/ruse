@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.IO;
+using System.IO.Compression;
 using System.Text.Json;
 using NAudio.Wave;
 using Ruse.App.Audio;
@@ -21,6 +22,7 @@ internal sealed partial class WebShellController
         MixerGroupBus.SetSolo(groupTestKey, true);
         Check("output wave buffer", LatencySelfTest.TestOutputWaveBuffer());
         Check("graph swap under load", LatencySelfTest.TestGraphSwapUnderLoad());
+        Check("modifier fault recovery", LatencySelfTest.TestModifierFaultRecovery());
         Check("network packet reorder", LatencySelfTest.TestNetworkPacketReorder());
         Check("mixer node pan/mute/solo/crossfade/auto gain/width", LatencySelfTest.TestMixerNode());
         Check("mixer input delay", LatencySelfTest.TestMixerInputDelay());
@@ -485,6 +487,9 @@ internal sealed partial class WebShellController
                               Math.Abs(fileSource.FileDurationSeconds - file.DurationSeconds) < 0.05;
             file.Stop();
             fileSource.Dispose();
+            int detectedRoot = SampleNoteDetector.DetectRootMidi(fileTestPath, out float detectedConfidence);
+            Check("sample root note detection",
+                detectedRoot == 57 && detectedConfidence >= 0.4f);
         }
         catch
         {
@@ -496,6 +501,17 @@ internal sealed partial class WebShellController
         }
 
         Check("file player transport", fileTransportOk);
+
+        var fileNoteSource = new SourceNode("File note test", SourceKind.File);
+        fileNoteSource.SetFileNote(60, 72, 25);
+        fileNoteSource.SetFileTapeMode(true);
+        Check("file player note transpose",
+            fileNoteSource.FileRootNote == 60 &&
+            fileNoteSource.FileTargetNote == 72 &&
+            Math.Abs(fileNoteSource.FilePitchCents - 25f) < 0.01f &&
+            Math.Abs(fileNoteSource.FilePitchSemitones - 12.25f) < 0.01f &&
+            fileNoteSource.FileTapeMode);
+        fileNoteSource.Dispose();
 
         var appSettings = new AppSettings
         {
@@ -528,6 +544,128 @@ internal sealed partial class WebShellController
         };
         var appSettingsJson = JsonSerializer.Serialize(appSettings);
         var appSettingsBack = JsonSerializer.Deserialize<AppSettings>(appSettingsJson) ?? new AppSettings();
+        Check("support reports",
+            BuildDiagnosticsReport().Contains("Ruse ", StringComparison.Ordinal) &&
+            BuildSettingsReport().Contains("\"appVersion\"", StringComparison.Ordinal) &&
+            BuildRoutesReport().Contains("Nodes:", StringComparison.Ordinal) &&
+            BuildRoutesReport().Contains("Links:", StringComparison.Ordinal));
+        Check("support privacy redaction",
+            !SanitizeSupportText(
+                @"C:\Users\alice\secret.wav 192.168.1.5 alice@example.com " +
+                "00000000-0000-0000-0000-000000000000")
+                .Contains("alice", StringComparison.OrdinalIgnoreCase) &&
+            !SanitizeSupportText(@"C:\Users\alice\secret.wav").Contains("secret.wav", StringComparison.OrdinalIgnoreCase) &&
+            !SanitizeSupportText("192.168.1.5").Contains("192.168", StringComparison.Ordinal) &&
+            !SanitizeLogText("song.wav").Contains("song.wav", StringComparison.OrdinalIgnoreCase) &&
+            SanitizeSupportText("Network local LAN IP: 192.168.1.5", "192.168.1.5")
+                .Contains("192.168.1.5", StringComparison.Ordinal));
+        string networkProbeId = "support-network-probe-" + Guid.NewGuid().ToString("N");
+        var networkProbe = new SourceNode("Network link", SourceKind.Network);
+        networkProbe.SetNetworkPort(NetworkPcm.DefaultPort);
+        _nodes[networkProbeId] = new NodeEntry
+        {
+            Id = networkProbeId,
+            Kind = "network",
+            Flavor = "network",
+            Title = "Network link",
+            Subtitle = "Voice + text",
+            Accent = "#4FD1C5",
+            Source = networkProbe,
+        };
+        try
+        {
+            string networkReport = BuildNetworkReport();
+            Check("support network LAN IP",
+                networkReport.Contains("Local LAN IP:", StringComparison.Ordinal) &&
+                networkReport.Contains(NetworkPcm.GetLocalAddress(), StringComparison.Ordinal) &&
+                BuildDiagnosticsReport().Contains("Network local LAN IP:", StringComparison.Ordinal));
+        }
+        finally
+        {
+            _nodes.Remove(networkProbeId);
+            networkProbe.Dispose();
+        }
+
+        string secretId = "support-text-probe-" + Guid.NewGuid().ToString("N");
+        const string secretText = "private transcript and note text";
+        _nodes[secretId] = new NodeEntry
+        {
+            Id = secretId,
+            Kind = "text",
+            Flavor = "note",
+            Title = "Text note",
+            Subtitle = "Notes and scripts",
+            Accent = "#8FB7FF",
+            TextContent = secretText,
+            TextCommittedContent = secretText,
+            TtsText = secretText,
+        };
+        try
+        {
+            Check("support content exclusion",
+                !RedactSensitiveContent("log " + secretText).Contains(secretText, StringComparison.Ordinal));
+        }
+        finally
+        {
+            _nodes.Remove(secretId);
+        }
+
+        string supportTestDir = Path.Combine(Path.GetTempPath(), "ruse-support-test-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            string? supportBundle = ExportSupportBundle(
+                supportTestDir,
+                announce: false,
+                description: "test description");
+            bool supportBundleOk = false;
+            if (supportBundle != null)
+            {
+                using var archive = ZipFile.OpenRead(supportBundle);
+                var names = archive.Entries.Select(entry => entry.FullName).ToHashSet(StringComparer.Ordinal);
+                supportBundleOk = names.Contains("README.txt") &&
+                    names.Contains("description.txt") &&
+                    names.Contains("diagnostics.txt") &&
+                    names.Contains("settings.json") &&
+                    names.Contains("devices.txt") &&
+                    names.Contains("routes.txt") &&
+                    names.Contains("log-tail.txt");
+            }
+
+            Check("support bundle", supportBundleOk);
+
+            string minimalDir = supportTestDir + "-minimal";
+            string? minimalBundle = ExportSupportBundle(
+                minimalDir,
+                announce: false,
+                includeDiagnostics: false,
+                description: "test description");
+            bool minimalBundleOk = false;
+            if (minimalBundle != null)
+            {
+                using var archive = ZipFile.OpenRead(minimalBundle);
+                var names = archive.Entries.Select(entry => entry.FullName).ToHashSet(StringComparer.Ordinal);
+                minimalBundleOk = names.Contains("README.txt") &&
+                    names.Contains("version.txt") &&
+                    names.Contains("description.txt") &&
+                    !names.Contains("log-tail.txt") &&
+                    !names.Contains("devices.txt") &&
+                    !names.Contains("routes.txt");
+            }
+
+            Check("support bundle without diagnostics", minimalBundleOk);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(supportTestDir, recursive: true);
+                Directory.Delete(supportTestDir + "-minimal", recursive: true);
+            }
+            catch
+            {
+            }
+        }
+
         Check("settings persistence",
             appSettingsBack.Theme == "light" &&
             Math.Abs(appSettingsBack.UiScale - 1.25) < 0.001 &&
@@ -880,9 +1018,20 @@ internal sealed partial class WebShellController
                     deviceId: "{0.0.1.00000000}.{00000000-0000-0000-0000-000000000000}"),
                 40,
                 700);
-            var savedWithoutInvalid = BuildPreset();
+            var skippedNames = new List<string>();
+            var savedWithoutInvalid = BuildPreset(skipped: skippedNames);
             Check("invalid device node skipped on save",
-                savedWithoutInvalid.Sources.All(source => source.Id != invalidSource.Id));
+                savedWithoutInvalid.Sources.All(source => source.Id != invalidSource.Id) &&
+                skippedNames.Count == 1 &&
+                skippedNames[0] == invalidSource.Title);
+            var missingFile = RegisterSource(new SourceNode("Missing file", SourceKind.File), 40, 760);
+            missingFile.Source!.SetFile(
+                Path.Combine(Path.GetTempPath(), $"ruse-missing-{Guid.NewGuid():N}.wav"),
+                loop: false);
+            var savedWithMissingFile = BuildPreset();
+            Check("missing file node is kept on save",
+                savedWithMissingFile.Sources.Any(source => source.Id == missingFile.Id));
+            RemoveEntryInternal(missingFile.Id);
             RemoveEntryInternal(invalidSource.Id);
         }
         finally
@@ -1495,6 +1644,7 @@ internal sealed partial class WebShellController
                 RuseFolders.Recordings,
                 RuseFolders.Samples,
                 RuseFolders.Exports,
+                RuseFolders.Notes,
             }.All(Directory.Exists));
             try { File.Delete(importedSample); } catch { }
             RefreshSamples();
@@ -1934,6 +2084,57 @@ internal sealed partial class WebShellController
             groupA.Source?.GroupKey?.StartsWith("source:g:", StringComparison.Ordinal) == true);
         UngroupMixerGroup(groupA.GroupId!);
         Check("mixer ungroup", groupA.GroupId == null && groupB.GroupId == null);
+
+        var networkLink = AddNetworkLink(40, 3000);
+        NodeDto networkDto = CreateNodeDto(networkLink);
+        Check("combined network node",
+            networkLink.Source is { Kind: SourceKind.Network } &&
+            networkLink.Output is { IsNetworkOutput: true } &&
+            networkLink.ChatPort == ChatService.DefaultPort);
+        Check("combined network dto",
+            networkDto.Kind == "network" &&
+            networkDto.IsNetworkInput &&
+            networkDto.IsNetworkOutput &&
+            networkDto.NetworkPort == NetworkPcm.DefaultPort &&
+            networkDto.ChatPort == ChatService.DefaultPort);
+        ReceiveNetworkText(networkLink.Id, "incoming network text");
+        Check("network text feeds TTS source",
+            TextFromSource(networkLink.Id)?.Text == "incoming network text");
+        Check("network text is listed for TTS",
+            BuildTtsSources(null).Any(source => source.Id == networkLink.Id && source.Kind == "network"));
+        Check("network text is listed for translator",
+            BuildNetworkTextSources(null).Any(source => source.Id == networkLink.Id));
+        SetNetworkOutputHost(networkLink.Id, "192.168.1.50");
+        SetNetworkVoicePort(networkLink.Id, 7901);
+        SetNetworkChatPort(networkLink.Id, 7902);
+        Preset combinedPreset = Preset.FromJson(
+            BuildPreset(new HashSet<string> { networkLink.Id }).ToJson());
+        ClearGraph();
+        Check("combined network preset restore",
+            ApplyPreset(combinedPreset, autoRun: false, trustRecorderPaths: true) &&
+            _nodes.Values.FirstOrDefault(entry => entry.Kind == "network") is
+            {
+                Source: { Kind: SourceKind.Network, NetworkPort: 7901 },
+                Output: { IsNetworkOutput: true, NetworkPort: 7901, NetworkHost: "192.168.1.50" },
+                ChatPort: 7902,
+            });
+        RemoveEntryInternal(networkLink.Id);
+
+        var textNote = CreateTextNote(40, 3200, content: "Note line one\nNote line two");
+        Check("text note dto",
+            CreateNodeDto(textNote) is { IsTextNote: true, TextContent: "Note line one\nNote line two" } &&
+            TextFromSource(textNote.Id)?.Text == "Note line one\nNote line two" &&
+            BuildTtsSources(null).Any(source => source.Id == textNote.Id && source.Kind == "note") &&
+            BuildNetworkTextSources(null).Any(source => source.Id == textNote.Id && source.Kind == "note"));
+        Preset notePreset = Preset.FromJson(
+            BuildPreset(new HashSet<string> { textNote.Id }).ToJson());
+        ClearGraph();
+        Check("text note preset restore",
+            ApplyPreset(notePreset, autoRun: false) &&
+            _nodes.Values.FirstOrDefault(entry => entry.Kind == "text") is
+            {
+                TextContent: "Note line one\nNote line two",
+            });
 
         ClearGraph();
         ClearHistory();

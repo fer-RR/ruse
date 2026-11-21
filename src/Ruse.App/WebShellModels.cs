@@ -109,6 +109,8 @@ internal sealed class NodeDto
     public int BitsPerSample { get; set; } = 32;
     public List<ParameterDto> Parameters { get; set; } = new();
     public bool Enabled { get; set; } = true;
+    public bool Faulted { get; set; }
+    public long FaultCount { get; set; }
     public bool IsParallel { get; set; }
     public float Send { get; set; } = 0.5f;
     public bool IsMixer { get; set; }
@@ -146,6 +148,10 @@ internal sealed class NodeDto
     public string? FileOutputId { get; set; }
     public bool FileLoop { get; set; }
     public float FileSpeed { get; set; } = 1f;
+    public int FileRootNote { get; set; } = 60;
+    public int FileTargetNote { get; set; } = 60;
+    public float FilePitchCents { get; set; }
+    public bool FileTapeMode { get; set; }
     public bool IsMetronome { get; set; }
     public float MetronomeBpm { get; set; } = 120f;
     public int MetronomeBeatsPerBar { get; set; } = 4;
@@ -170,6 +176,7 @@ internal sealed class NodeDto
     public string? NetworkLocalIp { get; set; }
     public string? NetworkError { get; set; }
     public double NetworkBufferedMs { get; set; }
+    public int ChatPort { get; set; } = ChatService.DefaultPort;
     public float ToneFrequency { get; set; } = 1000f;
     public bool IsTts { get; set; }
     public string? TtsText { get; set; }
@@ -196,6 +203,8 @@ internal sealed class NodeDto
     public string? TranslatorTarget { get; set; }
     public string? TranslatorModel { get; set; }
     public string? TranslatorProvider { get; set; }
+    public string? TranslatorTextSourceId { get; set; }
+    public List<TtsTextSourceDto> TranslatorTextSources { get; set; } = new();
     public bool IsVst3 { get; set; }
     public string? Vst3Identifier { get; set; }
     public string? Vst3Status { get; set; }
@@ -212,6 +221,9 @@ internal sealed class NodeDto
     public string? WarningSeverity { get; set; }
     public bool Invalid { get; set; }
     public string? InvalidReason { get; set; }
+    public bool IsTextNote { get; set; }
+    public string TextContent { get; set; } = "";
+    public string? TextFileName { get; set; }
 }
 
 internal sealed class MixerStateDto
@@ -454,6 +466,18 @@ internal sealed class NodeTelemetryDto
     public int? OutputSampleRate { get; set; }
     public bool? OutputResampling { get; set; }
 
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? NetworkPackets { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? NetworkLostPackets { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? NetworkUnderruns { get; set; }
+
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? NetworkStreamResets { get; set; }
+
     public void Reset()
     {
         Level = 0;
@@ -516,6 +540,10 @@ internal sealed class NodeTelemetryDto
         InputResamplerLatencyMs = null;
         OutputSampleRate = null;
         OutputResampling = null;
+        NetworkPackets = null;
+        NetworkLostPackets = null;
+        NetworkUnderruns = null;
+        NetworkStreamResets = null;
     }
 }
 
@@ -564,6 +592,13 @@ internal sealed class DiagnosticsDto
     public double ChainLatencyMs { get; set; }
     public long ShortReadFrames { get; set; }
     public long OutputUnderruns { get; set; }
+    public long EndpointStarvedFrames { get; set; }
+    public long EndpointStarvedReads { get; set; }
+    public long EndpointDroppedFrames { get; set; }
+    public long TapDroppedFrames { get; set; }
+    public long NativeSkippedFrames { get; set; }
+    public long RenderAllocatedBytes { get; set; }
+    public long CaptureAllocatedBytes { get; set; }
     public bool LowLatency { get; set; }
     public double TelemetryMs { get; set; }
     public string AudioFormat { get; set; } = "48 kHz · stereo · float32";
@@ -664,6 +699,7 @@ internal sealed class SettingsDto
     public string DataFolder { get; set; } = "";
     public string ModelsFolder { get; set; } = "";
     public string UserFolder { get; set; } = "";
+    public bool StorageRestartRequired { get; set; }
 }
 
 internal sealed class MidiInputDto
@@ -791,6 +827,31 @@ internal sealed class MediaListDto
     public List<MediaFolderDto> Folders { get; set; } = new();
     public List<MediaFileDto> Files { get; set; } = new();
     public string? Error { get; set; }
+}
+
+internal sealed class ChatMessageDto
+{
+    public string Id { get; set; } = "";
+    public string Sender { get; set; } = "";
+    public string Text { get; set; } = "";
+    public string SentAt { get; set; } = "";
+    public bool Mine { get; set; }
+}
+
+internal sealed class ChatStateDto
+{
+    public bool Active { get; set; }
+    public bool Hosting { get; set; }
+    public bool Connected { get; set; }
+    public string Mode { get; set; } = "";
+    public string OwnerNodeId { get; set; } = "";
+    public string LocalName { get; set; } = "";
+    public string PeerName { get; set; } = "";
+    public string PairCode { get; set; } = "";
+    public string HostAddress { get; set; } = "";
+    public int Port { get; set; }
+    public string? Error { get; set; }
+    public List<ChatMessageDto> Messages { get; set; } = new();
 }
 
 internal sealed class BridgeMessage

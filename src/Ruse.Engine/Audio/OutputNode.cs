@@ -6,7 +6,7 @@ namespace Ruse.App.Audio;
 /// <summary>A render endpoint with its own mixing thread.</summary>
 public sealed class OutputNode : IDisposable
 {
-    private readonly MMDevice _device;
+    private MMDevice _device;
     private WasapiPlayer? _wasapiOut;
     private OutputWaveBuffer? _buffer;
     private DirectGraphProvider? _directProvider;
@@ -36,7 +36,7 @@ public sealed class OutputNode : IDisposable
     public double RecorderStartThresholdDb { get; set; } = -40;
 
     public string Id { get; } = Guid.NewGuid().ToString("N");
-    public string DeviceId { get; }
+    public string DeviceId { get; private set; }
     public string Title { get; set; }
     public float Volume { get; set; } = 1.0f;
     public string? GroupKey { get; set; }
@@ -367,6 +367,51 @@ public sealed class OutputNode : IDisposable
         _device = device;
         DeviceId = device.ID;
         Title = device.FriendlyName;
+    }
+
+    /// <summary>
+    /// Replaces a stale endpoint wrapper after a device was removed and added
+    /// again. Stops the current pump first; the caller starts the output when
+    /// routing should resume.
+    /// </summary>
+    public bool RebindDevice(MMDevice device)
+    {
+        if (IsNetworkOutput || IsFileRecorder || device == null)
+        {
+            return false;
+        }
+
+        bool wasRunning = IsRunning;
+        bool needsStop = wasRunning || _wasapiOut != null || _pumpThread != null || _recorder != null;
+        if (needsStop && !Stop())
+        {
+            return false;
+        }
+
+        MMDevice old = _device;
+        string oldName = old?.FriendlyName ?? Title;
+        _device = device;
+        DeviceId = device.ID;
+        if (string.IsNullOrWhiteSpace(Title) ||
+            string.Equals(Title, oldName, StringComparison.Ordinal))
+        {
+            Title = device.FriendlyName;
+        }
+
+        try
+        {
+            old?.Dispose();
+        }
+        catch
+        {
+        }
+
+        if (wasRunning)
+        {
+            Start();
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -1185,6 +1230,7 @@ public sealed class OutputNode : IDisposable
     internal bool UnpacedTestSink { get; set; }
 
     /// <summary>Frames that had to be silence-padded because the source underran.</summary>
+    public long StartedAt => _startedAt;
     public long ShortReadFrames { get; private set; }
 
     /// <summary>Times the device buffer was empty when the pump wanted to refill it.</summary>
@@ -1992,6 +2038,19 @@ public sealed class OutputNode : IDisposable
 
     /// <summary>How much audio is queued in the render buffer right now, in ms.</summary>
     public double BufferedMs => _buffer?.BufferedDuration.TotalMilliseconds ?? 0;
+
+    /// <summary>Silence the endpoint had to insert because the pump was late.</summary>
+    public long EndpointStarvedFrames => _buffer == null
+        ? 0
+        : _buffer.StarvedBytes / Math.Max(1, _buffer.WaveFormat.BlockAlign);
+
+    /// <summary>Endpoint callback reads that were short of audio.</summary>
+    public long EndpointStarvedReads => _buffer?.StarvedReads ?? 0;
+
+    /// <summary>Frames dropped because the endpoint ring was full.</summary>
+    public long EndpointDroppedFrames => _buffer == null
+        ? 0
+        : _buffer.DroppedBytes / Math.Max(1, _buffer.WaveFormat.BlockAlign);
 
     /// <summary>Playback state of the underlying endpoint ("Playing", "Stopped", …).</summary>
     public string PlaybackState => _recorder != null

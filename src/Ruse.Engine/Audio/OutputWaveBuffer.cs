@@ -14,6 +14,8 @@ internal sealed class OutputWaveBuffer : IWaveProvider
     private int _read;
     private int _write;
     private long _droppedBytes;
+    private long _starvedBytes;
+    private long _starvedReads;
 
     public OutputWaveBuffer(WaveFormat format, int capacityMs)
     {
@@ -21,6 +23,8 @@ internal sealed class OutputWaveBuffer : IWaveProvider
         int capacity = Math.Max(4096,
             format.AverageBytesPerSecond * Math.Clamp(capacityMs, 20, 500) / 1000);
         _buffer = new byte[capacity];
+        _starvedBytes = 0;
+        _starvedReads = 0;
     }
 
     public WaveFormat WaveFormat { get; }
@@ -40,6 +44,8 @@ internal sealed class OutputWaveBuffer : IWaveProvider
         TimeSpan.FromSeconds(BufferedBytes / (double)Math.Max(1, WaveFormat.AverageBytesPerSecond));
 
     public long DroppedBytes => Interlocked.Read(ref _droppedBytes);
+    public long StarvedBytes => Interlocked.Read(ref _starvedBytes);
+    public long StarvedReads => Interlocked.Read(ref _starvedReads);
 
     public int Write(byte[] buffer, int offset, int count) =>
         Write(buffer.AsSpan(offset, count));
@@ -108,6 +114,9 @@ internal sealed class OutputWaveBuffer : IWaveProvider
         // Always give the endpoint a full buffer; missing samples are silence.
         if (copied < destination.Length)
         {
+            int missing = destination.Length - copied;
+            Interlocked.Add(ref _starvedBytes, missing);
+            Interlocked.Increment(ref _starvedReads);
             destination[copied..].Clear();
         }
 

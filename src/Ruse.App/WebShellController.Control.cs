@@ -52,7 +52,7 @@ internal sealed partial class WebShellController
             await server.StartAsync(_settings.ControlApiPort);
             if (_disposed)
             {
-                server.Dispose();
+                await server.StopAsync().ConfigureAwait(false);
                 return;
             }
 
@@ -71,7 +71,7 @@ internal sealed partial class WebShellController
         await _controlServerGate.WaitAsync();
         try
         {
-            StopControlServer();
+            await StopControlServerAsync().ConfigureAwait(false);
             if (_settings.ControlApiEnabled)
             {
                 await StartControlServerCoreAsync();
@@ -85,7 +85,7 @@ internal sealed partial class WebShellController
         }
     }
 
-    private void StopControlServer()
+    private async Task StopControlServerAsync()
     {
         var server = _controlServer;
         _controlServer = null;
@@ -96,7 +96,7 @@ internal sealed partial class WebShellController
 
         try
         {
-            server.Dispose();
+            await server.StopAsync().ConfigureAwait(false);
         }
         catch (Exception ex)
         {

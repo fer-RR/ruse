@@ -208,6 +208,7 @@ internal static class TtsSynthesis
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromMinutes(5));
+            using var watchdog = timeout.Token.Register(() => TryKill(process));
             var stderr = process.StandardError.ReadToEndAsync(timeout.Token);
             while (true)
             {

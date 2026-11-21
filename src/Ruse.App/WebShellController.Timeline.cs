@@ -32,6 +32,7 @@ internal sealed partial class WebShellController
     private int _timelineRecordingLatencyFrames;
     private volatile bool _timelineRecordingActive;
     private bool _timelineBounceActive;
+    private bool _offlinePrepareActive;
     private CancellationTokenSource? _timelineBounceCancel;
     private SourceNode? _timelineMetronomeSource;
     private bool _timelineMetronome;
@@ -792,7 +793,7 @@ internal sealed partial class WebShellController
     private void TimelineSeek(long sample)
     {
         _timeline?.Seek(sample);
-        PublishTimeline(false);
+        PublishTimelinePlayhead();
     }
 
     private void StartTimelineRecording()
@@ -817,6 +818,12 @@ internal sealed partial class WebShellController
         }
 
         string path = NextRecordingPath(AudioFileFormat.Wav24);
+        if (!DiskSpace.Ensure(path, DiskSpace.RecordingReserveBytes, out string spaceError))
+        {
+            SetStatus("Not enough disk space to record the timeline: " + spaceError, isError: true);
+            return;
+        }
+
         try
         {
             _timelineRecorder = new AudioFileRecorder(path, AudioFileFormat.Wav24, AudioEngineConfig.SampleRate, 2);
@@ -1042,20 +1049,36 @@ internal sealed partial class WebShellController
         }
 
         string path = dialog.FileName;
+        long bounceSamples = rangeOnly ? rangeEnd - rangeStart : _timeline.TotalLengthSamples();
+        double bounceSeconds = bounceSamples / (double)Math.Max(1, _timeline.SampleRate) +
+            Math.Clamp(_settings.TimelineBounceTailSeconds, 0, 30);
+        long requiredBytes = DiskSpace.PcmBytes(AudioEngineConfig.SampleRate, 2, 24, bounceSeconds) +
+            (32L * 1024 * 1024);
+        if (!DiskSpace.Ensure(path, requiredBytes, out string spaceError))
+        {
+            SetStatus("Not enough disk space to bounce the timeline: " + spaceError, isError: true);
+            return;
+        }
+
         _timelineBounceActive = true;
         SetStatus(rangeOnly ? "Bouncing timeline range..." : "Bouncing timeline...");
         bool ok;
         string error;
         OfflineTimelineBounce? bounce;
+        _offlinePrepareActive = true;
         try
         {
-            bounce = BuildTimelineBounceGraph();
+            bounce = await Task.Run(BuildTimelineBounceGraph).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
-        EndTimelineBounce();
+            EndTimelineBounce();
             SetStatus("Could not prepare the timeline bounce: " + ex.Message, isError: true);
             return;
+        }
+        finally
+        {
+            _offlinePrepareActive = false;
         }
 
         if (bounce == null)
@@ -1138,15 +1161,20 @@ internal sealed partial class WebShellController
         bool ok;
         string error;
         OfflineTimelineBounce? bounce;
+        _offlinePrepareActive = true;
         try
         {
-            bounce = BuildTimelineBounceGraph();
+            bounce = await Task.Run(BuildTimelineBounceGraph).ConfigureAwait(true);
         }
         catch (Exception ex)
         {
-        EndTimelineBounce();
+            EndTimelineBounce();
             SetStatus("Could not prepare the timeline freeze: " + ex.Message, isError: true);
             return;
+        }
+        finally
+        {
+            _offlinePrepareActive = false;
         }
 
         if (bounce == null)

@@ -138,6 +138,8 @@ public sealed class SynthGeneratorCapture : IDisposable
         using var mmcss = MmcssScope.Enter();
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long produced = 0;
+        try
+        {
         while (!_stop)
         {
             if (_stopRequested)
@@ -163,6 +165,12 @@ public sealed class SynthGeneratorCapture : IDisposable
             _packetArgs.Set(_bytes, frames * Channels * sizeof(float));
             DataAvailable?.Invoke(this, _packetArgs);
             produced += frames;
+        }
+        }
+        catch (Exception ex)
+        {
+            AudioFaultLog.ReportOutputPumpFault("Synth generator", ex);
+            _stop = true;
         }
     }
 

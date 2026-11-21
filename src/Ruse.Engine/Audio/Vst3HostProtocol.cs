@@ -34,6 +34,26 @@ public static class Vst3HostProtocol
         stream.Write(payload);
     }
 
+    public static async Task WriteControlAsync(
+        Stream stream,
+        Vst3HostRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, Json);
+        byte[] frame = new byte[payload.Length + 4];
+        BinaryPrimitives.WriteInt32LittleEndian(frame, payload.Length);
+        payload.CopyTo(frame, 4);
+        await stream.WriteAsync(frame, cancellationToken).ConfigureAwait(false);
+    }
+
+    public static async Task<Vst3HostResponse?> ReadControlAsync(
+        Stream stream,
+        CancellationToken cancellationToken = default)
+    {
+        byte[] payload = await ReadControlPayloadAsync(stream, cancellationToken).ConfigureAwait(false);
+        return JsonSerializer.Deserialize<Vst3HostResponse>(payload, Json);
+    }
+
     public static Vst3HostRequest? ReadRequest(Stream stream)
     {
         var payload = ReadControlPayload(stream);
@@ -59,6 +79,40 @@ public static class Vst3HostProtocol
         var payload = new byte[size];
         ReadExactly(stream, payload);
         return payload;
+    }
+
+    private static async Task<byte[]> ReadControlPayloadAsync(
+        Stream stream,
+        CancellationToken cancellationToken)
+    {
+        var length = new byte[4];
+        await ReadExactlyAsync(stream, length, cancellationToken).ConfigureAwait(false);
+        int size = BinaryPrimitives.ReadInt32LittleEndian(length);
+        if (size <= 0 || size > 2_000_000)
+        {
+            throw new InvalidDataException("Invalid VST3 host message length.");
+        }
+
+        var payload = new byte[size];
+        await ReadExactlyAsync(stream, payload, cancellationToken).ConfigureAwait(false);
+        return payload;
+    }
+
+    private static async Task ReadExactlyAsync(
+        Stream stream,
+        Memory<byte> buffer,
+        CancellationToken cancellationToken)
+    {
+        while (!buffer.IsEmpty)
+        {
+            int read = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            if (read <= 0)
+            {
+                throw new EndOfStreamException();
+            }
+
+            buffer = buffer[read..];
+        }
     }
 
     public static void WriteAudio(Stream stream, ReadOnlySpan<float> samples, int frames, int channels, int command)

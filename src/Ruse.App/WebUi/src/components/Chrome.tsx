@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import {
-  Clock3, FolderOpen, LayoutGrid, MicOff, Minus, RefreshCw, SlidersHorizontal,
-  Redo2, Save, Settings, Square, Stethoscope, Trash2, Undo2, Volume2, VolumeX, X, Activity,
+  Activity, Clock3, FolderOpen, LayoutGrid, MicOff, Minus, RefreshCw, SlidersHorizontal,
+  Redo2, Save, Settings, Square, Stethoscope, Trash2, Undo2, Volume2, VolumeX, X,
 } from 'lucide-react';
 import { send } from '../bridge';
 import { formatGainDb, nextVolumeValue } from '../gain';

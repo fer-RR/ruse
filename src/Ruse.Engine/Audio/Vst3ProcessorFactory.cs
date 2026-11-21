@@ -35,7 +35,8 @@ public static class Vst3ProcessorFactory
             }
         }
 
-        return new Vst3Processor(identifier, stateBase64, pendingParameters, start);
+        return new GuardedVst3Processor(
+            new Vst3Processor(identifier, stateBase64, pendingParameters, start));
     }
 
     /// <summary>

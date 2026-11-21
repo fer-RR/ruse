@@ -120,7 +120,15 @@ internal sealed partial class WebShellController
         bool IsMixer = false,
         float MixerWidth = 1f,
         bool MixerAutoGain = false,
-        float MixerCrossfade = 0f);
+        float MixerCrossfade = 0f,
+        int ChatPort = ChatService.DefaultPort,
+        string? TranslatorTextSourceId = null,
+        int FileRootNote = 60,
+        int FileTargetNote = 60,
+        float FilePitchCents = 0f,
+        bool FileTapeMode = false,
+        string? TextContent = null,
+        string? TextFileName = null);
 
     private void PushAction(
         string label, Action undo, Action redo,
@@ -219,6 +227,15 @@ internal sealed partial class WebShellController
             new List<PresetProcessor>(), 1, false, true, null, null, null, false,
             ControlId: entry.ControlId);
 
+        if (entry.Kind == "text")
+        {
+            return snapshot with
+            {
+                TextContent = entry.TextContent,
+                TextFileName = entry.TextFileName,
+            };
+        }
+
         if (entry.Source != null)
         {
             return snapshot with
@@ -230,6 +247,10 @@ internal sealed partial class WebShellController
                 FilePath = entry.Source.Kind == SourceKind.Tts ? null : entry.Source.FilePath,
                 FileLoop = entry.Source.FileLoop,
                 FileSpeed = entry.Source.FileSpeed,
+                FileRootNote = entry.Source.FileRootNote,
+                FileTargetNote = entry.Source.FileTargetNote,
+                FilePitchCents = entry.Source.FilePitchCents,
+                FileTapeMode = entry.Source.FileTapeMode,
                 ToneFrequency = entry.Source.ToneFrequency,
                 ToneWave = entry.Source.ToneWave,
                 ToneLevelDb = entry.Source.ToneLevelDb,
@@ -242,7 +263,10 @@ internal sealed partial class WebShellController
                 TtsModel = entry.TtsModel,
                 TtsSpeed = entry.TtsSpeed,
                 TtsVoice = entry.TtsVoice,
-                NetworkPort = entry.Source.NetworkPort,
+                NetworkPort = entry.Output?.NetworkPort ?? entry.Source.NetworkPort,
+                NetworkHost = entry.Output?.NetworkHost,
+                IsNetworkOutput = entry.Output?.IsNetworkOutput == true,
+                ChatPort = entry.ChatPort,
                 Volume = entry.Source.Gain,
                 Muted = entry.Source.Muted,
             };
@@ -281,6 +305,7 @@ internal sealed partial class WebShellController
                 TranscriberModel = entry.TranscriberModel,
                 TranslatorTarget = entry.TranslatorTarget,
                 TranslatorModel = entry.TranslatorModel,
+                TranslatorTextSourceId = entry.TranslatorTextSourceId,
                 IsMixer = entry.Modifier.IsMixer,
                 MixerWidth = entry.Modifier.MixerWidth,
                 MixerAutoGain = entry.Modifier.MixerAutoGain,
@@ -295,6 +320,40 @@ internal sealed partial class WebShellController
     {
         try
         {
+            if (snapshot.Kind == "text")
+            {
+                var note = CreateTextNote(
+                    snapshot.X, snapshot.Y, snapshot.Id, snapshot.ControlId,
+                    snapshot.TextContent ?? "", snapshot.TextFileName);
+                note.Title = snapshot.Title;
+                note.Width = snapshot.Width;
+                note.Height = snapshot.Height;
+                return note;
+            }
+
+            if (snapshot.Kind == "network" && snapshot.SourceKind == SourceKind.Network)
+            {
+                var source = new SourceNode(
+                    snapshot.Title, SourceKind.Network, id: snapshot.Id);
+                source.SetNetworkPort(snapshot.NetworkPort);
+                source.Gain = snapshot.Volume;
+                source.Muted = snapshot.Muted;
+                var entry = RegisterSource(source, snapshot.X, snapshot.Y, snapshot.Id, snapshot.ControlId);
+                entry.Kind = "network";
+                entry.Subtitle = "Voice + text";
+                entry.ChatPort = Math.Clamp(snapshot.ChatPort, 1, 65535);
+                var output = OutputNode.CreateForNetwork(
+                    snapshot.NetworkHost ?? "127.0.0.1", snapshot.NetworkPort);
+                output.Volume = snapshot.Volume;
+                output.Muted = snapshot.Muted;
+                AttachNetworkOutput(
+                    entry, output, snapshot.NetworkHost ?? "127.0.0.1",
+                    snapshot.NetworkPort, snapshot.ChatPort);
+                entry.Width = snapshot.Width;
+                entry.Height = snapshot.Height;
+                return entry;
+            }
+
             if (snapshot.Kind == "source")
             {
                 RestoreFrozenProxyPath(snapshot.FilePath);
@@ -308,6 +367,8 @@ internal sealed partial class WebShellController
                     fileLoop: snapshot.FileLoop,
                     id: snapshot.Id);
                 source.SetFileSpeed(snapshot.FileSpeed);
+                source.SetFileNote(snapshot.FileRootNote, snapshot.FileTargetNote, snapshot.FilePitchCents);
+                source.SetFileTapeMode(snapshot.FileTapeMode);
                 if (snapshot.IsMetronome)
                 {
                     source.SetMetronome(snapshot.MetronomeBpm, snapshot.MetronomeBeatsPerBar);
@@ -411,6 +472,12 @@ internal sealed partial class WebShellController
                     snapshot.TranslatorTarget, snapshot.TranslatorModel, snapshot.ControlId);
                 modifierEntry.Width = snapshot.Width;
                 modifierEntry.Height = snapshot.Height;
+                if (modifierEntry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true)
+                {
+                    modifierEntry.TranslatorTextSourceId = snapshot.TranslatorTextSourceId;
+                    RestartTranslatorText(modifierEntry);
+                }
+
                 return modifierEntry;
             }
 

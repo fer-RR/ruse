@@ -14,7 +14,11 @@ internal static class RuseFolders
     public static string UserRoot =>
         AppSettings.OverrideDirectory != null
             ? Path.Combine(AppSettings.OverrideDirectory, "User")
-            : Path.Combine(DocumentsRoot(), "Ruse");
+            : AppSettings.ConfiguredUserDirectory is { Length: > 0 } custom
+                ? custom
+                : DefaultUserRoot;
+
+    public static string DefaultUserRoot => Path.Combine(DocumentsRoot(), "Ruse");
 
     private static string DocumentsRoot()
     {
@@ -31,6 +35,8 @@ internal static class RuseFolders
     public static string Recordings => Path.Combine(UserRoot, "Recordings");
     public static string Samples => Path.Combine(UserRoot, "Samples");
     public static string Exports => Path.Combine(UserRoot, "Exports");
+    public static string Notes => Path.Combine(UserRoot, "Notes");
+    public static string Support => Path.Combine(UserRoot, "Support");
 
     /// <summary>Old top-level folder used before the Ruse folder was grouped.</summary>
     public static string LegacySamples => Path.Combine(MyMusicOrDocuments(), "Ruse Samples");
@@ -40,7 +46,7 @@ internal static class RuseFolders
 
     public static void EnsureAll()
     {
-        foreach (string directory in new[] { UserRoot, Presets, Recordings, Samples, Exports })
+        foreach (string directory in new[] { UserRoot, Presets, Recordings, Samples, Exports, Notes, Support })
         {
             try
             {
@@ -69,9 +75,15 @@ internal static class RuseFolders
     public static void OpenUserFolder()
     {
         EnsureAll();
+        OpenFolder(UserRoot);
+    }
+
+    public static void OpenFolder(string directory)
+    {
+        Ensure(directory);
         Process.Start(new ProcessStartInfo
         {
-            FileName = UserRoot,
+            FileName = directory,
             UseShellExecute = true,
         });
     }

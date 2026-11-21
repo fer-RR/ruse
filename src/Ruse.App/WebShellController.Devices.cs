@@ -8,6 +8,7 @@ internal sealed partial class WebShellController
     private MMDeviceEnumerator? _deviceEnumerator;
     private MMDeviceNotificationClient? _deviceNotifications;
     private int _deviceRefreshPending;
+    private int _deviceScanRunning;
 
     /// <summary>
     /// Subscribes to Core Audio endpoint/default-device notifications. Changes
@@ -77,6 +78,78 @@ internal sealed partial class WebShellController
         catch
         {
         }
+    }
+
+    /// <summary>
+    /// Reconnects device outputs that stopped after an endpoint disappeared and
+    /// came back. Only runs while routing is active, or after a fault stopped
+    /// routing, so a manual device refresh never starts a stopped session.
+    /// </summary>
+    private bool RecoverOutputDevices()
+    {
+        if (_disposed || (!_running && !_routingFaultStopped))
+        {
+            return false;
+        }
+
+        bool recovered = false;
+        using var enumerator = new MMDeviceEnumerator();
+        foreach (var entry in _nodes.Values)
+        {
+            if (entry.Output is not { IsRunning: false } output ||
+                output.IsNetworkOutput ||
+                output.IsFileRecorder ||
+                string.IsNullOrWhiteSpace(output.DeviceId))
+            {
+                continue;
+            }
+
+            MMDevice? device = null;
+            bool rebound = false;
+            try
+            {
+                device = enumerator.GetDevice(output.DeviceId);
+                if (device.State != DeviceState.Active)
+                {
+                    device.Dispose();
+                    continue;
+                }
+
+                if (!output.RebindDevice(device))
+                {
+                    device.Dispose();
+                    continue;
+                }
+
+                rebound = true;
+                recovered = true;
+                if (_running)
+                {
+                    output.Start();
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!rebound)
+                {
+                    device?.Dispose();
+                }
+
+                AppLog.Warning($"Could not reconnect output '{entry.Title}': {ex.Message}");
+            }
+        }
+
+        bool restartRouting = recovered && _routingFaultStopped;
+        if (restartRouting)
+        {
+            StartRouting();
+        }
+        else if (recovered)
+        {
+            SetStatus("Audio device reconnected; routing resumed.");
+        }
+
+        return recovered;
     }
 
     private void OnDeviceStateChanged(object? sender, DeviceStateChangedEventArgs e) =>

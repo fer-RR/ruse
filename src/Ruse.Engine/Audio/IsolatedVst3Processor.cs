@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO.Pipes;
 using Ruse.App.Diagnostics;
@@ -14,6 +15,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     private const int MaxFrames = 2048;
     private const int SampleRate = 48000;
     private const int Channels = 2;
+    private const int ControlTimeoutMs = 1500;
 
     private readonly string _identifier;
     private readonly string? _initialState;
@@ -23,6 +25,8 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     private readonly object _controlLock = new();
     private readonly object _stateLock = new();
     private readonly object _editorPollLock = new();
+    private readonly ConcurrentDictionary<string, float> _queuedParameters = new(StringComparer.Ordinal);
+    private int _parameterFlushScheduled;
     private readonly float[] _audioInput = new float[MaxFrames * Channels];
     private const int AudioSlotCount = 4;
     private readonly AudioSlot[] _audioSlots = CreateAudioSlots();
@@ -267,12 +271,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
                 Set = value =>
                 {
                     parameter.Value = value;
-                    SendControl(new Vst3HostRequest
-                    {
-                        Command = "set",
-                        Name = parameter.Name,
-                        Value = value,
-                    });
+                    QueueParameter(parameter.Name, value);
                 },
             });
         }
@@ -294,11 +293,68 @@ public sealed class IsolatedVst3Processor : IVst3Processor
         }
     }
 
+    private void QueueParameter(string name, float value)
+    {
+        if (_disposed || !IsReady)
+        {
+            return;
+        }
+
+        _queuedParameters[name] = value;
+        if (Interlocked.Exchange(ref _parameterFlushScheduled, 1) == 0)
+        {
+            ThreadPool.QueueUserWorkItem(_ => FlushParameters());
+        }
+    }
+
+    private void FlushParameters()
+    {
+        try
+        {
+            while (!_disposed)
+            {
+                string? name = null;
+                foreach (string candidate in _queuedParameters.Keys)
+                {
+                    name = candidate;
+                    break;
+                }
+
+                if (name == null)
+                {
+                    break;
+                }
+
+                if (!_queuedParameters.TryRemove(name, out float value))
+                {
+                    continue;
+                }
+
+                SendControl(new Vst3HostRequest
+                {
+                    Command = "set",
+                    Name = name,
+                    Value = value,
+                });
+            }
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _parameterFlushScheduled, 0);
+            if (!_disposed && !_queuedParameters.IsEmpty &&
+                Interlocked.Exchange(ref _parameterFlushScheduled, 1) == 0)
+            {
+                ThreadPool.QueueUserWorkItem(_ => FlushParameters());
+            }
+        }
+    }
+
     private Vst3HostResponse? SendControl(Vst3HostRequest request)
     {
         lock (_controlLock)
         {
-            if (_controlPipe == null || !_controlPipe.IsConnected)
+            var pipe = _controlPipe;
+            if (pipe == null || !pipe.IsConnected)
             {
                 return null;
             }
@@ -306,8 +362,15 @@ public sealed class IsolatedVst3Processor : IVst3Processor
             Interlocked.Exchange(ref _controlCallStarted, Environment.TickCount64);
             try
             {
-                Vst3HostProtocol.WriteControl(_controlPipe, request);
-                return Vst3HostProtocol.ReadControl(_controlPipe);
+                Task<Vst3HostResponse?> task = SendControlAsync(pipe, request);
+                if (!task.Wait(ControlTimeoutMs))
+                {
+                    ObserveFault(task);
+                    KillHost("control call exceeded 1.5 s");
+                    return null;
+                }
+
+                return task.Result;
             }
             catch (Exception ex)
             {
@@ -319,6 +382,23 @@ public sealed class IsolatedVst3Processor : IVst3Processor
                 Interlocked.Exchange(ref _controlCallStarted, 0);
             }
         }
+    }
+
+    private static async Task<Vst3HostResponse?> SendControlAsync(
+        Stream pipe,
+        Vst3HostRequest request)
+    {
+        await Vst3HostProtocol.WriteControlAsync(pipe, request).ConfigureAwait(false);
+        return await Vst3HostProtocol.ReadControlAsync(pipe).ConfigureAwait(false);
+    }
+
+    private static void ObserveFault(Task task)
+    {
+        _ = task.ContinueWith(
+            completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     public void Process(Span<float> samples, int frames)
@@ -798,6 +878,11 @@ public sealed class IsolatedVst3Processor : IVst3Processor
         if (_disposed || Interlocked.Exchange(ref _restartPending, 1) != 0)
         {
             return;
+        }
+
+        lock (_audioLock)
+        {
+            ResetHost();
         }
 
         long attempt = Interlocked.Increment(ref _restartAttempts);

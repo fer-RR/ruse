@@ -34,7 +34,7 @@ public sealed class Vst3Processor : IVst3Processor
     private string _version = "";
     private int _latency;
     private bool _hasEditor;
-    private bool _ready;
+    private volatile bool _ready;
     private bool _disposed;
     private int _started;
     private string? _lastStateBase64;
@@ -102,6 +102,12 @@ public sealed class Vst3Processor : IVst3Processor
             RaiseChanged();
 
             var wrapper = new ThreadedVst3Wrapper();
+            if (_disposed)
+            {
+                wrapper.Dispose();
+                return;
+            }
+
             _wrapper = wrapper;
             if (!await wrapper.LoadPluginAsync(_identifier))
             {
@@ -141,6 +147,8 @@ public sealed class Vst3Processor : IVst3Processor
 
             if (_disposed)
             {
+                wrapper.Dispose();
+                if (ReferenceEquals(_wrapper, wrapper)) _wrapper = null;
                 return;
             }
 

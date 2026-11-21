@@ -6,7 +6,7 @@ import {
 import type { Connection, Edge, EdgeChange, NodeChange } from '@xyflow/react';
 import {
   AlertTriangle, ArrowUpDown, AudioLines, ChevronLeft, ChevronRight, Copy, Info, LayoutGrid, Maximize2,
-  LayoutTemplate, Minus, Pencil, Plus, Snowflake, Trash2, Unplug, Volume2, VolumeX, X, Zap,
+  LayoutTemplate, Minus, Pencil, Plus, RefreshCw, Snowflake, Trash2, Unplug, Volume2, VolumeX, X, Zap,
 } from 'lucide-react';
 import { isHosted, send, subscribe } from './bridge';
 import { createDemoTelemetry, demoCatalog, demoGraph, demoSettings } from './demo';
@@ -15,6 +15,8 @@ import type { RuseFlowNode } from './flow';
 import { chainLayout, nearestFreePosition } from './layout';
 import { catalogKey } from './library';
 import { SHORTCUTS, hasOpenDialog, shouldIgnoreShortcut } from './shortcuts';
+import { themeGraphDotColor } from './themes';
+import { ensureThemeStyles } from './themeStyles';
 import { getNodeTelemetry, publishTelemetry, setNodeTitles, useUiTelemetry } from './telemetry';
 import { setMotionMode, useReducedMotion } from './useReducedMotion';
 import RuseNode from './components/RuseNode';
@@ -23,7 +25,7 @@ import RuseConnectionLine from './components/RuseConnectionLine';
 import RouteHintOverlay from './components/RouteHintOverlay';
 import Sidebar from './components/Sidebar';
 import { StatusBar, TitleBar, Toolbar } from './components/Chrome';
-import { ConfirmDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog, TrayPromptDialog } from './components/Dialogs';
+import { ConfirmDialog, DuplicateAudioDialog, PromptDialog, RemoveFrameDialog, SettingsDialog, StorageFolderDialog, TrayPromptDialog } from './components/Dialogs';
 import type { SettingsTab } from './components/Dialogs';
 import ChainEditorDialog from './components/ChainEditorDialog';
 import type { ExplainerId } from './components/Explainers';
@@ -47,6 +49,7 @@ const ExplainerDialog = lazy(() => import('./components/Explainers'));
 const WelcomeWizard = lazy(() => import('./components/WelcomeWizard'));
 const FirstRouteDialog = lazy(() => import('./components/FirstRouteDialog'));
 const RouteCheckDialog = lazy(() => import('./components/RouteCheckDialog'));
+const SupportReportDialog = lazy(() => import('./components/SupportReportDialog'));
 const ProcessPickerDialog = lazy(() => import('./components/ProcessPickerDialog'));
 const nodeTypes = { ruseNode: RuseNode };
 const edgeTypes = { ruseEdge: RuseEdge };
@@ -112,11 +115,33 @@ export default function App() {
   const [mediaWaveforms, setMediaWaveforms] = useState<Record<string, number[]>>({});
   const [graph, setGraph] = useState<GraphSnapshot>(isHosted ? { version: 0, nodes: [], links: [], running: false } : demoGraph);
   const [settings, setSettings] = useState<SettingsModel>(initialSettings);
+  const [settingsReady, setSettingsReady] = useState(!isHosted);
   const language = normalizeLanguage(settings.uiLanguage);
   const theme = settings.theme;
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-  }, [theme]);
+    if (isHosted && !settingsReady) {
+      return;
+    }
+
+    let cancelled = false;
+    void ensureThemeStyles(theme)
+      .then(() => {
+        if (cancelled) return;
+        document.documentElement.dataset.theme = theme;
+        try {
+          localStorage.setItem('ruse.theme', theme);
+        } catch {
+          // Storage is only a preload hint; the theme still applies.
+        }
+      })
+      .catch(() => {
+        if (!cancelled) document.documentElement.dataset.theme = 'dark';
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [theme, settingsReady]);
   const t = useMemo(() => (text: string, vars?: Record<string, string | number>) => translate(language, text, vars), [language]);
   const ui = useUiTelemetry();
   const running = ui.running || graph.running;
@@ -178,11 +203,15 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('behavior');
   const [showAudioHelp, setShowAudioHelp] = useState(false);
   const [showRouteCheck, setShowRouteCheck] = useState(false);
+  const [showSupportReport, setShowSupportReport] = useState(false);
+  const [storageChoice, setStorageChoice] = useState<{ kind: 'data' | 'models' | 'user'; path: string } | null>(null);
   const [processPicker, setProcessPicker] = useState<{ id: string; title: string; processId?: number; processName?: string } | null>(null);
   const [firstRouteOpen, setFirstRouteOpen] = useState(false);
   const [firstRouteResult, setFirstRouteResult] = useState<FirstRouteResult | null>(null);
   const [welcomeOpen, setWelcomeOpen] = useState(false);
+  const [welcomeFirstRun, setWelcomeFirstRun] = useState(false);
   const [showClear, setShowClear] = useState(false);
+  const [removeInvalidIds, setRemoveInvalidIds] = useState<string[] | null>(null);
   const [timelineTrackRemoval, setTimelineTrackRemoval] = useState<{ id: string; name: string } | null>(null);
   const [timelineTrackRename, setTimelineTrackRename] = useState<{ id: string; name: string } | null>(null);
   const [trayPrompt, setTrayPrompt] = useState(false);
@@ -221,6 +250,34 @@ export default function App() {
   const frameEditing = useRef(false);
   const graphSeen = useRef(false);
   const [rejectedLinkId, setRejectedLinkId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const resetInteraction = () => {
+      if (!draggingRef.current && !connectingRef.current) return;
+      draggingRef.current = false;
+      connectingRef.current = false;
+      appShellRef.current?.classList.remove('is-interacting');
+      if (pendingTelemetry.current) {
+        publishTelemetry(pendingTelemetry.current);
+        pendingTelemetry.current = null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') resetInteraction();
+    };
+
+    window.addEventListener('blur', resetInteraction);
+    window.addEventListener('pointerup', resetInteraction);
+    window.addEventListener('pointercancel', resetInteraction);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('blur', resetInteraction);
+      window.removeEventListener('pointerup', resetInteraction);
+      window.removeEventListener('pointercancel', resetInteraction);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
 
   const nodesRef = useRef(nodes);
   const graphRef = useRef(graph);
@@ -565,6 +622,22 @@ export default function App() {
     if (await confirmRecorderRemoval(recorderIds)) setShowClear(true);
   };
 
+  const requestRemoveInvalid = () => {
+    const ids = nodesRef.current
+      .filter(node => !node.data.diagnostics && node.data.invalid)
+      .map(node => node.id);
+    if (ids.length > 0) setRemoveInvalidIds(ids);
+  };
+
+  const confirmRemoveInvalid = async () => {
+    const ids = removeInvalidIds;
+    setRemoveInvalidIds(null);
+    if (!ids || ids.length === 0) return;
+    if (!(await confirmRecorderRemoval(ids))) return;
+    for (const id of ids) send('remove', { id });
+    setShowRouteCheck(false);
+  };
+
   const requestRemoveFrame = (frame: FrameModel) => {
     const nodeIds = nodes.filter(node => {
       if (node.data.diagnostics) return false;
@@ -646,7 +719,13 @@ export default function App() {
           publishTelemetry(payload as TelemetrySnapshot);
         }
         break;
-      case 'settings': setSettings(payload as SettingsModel); break;
+      case 'settings':
+        setSettingsReady(true);
+        setSettings(payload as SettingsModel);
+        break;
+      case 'storage-folder-chosen':
+        setStorageChoice(payload as { kind: 'data' | 'models' | 'user'; path: string });
+        break;
       case 'file-analysis': {
         const update = payload as { id: string; analysis?: FileAnalysis; error?: string };
         setNodes(current => current.map(node => node.id === update.id
@@ -692,8 +771,16 @@ export default function App() {
       case 'status': setStatus(payload as StatusMessage); break;
       case 'alert': setAlert(payload as StatusMessage); break;
       case 'toast': setToast(payload as StatusMessage); break;
-      case 'splash':
-      case 'welcome': setWelcomeOpen(true); break;
+      case 'splash': {
+        const detail = payload as { firstRun?: boolean } | null;
+        setWelcomeFirstRun(Boolean(detail?.firstRun));
+        setWelcomeOpen(true);
+        break;
+      }
+      case 'welcome':
+        setWelcomeFirstRun(false);
+        setWelcomeOpen(true);
+        break;
       case 'startup-progress': {
         const detail = payload as { progress?: number };
         const progress = Number.isFinite(detail.progress) ? Math.max(0.05, Math.min(1, detail.progress!)) : 0.1;
@@ -743,6 +830,7 @@ export default function App() {
           y = pending.y;
         }
       }
+      const sameFile = existing !== undefined && existing.data.filePath === model.filePath;
       return {
         id: model.id,
         type: 'ruseNode',
@@ -751,6 +839,8 @@ export default function App() {
         zIndex: existing?.zIndex ?? ++zCounter.current,
         data: {
           ...model,
+          fileAnalysis: sameFile ? existing?.data.fileAnalysis : model.fileAnalysis,
+          fileAnalysisError: sameFile ? existing?.data.fileAnalysisError : model.fileAnalysisError,
           fileOutputs,
           showDiagnostics: settingsRef.current.showDiagnostics,
           midiEnabled: settingsRef.current.midiEnabled === true,
@@ -1084,12 +1174,12 @@ export default function App() {
              (source.isTranscriber === true || source.isTranslator === true) &&
              target.isTts === true;
     }
+    const sourceSide = source.kind === 'source' || source.isNetworkInput === true;
     if (connection.targetHandle === 'sidechain') {
-      return (source.kind === 'source' || source.kind === 'modifier') &&
+      return (sourceSide || source.kind === 'modifier') &&
              target.kind === 'modifier' && target.supportsSidechain === true;
     }
-    return (source.kind === 'source' && target.kind !== 'source') ||
-           (source.kind === 'modifier' && target.kind !== 'source');
+    return ((sourceSide || source.kind === 'modifier') && target.kind !== 'source');
   }, [nodeById]);
 
   const setInteracting = (value: boolean) => {
@@ -1214,7 +1304,7 @@ export default function App() {
 
   const fitGraph = () => flow.fitView({ padding: 0.18, duration: reducedMotion ? 0 : 180 });
   const modalOpen = showSettings || showAudioHelp || welcomeOpen || firstRouteOpen || showRouteCheck || processPicker != null || explainer != null ||
-    showClear || trayPrompt || renamePrompt != null || chainEditor != null ||
+    showClear || removeInvalidIds != null || showSupportReport || trayPrompt || renamePrompt != null || chainEditor != null ||
     renameLibrary != null || libraryRemoval != null || canvasMenu != null;
 
   useEffect(() => {
@@ -1697,7 +1787,7 @@ export default function App() {
             if (files.length > 0) {
               const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
               const output = nodesRef.current.find(node => {
-                if (node.data.kind !== 'output') return false;
+                if (node.data.kind !== 'output' && node.data.isNetworkOutput !== true) return false;
                 const width = node.measured?.width ?? node.data.width ?? 204;
                 const height = node.measured?.height ?? 140;
                 return position.x >= node.position.x && position.x <= node.position.x + width &&
@@ -1731,7 +1821,7 @@ export default function App() {
             if (mediaPaths.length > 0) {
               const position = flow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
               const output = nodesRef.current.find(node => {
-                if (node.data.kind !== 'output') return false;
+                if (node.data.kind !== 'output' && node.data.isNetworkOutput !== true) return false;
                 const width = node.measured?.width ?? node.data.width ?? 204;
                 const height = node.measured?.height ?? 140;
                 return position.x >= node.position.x && position.x <= node.position.x + width &&
@@ -1773,7 +1863,7 @@ export default function App() {
             let connectTo = '';
             if (item.kind === 'sample' && item.filePath) {
               const output = nodesRef.current.find(node => {
-                if (node.data.kind !== 'output') return false;
+                if (node.data.kind !== 'output' && node.data.isNetworkOutput !== true) return false;
                 const width = node.measured?.width ?? node.data.width ?? 204;
                 const height = node.measured?.height ?? 140;
                 return position.x >= node.position.x && position.x <= node.position.x + width &&
@@ -1846,13 +1936,7 @@ export default function App() {
             proOptions={{ hideAttribution: true }}
             defaultEdgeOptions={{ type: 'ruseEdge' }}
           >
-            <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color={
-              theme === 'light' ? '#C5CFDD'
-                : theme === 'blueprint' ? '#2B6BA8'
-                : theme === 'studio74' ? '#4A5D4E'
-                : theme === 'receiver' ? '#8E8271'
-                : '#34465A'
-            } />
+            <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color={themeGraphDotColor(theme)} />
             <ViewportPortal>
               <div className={`ruse-frame-layer ${altPressed ? 'alt' : ''}` }>
                 {frameDraft && <div className="ruse-frame draft" style={{ left: frameDraft.x, top: frameDraft.y, width: frameDraft.width, height: frameDraft.height }} />}
@@ -2012,13 +2096,14 @@ export default function App() {
         )}
       </div>
       <StatusBar status={status} showDiagnostics={settings.showDiagnostics} />
-      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} virtualInputs={catalog.inputs.filter(item => item.virtual)} virtualOutputs={catalog.virtuals} vstPlugins={catalog.vst3Plugins} onFirstRoute={openFirstRoute} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
+      {showSettings && <SettingsDialog settings={settings} initialTab={settingsTab} outputs={[...catalog.outputs, ...catalog.virtuals]} virtualInputs={catalog.inputs.filter(item => item.virtual)} virtualOutputs={catalog.virtuals} vstPlugins={catalog.vst3Plugins} onFirstRoute={openFirstRoute} onSendSupportReport={() => { setShowSettings(false); setShowSupportReport(true); }} onChange={next => { setSettings(next); send('settings', { ...next }); }} onClose={() => setShowSettings(false)} />}
       {trayPrompt && <TrayPromptDialog
         onKeep={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: true }); }}
         onQuit={() => { setTrayPrompt(false); send('close-to-tray-result', { keep: false }); }}
         onCancel={() => { setTrayPrompt(false); send('close-to-tray-result', { cancel: true }); }}
       />}
       {showClear && <ConfirmDialog title={t('Clear routing graph')} body={t('This removes every node and cable. The current session will be replaced when you close Ruse.')} confirmLabel={t('Clear graph')} onConfirm={() => { setShowClear(false); send('clear'); }} onClose={() => setShowClear(false)} />}
+      {removeInvalidIds && <ConfirmDialog title={t('Remove invalid nodes')} body={t('This removes {count} invalid nodes and their cables.', { count: removeInvalidIds.length })} confirmLabel={t('Remove invalid')} onConfirm={() => void confirmRemoveInvalid()} onClose={() => setRemoveInvalidIds(null)} />}
       {recorderRemoval && <ConfirmDialog
         title={t('Recording in progress')}
         body={t('Removing “{name}” will stop and save the current recording. Continue?', { name: recorderRemoval.title })}
@@ -2122,12 +2207,13 @@ export default function App() {
           {canvasMenu.kind === 'node' && menuNode && <>
             <button role="menuitem" tabIndex={-1} onClick={() => { setRenamePrompt({ id: menuNode.id, title: menuNode.data.title }); setCanvasMenu(null); } }><Pencil size={14} /> <span className="menu-label">{t('Rename')}</span></button>
             <button role="menuitem" tabIndex={-1} onClick={() => { send('duplicate', { id: menuNode.id }); setCanvasMenu(null); } }><Copy size={14} /> <span className="menu-label">{t('Duplicate')}</span> <kbd>{SHORTCUTS.duplicate}</kbd></button>
+            {menuNode.data.faulted && <button role="menuitem" tabIndex={-1} onClick={() => { send('retry-effects', { id: menuNode.id }); setCanvasMenu(null); } }><RefreshCw size={14} /> <span className="menu-label">{t('Retry effects')}</span></button>}
             {menuNode.data.canFreezeEffects && <button role="menuitem" tabIndex={-1} onClick={() => { send('freeze-effects', { id: menuNode.id }); setCanvasMenu(null); } }><Snowflake size={14} /> <span className="menu-label">{t('Freeze effects')}</span></button>}
             <button role="menuitem" tabIndex={-1} onClick={() => { send('mute', { id: menuNode.id, value: !menuNode.data.muted }); setCanvasMenu(null); } }>{menuNode.data.muted ? <Volume2 size={14} /> : <VolumeX size={14} />} <span className="menu-label">{menuNode.data.muted ? t('Unmute node') : t('Mute node')}</span> <kbd>{SHORTCUTS.muteSelected}</kbd></button>
             {menuNode.data.isDbMeter && <button role="menuitem" tabIndex={-1} onClick={() => { send('db-meter-orientation', { id: menuNode.id, vertical: !menuDbVertical }); setCanvasMenu(null); } }><ArrowUpDown size={14} /> <span className="menu-label">{menuDbVertical ? t('Make horizontal') : t('Make vertical')}</span></button>}
             <button role="menuitem" tabIndex={-1} onClick={() => { send('disconnect-node', { id: menuNode.id }); setCanvasMenu(null); } }><Unplug size={14} /> <span className="menu-label">{t('Disconnect routes')}</span></button>
             <div className="menu-separator" role="separator" />
-            <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('remove', { id: menuNode.id }); setCanvasMenu(null); } }><Trash2 size={14} /> <span className="menu-label">{t('Remove node')}</span> <kbd>{SHORTCUTS.remove}</kbd></button>
+            <button role="menuitem" tabIndex={-1} className="danger" onClick={async () => { const id = menuNode.id; setCanvasMenu(null); if (await confirmRecorderRemoval([id])) send('remove', { id }); } }><Trash2 size={14} /> <span className="menu-label">{t('Remove node')}</span> <kbd>{SHORTCUTS.remove}</kbd></button>
           </>}
           {canvasMenu.kind === 'edge' && menuLink && <>
             {menuLink.kind === 'direct' && <>
@@ -2152,11 +2238,20 @@ export default function App() {
       {explainer && <Suspense fallback={null}><ExplainerDialog id={explainer} onClose={() => setExplainer(null)} /></Suspense>}
       {firstRouteOpen && <Suspense fallback={null}><FirstRouteDialog catalog={catalog} result={firstRouteResult} onClose={() => setFirstRouteOpen(false)} /></Suspense>}
       {processPicker && <Suspense fallback={null}><ProcessPickerDialog nodeId={processPicker.id} nodeTitle={processPicker.title} processId={processPicker.processId} processName={processPicker.processName} apps={catalog.apps} onClose={() => setProcessPicker(null)} /></Suspense>}
-      {showRouteCheck && <Suspense fallback={null}><RouteCheckDialog nodes={nodes} links={graph.links} warnings={graph.warnings} running={running} onOpenFirstRoute={() => { setShowRouteCheck(false); openFirstRoute(); }} onOpenMixer={() => { setShowRouteCheck(false); setMixerOpen(true); }} onClose={() => setShowRouteCheck(false)} /></Suspense>}
+      {showSupportReport && <Suspense fallback={null}><SupportReportDialog onClose={() => setShowSupportReport(false)} /></Suspense>}
+      {storageChoice && <StorageFolderDialog
+        kind={storageChoice.kind}
+        path={storageChoice.path}
+        onConfirm={copyExisting => { send('set-storage-location', { kind: storageChoice.kind, path: storageChoice.path, migrate: copyExisting }); setStorageChoice(null); }}
+        onClose={() => setStorageChoice(null)}
+      />}
+      {showRouteCheck && <Suspense fallback={null}><RouteCheckDialog nodes={nodes} links={graph.links} warnings={graph.warnings} running={running} onOpenFirstRoute={() => { setShowRouteCheck(false); openFirstRoute(); }} onOpenMixer={() => { setShowRouteCheck(false); setMixerOpen(true); }} onRemoveInvalid={requestRemoveInvalid} onClose={() => setShowRouteCheck(false)} /></Suspense>}
       {welcomeOpen && <Suspense fallback={null}><WelcomeWizard
         settings={settings}
+        firstRun={welcomeFirstRun}
         onChange={next => { setSettings(next); send('settings', { ...next }); }}
-        onClose={() => { setWelcomeOpen(false); send('onboarding-complete'); }}
+        onClose={() => { setWelcomeOpen(false); setWelcomeFirstRun(false); send('onboarding-complete'); }}
+        onOpenFirstRoute={() => { setWelcomeOpen(false); setWelcomeFirstRun(false); send('onboarding-complete'); openFirstRoute(); }}
         onCreateDesktopShortcut={() => send('create-desktop-shortcut')}
       /></Suspense>}
       {showAudioHelp && <DuplicateAudioDialog warning={primaryWarning} onClose={() => setShowAudioHelp(false)} />}

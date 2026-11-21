@@ -1482,8 +1482,9 @@ public static class LatencySelfTest
         bool payload = written == source.Length && read == destination.Length;
         for (int i = 0; i < source.Length && payload; i++) payload = destination[i] == source[i];
         for (int i = source.Length; i < destination.Length && payload; i++) payload = destination[i] == 0;
+        bool starvation = buffer.StarvedBytes == 960 && buffer.StarvedReads == 1;
         buffer.Clear();
-        return payload && buffer.BufferedBytes == 0;
+        return payload && starvation && buffer.BufferedBytes == 0;
     }
 
     public static bool TestGraphSwapUnderLoad()
@@ -3227,7 +3228,7 @@ public static class LatencySelfTest
 
         string summary =
             $"Live route pid {processId}: captured {captured} frames ({captured / 48000.0:0.00} s of audio), " +
-            $"mixed {mixedFrames}, underrun {shortRead} frames, RMS {rms:0.000}, peak {peak:0.000}, " +
+            $"mixed {mixedFrames}, short-read frames {shortRead}, RMS {rms:0.000}, peak {peak:0.000}, " +
             $"source meter {meter:0.000}" +
             (fault == null ? "." : $" | FAULT: {fault}");
 
@@ -3244,6 +3245,7 @@ public static class LatencySelfTest
         double ExpectedBytes,
         double BufferedMs,
         long CapturedFrames,
+        long Underruns,
         long ShortReadFrames,
         float SourceMeter,
         string? Fault,
@@ -3278,6 +3280,12 @@ public static class LatencySelfTest
         output.Start();
         source.Start();
 
+        // Ignore device/engine startup: buffer priming and capture ramp are not steady-state faults.
+        Thread.Sleep(2000);
+        long baselineUnderruns = output.Underruns;
+        long baselineShortReads = output.ShortReadFrames;
+        long baselineBytes = output.BytesWritten;
+        long baselineCaptured = source.CapturedFrames;
         var clock = System.Diagnostics.Stopwatch.StartNew();
         double bufferedSum = 0;
         int samples = 0;
@@ -3289,9 +3297,10 @@ public static class LatencySelfTest
         }
 
         double elapsed = Math.Max(clock.Elapsed.TotalSeconds, 0.001);
-        long bytes = output.BytesWritten;
-        long captured = source.CapturedFrames;
-        long shortRead = output.ShortReadFrames;
+        long bytes = Math.Max(0, output.BytesWritten - baselineBytes);
+        long captured = Math.Max(0, source.CapturedFrames - baselineCaptured);
+        long underruns = Math.Max(0, output.Underruns - baselineUnderruns);
+        long shortRead = Math.Max(0, output.ShortReadFrames - baselineShortReads);
         float meter = source.MeterLevel;
         string state = output.PlaybackState;
         bool lowLatency = output.LowLatencyActive;
@@ -3305,13 +3314,13 @@ public static class LatencySelfTest
         string summary =
             $"Device route on '{deviceName}': state {state}, low-latency {lowLatency}, " +
             $"latency {deviceLatency:0.0} ms, wrote {bytes} bytes (expected ~{expectedBytes:0}), " +
-            $"avg buffered {avgBuffered:0.0} ms, captured {captured} frames, underrun {shortRead}, " +
-            $"source meter {meter:0.000}" +
+            $"avg buffered {avgBuffered:0.0} ms, captured {captured} frames, underruns {underruns}, " +
+            $"short-read frames {shortRead}, source meter {meter:0.000}" +
             (fault == null ? "." : $" | FAULT: {fault}");
 
         return new DeviceRouteResult(
             deviceName, state, lowLatency, deviceLatency, bytes, expectedBytes,
-            avgBuffered, captured, shortRead, meter, fault, summary);
+            avgBuffered, captured, underruns, shortRead, meter, fault, summary);
     }
 
     public sealed record MonitorRouteResult(
@@ -3374,6 +3383,8 @@ public static class LatencySelfTest
         long baselineSkipped = source.SkippedFrames;
         long baselineUnderruns = output.Underruns;
         long baselineShortReads = output.ShortReadFrames;
+        long baselineBytes = output.BytesWritten;
+        long baselineCaptured = source.CapturedFrames;
         var clock = System.Diagnostics.Stopwatch.StartNew();
         double maxBacklog = 0;
         double sumBacklog = 0;
@@ -3524,6 +3535,46 @@ public static class LatencySelfTest
     /// modifier into an output must be audible at the modifier's gain, and must
     /// fall silent — with no leftover route — once the modifier is deleted.
     /// </summary>
+    public static bool TestModifierFaultRecovery()
+    {
+        const int channels = 2;
+        const int frames = 480;
+        var graph = new AudioGraph { AutoRun = false };
+        var source = new SourceNode("fault source", SourceKind.Application);
+        var modifier = new ModifierNode("Faulting effect");
+        modifier.Add(new ThrowingProcessor());
+        var output = graph.AddOutputForTest(static (_, _) => { });
+        output.EnableGraphEngine();
+        graph.AddSource(source);
+        graph.AddModifier(modifier);
+        graph.ConnectSourceToModifier(source, modifier);
+        graph.ConnectModifierToOutput(modifier, output);
+
+        var tone = new float[frames * channels];
+        for (int i = 0; i < tone.Length; i++)
+        {
+            tone[i] = 0.5f;
+        }
+
+        source.WriteTestSamples(tone);
+        source.WriteTestSamples(tone);
+        graph.RenderEngineOnceForTest();
+        bool faulted = modifier.Faulted && modifier.FaultCount > 0;
+
+        modifier.ClearChainFault();
+        modifier.Clear();
+        modifier.Add(new GainProcessor { Gain = 1f });
+        graph.RefreshModifiers();
+        source.WriteTestSamples(tone);
+        source.WriteTestSamples(tone);
+        graph.RenderEngineOnceForTest();
+        bool recovered = !modifier.Faulted && output.EngineBufferedFrames > 0;
+
+        graph.Dispose();
+        source.Dispose();
+        return faulted && recovered;
+    }
+
     public static ChainBreakResult TestChainBreak()
     {
         const int channels = 2;

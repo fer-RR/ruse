@@ -1,0 +1,187 @@
+/* Blueprint theme. Loaded on demand from themeStyles.ts. */
+
+:root[data-theme="blueprint"] {
+  color-scheme: dark;
+  --canvas: #052548;
+  --surface-0: #073162;
+  --surface-1: #0a3b72;
+  --surface-2: #0d457f;
+  --surface-3: #11519a;
+  --inset: #04203f;
+  --line: rgba(255, 255, 255, 0.24);
+  --line-strong: rgba(255, 255, 255, 0.44);
+  --text: #f7fbff;
+  --text-2: #d4e9ff;
+  --text-3: #a9cdf0;
+  --signal: #7df0c4;
+  --cyan: #a6f0ff;
+  --blue: #b3d4ff;
+  --amber: #ffd27a;
+  --yellow: #fff08a;
+  --violet: #d8c2ff;
+  --record: #ffb19d;
+  --danger: #ffa0a0;
+}
+
+/* Blueprint: white drafting lines over a classic cyanotype-blue canvas. */
+:root[data-theme="blueprint"] ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.22); }
+:root[data-theme="blueprint"] ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.36); }
+:root[data-theme="blueprint"] .modal::backdrop { background: rgba(3, 20, 44, 0.52); }
+:root[data-theme="blueprint"] .edge-gain-label { background: rgba(9, 58, 112, 0.94); }
+:root[data-theme="blueprint"] .graph-caption { background: rgba(9, 58, 112, 0.86); }
+:root[data-theme="blueprint"] .canvas-controls { background: rgba(9, 58, 112, 0.94); }
+:root[data-theme="blueprint"] .ruse-minimap { background: #0a3a73 !important; }
+:root[data-theme="blueprint"] .graph-empty { background: rgba(8, 50, 100, 0.96); box-shadow: 0 18px 50px rgba(0, 12, 30, 0.32); }
+:root[data-theme="blueprint"] .spectrum-view canvas,
+:root[data-theme="blueprint"] .spectrogram-view canvas,
+:root[data-theme="blueprint"] .waveform-view canvas { background: #062a56; }
+:root[data-theme="blueprint"] .ruse-node {
+  --accent: #ffffff !important;
+  --surface-0: #e7f2ff;
+  --surface-1: #b9d9fa;
+  --surface-2: #a9cdf3;
+  --surface-3: #98c1eb;
+  --inset: #d8eaff;
+  --line: rgba(7, 45, 91, 0.2);
+  --line-strong: rgba(7, 45, 91, 0.36);
+  --text: #082b54;
+  --text-2: #174b80;
+  --text-3: #3b6b9d;
+  --cyan: #0b5f8f;
+  --blue: #1d5aa6;
+  --amber: #805600;
+  --signal: #087a52;
+  --record: #a63e29;
+  --danger: #a82828;
+  background: #b9d9fa;
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35), 0 8px 24px rgba(0, 18, 44, 0.28);
+}
+:root[data-theme="blueprint"] .ruse-node .node-icon { color: #174b80; }
+
+/* Cyanotype drafting surface and paper modules. */
+:root[data-theme="blueprint"] .app-shell {
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(255, 255, 255, 0.09), transparent 55%),
+    linear-gradient(180deg, #073162, #041e3c);
+}
+:root[data-theme="blueprint"] .titlebar,
+:root[data-theme="blueprint"] .toolbar,
+:root[data-theme="blueprint"] .statusbar {
+  background: linear-gradient(180deg, #0a3b72, #06294f);
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+:root[data-theme="blueprint"] .sidebar,
+:root[data-theme="blueprint"] .mixer-panel,
+:root[data-theme="blueprint"] .timeline-dock,
+:root[data-theme="blueprint"] .modal-frame {
+  background: linear-gradient(180deg, #083a70, #062f5d);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+:root[data-theme="blueprint"] .sidebar-edge {
+  background: #062f5d;
+  border-right: 3px solid #f7fbff;
+  box-shadow: 2px 0 10px rgba(0, 0, 0, 0.22);
+}
+:root[data-theme="blueprint"] .sidebar-resizer:hover { background: rgba(5, 37, 72, 0.16); }
+:root[data-theme="blueprint"] .graph-area,
+:root[data-theme="blueprint"] .react-flow {
+  background:
+    radial-gradient(ellipse at 50% 8%, rgba(255, 255, 255, 0.06), transparent 58%),
+    linear-gradient(180deg, #083a70, #052447);
+}
+:root[data-theme="blueprint"] .ruse-node {
+  border-color: #f7fbff;
+  background: linear-gradient(180deg, #e8f3ff, #b9d9fa 60%, #a7cdf4);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.45), 0 8px 24px rgba(0, 18, 44, 0.3);
+}
+:root[data-theme="blueprint"] .node-header {
+  border-bottom-color: rgba(7, 45, 91, 0.2);
+  background: linear-gradient(180deg, #f7fbff, #d7eaff);
+}
+:root[data-theme="blueprint"] .node-header strong { color: #082b54; }
+:root[data-theme="blueprint"] .ruse-node .node-icon {
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  color: #a6f0ff;
+  background: radial-gradient(circle at 34% 28%, #174b80, #082b54 70%);
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.2), 0 1px 3px rgba(0, 18, 44, 0.35);
+}
+:root[data-theme="blueprint"] .node-subtitle { color: #174b80; }
+:root[data-theme="blueprint"] .node-hint { color: #3b6b9d; }
+:root[data-theme="blueprint"] .node-header .node-badge {
+  background: #082b54;
+  color: #f7fbff;
+  box-shadow: inset 0 0 0 1px rgba(166, 240, 255, 0.2);
+}
+:root[data-theme="blueprint"] .node-header .format-badge { color: #c7dbe3; }
+:root[data-theme="blueprint"] .node-header .latency-badge { color: #a6f0ff; }
+:root[data-theme="blueprint"] .node-header .rec-badge { color: #ffb19d; }
+:root[data-theme="blueprint"] .node-header .gpu-badge,
+:root[data-theme="blueprint"] .node-header .cpu-badge { color: #c8f0df; }
+:root[data-theme="blueprint"] .node-header .clip-badge { color: #ffb4a5; }
+:root[data-theme="blueprint"] .node-header .guard-badge,
+:root[data-theme="blueprint"] .node-header .warn-badge { color: #ffd27a; }
+:root[data-theme="blueprint"] .node-header .copy-badge { color: #c8e9f0; }
+:root[data-theme="blueprint"] .node-header .bypass-badge { color: #c9e0f8; }
+:root[data-theme="blueprint"] .node-control-id { color: #3b6b9d; }
+:root[data-theme="blueprint"] .node-control-id code { color: #174b80; }
+:root[data-theme="blueprint"] .ruse-handle {
+  border-color: #082b54 !important;
+  background: #a6f0ff !important;
+  box-shadow: 0 0 0 3px rgba(232, 242, 255, 0.9) !important;
+}
+:root[data-theme="blueprint"] .library-icon {
+  background: #082b54;
+  color: color-mix(in srgb, var(--item-accent) 58%, #f7fbff);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+:root[data-theme="blueprint"] .library-icon:has(.library-app-icon) { background: #e8f2ff; }
+:root[data-theme="blueprint"] .library-name { font-weight: 600; }
+:root[data-theme="blueprint"] .media-sort {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: #04203f;
+  color: #d4e9ff;
+  color-scheme: dark;
+}
+:root[data-theme="blueprint"] .media-sort:hover,
+:root[data-theme="blueprint"] .media-sort:focus-visible { border-color: #a6f0ff; color: #f7fbff; }
+:root[data-theme="blueprint"] .timeline-header {
+  background: linear-gradient(180deg, #0a3b72, #073162);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+:root[data-theme="blueprint"] .timeline-header .tool-button,
+:root[data-theme="blueprint"] .timeline-header .small-button {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.06);
+  color: #eaf6ff;
+}
+:root[data-theme="blueprint"] .timeline-header .tool-button:hover,
+:root[data-theme="blueprint"] .timeline-header .small-button:hover {
+  border-color: #a6f0ff;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+:root[data-theme="blueprint"] .timeline-header .tool-button.active,
+:root[data-theme="blueprint"] .timeline-header .tool-button.active.accent {
+  border-color: #a6f0ff;
+  background: #a6f0ff;
+  color: #052548;
+}
+:root[data-theme="blueprint"] .timeline-header .icon-button { color: #d4e9ff; }
+:root[data-theme="blueprint"] .timeline-header .icon-button:hover { border-color: #a6f0ff; background: rgba(255, 255, 255, 0.1); color: #fff; }
+:root[data-theme="blueprint"] .timeline-header .icon-button:disabled { color: #7fa3c6; }
+:root[data-theme="blueprint"] .timeline-header select,
+:root[data-theme="blueprint"] .timeline-header input[type="number"],
+:root[data-theme="blueprint"] .timeline-clip-length input,
+:root[data-theme="blueprint"] .timeline-clip-pitch input {
+  border-color: rgba(255, 255, 255, 0.3);
+  background: #04203f;
+  color: #f7fbff;
+  color-scheme: dark;
+}
+:root[data-theme="blueprint"] .timeline-header option { background: #04203f; color: #f7fbff; }
+:root[data-theme="blueprint"] .ruse-minimap { background: #052548 !important; border-color: rgba(255, 255, 255, 0.24); }
+:root[data-theme="blueprint"] .graph-empty { border-color: rgba(255, 255, 255, 0.24); background: rgba(5, 37, 72, 0.96); }

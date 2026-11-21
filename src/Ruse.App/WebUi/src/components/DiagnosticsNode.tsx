@@ -58,6 +58,9 @@ function metricValue(
     case 'skipped-frames': return diagnostics?.skippedFrames ?? null;
     case 'short-read-frames': return diagnostics?.shortReadFrames ?? null;
     case 'output-underruns': return diagnostics?.outputUnderruns ?? null;
+    case 'native-skipped-frames': return diagnostics?.nativeSkippedFrames ?? null;
+    case 'render-allocations': return diagnostics ? diagnostics.renderAllocatedBytes / 1048576 : null;
+    case 'capture-allocations': return diagnostics ? diagnostics.captureAllocatedBytes / 1048576 : null;
     case 'cpu': return diagnostics?.cpuPercent ?? null;
     case 'cpu-share': return diagnostics?.cpuShare ?? null;
     case 'gpu': return diagnostics?.gpuPercent ?? null;
@@ -318,8 +321,15 @@ export default function DiagnosticsNode({ nodeId }: { nodeId: string }) {
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Mean latency')} value={diagnostics ? `${formatMs(diagnostics.latencyMeanMs)} ${DASH} ${formatMs(diagnostics.latencyStdDevMs)}` : DASH} metric="latency-mean" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Estimated drift')} value={diagnostics ? `${formatSigned(diagnostics.estimatedDriftPpm)} ppm` : DASH} metric="drift" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Chain delay')} value={formatMs(diagnostics?.chainLatencyMs)} metric="chain-delay" />
-          <DiagRow {...rowProps} color="var(--cyan)" label={t('Skipped / short-read frames')} value={diagnostics ? `${diagnostics.skippedFrames} / ${diagnostics.shortReadFrames}` : DASH} metric="short-read-frames" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Skipped frames')} value={diagnostics?.skippedFrames ?? DASH} metric="skipped-frames" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Short-read frames (steady)')} value={diagnostics?.shortReadFrames ?? DASH} metric="short-read-frames" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Output underruns')} value={diagnostics?.outputUnderruns ?? DASH} metric="output-underruns" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Endpoint starved frames')} value={diagnostics?.endpointStarvedFrames ?? DASH} metric="endpoint-starved-frames" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Endpoint dropped frames')} value={diagnostics?.endpointDroppedFrames ?? DASH} metric="endpoint-dropped-frames" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Tap dropped frames')} value={diagnostics?.tapDroppedFrames ?? DASH} metric="tap-dropped-frames" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Native skipped frames')} value={diagnostics?.nativeSkippedFrames ?? DASH} metric="native-skipped-frames" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Render allocations')} value={diagnostics ? formatMb(diagnostics.renderAllocatedBytes / 1048576) : DASH} metric="render-allocations" />
+          <DiagRow {...rowProps} color="var(--cyan)" label={t('Capture allocations')} value={diagnostics ? formatMb(diagnostics.captureAllocatedBytes / 1048576) : DASH} metric="capture-allocations" />
           <DiagRow {...rowProps} color="var(--cyan)" label={t('Format')} value={diagnostics?.audioFormat ?? '48 kHz \u00b7 stereo \u00b7 float32'} />
         </div>
         <div className="diag-section">

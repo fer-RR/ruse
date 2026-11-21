@@ -186,11 +186,34 @@ public sealed class AppSettings
     /// <summary>Start the restored graph automatically once the window is ready.</summary>
     public bool StartRoutingOnLaunch { get; set; }
 
+    private static StorageLocations _locations = new();
+
+    static AppSettings()
+    {
+        _locations = ReadStorageLocations();
+    }
+
+    /// <summary>Fixed pointer folder that always lives in Roaming AppData.</summary>
+    [JsonIgnore]
+    public static string BootstrapDirectory =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Ruse");
+
+    [JsonIgnore]
+    public static string StorageLocationsPath => Path.Combine(BootstrapDirectory, "storage.json");
+
+    [JsonIgnore]
+    public static string DefaultDataDirectory => BootstrapDirectory;
+
     /// <summary>Settings/session folder; self-tests redirect it.</summary>
     [JsonIgnore]
     public static string Directory =>
-        OverrideDirectory ??
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Ruse");
+        OverrideDirectory ?? _locations.DataDirectory ?? DefaultDataDirectory;
+
+    [JsonIgnore]
+    public static string? ConfiguredModelsDirectory => _locations.ModelsDirectory;
+
+    [JsonIgnore]
+    public static string? ConfiguredUserDirectory => _locations.UserDirectory;
 
     /// <summary>Redirects settings/session storage (used by the UI self-test).</summary>
     [JsonIgnore]
@@ -202,11 +225,78 @@ public sealed class AppSettings
     [JsonIgnore]
     public static string SessionPath => Path.Combine(Directory, "session.ruse.json");
 
+    public static StorageLocations SnapshotStorageLocations() => new()
+    {
+        DataDirectory = _locations.DataDirectory,
+        ModelsDirectory = _locations.ModelsDirectory,
+        UserDirectory = _locations.UserDirectory,
+    };
+
+    public static bool SaveStorageLocations(StorageLocations locations, out string error)
+    {
+        System.IO.Directory.CreateDirectory(BootstrapDirectory);
+        return AtomicFile.TryWriteAllText(
+            StorageLocationsPath,
+            JsonSerializer.Serialize(locations, Options),
+            out error);
+    }
+
+    public static void ApplyStorageLocations(StorageLocations locations)
+    {
+        _locations = new StorageLocations
+        {
+            DataDirectory = NormalizeStoredPath(locations.DataDirectory),
+            ModelsDirectory = NormalizeStoredPath(locations.ModelsDirectory),
+            UserDirectory = NormalizeStoredPath(locations.UserDirectory),
+        };
+    }
+
+    private static StorageLocations ReadStorageLocations()
+    {
+        try
+        {
+            if (File.Exists(StorageLocationsPath))
+            {
+                StorageLocations? loaded = JsonSerializer.Deserialize<StorageLocations>(
+                    File.ReadAllText(StorageLocationsPath), Options);
+                if (loaded != null)
+                {
+                    loaded.DataDirectory = NormalizeStoredPath(loaded.DataDirectory);
+                    loaded.ModelsDirectory = NormalizeStoredPath(loaded.ModelsDirectory);
+                    loaded.UserDirectory = NormalizeStoredPath(loaded.UserDirectory);
+                    return loaded;
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return new StorageLocations();
+    }
+
+    private static string? NormalizeStoredPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            string full = Path.GetFullPath(path);
+            return Path.IsPathFullyQualified(full) ? full : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
     };
-
     public static AppSettings Load()
     {
         bool exists = File.Exists(SettingsPath);

@@ -1,0 +1,172 @@
+/* Light theme. Loaded on demand from themeStyles.ts. */
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #e8edf2;
+  --surface-0: #f4f7fa;
+  --surface-1: #ffffff;
+  --surface-2: #edf1f6;
+  --surface-3: #dfe5ee;
+  --inset: #f0f3f8;
+  --line: rgba(24, 36, 52, 0.13);
+  --line-strong: rgba(24, 36, 52, 0.24);
+  --text: #16202c;
+  --text-2: #44546a;
+  --text-3: #5c6f86;
+  --signal: #149a5d;
+  --cyan: #0b7f7a;
+  --blue: #3767cf;
+  --amber: #a96f10;
+  --yellow: #9c7a00;
+  --violet: #7651cc;
+  --record: #cf5b41;
+  --danger: #cf3f3f;
+}
+
+/* Light theme overrides for surfaces that are intentionally darker than the
+   variables (canvas overlays, native form controls and scrollbars). */
+:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c3ccd9; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #aab6c7; }
+:root[data-theme="light"] .modal::backdrop { background: rgba(24, 36, 52, 0.28); }
+:root[data-theme="light"] .modal-frame { box-shadow: 0 24px 70px rgba(24, 36, 52, 0.18); }
+:root[data-theme="light"] .react-flow__attribution { color: #8a97a8; }
+:root[data-theme="light"] .react-flow__attribution a { color: #6b7a8d; }
+:root[data-theme="light"] .ruse-minimap { background: var(--surface-0) !important; }
+:root[data-theme="light"] .ruse-handle { border-color: #fff !important; box-shadow: 0 0 0 3px rgba(238, 241, 246, 0.85); }
+:root[data-theme="light"] .edge-gain-label { background: rgba(255, 255, 255, 0.94); }
+:root[data-theme="light"] .graph-caption { background: rgba(247, 248, 251, 0.9); }
+:root[data-theme="light"] .canvas-controls { background: rgba(247, 248, 251, 0.94); }
+:root[data-theme="light"] .graph-empty { background: rgba(247, 248, 251, 0.97); box-shadow: 0 18px 50px rgba(24, 36, 52, 0.14); }
+:root[data-theme="light"] .ruse-frame-header { background: rgba(247, 248, 251, 0.92); }
+:root[data-theme="light"] .primary-button { color: #fff; }
+:root[data-theme="light"] .primary-button:hover { background: #1aa8a0; }
+:root[data-theme="light"] .switch-track { background: #c6cfdb; }
+:root[data-theme="light"] .switch-knob { background: #fff; }
+:root[data-theme="light"] .routing-switch.on { background: #e8f7ef; }
+:root[data-theme="light"] .routing-switch.on .switch-track { background: #b7ead0; }
+:root[data-theme="light"] .routing-switch.on .switch-knob { background: var(--signal); box-shadow: 0 0 8px rgba(20, 154, 93, 0.4); }
+:root[data-theme="light"] .routing-switch.off-alert { background: #fdeceb; }
+:root[data-theme="light"] .routing-switch.off-alert .switch-track { background: #f3c4c0; }
+:root[data-theme="light"] .tool-button:active { background: var(--surface-3); }
+:root[data-theme="light"] .toolbar-icon:disabled { color: #a7b1bf; }
+:root[data-theme="light"] .alert-bar { color: #0a5f5b; }
+:root[data-theme="light"] .alert-bar.error { color: #8a2a2a; }
+:root[data-theme="light"] .routing-warning-bar { color: #6b4a00; }
+:root[data-theme="light"] .routing-warning-bar.info { color: #0a5f5b; }
+:root[data-theme="light"] .warning-button { color: #6b4a00; }
+:root[data-theme="light"] .danger-button { color: #a02c2c; }
+:root[data-theme="light"] .recorder-stop { color: #a02c2c; }
+:root[data-theme="light"] .recorder-stop:hover { color: #c23b3b; }
+:root[data-theme="light"] input[type="range"]::-webkit-slider-runnable-track { background: #c6cfdb; }
+:root[data-theme="light"] input[type="range"]::-webkit-slider-thumb { border-color: #7b8a9e; background: #fff; }
+:root[data-theme="light"] .setting-row input[role="switch"] { background: #c6cfdb; }
+:root[data-theme="light"] .setting-row input[role="switch"]::after { background: #fff; }
+:root[data-theme="light"] .setting-row input[role="switch"]:checked { background: #b7ead0; }
+:root[data-theme="light"] .run-dot { background: #b3bdcb; }
+:root[data-theme="light"] .bypass-badge { background: rgba(24, 36, 52, 0.08); }
+:root[data-theme="light"] .wizard-level,
+:root[data-theme="light"] .transcription-level,
+:root[data-theme="light"] .model-progress { background: rgba(24, 36, 52, 0.1); }
+:root[data-theme="light"] .ruse-node { box-shadow: 0 5px 16px rgba(24, 36, 52, 0.12); }
+
+:root[data-theme="light"] .primary-button.signal-ready { color: #fff; }
+
+/* Daylight console depth and clearer active states. */
+:root[data-theme="light"] .app-shell {
+  background:
+    radial-gradient(ellipse at 50% -10%, rgba(255, 255, 255, 0.9), transparent 60%),
+    linear-gradient(180deg, #eef2f7, #e4eaf1);
+}
+:root[data-theme="light"] .titlebar,
+:root[data-theme="light"] .toolbar,
+:root[data-theme="light"] .statusbar {
+  background: linear-gradient(180deg, #ffffff, #f1f4f8);
+  border-color: rgba(24, 36, 52, 0.12);
+  box-shadow: inset 0 -1px 0 rgba(24, 36, 52, 0.05);
+}
+:root[data-theme="light"] .brand-plate strong { color: #0b6f6a; text-shadow: none; }
+:root[data-theme="light"] .brand-plate > div > span { color: rgba(11, 111, 106, 0.7); }
+:root[data-theme="light"] .titlebar-caption { color: #5c6f86; }
+:root[data-theme="light"] .sidebar,
+:root[data-theme="light"] .mixer-panel,
+:root[data-theme="light"] .timeline-dock,
+:root[data-theme="light"] .modal-frame {
+  background: linear-gradient(180deg, #ffffff, #f6f8fb);
+  border-color: rgba(24, 36, 52, 0.12);
+}
+:root[data-theme="light"] .ruse-node {
+  border-color: rgba(24, 36, 52, 0.16);
+  background: linear-gradient(180deg, #ffffff, #f6f8fb);
+  box-shadow: inset 0 1px 0 #fff, 0 6px 18px rgba(24, 36, 52, 0.1);
+}
+:root[data-theme="light"] .node-header {
+  border-bottom-color: rgba(24, 36, 52, 0.12);
+  background: linear-gradient(180deg, #f8fafc, #edf2f7);
+}
+:root[data-theme="light"] .node-icon {
+  width: 23px;
+  height: 23px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 12%, #fff);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 22%, transparent);
+}
+:root[data-theme="light"] .library-icon {
+  background: color-mix(in srgb, var(--item-accent) 12%, #fff);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--item-accent) 20%, transparent);
+}
+:root[data-theme="light"] .library-name { color: var(--text); font-weight: 600; }
+:root[data-theme="light"] .library-subtitle { color: var(--text-3); }
+:root[data-theme="light"] .media-sort {
+  border-color: var(--line-strong);
+  background: #fff;
+  color: var(--text-2);
+}
+:root[data-theme="light"] .media-sort:hover,
+:root[data-theme="light"] .media-sort:focus-visible { border-color: var(--cyan); color: var(--text); }
+:root[data-theme="light"] .toolbar .tool-button.active,
+:root[data-theme="light"] .toolbar .tool-button.active.accent {
+  border-color: #9bd8d3;
+  background: #e1f3f0;
+  color: #0b6f6a;
+}
+:root[data-theme="light"] .timeline-header {
+  border-color: rgba(24, 36, 52, 0.12);
+  background: linear-gradient(180deg, #f8fafc, #eef2f7);
+}
+:root[data-theme="light"] .timeline-position { color: #0b6f6a; }
+:root[data-theme="light"] .timeline-header .tool-button,
+:root[data-theme="light"] .timeline-header .small-button {
+  border-color: rgba(24, 36, 52, 0.16);
+  background: #fff;
+  color: var(--text-2);
+}
+:root[data-theme="light"] .timeline-header .tool-button:hover,
+:root[data-theme="light"] .timeline-header .small-button:hover {
+  border-color: rgba(24, 36, 52, 0.24);
+  background: #f0f4f8;
+  color: var(--text);
+}
+:root[data-theme="light"] .timeline-header .tool-button.active,
+:root[data-theme="light"] .timeline-header .tool-button.active.accent {
+  border-color: var(--cyan);
+  background: var(--cyan);
+  color: #fff;
+}
+:root[data-theme="light"] .timeline-header .icon-button { color: var(--text-2); }
+:root[data-theme="light"] .timeline-header .icon-button:hover { background: #eef2f7; color: var(--text); }
+:root[data-theme="light"] .timeline-header select,
+:root[data-theme="light"] .timeline-header input[type="number"],
+:root[data-theme="light"] .timeline-clip-length input,
+:root[data-theme="light"] .timeline-clip-pitch input {
+  border-color: var(--line-strong);
+  background: #fff;
+  color: var(--text);
+}
+
+
+:root[data-theme="light"] .graph-area,
+:root[data-theme="light"] .react-flow {
+  background:
+    radial-gradient(ellipse at 50% 0%, #ffffff, transparent 62%),
+    linear-gradient(180deg, #eef3f8 0%, #e6ebf2 100%);
+}

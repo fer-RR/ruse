@@ -51,7 +51,7 @@ export function nearestFreePosition(moving: NodeRect, others: NodeRect[]): { x: 
 }
 
 
-export type ChainLayoutKind = 'source' | 'modifier' | 'output';
+export type ChainLayoutKind = 'source' | 'modifier' | 'output' | 'network' | 'text';
 
 export interface ChainLayoutNode {
   id: string;
@@ -112,7 +112,7 @@ export function chainLayout(nodes: ChainLayoutNode[], links: ChainLayoutLink[]):
     if (cached !== undefined) return cached;
     const node = byId.get(id);
     if (!node) return 0;
-    if (node.kind === 'source') {
+    if (node.kind === 'source' || node.kind === 'network') {
       rank.set(id, 0);
       return 0;
     }
@@ -139,7 +139,7 @@ export function chainLayout(nodes: ChainLayoutNode[], links: ChainLayoutLink[]):
   }
   const outputColumn = maxModifierRank + 1;
   const columnOf = (node: ChainLayoutNode): number =>
-    node.kind === 'source' ? 0 : node.kind === 'output' ? outputColumn : Math.max(1, rank.get(node.id) ?? 1);
+    node.kind === 'source' || node.kind === 'network' ? 0 : node.kind === 'output' ? outputColumn : Math.max(1, rank.get(node.id) ?? 1);
 
   const paths: string[][] = [];
   const pathKeys = new Set<string>();
@@ -172,7 +172,7 @@ export function chainLayout(nodes: ChainLayoutNode[], links: ChainLayoutLink[]):
   };
 
   for (const source of nodes) {
-    if (source.kind !== 'source') continue;
+    if (source.kind !== 'source' && source.kind !== 'network') continue;
     visit(source.id, [source.id], new Set([source.id]));
   }
 

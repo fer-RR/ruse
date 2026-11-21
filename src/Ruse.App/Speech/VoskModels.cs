@@ -18,7 +18,7 @@ internal static class VoskModels
     private const string ArchiveRoot = "vosk-model-small-en-us-0.15";
 
     private static readonly SemaphoreSlim Gate = new(1, 1);
-    private static readonly HttpClient Http = new();
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(30) };
 
     public static string Root => Path.Combine(ModelStorage.Root, "vosk");
     public static string PathFor => Path.Combine(Root, ArchiveRoot);

@@ -21,7 +21,7 @@ public static class FrameTemplateLibrary
 {
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
-    public static string LibraryPath { get; } = Path.Combine(AppSettings.Directory, "frame-templates.json");
+    public static string LibraryPath => Path.Combine(AppSettings.Directory, "frame-templates.json");
 
     private static readonly List<FrameTemplate> _templates = new();
 

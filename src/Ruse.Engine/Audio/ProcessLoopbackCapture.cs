@@ -70,7 +70,7 @@ public sealed class ProcessLoopbackCapture : IDisposable
 
     public void Start()
     {
-        if (_running)
+        if (_running || _thread is { IsAlive: true })
         {
             return;
         }
@@ -81,16 +81,17 @@ public sealed class ProcessLoopbackCapture : IDisposable
         _thread.Start();
     }
 
-    public void Stop()
+    public bool Stop()
     {
-        if (!_running)
-        {
-            return;
-        }
-
         _running = false;
         _stopEvent.Set();
-        _thread?.Join(3000);
+        Thread? thread = _thread;
+        if (thread == null || thread == Thread.CurrentThread)
+        {
+            return true;
+        }
+
+        return !thread.IsAlive || thread.Join(3000);
     }
 
     private void CaptureThread()
@@ -261,14 +262,16 @@ public sealed class ProcessLoopbackCapture : IDisposable
         var captureClient = (IAudioCaptureClient)captureObj;
         _packetBuffer = new byte[Math.Max(16384, format.AverageBytesPerSecond / 5)];
 
-        hr = audioClient.Start();
-        if (hr < 0)
-        {
-            throw new InvalidOperationException($"IAudioClient.Start failed (0x{hr:X8}).");
-        }
-
+        bool started = false;
         try
         {
+            hr = audioClient.Start();
+            if (hr < 0)
+            {
+                throw new InvalidOperationException($"IAudioClient.Start failed (0x{hr:X8}).");
+            }
+
+            started = true;
             while (_running)
             {
                 bool signaled = bufferReady.WaitOne(500, false);
@@ -287,7 +290,11 @@ public sealed class ProcessLoopbackCapture : IDisposable
         }
         finally
         {
-            audioClient.Stop();
+            if (started)
+            {
+                audioClient.Stop();
+            }
+
             Marshal.ReleaseComObject(captureClient);
         }
     }

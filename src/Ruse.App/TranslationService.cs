@@ -536,7 +536,7 @@ internal sealed class TranslationSession : IDisposable
         }
     }
 
-    private static async Task<string> TranslateTextAsync(
+    internal static async Task<string> TranslateTextAsync(
         StatelessExecutor translator,
         string text,
         CancellationToken token)

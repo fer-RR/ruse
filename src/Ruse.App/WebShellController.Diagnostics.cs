@@ -20,6 +20,16 @@ internal sealed partial class WebShellController
     private long _rateLastUnderruns;
     private double _rateUnderrunsPerMinute;
     private double _rateSkippedPerMinute;
+    private bool _diagnosticsSessionActive;
+    private bool _diagnosticsPrimed;
+    private long _diagnosticsSessionStart;
+    private long _diagnosticsUnderrunBaseline;
+    private long _diagnosticsShortReadBaseline;
+    private long _diagnosticsSkippedBaseline;
+    private long _diagnosticsEndpointStarvedBaseline;
+    private long _diagnosticsEndpointReadsBaseline;
+    private long _diagnosticsEndpointDroppedBaseline;
+    private long _diagnosticsTapDroppedBaseline;
 
     private sealed class SourceMetricState
     {
@@ -31,6 +41,11 @@ internal sealed partial class WebShellController
     /// <summary>Snapshots the engine, process and UI costs for the diagnostics overlay.</summary>
     private DiagnosticsDto BuildDiagnostics(long now)
     {
+        if (!_diagnosticsSessionActive)
+        {
+            BeginDiagnosticsSession(now);
+        }
+
         var diagnostics = new DiagnosticsDto
         {
             RenderTier = System.Windows.Media.RenderCapability.Tier >> 16,
@@ -47,10 +62,12 @@ internal sealed partial class WebShellController
 
         double worstBacklog = 0;
         long skippedFrames = 0;
+        long captureAllocated = 0;
         foreach (var source in _graph.Sources)
         {
             worstBacklog = Math.Max(worstBacklog, source.BufferedMs);
             skippedFrames += source.SkippedFrames;
+            captureAllocated += source.CaptureAllocatedBytes;
         }
 
         double worstLatency = 0;
@@ -62,6 +79,12 @@ internal sealed partial class WebShellController
         double outputRingFill = 0;
         long shortReads = 0;
         long outputUnderruns = 0;
+        long endpointStarved = 0;
+        long endpointStarvedReads = 0;
+        long endpointDropped = 0;
+        long tapDropped = _graph.TapDroppedFrames;
+        long nativeSkipped = 0;
+        long renderAllocated = 0;
         bool lowLatency = false;
         foreach (var output in _graph.Outputs)
         {
@@ -78,8 +101,54 @@ internal sealed partial class WebShellController
                 lowLatency |= output.LowLatencyActive;
             }
 
+            nativeSkipped += output.NativeSkippedFrames;
+            renderAllocated += output.RenderAllocatedBytes;
             shortReads += output.ShortReadFrames;
             outputUnderruns += output.Underruns;
+            endpointStarved += output.EndpointStarvedFrames;
+            endpointStarvedReads += output.EndpointStarvedReads;
+            endpointDropped += output.EndpointDroppedFrames;
+        }
+
+        if (!_diagnosticsPrimed)
+        {
+            if (now - _diagnosticsSessionStart >= 2000)
+            {
+                _diagnosticsUnderrunBaseline = outputUnderruns;
+                _diagnosticsShortReadBaseline = shortReads;
+                _diagnosticsSkippedBaseline = skippedFrames;
+                _diagnosticsEndpointStarvedBaseline = endpointStarved;
+                _diagnosticsEndpointReadsBaseline = endpointStarvedReads;
+                _diagnosticsEndpointDroppedBaseline = endpointDropped;
+                _diagnosticsTapDroppedBaseline = tapDropped;
+                _diagnosticsPrimed = true;
+                _rateLastTick = now;
+                _rateLastUnderruns = 0;
+                _rateLastSkipped = 0;
+                _rateUnderrunsPerMinute = 0;
+                _rateSkippedPerMinute = 0;
+                _latencyHistoryCount = 0;
+                _latencyHistoryIndex = 0;
+                _sourceMetrics.Clear();
+            }
+
+            skippedFrames = 0;
+            shortReads = 0;
+            outputUnderruns = 0;
+            endpointStarved = 0;
+            endpointStarvedReads = 0;
+            endpointDropped = 0;
+            tapDropped = 0;
+        }
+        else
+        {
+            skippedFrames = Math.Max(0, skippedFrames - _diagnosticsSkippedBaseline);
+            shortReads = Math.Max(0, shortReads - _diagnosticsShortReadBaseline);
+            outputUnderruns = Math.Max(0, outputUnderruns - _diagnosticsUnderrunBaseline);
+            endpointStarved = Math.Max(0, endpointStarved - _diagnosticsEndpointStarvedBaseline);
+            endpointStarvedReads = Math.Max(0, endpointStarvedReads - _diagnosticsEndpointReadsBaseline);
+            endpointDropped = Math.Max(0, endpointDropped - _diagnosticsEndpointDroppedBaseline);
+            tapDropped = Math.Max(0, tapDropped - _diagnosticsTapDroppedBaseline);
         }
 
         diagnostics.WorstBacklogMs = worstBacklog;
@@ -92,6 +161,13 @@ internal sealed partial class WebShellController
         diagnostics.EngineQueueMs = engineQueue;
         diagnostics.ShortReadFrames = shortReads;
         diagnostics.OutputUnderruns = outputUnderruns;
+        diagnostics.EndpointStarvedFrames = endpointStarved;
+        diagnostics.EndpointStarvedReads = endpointStarvedReads;
+        diagnostics.EndpointDroppedFrames = endpointDropped;
+        diagnostics.TapDroppedFrames = tapDropped;
+        diagnostics.NativeSkippedFrames = nativeSkipped;
+        diagnostics.RenderAllocatedBytes = renderAllocated;
+        diagnostics.CaptureAllocatedBytes = captureAllocated;
         diagnostics.LowLatency = lowLatency;
         UpdateMeasurementStats(now, skippedFrames, outputUnderruns, outputRingFill, worstLatency, diagnostics);
         diagnostics.GpuAvailable = ModelRuntime.GpuAvailable;
@@ -102,6 +178,41 @@ internal sealed partial class WebShellController
         SampleProcess(now, diagnostics);
         diagnostics.GpuPercent = GpuUsage.Sample();
         return diagnostics;
+    }
+
+    private void BeginDiagnosticsSession(long now)
+    {
+        _diagnosticsSessionActive = true;
+        _diagnosticsPrimed = false;
+        _diagnosticsSessionStart = now;
+        _diagnosticsUnderrunBaseline = 0;
+        _diagnosticsShortReadBaseline = 0;
+        _diagnosticsSkippedBaseline = 0;
+        _diagnosticsEndpointStarvedBaseline = 0;
+        _diagnosticsEndpointReadsBaseline = 0;
+        _diagnosticsEndpointDroppedBaseline = 0;
+        _diagnosticsTapDroppedBaseline = 0;
+        _rateLastTick = 0;
+        _rateLastUnderruns = 0;
+        _rateLastSkipped = 0;
+        _rateUnderrunsPerMinute = 0;
+        _rateSkippedPerMinute = 0;
+        _latencyHistoryCount = 0;
+        _latencyHistoryIndex = 0;
+        _sourceMetrics.Clear();
+    }
+
+    private void ResetDiagnosticsSession()
+    {
+        _diagnosticsSessionActive = false;
+        _diagnosticsPrimed = false;
+        _diagnosticsSessionStart = 0;
+        _rateLastTick = 0;
+        _rateLastUnderruns = 0;
+        _rateLastSkipped = 0;
+        _rateUnderrunsPerMinute = 0;
+        _rateSkippedPerMinute = 0;
+        _sourceMetrics.Clear();
     }
 
     private void UpdateMeasurementStats(

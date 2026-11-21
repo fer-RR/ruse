@@ -25,7 +25,7 @@ internal sealed partial class WebShellController
     {
         try
         {
-            _window.Dispatcher.BeginInvoke(new Action(() => Application.Current.Shutdown()));
+            _window.Dispatcher.BeginInvoke(new Action(() => _window.ShutdownForUpdate()));
         }
         catch
         {

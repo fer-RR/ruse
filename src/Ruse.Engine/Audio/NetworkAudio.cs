@@ -19,6 +19,7 @@ public static class NetworkPcm
     public const int BlockFrames = 240;
     public const int HeaderBytes = 24;
     public const int DefaultPort = 7890;
+    public const int DefaultChatPort = 7895;
     public const int DefaultBufferMs = 40;
 
     public static string GetLocalAddress()

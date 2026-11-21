@@ -10,6 +10,16 @@ namespace Ruse.App;
 
 internal sealed partial class WebShellController
 {
+    private DispatcherTimer? _routeTestToneTimer;
+    private string? _routeTestToneNodeId;
+    private string? _routeTestToneLinkId;
+    private string? _routeTestToneOutputTitle;
+    private bool _routeTestToneLinkAdded;
+    private bool _routeTestToneNodeCreated;
+    private Task? _routingStartTask;
+    private Task? _routingStopTask;
+    private bool _restartAfterStop;
+
     private void AddFromMessage(BridgeMessage message)
     {
         string kind = String(message, "kind");
@@ -84,6 +94,14 @@ internal sealed partial class WebShellController
                 entry = RegisterOutput(OutputNode.CreateForNetwork("127.0.0.1", NetworkPcm.DefaultPort), x, y);
                 SetStatus("Added a network output. Set the destination IP and port.");
                 break;
+            case "network":
+                entry = AddNetworkLink(x, y);
+                SetStatus("Added a network link. Connect voice and text separately when the other Ruse is ready.");
+                break;
+            case "text-note":
+                entry = CreateTextNote(x, y);
+                SetStatus("Added a text note. Write or paste text, then save it if needed.");
+                break;
             case "input": entry = AddDeviceInput(id, x, y); break;
             case "output": entry = AddDeviceOutput(id, x, y); break;
             case "virtual": entry = AddVirtualOutput(id, x, y); break;
@@ -137,7 +155,7 @@ internal sealed partial class WebShellController
             return;
         }
 
-        if (source.Kind is SourceKind.Tts or SourceKind.Timeline)
+        if (source.Kind is SourceKind.Tts or SourceKind.Timeline or SourceKind.Network)
         {
             return;
         }
@@ -160,8 +178,10 @@ internal sealed partial class WebShellController
             try
             {
                 source.SetFile(path, loop: false);
+                source.SetFileNote(60, 60, 0);
                 entry.Title = Path.GetFileNameWithoutExtension(path);
                 source.Title = entry.Title;
+                _ = DetectFileRootNoteAfterLoad(entry.Id, path);
                 SetStatus($"File loaded: {Path.GetFileName(path)}. Press Start to play.");
             }
             catch (Exception ex)
@@ -208,11 +228,13 @@ internal sealed partial class WebShellController
         string? previousPath = source.FilePath;
         string path = dialog.FileName;
         source.SetFile(path, source.FileLoop);
+        source.SetFileNote(60, 60, 0);
         ReleaseFrozenProxyPath(previousPath);
         entry.Title = Path.GetFileNameWithoutExtension(path);
         source.Title = entry.Title;
         PublishGraph();
         PublishTelemetry(force: true);
+        _ = DetectFileRootNoteAfterLoad(entry.Id, path);
         SetStatus($"File loaded: {Path.GetFileName(path)}. Press Start to play.");
     }
 
@@ -235,6 +257,84 @@ internal sealed partial class WebShellController
             return;
         }
         source.SetFileSpeed(speed);
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private void SetFilePlayerNote(string id, int root, int target, float cents)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        source.SetFileNote(root, target, cents);
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private void SetFilePlayerTapeMode(string id, bool enabled)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source)
+        {
+            return;
+        }
+
+        source.SetFileTapeMode(enabled);
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private async void DetectFileRootNote(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Source is not { Kind: SourceKind.File } source ||
+            string.IsNullOrWhiteSpace(source.FilePath))
+        {
+            return;
+        }
+
+        string path = source.FilePath;
+        int midi = await Task.Run(() => SampleNoteDetector.DetectRootMidi(path, out _));
+        if (!_nodes.TryGetValue(id, out entry) || entry.Source is not { Kind: SourceKind.File } current ||
+            !string.Equals(current.FilePath, path, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        if (midi <= 0)
+        {
+            SetStatus($"{entry.Title}: could not detect a stable note.", isError: true);
+            return;
+        }
+
+        current.SetFileNote(midi, midi, 0);
+        PublishGraph();
+        PublishTelemetry(force: true);
+        SetStatus($"{entry.Title}: root note {MidiNoteName(midi)}.");
+    }
+
+    private static string MidiNoteName(int midi)
+    {
+        string[] names = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+        int note = Math.Clamp(midi, 0, 127);
+        return names[note % 12] + (note / 12 - 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private async Task DetectFileRootNoteAfterLoad(string id, string path)
+    {
+        int midi = await Task.Run(() => SampleNoteDetector.DetectRootMidi(path, out _));
+        if (midi <= 0 ||
+            !_nodes.TryGetValue(id, out var entry) ||
+            entry.Source is not { Kind: SourceKind.File } source ||
+            !string.Equals(source.FilePath, path, StringComparison.Ordinal) ||
+            source.FileRootNote != 60 ||
+            source.FileTargetNote != 60 ||
+            Math.Abs(source.FilePitchCents) > 0.01f)
+        {
+            return;
+        }
+
+        source.SetFileNote(midi, midi, 0);
         PublishGraph();
         PublishTelemetry(force: true);
     }
@@ -289,17 +389,6 @@ internal sealed partial class WebShellController
             PublishGraph();
             PublishTelemetry(force: true);
         }
-    }
-
-    private void SetNodeWidth(string id, double width)
-    {
-        if (!_nodes.TryGetValue(id, out var entry))
-        {
-            return;
-        }
-
-        entry.Width = Math.Clamp(width, 200, 600);
-        PublishGraph();
     }
 
     private void SetNodeMetronome(string id, float bpm, int beatsPerBar)
@@ -1119,6 +1208,64 @@ internal sealed partial class WebShellController
         return entry;
     }
 
+    private NodeEntry CreateTextNote(
+        double x, double y, string? id = null, string? controlId = null,
+        string content = "", string? fileName = null)
+    {
+        var entry = new NodeEntry
+        {
+            Id = id ?? Guid.NewGuid().ToString("N"),
+            Kind = "text",
+            Flavor = "note",
+            Title = "Text note",
+            Subtitle = "Notes and scripts",
+            Accent = "#8FB7FF",
+            X = x,
+            Y = y,
+            Width = 340,
+            Height = 240,
+            TextContent = NormalizeTextNote(content),
+            TextCommittedContent = NormalizeTextNote(content),
+            TextFileName = string.IsNullOrWhiteSpace(fileName) ? null : Path.GetFileName(fileName),
+        };
+        _nodes.Add(entry.Id, entry);
+        entry.ControlId = MakeUniqueControlId(entry, controlId);
+        return entry;
+    }
+
+    private NodeEntry AddNetworkLink(double x, double y)
+    {
+        var source = new SourceNode("Network link", SourceKind.Network);
+        source.SetNetworkPort(NetworkPcm.DefaultPort);
+        source.Muted = true;
+        var entry = RegisterSource(source, x, y);
+        entry.Kind = "network";
+        entry.Title = "Network link";
+        entry.Subtitle = "Voice + text";
+        entry.Flavor = "network";
+        AttachNetworkOutput(
+            entry,
+            OutputNode.CreateForNetwork("127.0.0.1", NetworkPcm.DefaultPort),
+            "127.0.0.1",
+            NetworkPcm.DefaultPort,
+            ChatService.DefaultPort);
+        entry.Output!.Muted = true;
+        return entry;
+    }
+
+    private void AttachNetworkOutput(
+        NodeEntry entry, OutputNode output, string host, int voicePort, int chatPort)
+    {
+        int port = Math.Clamp(voicePort, 1, 65535);
+        output.SetNetworkDestination(host, port);
+        output.Title = entry.Title;
+        _graph.AddOutputNode(output);
+        entry.Output = output;
+        entry.ChatPort = Math.Clamp(chatPort, 1, 65535);
+        output.Faulted += (node, reason) => _window.Dispatcher.BeginInvoke(new Action(() =>
+            OnNodeFault(entry.Id, $"Output '{node.Title}' stopped: {reason}")));
+    }
+
     private NodeEntry RegisterModifier(
         ModifierNode modifier,
         double x,
@@ -1424,6 +1571,7 @@ internal sealed partial class WebShellController
         if (_running && !_graph.Outputs.Any(output => output.IsRunning))
         {
             StopRouting();
+            _routingFaultStopped = true;
         }
     }
 
@@ -1446,6 +1594,11 @@ internal sealed partial class WebShellController
             Width = entry.Width,
             Height = entry.Height,
             MicHint = entry.MicHint,
+            ChatPort = entry.ChatPort,
+            TranslatorTextSourceId = entry.TranslatorTextSourceId,
+            IsTextNote = entry.Kind == "text",
+            TextContent = entry.TextContent,
+            TextFileName = entry.TextFileName,
         };
 
         if (entry.Source != null)
@@ -1470,6 +1623,10 @@ internal sealed partial class WebShellController
             dto.FileOutputId = entry.Source.SelectedOutputId;
             dto.FileLoop = entry.Source.FileLoop;
             dto.FileSpeed = entry.Source.FileSpeed;
+            dto.FileRootNote = entry.Source.FileRootNote;
+            dto.FileTargetNote = entry.Source.FileTargetNote;
+            dto.FilePitchCents = entry.Source.FilePitchCents;
+            dto.FileTapeMode = entry.Source.FileTapeMode;
             dto.IsMetronome = entry.Source.IsMetronome;
             dto.MetronomeBpm = entry.Source.MetronomeBpm;
             dto.MetronomeBeatsPerBar = entry.Source.MetronomeBeatsPerBar;
@@ -1512,7 +1669,7 @@ internal sealed partial class WebShellController
             dto.TtsModelInstalled = TtsModels.IsInstalled(dto.TtsModel);
             dto.TtsSources = entry.Source.Kind == SourceKind.Tts ? BuildTtsSources(entry.Id) : new();
         }
-        else if (entry.Output != null)
+        if (entry.Output != null)
         {
             dto.Volume = entry.Output.Volume;
             dto.Muted = entry.Output.Muted;
@@ -1536,10 +1693,17 @@ internal sealed partial class WebShellController
             dto.RecorderSaveToSamples = entry.Output.SaveToSamples;
             dto.RecorderSilenceStopSeconds = entry.Output.RecorderSilenceStopSeconds;
             dto.RecorderStartThresholdDb = entry.Output.RecorderStartThresholdDb;
+            if (entry.Source is { Kind: SourceKind.Network })
+            {
+                dto.NetworkError = entry.Source.NetworkError ?? entry.Output.NetworkError;
+                dto.NetworkBufferedMs = entry.Source.NetworkBufferedMs;
+            }
         }
         else if (entry.Modifier != null)
         {
             dto.Enabled = entry.Modifier.Enabled;
+            dto.Faulted = entry.Modifier.Faulted;
+            dto.FaultCount = entry.Modifier.FaultCount;
             dto.IsParallel = entry.Modifier.Parallel;
             dto.Send = entry.Modifier.Send;
             if (entry.Modifier.IsMixer)
@@ -1589,6 +1753,7 @@ internal sealed partial class WebShellController
             dto.TranslatorTarget = entry.TranslatorTarget;
             dto.TranslatorModel = entry.TranslatorModel;
             dto.TranslatorProvider = _settings.TranslationProvider;
+            dto.TranslatorTextSources = dto.IsTranslator ? BuildNetworkTextSources(entry.Id) : new();
             if (entry.Modifier.Processors.OfType<IVst3Processor>().FirstOrDefault() is { } vst)
             {
                 dto.IsVst3 = true;
@@ -2035,6 +2200,15 @@ internal sealed partial class WebShellController
         SetStatus($"{entry.Title}: {(enabled ? "enabled" : "bypassed")}.");
     }
 
+    private void RetryEffectChain(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
+        entry.Modifier.ClearChainFault();
+        _graph.RefreshModifiers();
+        PublishGraph();
+        SetStatus($"{entry.Title}: effect chain retried.");
+    }
+
     private void ApplyEffectEnabled(string id, bool enabled, bool publish)
     {
         if (!_nodes.TryGetValue(id, out var entry) || entry.Modifier == null) return;
@@ -2171,6 +2345,12 @@ internal sealed partial class WebShellController
 
         bool sidechain = string.Equals(kind, "sidechain", StringComparison.OrdinalIgnoreCase);
         bool barge = string.Equals(kind, "barge-key", StringComparison.OrdinalIgnoreCase);
+        if (!sidechain && !barge && WouldCreateCycle(fromId, toId))
+        {
+            SetStatus("That cable would create an audio loop.", isError: true);
+            return;
+        }
+
         if (sidechain &&
             ((from.Source == null && from.Modifier == null) || to.Modifier == null ||
              !to.Modifier.Processors.Any(SidechainRouting.Supports)))
@@ -2215,6 +2395,36 @@ internal sealed partial class WebShellController
                 ? $"Connected {from.Title} as a sidechain key."
                 : $"Connected {from.Title} to {to.Title}.");
         PublishGraph();
+    }
+
+    private bool WouldCreateCycle(string fromId, string toId)
+    {
+        var pending = new Stack<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        pending.Push(toId);
+        while (pending.Count > 0)
+        {
+            string id = pending.Pop();
+            if (string.Equals(id, fromId, StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (!seen.Add(id))
+            {
+                continue;
+            }
+
+            foreach (var link in _links)
+            {
+                if (link.From == id && link.Kind is not ("sidechain" or "barge-key"))
+                {
+                    pending.Push(link.To);
+                }
+            }
+        }
+
+        return false;
     }
 
     private LinkEntry ConnectEntries(NodeEntry from, NodeEntry to, float gain = 1, bool publish = false, string? linkId = null, string? kind = null)
@@ -2399,10 +2609,13 @@ internal sealed partial class WebShellController
             return;
         }
 
+        ClearRouteCheckTestTone(announce: false);
+
         var existing = _nodes.Values.FirstOrDefault(entry =>
             entry.Source is { Kind: SourceKind.Tone } source &&
             string.Equals(source.Title, "Route test tone", StringComparison.Ordinal));
         NodeEntry toneEntry;
+        bool createdNode = false;
         if (existing?.Source is { } toneSource)
         {
             toneEntry = existing;
@@ -2413,11 +2626,16 @@ internal sealed partial class WebShellController
             var tone = new SourceNode("Route test tone", SourceKind.Tone);
             tone.SetTone(1000f, ToneWaveform.Sine, -30f);
             toneEntry = RegisterSource(tone, 80, 520);
+            createdNode = true;
         }
 
-        if (!_links.Any(link => link.From == toneEntry.Id && link.To == output.Id && link.Enabled))
+        bool addedLink = false;
+        LinkEntry? link = _links.FirstOrDefault(item =>
+            item.From == toneEntry.Id && item.To == output.Id && item.Enabled);
+        if (link == null)
         {
-            ConnectEntries(toneEntry, output);
+            link = ConnectEntries(toneEntry, output);
+            addedLink = true;
         }
 
         if (!_running)
@@ -2425,8 +2643,83 @@ internal sealed partial class WebShellController
             StartRouting();
         }
 
+        _routeTestToneNodeId = toneEntry.Id;
+        _routeTestToneLinkId = link?.Id;
+        _routeTestToneOutputTitle = output.Title;
+        _routeTestToneLinkAdded = addedLink;
+        _routeTestToneNodeCreated = createdNode;
+        _routeTestToneTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+        _routeTestToneTimer.Tick += OnRouteTestToneExpired;
+        _routeTestToneTimer.Start();
+
         PublishGraph();
-        SetStatus($"Test tone connected to {output.Title}.");
+        SetStatus($"Test tone connected to {output.Title} for 10 seconds.");
+    }
+
+    private void OnRouteTestToneExpired(object? sender, EventArgs e)
+    {
+        if (sender is DispatcherTimer timer)
+        {
+            timer.Stop();
+            timer.Tick -= OnRouteTestToneExpired;
+        }
+
+        if (ReferenceEquals(_routeTestToneTimer, sender))
+        {
+            _routeTestToneTimer = null;
+        }
+
+        ClearRouteCheckTestTone();
+    }
+
+    private void ClearRouteCheckTestTone(bool announce = true)
+    {
+        _routeTestToneTimer?.Stop();
+        if (_routeTestToneTimer != null)
+        {
+            _routeTestToneTimer.Tick -= OnRouteTestToneExpired;
+            _routeTestToneTimer = null;
+        }
+
+        string? nodeId = _routeTestToneNodeId;
+        string? linkId = _routeTestToneLinkId;
+        string? outputTitle = _routeTestToneOutputTitle;
+        bool addedLink = _routeTestToneLinkAdded;
+        bool createdNode = _routeTestToneNodeCreated;
+        _routeTestToneNodeId = null;
+        _routeTestToneLinkId = null;
+        _routeTestToneOutputTitle = null;
+        _routeTestToneLinkAdded = false;
+        _routeTestToneNodeCreated = false;
+
+        bool changed = false;
+        if (addedLink && linkId != null)
+        {
+            var link = _links.FirstOrDefault(item => item.Id == linkId);
+            if (link != null)
+            {
+                RemoveLinkInternal(link);
+                changed = true;
+            }
+        }
+
+        if (createdNode && nodeId != null && _nodes.TryGetValue(nodeId, out _) &&
+            !_links.Any(link => link.From == nodeId || link.To == nodeId))
+        {
+            RemoveEntryInternal(nodeId);
+            changed = true;
+        }
+
+        if (changed)
+        {
+            PublishGraph();
+            if (announce)
+            {
+                SetStatus(outputTitle == null
+                    ? "Test tone removed."
+                    : $"Test tone disconnected from {outputTitle}.");
+            }
+        }
     }
 
     private void RememberAppRoutes(NodeEntry entry)
@@ -2591,6 +2884,32 @@ internal sealed partial class WebShellController
     private void RemoveEntryInternal(string id)
     {
         if (!_nodes.TryGetValue(id, out var entry)) return;
+        if (string.Equals(_chat.Snapshot().OwnerNodeId, id, StringComparison.Ordinal))
+        {
+            _chat.Stop();
+        }
+
+        entry.TranslatorText?.Dispose();
+        entry.TranslatorText = null;
+        _networkIncomingText.Remove(id);
+        foreach (var candidate in _nodes.Values)
+        {
+            if (string.Equals(candidate.TtsSourceNodeId, id, StringComparison.Ordinal))
+            {
+                candidate.TtsSourceNodeId = null;
+                candidate.TtsSpokenLength = 0;
+            }
+
+            if (!string.Equals(candidate.TranslatorTextSourceId, id, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            candidate.TranslatorTextSourceId = null;
+            candidate.TranslatorText?.Dispose();
+            candidate.TranslatorText = null;
+        }
+
         bool linked = _links.Any(link => link.From == id || link.To == id);
         bool hasTap = entry.Modifier?.Processors.Any(processor => processor is ITapProcessor) == true;
         bool affectsEngine = linked || hasTap;
@@ -2616,6 +2935,7 @@ internal sealed partial class WebShellController
         ReleaseFrozenProxyPath(entry.Source?.FilePath);
         _nodeClipHoldUntil.Remove(id);
         _spectrogramCursors.Remove(id);
+        _telemetryText.Remove(id);
         _midiBindings.RemoveAll(binding => binding.NodeId == id);
         if (_midiLearnTarget?.NodeId == id)
         {
@@ -2628,13 +2948,19 @@ internal sealed partial class WebShellController
         switch (processor)
         {
             case TranscriptionProcessor transcriber:
-                TranscriptionRegistry.Stop(transcriber.TapId);
-                TranscriptionProcessor.RemoveTap(transcriber.TapId);
+            {
+                int tapId = transcriber.TapId;
+                TranscriptionProcessor.RemoveTap(tapId);
+                ThreadPool.QueueUserWorkItem(_ => TranscriptionRegistry.Stop(tapId));
                 break;
+            }
             case TranslatorProcessor translator:
-                TranslationRegistry.Stop(translator.TapId);
-                TranscriptionProcessor.RemoveTap(translator.TapId);
+            {
+                int tapId = translator.TapId;
+                TranscriptionProcessor.RemoveTap(tapId);
+                ThreadPool.QueueUserWorkItem(_ => TranslationRegistry.Stop(tapId));
                 break;
+            }
             case SpectrumProcessor spectrum:
                 SpectrumProcessor.RemoveTap(spectrum.TapId);
                 break;
@@ -2718,69 +3044,98 @@ internal sealed partial class WebShellController
 
     private void StartRouting()
     {
-        _graph.AutoRun = true;
-        _graph.StartEngine();
-        int started = 0;
-        int recordings = 0;
-        int armed = 0;
-        int unarmed = 0;
-        int playersWithoutFile = 0;
-
-        // Start outputs before sources. Output initialization can take hundreds
-        // of milliseconds; starting capture first leaves a permanent source
-        // backlog that later shows up as stale skips and clicks.
-        foreach (var entry in _nodes.Values)
+        if (_routingStopTask is { IsCompleted: false })
         {
-            if (entry.Output is not { IsRunning: false } output)
+            _restartAfterStop = true;
+            SetStatus("Stopping routing; start is queued.");
+            return;
+        }
+
+        if (_routingStartTask is { IsCompleted: false })
+        {
+            return;
+        }
+
+        _routingStartTask = StartRoutingAsync();
+    }
+
+    private async Task StartRoutingAsync()
+    {
+        try
+        {
+            if (_disposed)
             {
-                continue;
+                return;
             }
 
-            try
+            _routingFaultStopped = false;
+            _graph.AutoRun = true;
+            _graph.StartEngine();
+            int started = 0;
+            int recordings = 0;
+            int armed = 0;
+            int unarmed = 0;
+            int playersWithoutFile = 0;
+            var outputsToStart = new List<(string Title, OutputNode Output)>();
+            var sourcesToStart = new List<(string Title, SourceNode Source)>();
+
+            // Recorder setup touches files and controller state, so keep it on
+            // the UI thread. Ordinary endpoints are initialized below.
+            foreach (var entry in _nodes.Values)
             {
-                if (output.IsFileRecorder)
+                if (entry.Output is not { IsRunning: false } output)
                 {
-                    if (!output.AutoStart)
+                    continue;
+                }
+
+                try
+                {
+                    if (output.IsNetworkOutput && output.Muted)
                     {
                         continue;
                     }
 
-                    if (output.RecorderMode == RecorderMode.On)
+                    if (output.IsFileRecorder)
                     {
-                        if (StartRecorder(entry, output, autoStarted: true)) recordings++;
-                        else if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
-                    }
-                    else if (output.RecorderMode == RecorderMode.Armed)
-                    {
-                        armed++;
-                        if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
-                    }
-                    else if (!output.AutoSave && !output.HasRecordingPath)
-                    {
-                        unarmed++;
+                        if (!output.AutoStart)
+                        {
+                            continue;
+                        }
+
+                        if (output.RecorderMode == RecorderMode.On)
+                        {
+                            if (StartRecorder(entry, output, autoStarted: true)) recordings++;
+                            else if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
+                        }
+                        else if (output.RecorderMode == RecorderMode.Armed)
+                        {
+                            armed++;
+                            if (!output.AutoSave && !output.HasRecordingPath) unarmed++;
+                        }
+                        else if (!output.AutoSave && !output.HasRecordingPath)
+                        {
+                            unarmed++;
+                        }
+
+                        continue;
                     }
 
+                    outputsToStart.Add((entry.Title, output));
+                }
+                catch (Exception ex)
+                {
+                    ShowError($"Could not start '{entry.Title}': {ex.Message}", ex,
+                        "Retry routing", "retry-routing");
+                }
+            }
+
+            foreach (var entry in _nodes.Values)
+            {
+                if (entry.Source is not { IsRunning: false } source)
+                {
                     continue;
                 }
 
-                output.Start();
-            }
-            catch (Exception ex)
-            {
-                ShowError($"Could not start '{entry.Title}': {ex.Message}", ex,
-                    "Retry routing", "retry-routing");
-            }
-        }
-
-        foreach (var entry in _nodes.Values)
-        {
-            if (entry.Source is not { IsRunning: false } source)
-            {
-                continue;
-            }
-
-            try
-            {
                 if (source.Kind == SourceKind.Tts)
                 {
                     continue;
@@ -2791,50 +3146,170 @@ internal sealed partial class WebShellController
                     continue;
                 }
 
-                source.Start();
-                started++;
+                if (source.Kind == SourceKind.Network && source.Muted)
+                {
+                    continue;
+                }
+
+                sourcesToStart.Add((entry.Title, source));
             }
-            catch (Exception ex)
+
+            SetStatus("Starting routing...");
+            PublishGraph();
+            PublishTelemetry(force: true);
+
+            var errors = new List<string>();
+            await Task.Run(() =>
             {
-                ShowError($"Could not start '{entry.Title}': {ex.Message}", ex,
+                foreach (var item in outputsToStart)
+                {
+                    try
+                    {
+                        item.Output.Start();
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"Could not start '{item.Title}': {ex.Message}");
+                    }
+                }
+
+                foreach (var item in sourcesToStart)
+                {
+                    try
+                    {
+                        item.Source.Start();
+                        started++;
+                    }
+                    catch (Exception ex)
+                    {
+                        errors.Add($"Could not start '{item.Title}': {ex.Message}");
+                    }
+                }
+            }).ConfigureAwait(true);
+
+            if (_disposed)
+            {
+                return;
+            }
+
+            foreach (string error in errors)
+            {
+                ShowError(error, null, "Retry routing", "retry-routing");
+            }
+
+            AutoEnableNativeRoutes();
+            ActivateNativeRoutes();
+            _graph.StartEngine();
+            _running = _graph.AutoRun;
+            SetAudioPriorityBoost(_running);
+            int outputCount = _graph.Outputs.Count;
+            string recordingNote = recordings > 0 ? $", {recordings} recording(s)" : string.Empty;
+            string armedNote = armed > 0 ? $", {armed} armed" : string.Empty;
+            string unarmedNote = unarmed > 0 ? $"; {unarmed} recorder(s) need a file" : string.Empty;
+            string playerNote = playersWithoutFile > 0
+                ? $"; {playersWithoutFile} file player(s) need a file"
+                : string.Empty;
+            SetStatus($"Routing started \u2014 {started} source(s), {outputCount} output(s){recordingNote}{unarmedNote}{playerNote}.");
+            PublishGraph();
+            PublishTelemetry(force: true);
+        }
+        catch (Exception ex)
+        {
+            if (!_disposed)
+            {
+                ShowError("Routing could not start: " + ex.Message, ex,
                     "Retry routing", "retry-routing");
             }
         }
-        AutoEnableNativeRoutes();
-        ActivateNativeRoutes();
-        _graph.StartEngine();
-        _running = _graph.AutoRun;
-        SetAudioPriorityBoost(_running);
-        int outputCount = _graph.Outputs.Count;
-        string recordingNote = recordings > 0 ? $", {recordings} recording(s)" : string.Empty;
-        string armedNote = armed > 0 ? $", {armed} armed" : string.Empty;
-        string unarmedNote = unarmed > 0 ? $"; {unarmed} recorder(s) need a file" : string.Empty;
-        string playerNote = playersWithoutFile > 0
-            ? $"; {playersWithoutFile} file player(s) need a file"
-            : string.Empty;
-        SetStatus($"Routing started · {started} source(s), {outputCount} output(s){recordingNote}{unarmedNote}{playerNote}.");
-        PublishGraph();
-        PublishTelemetry(force: true);
+        finally
+        {
+            _routingStartTask = null;
+        }
     }
+    private void StopRouting() => _ = StopRoutingAsync();
 
-    private void StopRouting()
+    private async Task StopRoutingAsync()
     {
+        if (_routingStartTask is { IsCompleted: false } starting)
+        {
+            SetStatus("Waiting for routing to start before stopping...");
+            await starting.ConfigureAwait(true);
+        }
+
+        if (_routingStopTask is { IsCompleted: false } stopping)
+        {
+            await stopping.ConfigureAwait(true);
+            return;
+        }
+
+        if (_disposed)
+        {
+            return;
+        }
+
+        _routingFaultStopped = false;
         var recorders = _nodes.Values.Select(entry => entry.Output)
             .Where(output => output?.IsRecording == true).Cast<OutputNode>().ToList();
+        var sources = _graph.Sources.ToArray();
+        var outputs = _graph.Outputs.ToArray();
         _graph.AutoRun = false;
-        _graph.StopEngine();
-        foreach (var source in _graph.Sources) source.Stop();
-        foreach (var output in _graph.Outputs) output.Stop();
+        _running = false;
+        SetAudioPriorityBoost(false);
+        SetStatus("Stopping routing...");
+        PublishGraph();
+        PublishTelemetry(force: true);
+
+        var stopTask = Task.Run(() =>
+        {
+            _graph.StopEngine();
+            foreach (var source in sources)
+            {
+                try { source.Stop(); }
+                catch { }
+            }
+
+            foreach (var output in outputs)
+            {
+                try { output.Stop(); }
+                catch { }
+            }
+        });
+
+        _routingStopTask = stopTask;
+        try
+        {
+            await stopTask.ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning("Routing stop failed: " + ex.Message);
+        }
+        finally
+        {
+            if (ReferenceEquals(_routingStopTask, stopTask))
+            {
+                _routingStopTask = null;
+            }
+        }
+
+        if (_disposed)
+        {
+            return;
+        }
 
         int saved = recorders.Count(output => string.IsNullOrEmpty(output.RecordingError));
         int failed = recorders.Count - saved;
-        _running = false;
-        SetAudioPriorityBoost(false);
         SetStatus(recorders.Count == 0
             ? "Routing stopped."
-            : $"Routing stopped · {saved} recording(s) saved{(failed > 0 ? $", {failed} failed" : string.Empty)}.");
+            : $"Routing stopped �� {saved} recording(s) saved{(failed > 0 ? $", {failed} failed" : string.Empty)}.");
         PublishGraph();
         PublishTelemetry(force: true);
+
+        if (_restartAfterStop && !_disposed)
+        {
+            _restartAfterStop = false;
+            StartRouting();
+        }
     }
 
     private void SetMicrophoneMute(bool muted)

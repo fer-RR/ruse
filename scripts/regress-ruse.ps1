@@ -86,6 +86,7 @@ function Invoke-RuseTest {
 
 $tests = @(
     @{ Name = "web";       Arguments = @("--web-test");       File = "web-test.txt" },
+    @{ Name = "chat";      Arguments = @("--chat-test");      File = "chat-test.txt" },
     @{ Name = "selftest";  Arguments = @("--selftest");       File = "latency-selftest.txt" },
     @{ Name = "lowlatency"; Arguments = @("--low-latency-test"); File = "low-latency-test.txt" },
     @{ Name = "effects";   Arguments = @("--effects-test");   File = "effects-test.txt" },

@@ -27,6 +27,23 @@ public sealed class ModifierNode : IDisposable
 
     private volatile bool _enabled = true;
 
+    private volatile bool _faulted;
+    private long _faultCount;
+
+    /// <summary>True after an effect in this chain threw and the chain was bypassed.</summary>
+    public bool Faulted => _faulted;
+
+    /// <summary>Number of times this chain has faulted since it was last reset.</summary>
+    public long FaultCount => Interlocked.Read(ref _faultCount);
+
+    internal void ReportChainFault()
+    {
+        _faulted = true;
+        Interlocked.Increment(ref _faultCount);
+    }
+
+    public void ClearChainFault() => _faulted = false;
+
     /// <summary>Runs the effect chain on a copy and mixes it back with the dry signal.</summary>
     public bool Parallel { get; set; }
 

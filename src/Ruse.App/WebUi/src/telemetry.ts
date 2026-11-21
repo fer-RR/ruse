@@ -68,6 +68,10 @@ export function sameNode(a: NodeTelemetry | undefined, b: NodeTelemetry | undefi
     a.inputResamplerLatencyMs === b.inputResamplerLatencyMs &&
     a.outputSampleRate === b.outputSampleRate &&
     a.outputResampling === b.outputResampling &&
+    a.networkPackets === b.networkPackets &&
+    a.networkLostPackets === b.networkLostPackets &&
+    a.networkUnderruns === b.networkUnderruns &&
+    a.networkStreamResets === b.networkStreamResets &&
     sameArray(a.spectrum, b.spectrum) &&
     a.spectrumPeakHz === b.spectrumPeakHz &&
     sameArray(a.spectrogram, b.spectrogram) &&

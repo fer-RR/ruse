@@ -26,7 +26,7 @@ internal sealed partial class WebShellController
             SetAudioOptimizerState("running", 0, "Preparing audio optimization\u2026");
             if (wasRunning)
             {
-                StopRouting();
+                await StopRoutingAsync();
             }
 
             var result = await Task.Run(() => AudioConfigOptimizer.Run(

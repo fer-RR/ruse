@@ -35,7 +35,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 - Per-app audio capture, system loopback, microphones and line inputs.
 - WASAPI outputs with low-latency shared mode where the driver supports it.
 - Existing virtual cables and virtual buses.
-- File playback, test-tone generator, network input and network output.
+- File playback with root/target note transpose, test-tone generator, network input, network output and resizable text-note nodes.
 - Direct source-to-device routes and **native passthrough** without sample-rate conversion.
 - Sidechain inputs, per-send gain, mute/solo and an advanced mixer with per-input level/pan/polarity/delay, A/B crossfade, width, auto-gain and bus metering.
 
@@ -70,7 +70,7 @@ Audio is processed locally. Ruse does not upload your audio. Optional transcript
 
 - Optional local Whisper transcription, translation and text-to-speech.
 - Local control API for scripts and automation, off by default.
-- Five UI themes: Dark, Light, Blueprint, Studio '74 and Receiver.
+- Five UI themes: Dark, Light, Blueprint, Studio '74 and Vesper.
 - Keyboard shortcuts, an in-app motion setting that can override Windows' reduce-motion preference and screen-reader labels.
 - English, German, Spanish, French, Italian, Japanese, Korean, Portuguese (Brazil) and Chinese (Simplified) UI.
 
@@ -82,15 +82,14 @@ flowchart LR
     B[System audio] --> G
     C[Microphone] --> G
     D[Files / test tone] --> G
-    E[Network input] --> G
+    N[Network link: voice + text] <--> G
     G --> F[EQ · dynamics · filters · VST3 · meters]
     F --> H[Speakers / headphones]
     F --> I[Virtual cable]
     F --> J[WAV / FLAC / MP3 recorder]
-    F --> K[Network output]
 ```
 
-Each node is a source, processor or destination. Cables carry audio. You can insert effects directly on a cable, create sidechain routes, and save a chain or frame as a template.
+Each node is a source, processor or destination. Cables carry audio. You can insert effects directly on a cable, create sidechain routes, and save a chain or frame as a template. Incoming Network link text can be selected as a Translator text source or as the TTS **Read from** source.
 
 ## Download and install
 
@@ -107,13 +106,13 @@ The package is self-contained and includes the .NET runtime. It does not include
 - **Per-app capture:** Windows 11 or Windows Server 2022.
 - **Runtime:** Microsoft Edge WebView2 Runtime. Windows 11 includes it; most Windows 10 devices have it, and Ruse links to the installer if it is missing.
 - **Build tools:** .NET 10 SDK and Node.js 20 or newer.
-- **Network audio:** Ruse-to-Ruse UDP PCM on the same trusted LAN. It is not encrypted.
+- **Network link:** Ruse-to-Ruse voice over UDP PCM and text over TCP on the same trusted LAN. Neither channel is encrypted.
 - **Models and drivers:** Whisper, translation, TTS and VST3 plugins are installed separately.
 
 ## Quick start
 
-1. **Add a source.** Drag an app, system audio, microphone, file, tone or network input from the Library onto the canvas.
-2. **Add a destination.** Drag speakers, headphones, a virtual cable, a recorder or a network output onto the canvas.
+1. **Add a source.** Drag an app, system audio, microphone, file, tone or network link from the Library onto the canvas.
+2. **Add a destination.** Drag speakers, headphones, a virtual cable, a recorder or a network link onto the canvas.
 3. **Connect them.** Drag from the source's **OUT** port to the destination's **IN** port.
 4. **Add processing (optional).** Drag an effect onto the cable or between two nodes.
 5. **Start routing.** Press the power button in the toolbar. Open the **Mixer** to adjust levels and the **Timeline** for clips and automation.
@@ -127,7 +126,7 @@ The first-run tour and the `?` help buttons explain the main workflows.
 | Hear a game and send it to Discord | Game app → High-pass/EQ → Headphones and VB-CABLE |
 | Use a microphone in Discord and OBS | Microphone → High-pass → Compressor → Limiter → VB-CABLE |
 | Record a stream mix | Apps + microphone → Mixer → File recorder |
-| Send audio to a second PC | Source → Network output; Network input → speakers on the other PC |
+| Send audio and text to a second PC | Source → Network link on the first PC; Network link → speakers on the second; connect text on either side |
 | Keep music out of a call | Music app → Headphones only; microphone → call output |
 | Add a VST3 effect | Source → VST3 node → destination; open the plugin editor in the node |
 | Make TV or games easier to hear | App or system audio -> Hearing profile -> Headphones |
@@ -140,6 +139,8 @@ Ruse keeps user content together in `Documents\Ruse`:
 - `Recordings` — recorder and timeline recordings.
 - `Samples` — imported samples and files used by the file player and timeline.
 - `Exports` — timeline bounces, consolidated clips and transcript exports.
+- `Notes` — saved text notes.
+- `Support` — exported support bundles with diagnostics and recent logs.
 
 Settings, session, effect chains, frame templates, logs and downloaded models
 stay in `%APPDATA%\Ruse`. Settings > Info shows these locations and opens the
@@ -191,7 +192,13 @@ The build also compiles the React UI in `src\Ruse.App\WebUi`.
 powershell -ExecutionPolicy Bypass -File scripts\regress-ruse.ps1 -Build
 ```
 
-Individual checks: `Ruse.exe --effects-test`, `--dsp-test`, `--web-test`, `--selftest`.
+Individual checks: `Ruse.exe --effects-test`, `--dsp-test`, `--web-test`, `--chat-test`, `--selftest`.
+
+Third-party licence audit:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\audit-licenses.ps1
+```
 
 ## Package a release
 

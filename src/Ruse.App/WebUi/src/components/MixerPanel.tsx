@@ -237,7 +237,34 @@ function MixerStrip({ node, outputs, links, inserts, vertical, groupColors, grou
   const [volume, setVolume] = useState(node.volume);
   const [dropTarget, setDropTarget] = useState(false);
   const [groupMenuOpen, setGroupMenuOpen] = useState(false);
+  const groupButtonRef = useRef<HTMLButtonElement>(null);
+  const groupMenuRef = useRef<HTMLSpanElement>(null);
   useEffect(() => setVolume(node.volume), [node.volume]);
+
+  const closeGroupMenu = (restoreFocus = true) => {
+    setGroupMenuOpen(false);
+    if (restoreFocus) groupButtonRef.current?.focus();
+  };
+
+  useEffect(() => {
+    if (!groupMenuOpen) return;
+    const menu = groupMenuRef.current;
+    menu?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
+    const outside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (menu?.contains(target) || groupButtonRef.current?.contains(target)) return;
+      closeGroupMenu(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeGroupMenu();
+    };
+    window.addEventListener('pointerdown', outside);
+    window.addEventListener('keydown', escape);
+    return () => {
+      window.removeEventListener('pointerdown', outside);
+      window.removeEventListener('keydown', escape);
+    };
+  }, [groupMenuOpen]);
 
   const dragStart = (event: DragEvent<HTMLElement>) => {
     event.dataTransfer.setData(MIXER_DRAG_TYPE, node.id);
@@ -286,23 +313,54 @@ function MixerStrip({ node, outputs, links, inserts, vertical, groupColors, grou
         ><GripVertical size={12} /></span>
         <span className="mixer-group-pick-wrap">
           <button
+            ref={groupButtonRef}
             type="button"
             className="mixer-group-pick"
             title={t('Group with...')}
             aria-label={t('Group with...')}
+            aria-haspopup="menu"
             aria-expanded={groupMenuOpen}
             onClick={event => {
               event.stopPropagation();
               setGroupMenuOpen(open => !open);
             }}
+            onKeyDown={event => {
+              if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                event.preventDefault();
+                setGroupMenuOpen(true);
+              }
+            }}
             onPointerDown={event => event.stopPropagation()}
           ><Link2 size={11} /></button>
           {groupMenuOpen && (
-            <span className="mixer-group-menu" role="menu"
+            <span
+              ref={groupMenuRef}
+              className="mixer-group-menu"
+              role="menu"
+              aria-label={t('Group with...')}
               onKeyDown={event => {
                 if (event.key === 'Escape') {
+                  event.preventDefault();
                   event.stopPropagation();
-                  setGroupMenuOpen(false);
+                  closeGroupMenu();
+                  return;
+                }
+
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp' || event.key === 'Home' || event.key === 'End') {
+                  const items = Array.from(
+                    groupMenuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [],
+                  );
+                  if (items.length === 0) return;
+                  event.preventDefault();
+                  const current = items.indexOf(document.activeElement as HTMLButtonElement);
+                  const next = event.key === 'Home'
+                    ? 0
+                    : event.key === 'End'
+                      ? items.length - 1
+                      : current < 0
+                        ? 0
+                        : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+                  items[next].focus();
                 }
               }}
             >
@@ -315,10 +373,11 @@ function MixerStrip({ node, outputs, links, inserts, vertical, groupColors, grou
                       key={target.id}
                       type="button"
                       role="menuitem"
+                      tabIndex={-1}
                       onClick={event => {
                         event.stopPropagation();
                         send('mixer-group', { from: node.id, to: target.id });
-                        setGroupMenuOpen(false);
+                        closeGroupMenu();
                       }}
                     >{target.title}</button>
                   ))}

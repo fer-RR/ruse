@@ -77,6 +77,10 @@ public sealed class SourceNode : IDisposable
     public int NetworkPort { get; private set; } = NetworkPcm.DefaultPort;
     public string? NetworkError => (_capture as NetworkPcmCapture)?.LastError;
     public double NetworkBufferedMs => (_capture as NetworkPcmCapture)?.BufferedMs ?? 0;
+    public long NetworkPackets => (_capture as NetworkPcmCapture)?.Packets ?? 0;
+    public long NetworkLostPackets => (_capture as NetworkPcmCapture)?.LostPackets ?? 0;
+    public long NetworkUnderruns => (_capture as NetworkPcmCapture)?.Underruns ?? 0;
+    public long NetworkStreamResets => (_capture as NetworkPcmCapture)?.StreamResets ?? 0;
     public int TtsQueuedFiles => (_capture as TtsAudioCapture)?.QueuedFiles ?? 0;
     public int TtsQueuedFrames => (_capture as TtsStreamCapture)?.QueuedFrames ?? 0;
     public bool IsTtsStreaming => _capture is TtsStreamCapture;
@@ -131,7 +135,8 @@ public sealed class SourceNode : IDisposable
 
     public SourceNode(string title, SourceKind kind, uint? processId = null, string? deviceId = null,
         string? processName = null, string? filePath = null, bool fileLoop = false, float fileSpeed = 1f,
-        string? id = null)
+        string? id = null, int fileRootNote = 60, int fileTargetNote = 60, float filePitchCents = 0f,
+        bool fileTapeMode = false)
     {
         Id = string.IsNullOrWhiteSpace(id) ? Guid.NewGuid().ToString("N") : id;
         Title = title;
@@ -142,6 +147,10 @@ public sealed class SourceNode : IDisposable
         FilePath = filePath;
         FileLoop = fileLoop;
         FileSpeed = Math.Clamp(fileSpeed, 0.5f, 2f);
+        FileRootNote = Math.Clamp(fileRootNote, 0, 127);
+        FileTargetNote = Math.Clamp(fileTargetNote, Math.Max(0, FileRootNote - 24), Math.Min(127, FileRootNote + 24));
+        FilePitchCents = Math.Clamp(float.IsFinite(filePitchCents) ? filePitchCents : 0f, -100f, 100f);
+        FileTapeMode = fileTapeMode;
         _fileDurationSeconds = SafeDuration(filePath);
     }
 
@@ -150,6 +159,11 @@ public sealed class SourceNode : IDisposable
 
     public bool FileLoop { get; private set; }
     public float FileSpeed { get; private set; } = 1f;
+    public int FileRootNote { get; private set; } = 60;
+    public int FileTargetNote { get; private set; } = 60;
+    public float FilePitchCents { get; private set; }
+    public bool FileTapeMode { get; private set; }
+    public float FilePitchSemitones => FileTargetNote - FileRootNote + FilePitchCents / 100f;
 
     public float ToneFrequency { get; private set; } = 1000f;
     public ToneWaveform ToneWave { get; private set; } = ToneWaveform.Sine;
@@ -280,6 +294,17 @@ public sealed class SourceNode : IDisposable
             file.Speed = FileSpeed;
         }
     }
+
+    public void SetFileNote(int rootNote, int targetNote, float cents)
+    {
+        FileRootNote = Math.Clamp(rootNote, 0, 127);
+        FileTargetNote = Math.Clamp(targetNote, Math.Max(0, FileRootNote - 24), Math.Min(127, FileRootNote + 24));
+        FilePitchCents = Math.Clamp(float.IsFinite(cents) ? cents : 0f, -100f, 100f);
+        if (_capture is AudioFileCapture file)
+        {
+            file.PitchSemitones = FilePitchSemitones;
+        }
+    }
     
     public void SetFileLoop(bool loop)
     {
@@ -287,6 +312,15 @@ public sealed class SourceNode : IDisposable
         if (_capture is AudioFileCapture file)
         {
             file.Loop = loop;
+        }
+    }
+
+    public void SetFileTapeMode(bool enabled)
+    {
+        FileTapeMode = enabled;
+        if (_capture is AudioFileCapture file)
+        {
+            file.TapeMode = enabled;
         }
     }
 
@@ -608,6 +642,30 @@ public sealed class SourceNode : IDisposable
             _capture = null;
         }
 
+        // A capture stream that stopped by itself keeps its old object here so
+        // the UI can still show the fault. Tear it down on retry; otherwise
+        // Start() would return forever after a device unplug or driver reset.
+        if (_capture != null && _faulted)
+        {
+            bool wasTtsStreaming = _ttsStreaming;
+            try
+            {
+                Stop();
+            }
+            finally
+            {
+                // A dead endpoint can throw while disposing. Retry must still
+                // be able to create a fresh capture.
+                if (_capture != null)
+                {
+                    UnwireStopEvents(_capture);
+                    _capture = null;
+                }
+
+                _ttsStreaming = wasTtsStreaming;
+            }
+        }
+
         if (_capture != null)
         {
             return;
@@ -889,7 +947,11 @@ public sealed class SourceNode : IDisposable
             throw new FileNotFoundException("Choose an audio file for this player.", FilePath);
         }
 
-        var capture = new AudioFileCapture(FilePath, FileLoop, FileSpeed);
+        var capture = new AudioFileCapture(FilePath, FileLoop, FileSpeed)
+        {
+            PitchSemitones = FilePitchSemitones,
+            TapeMode = FileTapeMode,
+        };
         _fileDurationSeconds = capture.DurationSeconds;
         SetSourceFormat(capture.WaveFormat.Channels, capture.WaveFormat.SampleRate,
             bitsPerSample: capture.WaveFormat.BitsPerSample);

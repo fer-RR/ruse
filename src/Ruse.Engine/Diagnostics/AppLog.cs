@@ -27,7 +27,7 @@ public static class AppLog
     /// <summary>Raised for every entry so the UI can react to critical ones.</summary>
     public static event Action<LogLevel, string>? Entry;
 
-    public static string LogPath { get; } = Path.Combine(AppSettings.Directory, "ruse.log");
+    public static string LogPath => Path.Combine(AppSettings.Directory, "ruse.log");
 
     /// <summary>Number of errors since the app started (shown in the status bar).</summary>
     public static int ErrorCount { get; private set; }

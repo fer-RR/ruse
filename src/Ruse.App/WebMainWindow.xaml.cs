@@ -16,6 +16,7 @@ public partial class WebMainWindow : Window
     private bool _hiddenToTray;
     private bool _exitFromTray;
     private bool _trayPromptOpen;
+    private DispatcherTimer? _trayPromptTimer;
     private TrayIcon? _tray;
     private DispatcherTimer? _trayTimer;
     private bool _lastRecording;
@@ -34,6 +35,8 @@ public partial class WebMainWindow : Window
             _closed = true;
             _trayTimer?.Stop();
             _trayTimer = null;
+            _trayPromptTimer?.Stop();
+            _trayPromptTimer = null;
             _tray?.Dispose();
             _tray = null;
             _controller.Dispose();
@@ -64,6 +67,14 @@ public partial class WebMainWindow : Window
                 }
 
                 _trayPromptOpen = true;
+                _trayPromptTimer?.Stop();
+                _trayPromptTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+                _trayPromptTimer.Tick += (_, _) =>
+                {
+                    _controller.CancelTrayDecision();
+                    ApplyTrayDecision(null);
+                };
+                _trayPromptTimer.Start();
                 if (!_controller.RequestTrayDecision(ApplyTrayDecision))
                 {
                     bool closeToTray = MessageBox.Show(
@@ -108,6 +119,15 @@ public partial class WebMainWindow : Window
 
         _closeConfirmed = true;
         _controller.Shutdown();
+    }
+
+    internal void ShutdownForUpdate()
+    {
+        _exitFromTray = true;
+        _closeConfirmed = true;
+        _controller.Shutdown();
+        Close();
+        Application.Current.Shutdown();
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -255,6 +275,8 @@ public partial class WebMainWindow : Window
     private void ApplyTrayDecision(bool? keep)
     {
         _trayPromptOpen = false;
+        _trayPromptTimer?.Stop();
+        _trayPromptTimer = null;
         if (keep is not bool decision)
         {
             return;

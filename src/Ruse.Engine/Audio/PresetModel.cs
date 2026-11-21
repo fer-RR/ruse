@@ -20,6 +20,9 @@ public sealed class Preset
     /// <summary>Effect-chain nodes placed on the canvas.</summary>
     public List<PresetModifier> Modifiers { get; set; } = new();
 
+    /// <summary>Free-form text note nodes.</summary>
+    public List<PresetTextNote> TextNotes { get; set; } = new();
+
     /// <summary>Per-input settings for mixer modifiers.</summary>
     public List<PresetMixerInput> MixerInputs { get; set; } = new();
 
@@ -72,6 +75,10 @@ public sealed class PresetSource
     public bool Solo { get; set; }
     public bool FileLoop { get; set; }
     public float FileSpeed { get; set; } = 1f;
+    public int FileRootNote { get; set; } = 60;
+    public int FileTargetNote { get; set; } = 60;
+    public float FilePitchCents { get; set; }
+    public bool FileTapeMode { get; set; }
     public float ToneFrequency { get; set; } = 1000f;
     public string ToneWaveform { get; set; } = "Sine";
     public float ToneLevelDb { get; set; } = -18f;
@@ -96,6 +103,9 @@ public sealed class PresetSource
     public float TtsSpeed { get; set; } = 1f;
     public int TtsVoice { get; set; }
     public int NetworkPort { get; set; } = NetworkPcm.DefaultPort;
+    public bool IsCombinedNetwork { get; set; }
+    public string? NetworkHost { get; set; }
+    public int ChatPort { get; set; } = NetworkPcm.DefaultChatPort;
     public double X { get; set; }
     public double Y { get; set; }
     public double? Width { get; set; }
@@ -106,6 +116,7 @@ public sealed class PresetSource
 
 public sealed class PresetOutput
 {
+    public string Id { get; set; } = "";
     public string DeviceId { get; set; } = "";
     public string Title { get; set; } = "";
     public string ControlId { get; set; } = "";
@@ -113,6 +124,7 @@ public sealed class PresetOutput
     public string? MicHint { get; set; }
     public bool IsFile { get; set; }
     public bool IsNetwork { get; set; }
+    public bool IsCombinedNetwork { get; set; }
     public string? NetworkHost { get; set; }
     public int NetworkPort { get; set; } = NetworkPcm.DefaultPort;
     public string? FilePath { get; set; }
@@ -149,7 +161,21 @@ public sealed class PresetRoute
     public bool? NativePreference { get; set; }
 }
 
-/// <summary>A modifier node placed on the canvas, with its effect chain.</summary>
+/// <summary>A free-form text note placed on the canvas.</summary>
+public sealed class PresetTextNote
+{
+    public string Id { get; set; } = "";
+    public string Title { get; set; } = "Text note";
+    public string ControlId { get; set; } = "";
+    public string Content { get; set; } = "";
+    public string? FileName { get; set; }
+    public string? Color { get; set; }
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double? Width { get; set; }
+    public double? Height { get; set; }
+}
+
 public sealed class PresetModifier
 {
     public string Title { get; set; } = "Modifier";
@@ -165,6 +191,7 @@ public sealed class PresetModifier
     public string? Color { get; set; }
     public string? TranslatorTarget { get; set; }
     public string? TranslatorModel { get; set; }
+    public string? TranslatorTextSourceId { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
     public double? Width { get; set; }

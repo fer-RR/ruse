@@ -27,6 +27,8 @@ public sealed class AudioFileCapture : IDisposable
     private volatile int _seekRequest = -1;
     private volatile float _positionSeconds;
     private volatile float _speed = 1f;
+    private volatile float _pitchSemitones;
+    private volatile bool _tapeMode;
 
     public AudioFileCapture(string path, bool loop, float speed = 1f)
     {
@@ -39,7 +41,7 @@ public sealed class AudioFileCapture : IDisposable
         _framesPerBlock = Math.Max(1, _sampleRate * 5 / 1000);
         _samples = new float[_framesPerBlock * _channels];
         _lastSamples = new float[_channels];
-        _speedSamples = new float[(_framesPerBlock * 2 + 2) * _channels];
+        _speedSamples = new float[(_framesPerBlock * 8 + 2) * _channels];
         _pitchShift = new PitchShiftEffect
         {
             FftSize = 2048,
@@ -57,10 +59,20 @@ public sealed class AudioFileCapture : IDisposable
     public float PositionSeconds => _positionSeconds;
     public bool IsRunning => _thread is { IsAlive: true } && !_ended;
     public bool IsPaused => _paused;
+    public bool TapeMode
+    {
+        get => _tapeMode;
+        set => _tapeMode = value;
+    }
     public float Speed
     {
         get => _speed;
         set => _speed = Math.Clamp(value, 0.5f, 2f);
+    }
+    public float PitchSemitones
+    {
+        get => _pitchSemitones;
+        set => _pitchSemitones = Math.Clamp(float.IsFinite(value) ? value : 0f, -24f, 24f);
     }
     public volatile bool Loop;
 
@@ -142,6 +154,8 @@ public sealed class AudioFileCapture : IDisposable
         var clock = System.Diagnostics.Stopwatch.StartNew();
         long produced = 0;
 
+        try
+        {
         void ApplySeek()
         {
             int request = _seekRequest;
@@ -216,14 +230,15 @@ public sealed class AudioFileCapture : IDisposable
 
             int frames = (int)Math.Min(_framesPerBlock, Math.Max(1, due - produced));
             int samples = frames * _channels;
+            float readSpeed = EffectiveReadSpeed();
             int read;
-            if (Math.Abs(_speed - 1f) < 0.001f)
+            if (Math.Abs(readSpeed - 1f) < 0.001f)
             {
                 read = _reader.Read(_samples.AsSpan(0, samples));
             }
             else
             {
-                int sourceFrames = Math.Max(1, (int)Math.Ceiling(frames * _speed));
+                int sourceFrames = Math.Max(1, (int)Math.Ceiling(frames * readSpeed));
                 int sourceSamples = sourceFrames * _channels;
                 int sourceRead = _reader.Read(_speedSamples.AsSpan(0, sourceSamples));
                 int sourceFramesRead = sourceRead / _channels;
@@ -235,7 +250,7 @@ public sealed class AudioFileCapture : IDisposable
                 {
                     for (int frame = 0; frame < frames; frame++)
                     {
-                        double position = frame * _speed;
+                        double position = frame * readSpeed;
                         int index = (int)position;
                         float fraction = (float)(position - index);
                         int a = Math.Min(index, sourceFramesRead - 1);
@@ -282,10 +297,14 @@ public sealed class AudioFileCapture : IDisposable
             }
 
             _positionSeconds = (float)_reader.CurrentTime.TotalSeconds;
-            if (Math.Abs(_speed - 1f) >= 0.001f)
+            if (!_tapeMode)
             {
-                _pitchShift.PitchSemitones = (float)(-12.0 * Math.Log2(_speed));
-                _pitchShift.Process(_samples.AsSpan(0, read));
+                float shift = _pitchSemitones - (float)(12.0 * Math.Log2(_speed));
+                if (Math.Abs(shift) >= 0.001f)
+                {
+                    _pitchShift.PitchSemitones = shift;
+                    _pitchShift.Process(_samples.AsSpan(0, read));
+                }
             }
             ApplyFade(_samples, read, _channels);
             RememberLastSamples(_samples, read, _channels);
@@ -294,6 +313,24 @@ public sealed class AudioFileCapture : IDisposable
             DataAvailable?.Invoke(this, _packetArgs);
             produced += read / _channels;
         }
+        }
+        catch (Exception ex)
+        {
+            AudioFaultLog.ReportOutputPumpFault("Audio file", ex);
+        }
+        finally
+        {
+            _ended = true;
+            _thread = null;
+        }
+    }
+
+    private float EffectiveReadSpeed()
+    {
+        float speed = _tapeMode
+            ? _speed * MathF.Pow(2f, _pitchSemitones / 12f)
+            : _speed;
+        return Math.Clamp(speed, 0.125f, 8f);
     }
 
     private void BeginFade()
@@ -339,20 +376,24 @@ public sealed class AudioFileCapture : IDisposable
         }
     }
 
-    public void Stop()
+    public bool Stop()
     {
         _stop = true;
         Thread? thread = _thread;
         _thread = null;
-        if (thread != null && thread.IsAlive && thread != Thread.CurrentThread)
+        if (thread == null || thread == Thread.CurrentThread)
         {
-            thread.Join(500);
+            return true;
         }
+
+        return !thread.IsAlive || thread.Join(500);
     }
 
     public void Dispose()
     {
-        Stop();
-        _reader.Dispose();
+        if (Stop())
+        {
+            _reader.Dispose();
+        }
     }
 }

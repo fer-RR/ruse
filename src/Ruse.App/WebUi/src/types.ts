@@ -1,6 +1,8 @@
-export type NodeKind = 'source' | 'output' | 'modifier';
+import type { ThemeId } from './themes';
+
+export type NodeKind = 'source' | 'output' | 'modifier' | 'network' | 'text';
 export type LinkKind = 'direct' | 'source-modifier' | 'modifier-modifier' | 'modifier-output' | 'sidechain' | 'barge-key';
-export type CatalogKind = 'app' | 'system' | 'metronome' | 'tone' | 'synth' | 'tts' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'mixer' | 'chain' | 'file-player' | 'sample' | 'recorder' | 'vst3' | 'template';
+export type CatalogKind = 'app' | 'system' | 'metronome' | 'tone' | 'synth' | 'tts' | 'network' | 'network-in' | 'network-out' | 'output' | 'input' | 'virtual' | 'effect' | 'mixer' | 'chain' | 'file-player' | 'sample' | 'text-note' | 'recorder' | 'vst3' | 'template';
 
 export interface ChainElement {
   typeId: string;
@@ -144,6 +146,8 @@ export interface NodeModel {
   midiEnabled?: boolean;
   parameters: ParameterModel[];
   enabled?: boolean;
+  faulted?: boolean;
+  faultCount?: number;
   isSpectrum?: boolean;
   isSpectrogram?: boolean;
   isWaveform?: boolean;
@@ -173,6 +177,10 @@ export interface NodeModel {
   fileOutputs?: Array<{ id: string; name: string }>;
   fileLoop?: boolean;
   fileSpeed?: number;
+  fileRootNote?: number;
+  fileTargetNote?: number;
+  filePitchCents?: number;
+  fileTapeMode?: boolean;
   fileAnalysis?: FileAnalysis | null;
   fileAnalysisError?: string;
   isMetronome?: boolean;
@@ -202,6 +210,7 @@ export interface NodeModel {
   networkLocalIp?: string;
   networkError?: string;
   networkBufferedMs?: number;
+  chatPort?: number;
   isTts?: boolean;
   ttsText?: string;
   ttsSpokenLength?: number;
@@ -222,6 +231,8 @@ export interface NodeModel {
   translatorTarget?: string;
   translatorModel?: string;
   translatorProvider?: string;
+  translatorTextSourceId?: string;
+  translatorTextSources?: Array<{ id: string; title: string; kind: string }>;
   translatorModels?: TranslatorModelInfo[];
   isVst3?: boolean;
   vst3Identifier?: string;
@@ -248,6 +259,9 @@ export interface NodeModel {
   warningSeverity?: 'warning' | 'info' | string;
   invalid?: boolean;
   invalidReason?: string;
+  isTextNote?: boolean;
+  textContent?: string;
+  textFileName?: string;
 }
 
 export interface NodeStateUpdate {
@@ -417,6 +431,10 @@ export interface NodeTelemetry {
   inputResamplerLatencyMs?: number;
   outputSampleRate?: number;
   outputResampling?: boolean;
+  networkPackets?: number;
+  networkLostPackets?: number;
+  networkUnderruns?: number;
+  networkStreamResets?: number;
 }
 
 export interface DiagnosticInfo {
@@ -452,6 +470,13 @@ export interface DiagnosticInfo {
   chainLatencyMs: number;
   shortReadFrames: number;
   outputUnderruns: number;
+  endpointStarvedFrames: number;
+  endpointStarvedReads: number;
+  endpointDroppedFrames: number;
+  tapDroppedFrames: number;
+  nativeSkippedFrames: number;
+  renderAllocatedBytes: number;
+  captureAllocatedBytes: number;
   lowLatency: boolean;
   telemetryMs: number;
   audioFormat: string;
@@ -546,7 +571,7 @@ export interface SettingsModel {
   timelineBounceTailSeconds: number;
   followOutputId: string;
   uiLanguage: string;
-  theme: 'dark' | 'light' | 'blueprint' | 'studio74' | 'receiver';
+  theme: ThemeId;
   uiScale: number;
   motionMode: 'system' | 'reduced' | 'full';
   startRoutingOnLaunch: boolean;
@@ -628,6 +653,7 @@ export interface SettingsModel {
   dataFolder?: string;
   modelsFolder?: string;
   userFolder?: string;
+  storageRestartRequired?: boolean;
 }
 
 export interface StatusMessage {
@@ -649,4 +675,27 @@ export interface ChainEditorRequest {
   previousName?: string;
   nodeId?: string;
   elements: ChainElement[];
+}
+
+export interface ChatMessageModel {
+  id: string;
+  sender: string;
+  text: string;
+  sentAt: string;
+  mine: boolean;
+}
+
+export interface ChatStateModel {
+  active: boolean;
+  hosting: boolean;
+  connected: boolean;
+  mode: 'host' | 'join' | '';
+  ownerNodeId: string;
+  localName: string;
+  peerName: string;
+  pairCode: string;
+  hostAddress: string;
+  port: number;
+  error?: string | null;
+  messages: ChatMessageModel[];
 }

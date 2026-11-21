@@ -15,6 +15,7 @@ namespace Ruse.App;
 internal sealed partial class WebShellController
 {
     private int _appsIdleScans;
+    private int _appsScanRunning;
     private IReadOnlyList<PluginDescriptor> _vst3Descriptors = Array.Empty<PluginDescriptor>();
     private readonly Dictionary<string, CatalogItemDto> _appCatalogCache = new(StringComparer.OrdinalIgnoreCase);
     private Task? _vst3ScanTask;
@@ -27,7 +28,7 @@ internal sealed partial class WebShellController
         {
             RefreshDevices();
             RememberDeviceSignature();
-            RefreshApps(publish: false, force: true);
+            RefreshApps(publish: true, force: true);
             RefreshEffectsAndChains();
             RefreshSamples();
             Post("catalog", _catalog);
@@ -89,41 +90,77 @@ internal sealed partial class WebShellController
 
     private void RefreshDevicesIfChanged(bool force = false)
     {
-        if (_disposed)
+        if (_disposed || Interlocked.Exchange(ref _deviceScanRunning, 1) != 0)
         {
             return;
         }
 
-        string signature;
-        try
+        string lastSignature = _lastDeviceSignature;
+        _ = Task.Run(() =>
         {
-            signature = DeviceSignature();
-        }
-        catch
-        {
-            return;
-        }
+            string? signature = null;
+            DeviceCatalogSnapshot? snapshot = null;
+            try
+            {
+                signature = DeviceSignature();
+                if (signature != null &&
+                    (force || !string.Equals(signature, lastSignature, StringComparison.Ordinal)))
+                {
+                    snapshot = BuildDeviceCatalog();
+                }
+            }
+            catch
+            {
+            }
 
-        if (!force && string.Equals(signature, _lastDeviceSignature, StringComparison.Ordinal))
-        {
-            return;
-        }
+            try
+            {
+                _window.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        if (_disposed)
+                        {
+                            return;
+                        }
 
-        _lastDeviceSignature = signature;
-        try
-        {
-            RefreshDevices();
-            Post("catalog", _catalog);
-            InvalidateActiveEndpointCache();
-            PublishGraph();
-            SetStatus("Audio devices refreshed.");
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warning("Device refresh failed: " + ex.Message);
-        }
+                        if (signature == null ||
+                            (!force && string.Equals(signature, _lastDeviceSignature, StringComparison.Ordinal)))
+                        {
+                            return;
+                        }
+
+                        _lastDeviceSignature = signature;
+                        if (snapshot != null)
+                        {
+                            ApplyDeviceCatalog(snapshot);
+                        }
+
+                        bool recovered = RecoverOutputDevices();
+                        Post("catalog", _catalog);
+                        InvalidateActiveEndpointCache();
+                        PublishGraph();
+                        if (!recovered)
+                        {
+                            SetStatus("Audio devices refreshed.");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLog.Warning("Device refresh failed: " + ex.Message);
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _deviceScanRunning, 0);
+                    }
+                }));
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _deviceScanRunning, 0);
+            }
+        });
     }
-
     private void QueueVst3Scan()
     {
         if (_vst3ScanTask is { IsCompleted: false } || _disposed)
@@ -189,7 +226,16 @@ internal sealed partial class WebShellController
         QueueVst3Scan();
     }
 
-    private void RefreshDevices()
+    private sealed record DeviceCatalogSnapshot(
+        List<CatalogItemDto> Outputs,
+        List<CatalogItemDto> Inputs,
+        string DefaultOutputId,
+        string DefaultOutputName,
+        List<CatalogItemDto> Virtuals);
+
+    private void RefreshDevices() => ApplyDeviceCatalog(BuildDeviceCatalog());
+
+    private static DeviceCatalogSnapshot BuildDeviceCatalog()
     {
         using var enumerator = new MMDeviceEnumerator();
         var outputs = new List<CatalogItemDto>();
@@ -210,8 +256,6 @@ internal sealed partial class WebShellController
                 });
             }
         }
-
-        _catalog.Outputs = outputs;
 
         var inputs = new List<CatalogItemDto>();
         foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active)
@@ -238,29 +282,19 @@ internal sealed partial class WebShellController
             }
         }
 
-        _catalog.Inputs = inputs;
-
+        string defaultOutputId = "";
+        string defaultOutputName = "";
         try
         {
             using var defaultDevice = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            _catalog.DefaultOutputId = defaultDevice.ID;
-            _catalog.DefaultOutputName = defaultDevice.FriendlyName;
+            defaultOutputId = defaultDevice.ID;
+            defaultOutputName = defaultDevice.FriendlyName;
         }
         catch
         {
-            _catalog.DefaultOutputId = "";
-            _catalog.DefaultOutputName = "";
         }
 
-        if (!string.IsNullOrEmpty(_catalog.DefaultOutputId))
-        {
-            _catalog.Outputs = _catalog.Outputs
-                .OrderByDescending(item => string.Equals(
-                    item.Id, _catalog.DefaultOutputId, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
-
-        _catalog.Virtuals = VirtualDeviceCatalog.Discover()
+        var virtuals = VirtualDeviceCatalog.Discover()
             .Select(info => new CatalogItemDto
             {
                 Id = info.RenderDeviceId,
@@ -274,6 +308,25 @@ internal sealed partial class WebShellController
                 Provider = info.Provider,
                 Badge = "VIRTUAL",
             }).ToList();
+
+        return new DeviceCatalogSnapshot(outputs, inputs, defaultOutputId, defaultOutputName, virtuals);
+    }
+
+    private void ApplyDeviceCatalog(DeviceCatalogSnapshot snapshot)
+    {
+        _catalog.Outputs = snapshot.Outputs;
+        _catalog.Inputs = snapshot.Inputs;
+        _catalog.DefaultOutputId = snapshot.DefaultOutputId;
+        _catalog.DefaultOutputName = snapshot.DefaultOutputName;
+        _catalog.Virtuals = snapshot.Virtuals;
+
+        if (!string.IsNullOrEmpty(_catalog.DefaultOutputId))
+        {
+            _catalog.Outputs = _catalog.Outputs
+                .OrderByDescending(item => string.Equals(
+                    item.Id, _catalog.DefaultOutputId, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
 
         // A virtual render device is already represented in Virtuals. Keeping it
         // in Outputs too made every Voicemeeter input appear twice.
@@ -290,7 +343,6 @@ internal sealed partial class WebShellController
             if (item.IsDefault) item.Badge = "DEFAULT";
         }
     }
-
     private static string? ProviderFromName(string name)
     {
         if (name.Contains("Virtual Audio Cable", StringComparison.OrdinalIgnoreCase)) return "Virtual Audio Cable";
@@ -312,6 +364,11 @@ internal sealed partial class WebShellController
 
     private void RefreshApps(bool publish = true, bool force = false)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         // Background scans are only needed when following playing apps.
         if (!force && !_window.IsActive && !_settings.FollowPlayingApps)
         {
@@ -336,79 +393,126 @@ internal sealed partial class WebShellController
             return;
         }
 
-        try
+        if (Interlocked.Exchange(ref _appsScanRunning, 1) != 0)
         {
-            var sessions = AudioSessionEnumerator.GetRenderSessions();
-            var apps = new List<CatalogItemDto>(sessions.Count);
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var signature = new StringBuilder(sessions.Count * 48);
+            return;
+        }
 
-            foreach (var session in sessions)
+        _ = Task.Run(() =>
+        {
+            IReadOnlyList<AudioSessionInfo>? sessions = null;
+            string? error = null;
+            try
             {
-                string key = $"{session.ProcessId}:{session.ProcessName}";
-                seen.Add(key);
-                if (!_appCatalogCache.TryGetValue(key, out var app))
+                sessions = AudioSessionEnumerator.GetRenderSessions();
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+            }
+
+            try
+            {
+                _window.Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    app = new CatalogItemDto
+                    try
                     {
-                        Id = key,
-                        Kind = "app",
-                    };
-                    _appCatalogCache[key] = app;
-                }
+                        if (_disposed)
+                        {
+                            return;
+                        }
 
-                app.Name = session.Label;
-                app.Subtitle = session.IsActive ? "Active audio session" : "Application";
-                app.Details = session.Details;
-                app.ProcessId = session.ProcessId;
-                app.ProcessName = session.ProcessName;
-                app.Active = session.IsActive;
-                app.DeviceId = session.DeviceId;
-                app.DeviceName = session.DeviceName;
-                app.IconDataUrl ??= GetProcessIcon(session.ProcessId);
-                apps.Add(app);
+                        if (error != null || sessions == null)
+                        {
+                            AppLog.Warning("Session enumeration failed: " + (error ?? "unknown error"));
+                            return;
+                        }
 
-                signature.Append(key).Append('|')
-                    .Append(app.Name).Append('|')
-                    .Append(app.Subtitle).Append('|')
-                    .Append(app.Details).Append('|')
-                    .Append(app.Active ? '1' : '0').Append('|')
-                    .Append(app.DeviceId).Append('|')
-                    .Append(app.DeviceName).Append(';');
+                        ApplySessionScan(sessions, publish);
+                    }
+                    catch (Exception ex)
+                    {
+                        AppLog.Warning("Session scan failed: " + ex.Message);
+                    }
+                    finally
+                    {
+                        Interlocked.Exchange(ref _appsScanRunning, 0);
+                    }
+                }));
             }
-
-            foreach (string stale in _appCatalogCache.Keys.Where(key => !seen.Contains(key)).ToList())
+            catch
             {
-                _appCatalogCache.Remove(stale);
+                Interlocked.Exchange(ref _appsScanRunning, 0);
             }
-
-            _catalog.Apps = apps;
-            string nextSignature = signature.ToString();
-            bool appsChanged = !string.Equals(nextSignature, _lastAppsSignature, StringComparison.Ordinal);
-            _lastAppsSignature = nextSignature;
-
-            bool reattached = _settings.FollowPlayingApps && ReattachPlayingApps();
-            bool autoAdded = _settings.FollowPlayingApps && AutoAddPlayingApps();
-            bool endpointsChanged = RefreshSourceEndpoints();
-            bool changed = appsChanged || reattached || autoAdded || endpointsChanged;
-            if (endpointsChanged || reattached || autoAdded)
-            {
-                PublishGraph();
-            }
-
-            SetAppsScanCadence(changed);
-
-            if (publish && appsChanged)
-            {
-                Post("catalog", _catalog);
-            }
-        }
-        catch (Exception ex)
-        {
-            AppLog.Warning("Session enumeration failed: " + ex.Message);
-        }
+        });
     }
 
+    private void ApplySessionScan(IReadOnlyList<AudioSessionInfo> sessions, bool publish)
+    {
+        var apps = new List<CatalogItemDto>(sessions.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var signature = new StringBuilder(sessions.Count * 48);
+
+        foreach (var session in sessions)
+        {
+            string key = $"{session.ProcessId}:{session.ProcessName}";
+            seen.Add(key);
+            if (!_appCatalogCache.TryGetValue(key, out var app))
+            {
+                app = new CatalogItemDto
+                {
+                    Id = key,
+                    Kind = "app",
+                };
+                _appCatalogCache[key] = app;
+            }
+
+            app.Name = session.Label;
+            app.Subtitle = session.IsActive ? "Active audio session" : "Application";
+            app.Details = session.Details;
+            app.ProcessId = session.ProcessId;
+            app.ProcessName = session.ProcessName;
+            app.Active = session.IsActive;
+            app.DeviceId = session.DeviceId;
+            app.DeviceName = session.DeviceName;
+            app.IconDataUrl ??= GetProcessIcon(session.ProcessId);
+            apps.Add(app);
+
+            signature.Append(key).Append('|')
+                .Append(app.Name).Append('|')
+                .Append(app.Subtitle).Append('|')
+                .Append(app.Details).Append('|')
+                .Append(app.Active ? '1' : '0').Append('|')
+                .Append(app.DeviceId).Append('|')
+                .Append(app.DeviceName).Append(';');
+        }
+
+        foreach (string stale in _appCatalogCache.Keys.Where(key => !seen.Contains(key)).ToList())
+        {
+            _appCatalogCache.Remove(stale);
+        }
+
+        _catalog.Apps = apps;
+        string nextSignature = signature.ToString();
+        bool appsChanged = !string.Equals(nextSignature, _lastAppsSignature, StringComparison.Ordinal);
+        _lastAppsSignature = nextSignature;
+
+        bool reattached = _settings.FollowPlayingApps && ReattachPlayingApps();
+        bool autoAdded = _settings.FollowPlayingApps && AutoAddPlayingApps();
+        bool endpointsChanged = RefreshSourceEndpoints();
+        bool changed = appsChanged || reattached || autoAdded || endpointsChanged;
+        if (endpointsChanged || reattached || autoAdded)
+        {
+            PublishGraph();
+        }
+
+        SetAppsScanCadence(changed);
+
+        if (publish && appsChanged)
+        {
+            Post("catalog", _catalog);
+        }
+    }
     private void SetAppsScanCadence(bool changed)
     {
         int baseMs = _settings.FollowPlayingApps ? 750 : 4000;

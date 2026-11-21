@@ -246,6 +246,9 @@ export default function TimelinePanel({
     const clip = track?.clips.find(item => item.id === selectedClip.clipId);
     return track && clip ? { track, clip } : null;
   }, [selectedClip, tracks]);
+  const orderedClips = useMemo(() => tracks
+    .flatMap((track, trackIndex) => track.clips.map(clip => ({ track, clip, trackIndex })))
+    .sort((a, b) => a.clip.startSample - b.clip.startSample || a.trackIndex - b.trackIndex), [tracks]);
   const canSplitSelected = selectedClipModel != null &&
     state.playheadSample > selectedClipModel.clip.startSample &&
     state.playheadSample < selectedClipModel.clip.startSample + selectedClipModel.clip.lengthSamples;
@@ -1226,12 +1229,17 @@ export default function TimelinePanel({
           <>
           <div className="timeline-canvas-wrap">
           <TimelineLabelOverlay labels={stickyLabels} />
+          <div className="sr-only" role="status" aria-live="polite">
+            {selectedClipModel
+              ? `${t('Selected clip')}: ${selectedClipModel.clip.name} \u00B7 ${t('Track')}: ${selectedClipModel.track.name}`
+              : ''}
+          </div>
           <canvas
             ref={canvasRef}
             tabIndex={0}
             role="application"
             aria-label={t('Timeline')}
-            aria-keyshortcuts="Control+C Control+X Control+V Control+A Delete Backspace ArrowLeft ArrowRight Home End"
+            aria-keyshortcuts="Control+C Control+X Control+V Control+A Control+ArrowLeft Control+ArrowRight Delete Backspace ArrowLeft ArrowRight Home End"
             title={`${t('Shift+drag a clip edge to time-stretch')} \u00B7 ${t('Shift+drag the ruler to set a loop range')}`}
             onKeyDown={event => {
               const mod = event.ctrlKey || event.metaKey;
@@ -1258,6 +1266,18 @@ export default function TimelinePanel({
               } else if (mod && event.key.toLowerCase() === 'v') {
                 event.preventDefault();
                 pasteClipboard();
+              } else if (mod && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+                event.preventDefault();
+                if (orderedClips.length === 0) return;
+                const currentIndex = orderedClips.findIndex(entry =>
+                  entry.track.id === selectedClip?.trackId && entry.clip.id === selectedClip?.clipId);
+                const direction = event.key === 'ArrowRight' ? 1 : -1;
+                const nextIndex = currentIndex < 0
+                  ? 0
+                  : (currentIndex + direction + orderedClips.length) % orderedClips.length;
+                const entry = orderedClips[nextIndex];
+                setSelectedClip({ trackId: entry.track.id, clipId: entry.clip.id });
+                setSelectedClipKeys([clipKey(entry.track.id, entry.clip.id)]);
               } else if ((event.key === 'Delete' || event.key === 'Backspace') && (selectedClipKeys.length > 0 || selectedClip)) {
                 event.preventDefault();
                 removeSelection();
