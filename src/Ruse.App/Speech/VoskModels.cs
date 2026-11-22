@@ -96,6 +96,7 @@ internal static class VoskModels
                     ?? throw new InvalidDataException("The Vosk model archive is empty.");
             }
 
+            token.ThrowIfCancellationRequested();
             if (Directory.Exists(PathFor)) Directory.Delete(PathFor, true);
             Directory.Move(source, PathFor);
             if (!IsInstalled)
@@ -124,22 +125,50 @@ internal static class VoskModels
         }
     }
 
-    public static void Delete()
+    public static async Task DeleteAsync()
     {
-        VoskModelCache.Delete();
-        DeleteFiles();
+        if (!await Gate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("The Vosk model is busy downloading. Cancel the download and try again.");
+        }
+
+        try
+        {
+            if (!VoskModelCache.TryDelete())
+            {
+                throw new InvalidOperationException(
+                    "The Vosk model is still used by active speech. Stop speech and try again.");
+            }
+
+            try
+            {
+                if (!DeleteFiles())
+                {
+                    throw new IOException("The Vosk model files could not be removed. Close Ruse and try again.");
+                }
+            }
+            finally
+            {
+                VoskModelCache.CompleteDelete();
+            }
+        }
+        finally
+        {
+            Gate.Release();
+        }
     }
 
-    internal static void DeleteFiles()
+    internal static bool DeleteFiles()
     {
         try
         {
             if (Directory.Exists(PathFor)) Directory.Delete(PathFor, true);
             if (Directory.Exists(Root)) Directory.Delete(Root, true);
+            return true;
         }
         catch
         {
-            // The cache retries after the last active recognizer releases it.
+            return false;
         }
     }
 

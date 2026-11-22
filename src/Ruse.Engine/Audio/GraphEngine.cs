@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Numerics;
 using Ruse.App.Diagnostics;
 
 namespace Ruse.App.Audio;
@@ -464,6 +465,11 @@ internal sealed class GraphEngine : IDisposable
                 ? (int)MathF.Round(Math.Clamp(delayMs, 0f, ModifierNode.MixerMaxDelayMs) * SampleRate / 1000f)
                 : 0;
         private readonly int _blockFrames;
+        private readonly float[] _scratchTemp;
+        private readonly float[] _scratchSidechain;
+        private readonly float[] _scratchDry;
+        private readonly float[] _scratchInput;
+        private readonly float[] _scratchMix;
 
         public List<SourceState> Sources { get; } = new();
         public List<NodeState> Nodes { get; } = new();
@@ -684,6 +690,12 @@ internal sealed class GraphEngine : IDisposable
         {
             _audioGraph = graph;
             _blockFrames = Math.Max(1, blockFrames);
+            int scratchFloats = _blockFrames * Channels;
+            _scratchTemp = new float[scratchFloats];
+            _scratchSidechain = new float[scratchFloats];
+            _scratchDry = new float[scratchFloats];
+            _scratchInput = new float[scratchFloats];
+            _scratchMix = new float[scratchFloats];
             var engineOutputs = graph.Outputs.Where(output => output.UseGraphEngine).ToList();
 
             var seeds = new HashSet<ModifierNode>();
@@ -783,7 +795,7 @@ internal sealed class GraphEngine : IDisposable
             var nodeStates = new Dictionary<ModifierNode, NodeState>();
             foreach (var modifier in order)
             {
-                var node = new NodeState(modifier, _blockFrames);
+                var node = new NodeState(modifier, _blockFrames, _scratchTemp, _scratchSidechain, _scratchDry, _scratchInput);
                 int maxUserDelayFrames = 0;
                 int maxUserDelayCapacity = ModifierNode.MixerMaxDelayMs * SampleRate / 1000;
                 foreach (var source in modifier.Inputs)
@@ -925,6 +937,7 @@ internal sealed class GraphEngine : IDisposable
                 }
 
                 node.Chain = chain.ToArray();
+                node.HasSidechain = node.Chain.Any(processor => processor is ISidechainProcessor);
                 int chainLatency = 0;
                 for (int i = 0; i < node.Chain.Length; i++)
                 {
@@ -946,7 +959,7 @@ internal sealed class GraphEngine : IDisposable
 
             foreach (var output in engineOutputs)
             {
-                var state = new OutputState(output, _blockFrames);
+                var state = new OutputState(output, _blockFrames, _scratchMix, _scratchTemp);
                 foreach (var source in graph.DirectSources(output))
                 {
                     if (!sourceStates.TryGetValue(source, out var sourceState))
@@ -1033,6 +1046,75 @@ internal sealed class GraphEngine : IDisposable
             }
 
             return false;
+        }
+
+        private static void AddInto(Span<float> destination, ReadOnlySpan<float> source)
+        {
+            int i = 0;
+            int width = Vector<float>.Count;
+            for (; i <= destination.Length - width; i += width)
+            {
+                var left = new Vector<float>(destination.Slice(i));
+                var right = new Vector<float>(source.Slice(i));
+                (left + right).CopyTo(destination.Slice(i));
+            }
+
+            for (; i < destination.Length; i++)
+            {
+                destination[i] += source[i];
+            }
+        }
+
+        private static void ScaleInto(Span<float> destination, float gain)
+        {
+            int i = 0;
+            int width = Vector<float>.Count;
+            var gainVector = new Vector<float>(gain);
+            for (; i <= destination.Length - width; i += width)
+            {
+                var block = new Vector<float>(destination.Slice(i));
+                (block * gainVector).CopyTo(destination.Slice(i));
+            }
+
+            for (; i < destination.Length; i++)
+            {
+                destination[i] *= gain;
+            }
+        }
+
+        private static void CopyScaled(ReadOnlySpan<float> source, Span<float> destination, float gain)
+        {
+            int i = 0;
+            int width = Vector<float>.Count;
+            var gainVector = new Vector<float>(gain);
+            for (; i <= destination.Length - width; i += width)
+            {
+                var block = new Vector<float>(source.Slice(i));
+                (block * gainVector).CopyTo(destination.Slice(i));
+            }
+
+            for (; i < destination.Length; i++)
+            {
+                destination[i] = source[i] * gain;
+            }
+        }
+
+        private static void AddScaled(ReadOnlySpan<float> source, Span<float> destination, float gain)
+        {
+            int i = 0;
+            int width = Vector<float>.Count;
+            var gainVector = new Vector<float>(gain);
+            for (; i <= destination.Length - width; i += width)
+            {
+                var block = new Vector<float>(source.Slice(i));
+                var target = new Vector<float>(destination.Slice(i));
+                (target + block * gainVector).CopyTo(destination.Slice(i));
+            }
+
+            for (; i < destination.Length; i++)
+            {
+                destination[i] += source[i] * gain;
+            }
         }
 
         private static bool HasTap(ModifierNode modifier) =>
@@ -1188,16 +1270,22 @@ internal sealed class GraphEngine : IDisposable
 
             public ModifierNode Modifier => _modifier;
 
-            public NodeState(ModifierNode modifier, int blockFrames)
+            public NodeState(
+                ModifierNode modifier,
+                int blockFrames,
+                float[] temp,
+                float[] sidechain,
+                float[] dry,
+                float[] input)
             {
                 _modifier = modifier;
                 _blockFrames = Math.Max(1, blockFrames);
                 int floats = _blockFrames * Channels;
                 _block = new float[floats];
-                _temp = new float[floats];
-                _sidechain = new float[floats];
-                _dry = new float[floats];
-                _input = new float[floats];
+                _temp = temp;
+                _sidechain = sidechain;
+                _dry = dry;
+                _input = input;
                 _wet = modifier.Enabled ? 1f : 0f;
                 modifier.ClearChainFault();
             }
@@ -1211,6 +1299,7 @@ internal sealed class GraphEngine : IDisposable
             public DelayLine? BypassDelay { get; set; }
             public bool HasNative { get; set; }
             public TapWorker? TapWorker { get; set; }
+            public bool HasSidechain { get; set; }
             public float[] Block => _block;
 
             public void Process()
@@ -1305,13 +1394,13 @@ internal sealed class GraphEngine : IDisposable
                                     if (firstInput) block.CopyTo(_block);
                                     else Add(block);
                                 }
+                                else if (firstInput)
+                                {
+                                    CopyScaled(block, _block, targetGain);
+                                }
                                 else
                                 {
-                                    for (int s = 0; s < block.Length; s++)
-                                    {
-                                        if (firstInput) _block[s] = block[s] * targetGain;
-                                        else _block[s] += block[s] * targetGain;
-                                    }
+                                    AddScaled(block, _block, targetGain);
                                 }
                             }
                             else
@@ -1486,7 +1575,11 @@ internal sealed class GraphEngine : IDisposable
                     Array.Copy(_block, _dry, _block.Length);
                 }
 
-                Array.Clear(_sidechain);
+                if (SidechainKeys.Count > 0 || HasSidechain)
+                {
+                    Array.Clear(_sidechain);
+                }
+
                 for (int i = 0; i < SidechainKeys.Count; i++)
                 {
                     var key = SidechainKeys[i];
@@ -1627,13 +1720,7 @@ internal sealed class GraphEngine : IDisposable
                 TapWorker?.Feed(_block);
             }
 
-            private void Add(ReadOnlySpan<float> source)
-            {
-                for (int i = 0; i < _block.Length; i++)
-                {
-                    _block[i] += source[i];
-                }
-            }
+            private void Add(ReadOnlySpan<float> source) => AddInto(_block, source);
         }
 
         public sealed class OutputContribution
@@ -1655,13 +1742,12 @@ internal sealed class GraphEngine : IDisposable
             private readonly float[] _temp;
             private float _volumeGain;
 
-            public OutputState(OutputNode output, int blockFrames)
+            public OutputState(OutputNode output, int blockFrames, float[] mix, float[] temp)
             {
                 _output = output;
                 _blockFrames = Math.Max(1, blockFrames);
-                int floats = _blockFrames * Channels;
-                _mix = new float[floats];
-                _temp = new float[floats];
+                _mix = mix;
+                _temp = temp;
                 _volumeGain = MixerGroupBus.Muted(output.GroupKey)
                     ? 0f
                     : output.Volume * OutputNode.MasterGain * MixerGroupBus.Gain(output.GroupKey);
@@ -1704,10 +1790,7 @@ internal sealed class GraphEngine : IDisposable
                             }
                             else
                             {
-                                for (int s = 0; s < _temp.Length; s++)
-                                {
-                                    _mix[s] += _temp[s] * targetGain;
-                                }
+                                AddScaled(_temp, _mix, targetGain);
                             }
                         }
                         else
@@ -1740,10 +1823,7 @@ internal sealed class GraphEngine : IDisposable
                             }
                             else
                             {
-                                for (int s = 0; s < _temp.Length; s++)
-                                {
-                                    _mix[s] += _temp[s] * targetGain;
-                                }
+                                AddScaled(_temp, _mix, targetGain);
                             }
                         }
                         else
@@ -1791,10 +1871,7 @@ internal sealed class GraphEngine : IDisposable
                 }
                 else if (targetVolume != 1f)
                 {
-                    for (int i = 0; i < _mix.Length; i++)
-                    {
-                        _mix[i] *= targetVolume;
-                    }
+                    ScaleInto(_mix, targetVolume);
                 }
 
                 if (OutputNode.ClipGuardEnabled)
@@ -1848,13 +1925,7 @@ internal sealed class GraphEngine : IDisposable
                 _output.SubmitEngineBlock(_mix);
             }
 
-            private void Add(float[] source)
-            {
-                for (int i = 0; i < _mix.Length; i++)
-                {
-                    _mix[i] += source[i];
-                }
-            }
+            private void Add(float[] source) => AddInto(_mix, source);
         }
     }
 

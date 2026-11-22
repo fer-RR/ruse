@@ -256,9 +256,28 @@ speech lifecycle, then UI/performance. Audit bullets below remain the full list.
 - Editor parameter changes are polled into node sliders while the editor is
   open; editor-only state is cached about every 2 s during the same poll.
 - Optional 32-bit bridge. VST2 stays unsupported. CLAP is a future option.
-- VST3 sidechain buses and VST3 MIDI. MIDI currently maps effect parameters
-  only; node gain/mute/solo, transport and MIDI clock remain. The host protocol
-  carries audio blocks only, so VST3 MIDI needs an event transport first.
+- VST3 MIDI input is in: raw notes/CC reach MIDI-enabled VST3 nodes, node
+  gain/mute can be learned, and MIDI clock/tempo plus start/stop/continue drive
+  VST3 transport and routing. Events travel with the audio block, so the only
+  latency is the existing graph/isolated-host block.
+- VST3 instrument nodes are in: the scanner lists instruments separately, they
+  load as no-input modifiers, receive MIDI, and render into the normal graph.
+  MIDI-only plugins still need MIDI output events, which the host does not
+  expose.
+- Added `Ruse Test MIDI`, a built-in pseudo-device that emits clock, notes, CC
+  and transport for testing without hardware.
+- End-to-end VST3 instrument rendering validated in-process and through the
+  isolated host with Surge XT, Dexed, TAL-NoiseMaker, OB-Xd and Odin2.
+- Fixed isolated MIDI loss when render blocks are dropped, stale MIDI after
+  bypass/idle, queue overflow reporting, idle-host audio-thread shutdown, and a
+  shutdown block on an unresponsive VST3 control pipe.
+- The fast scanner still reports several instruments as effects; runtime
+  detection now corrects the node and enables MIDI after load. A slower
+  background capability probe could still improve catalog labels and prevent
+  inserting an instrument into an audio cable.
+- VST3 sidechain remains blocked by `OwnAudioVst 2.1.0`: the wrapper exposes one
+  flat stereo audio buffer and no input-bus enumeration/activation. A patched
+  native host is required before Ruse can route into a VST3 auxiliary bus.
 
 ## Audio and nodes
 

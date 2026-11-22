@@ -12,13 +12,18 @@ public sealed class Vst3Processor : IVst3Processor
 {
     public const string Id = "vst3";
     private const int MaxBlockFrames = 1024;
+    private const int MaxMidiEvents = 128;
 
     private readonly string _identifier;
     private readonly byte[]? _initialState;
     private readonly IReadOnlyDictionary<string, float>? _pendingParameters;
+    private readonly bool _allowInstrument;
     private readonly object _audioLock = new();
     private readonly object _stateLock = new();
     private readonly object _pollLock = new();
+    private readonly Vst3MidiQueue _midi = new();
+    private readonly Vst3MidiEvent[] _midiDrain = new Vst3MidiEvent[MaxMidiEvents];
+    private readonly MidiEvent[]?[] _midiBuffers = new MidiEvent[MaxMidiEvents + 1][];
 
     private ThreadedVst3Wrapper? _wrapper;
     private VstEditorController? _editor;
@@ -34,18 +39,24 @@ public sealed class Vst3Processor : IVst3Processor
     private string _version = "";
     private int _latency;
     private bool _hasEditor;
+    private bool _isInstrument;
     private volatile bool _ready;
     private bool _disposed;
     private int _started;
+    private double _tempo = 120.0;
+    private bool _transportPlaying;
+    private int _transportReset;
     private string? _lastStateBase64;
 
     public Vst3Processor(
         string identifier,
         string? stateBase64 = null,
         IReadOnlyDictionary<string, float>? pendingParameters = null,
-        bool start = true)
+        bool start = true,
+        bool allowInstrument = false)
     {
         _identifier = identifier;
+        _allowInstrument = allowInstrument;
         _lastStateBase64 = stateBase64;
         if (!string.IsNullOrWhiteSpace(stateBase64))
         {
@@ -73,6 +84,7 @@ public sealed class Vst3Processor : IVst3Processor
     public string Status => _state;
     public string? Error => _error;
     public bool IsReady => _ready;
+    public bool IsInstrument => _ready ? _isInstrument : _allowInstrument;
     public bool HasEditor => _hasEditor;
     public bool IsEditorOpen
     {
@@ -131,14 +143,17 @@ public sealed class Vst3Processor : IVst3Processor
             _version = await wrapper.GetVersionAsync() ?? "";
             _hasEditor = await wrapper.HasEditorAsync();
             bool isEffect = await wrapper.GetIsEffectAsync();
+            bool isInstrument = await wrapper.GetIsInstrumentAsync();
             bool isMidiOnly = await wrapper.GetIsMidiOnlyAsync();
-            if (!isEffect || isMidiOnly)
+            if (isMidiOnly || (!isEffect && !(isInstrument && _allowInstrument)))
             {
                 Fail(isMidiOnly
-                    ? "This VST3 is a MIDI-only plugin, not an audio effect."
-                    : "This VST3 is an instrument, not an audio effect.");
+                    ? "This VST3 is a MIDI-only plugin and has no audio output."
+                    : "This VST3 is an instrument. Add it as a VST3 instrument node.");
                 return;
             }
+
+            _isInstrument = isInstrument;
 
             var parameters = await wrapper.GetAllParametersAsync();
             BuildParameters(parameters);
@@ -150,6 +165,13 @@ public sealed class Vst3Processor : IVst3Processor
                 wrapper.Dispose();
                 if (ReferenceEquals(_wrapper, wrapper)) _wrapper = null;
                 return;
+            }
+
+            wrapper.SetTempo(_tempo);
+            wrapper.SetTransportState(_transportPlaying);
+            if (Volatile.Read(ref _transportReset) > 0)
+            {
+                wrapper.ResetTransportPosition();
             }
 
             _ready = true;
@@ -227,6 +249,44 @@ public sealed class Vst3Processor : IVst3Processor
         }
     }
 
+    public void EnqueueMidi(byte status, byte data1, byte data2, int sampleOffset = 0) =>
+        _midi.TryWrite(new Vst3MidiEvent(status, data1, data2, sampleOffset));
+
+    public void SetTempo(double bpm)
+    {
+        if (!double.IsFinite(bpm) || bpm <= 0)
+        {
+            return;
+        }
+
+        _tempo = bpm;
+        _wrapper?.SetTempo(bpm);
+    }
+
+    public void SetTransportState(bool playing)
+    {
+        _transportPlaying = playing;
+        _wrapper?.SetTransportState(playing);
+    }
+
+    public void ResetTransportPosition()
+    {
+        Interlocked.Increment(ref _transportReset);
+        _wrapper?.ResetTransportPosition();
+    }
+
+    private MidiEvent[] GetMidiBuffer(int count)
+    {
+        MidiEvent[]? buffer = _midiBuffers[count];
+        if (buffer == null)
+        {
+            buffer = new MidiEvent[count];
+            _midiBuffers[count] = buffer;
+        }
+
+        return buffer;
+    }
+
     public void Process(Span<float> samples, int frames)
     {
         if (!_ready || _disposed || frames <= 0 || frames > MaxBlockFrames || samples.Length < frames * 2)
@@ -251,6 +311,22 @@ public sealed class Vst3Processor : IVst3Processor
                 {
                     plane[frame] = samples[frame * 2 + channel];
                 }
+            }
+
+            int midiCount = _midi.Read(_midiDrain);
+            if (midiCount > 0)
+            {
+                MidiEvent[] events = GetMidiBuffer(midiCount);
+                for (int i = 0; i < midiCount; i++)
+                {
+                    Vst3MidiEvent midi = _midiDrain[i];
+                    events[i].Status = midi.Status;
+                    events[i].Data1 = midi.Data1;
+                    events[i].Data2 = midi.Data2;
+                    events[i].SampleOffset = Math.Clamp(midi.SampleOffset, 0, frames - 1);
+                }
+
+                _wrapper.ProcessMidi(events);
             }
 
             if (!_wrapper.ProcessAudio(_inputPlanes, _outputPlanes, 2, frames))

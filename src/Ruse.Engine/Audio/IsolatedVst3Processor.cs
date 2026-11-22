@@ -20,6 +20,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     private readonly string _identifier;
     private readonly string? _initialState;
     private readonly IReadOnlyDictionary<string, float>? _pendingParameters;
+    private readonly bool _allowInstrument;
     private string? _lastState;
     private readonly object _audioLock = new();
     private readonly object _controlLock = new();
@@ -28,6 +29,10 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     private readonly ConcurrentDictionary<string, float> _queuedParameters = new(StringComparer.Ordinal);
     private int _parameterFlushScheduled;
     private readonly float[] _audioInput = new float[MaxFrames * Channels];
+    private readonly Vst3MidiQueue _midi = new();
+    private double _tempo = 120.0;
+    private bool _transportPlaying;
+    private int _transportReset;
     private const int AudioSlotCount = 4;
     private readonly AudioSlot[] _audioSlots = CreateAudioSlots();
     private int _freeAudioSlots = (1 << AudioSlotCount) - 1;
@@ -60,9 +65,11 @@ public sealed class IsolatedVst3Processor : IVst3Processor
         string identifier,
         string? stateBase64 = null,
         IReadOnlyDictionary<string, float>? pendingParameters = null,
-        bool start = true)
+        bool start = true,
+        bool allowInstrument = false)
     {
         _identifier = identifier;
+        _allowInstrument = allowInstrument;
         _initialState = stateBase64;
         _lastState = stateBase64;
         _pendingParameters = pendingParameters;
@@ -83,10 +90,39 @@ public sealed class IsolatedVst3Processor : IVst3Processor
     public string Status => _info?.Status ?? (_error == null ? "Loading plugin" : "Error");
     public string? Error => _error ?? _info?.Error;
     public bool IsReady => _ready && _info?.IsReady == true;
+    public bool IsInstrument => _info is { } info
+        ? info.IsInstrument
+        : _allowInstrument;
     public bool HasEditor => _info?.HasEditor == true;
     public bool IsEditorOpen => _info?.IsEditorOpen == true;
     public int LatencySamples => IsReady ? (_info?.LatencySamples ?? 0) + AudioEngineConfig.BlockFrames : 0;
     public IReadOnlyList<AudioParameter> Parameters => _parameters;
+
+    public void EnqueueMidi(byte status, byte data1, byte data2, int sampleOffset = 0) =>
+        _midi.TryWrite(new Vst3MidiEvent(status, data1, data2, sampleOffset));
+
+    public void SetTempo(double bpm)
+    {
+        if (!double.IsFinite(bpm) || bpm <= 0)
+        {
+            return;
+        }
+
+        _tempo = bpm;
+        _sharedAudio?.SetTempo(bpm);
+    }
+
+    public void SetTransportState(bool playing)
+    {
+        _transportPlaying = playing;
+        _sharedAudio?.SetTransportState(playing);
+    }
+
+    public void ResetTransportPosition()
+    {
+        int reset = Interlocked.Increment(ref _transportReset);
+        _sharedAudio?.WriteTransportReset(reset);
+    }
 
     public void Start()
     {
@@ -131,6 +167,9 @@ public sealed class IsolatedVst3Processor : IVst3Processor
             _controlPipe = new NamedPipeServerStream(controlName, PipeDirection.InOut, 1,
                 PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
             _sharedAudio = Vst3SharedAudio.Create(audioName);
+            _sharedAudio.SetTempo(_tempo);
+            _sharedAudio.SetTransportState(_transportPlaying);
+            _sharedAudio.WriteTransportReset(_transportReset);
 
             string? executable = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(executable))
@@ -153,6 +192,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
             startInfo.ArgumentList.Add(_initialState ?? "");
             string handshakeToken = Guid.NewGuid().ToString("N");
             startInfo.ArgumentList.Add(handshakeToken);
+            startInfo.ArgumentList.Add(_allowInstrument ? "1" : "0");
 
             _process = System.Diagnostics.Process.Start(startInfo);
             if (_process == null)
@@ -467,7 +507,8 @@ public sealed class IsolatedVst3Processor : IVst3Processor
 
             int frames = pending.Frames;
             long epoch = pending.Epoch;
-            bool processed = HostProcess(pending.Samples, frames);
+            pending.MidiCount = _midi.Read(pending.Midi);
+            bool processed = HostProcess(pending.Samples, frames, pending.Midi, pending.MidiCount);
 
             if (processed && !_audioStop && epoch == Volatile.Read(ref _audioEpoch))
             {
@@ -526,11 +567,13 @@ public sealed class IsolatedVst3Processor : IVst3Processor
 
         public int Index { get; }
         public float[] Samples { get; } = new float[MaxFrames * Channels];
+        public Vst3MidiEvent[] Midi { get; } = new Vst3MidiEvent[Vst3SharedAudio.MaxMidiEvents];
         public int Frames;
+        public int MidiCount;
         public long Epoch;
     }
 
-    private bool HostProcess(float[] samples, int frames)
+    private bool HostProcess(float[] samples, int frames, Vst3MidiEvent[] midi, int midiCount)
     {
         lock (_audioLock)
         {
@@ -543,7 +586,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
             try
             {
                 Interlocked.Exchange(ref _audioCallStarted, Environment.TickCount64);
-                if (!shared.Process(samples, frames))
+                if (!shared.Process(samples, frames, midi.AsSpan(0, midiCount)))
                 {
                     Fail("The isolated VST3 host did not return an audio block.");
                     return false;
@@ -1008,27 +1051,35 @@ public sealed class IsolatedVst3Processor : IVst3Processor
             Interlocked.Read(ref _controlCallStarted) != 0;
         if (!stuck)
         {
-            try
+            var control = _controlPipe;
+            if (control is { IsConnected: true })
             {
-                if (_controlPipe is { IsConnected: true })
+                _ = Task.Run(() =>
                 {
-                    Vst3HostProtocol.WriteControl(_controlPipe, new Vst3HostRequest { Command = "stop" });
-                }
-            }
-            catch
-            {
+                    try
+                    {
+                        Vst3HostProtocol.WriteControl(control, new Vst3HostRequest { Command = "stop" });
+                    }
+                    catch
+                    {
+                    }
+                });
             }
 
-            try
+            var audio = _audioPipe;
+            if (audio is { IsConnected: true })
             {
-                if (_audioPipe is { IsConnected: true })
+                _ = Task.Run(() =>
                 {
-                    Vst3HostProtocol.WriteAudio(_audioPipe, Span<float>.Empty, 0, Channels,
-                        Vst3HostProtocol.CommandStop);
-                }
-            }
-            catch
-            {
+                    try
+                    {
+                        Vst3HostProtocol.WriteAudio(audio, Span<float>.Empty, 0, Channels,
+                            Vst3HostProtocol.CommandStop);
+                    }
+                    catch
+                    {
+                    }
+                });
             }
         }
 

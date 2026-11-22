@@ -171,6 +171,7 @@ internal static class TranscriptionModels
             }
 
             progress?.Report(new TranscriberModelProgress(id, "installing", 100, $"Installing {model.Name}"));
+            token.ThrowIfCancellationRequested();
             File.Move(temp, PathFor(id), overwrite: true);
             progress?.Report(new TranscriberModelProgress(id, "done", 100, $"{model.Name} ready"));
         }
@@ -192,7 +193,24 @@ internal static class TranscriptionModels
         }
     }
 
-    public static void Delete(string id) => TryDelete(PathFor(id));
+    public static async Task DeleteAsync(string id)
+    {
+        string path = PathFor(Find(id)?.Id ?? id);
+        if (!await Gate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("The speech model is busy downloading. Cancel the download and try again.");
+        }
+
+        try
+        {
+            TryDelete(path);
+            TryDelete(path + ".part");
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
 
     public static string FormatSize(long bytes)
     {

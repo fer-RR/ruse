@@ -94,13 +94,13 @@ internal static class VoskModelCache
     private static readonly object Lock = new();
     private static Model? _model;
     private static int _references;
-    private static bool _deletePending;
+    private static bool _deleting;
 
     public static Model? Acquire()
     {
         lock (Lock)
         {
-            if (_deletePending || !VoskModels.IsInstalled) return null;
+            if (_deleting || !VoskModels.IsInstalled) return null;
             try
             {
                 _model ??= new Model(VoskModels.PathFor);
@@ -123,24 +123,30 @@ internal static class VoskModelCache
             if (_references > 0) _references--;
             if (_references > 0) return;
             DisposeModelLocked();
-            if (_deletePending)
-            {
-                _deletePending = false;
-                VoskModels.DeleteFiles();
-            }
         }
     }
 
-    /// <summary>Stops new users and disposes the model now or when the last user releases it.</summary>
-    public static void Delete()
+    /// <summary>Disposes the model when no recognizer is using it.</summary>
+    public static bool TryDelete()
     {
         lock (Lock)
         {
-            _deletePending = true;
-            if (_references == 0)
+            if (_references > 0)
             {
-                DisposeModelLocked();
+                return false;
             }
+
+            _deleting = true;
+            DisposeModelLocked();
+            return true;
+        }
+    }
+
+    public static void CompleteDelete()
+    {
+        lock (Lock)
+        {
+            _deleting = false;
         }
     }
 

@@ -14,12 +14,17 @@ public interface IVst3Processor : IAudioProcessor, IParameterizedProcessor, ISha
     string Status { get; }
     string? Error { get; }
     bool IsReady { get; }
+    bool IsInstrument { get; }
     bool HasEditor { get; }
     bool IsEditorOpen { get; }
 
     event Action? Changed;
 
     void Start();
+    void EnqueueMidi(byte status, byte data1, byte data2, int sampleOffset = 0);
+    void SetTempo(double bpm);
+    void SetTransportState(bool playing);
+    void ResetTransportPosition();
     string? CaptureStateBase64();
     bool OpenEditor(string title);
     void CloseEditor();

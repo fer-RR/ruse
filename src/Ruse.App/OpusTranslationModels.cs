@@ -223,6 +223,7 @@ internal static class OpusTranslationModels
                 completed++;
             }
 
+            token.ThrowIfCancellationRequested();
             if (Directory.Exists(final)) Directory.Delete(final, recursive: true);
             Directory.Move(temp, final);
             progress?.Report(new TranslationModelProgress(
@@ -248,11 +249,23 @@ internal static class OpusTranslationModels
         }
     }
 
-    public static void Delete(string id)
+    public static async Task DeleteAsync(string id)
     {
         var model = Find(id);
         if (model == null) return;
-        TryDeleteDirectory(PathFor(model.Id));
+        if (!await Gate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("The OPUS-MT model is busy downloading. Cancel the download and try again.");
+        }
+
+        try
+        {
+            TryDeleteDirectory(PathFor(model.Id));
+        }
+        finally
+        {
+            Gate.Release();
+        }
     }
 
     private static string OpusCode(string? code) => code?.ToLowerInvariant() switch

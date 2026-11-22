@@ -217,6 +217,8 @@ internal sealed partial class WebShellController
                     TranslatorTarget = entry.TranslatorTarget,
                     TranslatorModel = entry.TranslatorModel,
                     TranslatorTextSourceId = entry.TranslatorTextSourceId,
+                    Vst3MidiEnabled = entry.Vst3MidiEnabled,
+                    Vst3MidiConfigured = entry.Vst3MidiConfigured,
                     X = entry.X + offsetX,
                     Y = entry.Y + offsetY,
                     Width = entry.Width,
@@ -363,7 +365,7 @@ internal sealed partial class WebShellController
         }
 
         if (included == null)
-        SaveMidiBindings(preset, modifierIndex);
+        SaveMidiBindings(preset, modifierIndex, sourceIndex, outputIndex);
 
         if (included == null)
         foreach (var frame in _frames)
@@ -741,6 +743,8 @@ internal sealed partial class WebShellController
             modifierEntry.Width = saved.Width;
             modifierEntry.Height = saved.Height;
             modifierEntry.Color = NormalizeNodeColor(saved.Color);
+            modifierEntry.Vst3MidiEnabled = saved.Vst3MidiEnabled;
+            modifierEntry.Vst3MidiConfigured = saved.Vst3MidiConfigured;
             if (modifierEntry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true)
             {
                 modifierEntry.TranslatorTextSourceId =
@@ -884,7 +888,7 @@ internal sealed partial class WebShellController
 
         if (!insert)
         {
-            RestoreMidiBindings(preset, modifiers);
+            RestoreMidiBindings(preset, modifiers, sources, outputs);
         }
 
         if (!insert && preset.Timeline != null)
@@ -1625,17 +1629,23 @@ internal sealed partial class WebShellController
         }
     }
 
-    private void DeleteTranscriberModel(string modelId)
+    private async void DeleteTranscriberModel(string modelId)
     {
         var model = TranscriptionModels.Find(modelId);
         if (model == null) return;
 
         try
         {
+            if (_modelDownload is { } download &&
+                string.Equals(download.ModelId, modelId, StringComparison.OrdinalIgnoreCase))
+            {
+                _modelDownloadCancel?.Cancel();
+            }
+
             TranscriptionRegistry.StopModel(modelId);
             TranslationRegistry.StopSpeechModel(modelId);
             SpeechModelCache.Drop(modelId);
-            TranscriptionModels.Delete(modelId);
+            await TranscriptionModels.DeleteAsync(modelId).ConfigureAwait(true);
             ModelProbe.Clear();
 
             string fallback = TranscriptionModels.Resolve(
@@ -1886,14 +1896,20 @@ internal sealed partial class WebShellController
         }
     }
 
-    private void DeleteOpusTranslationModel(string modelId)
+    private async void DeleteOpusTranslationModel(string modelId)
     {
         var model = OpusTranslationModels.Find(modelId);
         if (model == null) return;
         try
         {
+            if (_translationDownload is { } download &&
+                string.Equals(download.ModelId, "opus:" + modelId, StringComparison.OrdinalIgnoreCase))
+            {
+                _translationDownloadCancel?.Cancel();
+            }
+
             OpusMtEngine.Drop(modelId);
-            OpusTranslationModels.Delete(modelId);
+            await OpusTranslationModels.DeleteAsync(modelId).ConfigureAwait(true);
             RestartTranslationNodes();
             PublishSettings();
             PublishGraph();
@@ -1942,16 +1958,22 @@ internal sealed partial class WebShellController
         }
     }
 
-    private void DeleteTranslationModel(string modelId)
+    private async void DeleteTranslationModel(string modelId)
     {
         var model = TranslationModels.Find(modelId);
         if (model == null) return;
 
         try
         {
+            if (_translationDownload is { } download &&
+                string.Equals(download.ModelId, modelId, StringComparison.OrdinalIgnoreCase))
+            {
+                _translationDownloadCancel?.Cancel();
+            }
+
             TranslationRegistry.StopTranslationModel(modelId);
             TranslationModelCache.Drop(modelId);
-            TranslationModels.Delete(modelId);
+            await TranslationModels.DeleteAsync(modelId).ConfigureAwait(true);
             TranslationModelProbe.Clear();
 
             string fallback = TranslationModels.Resolve(

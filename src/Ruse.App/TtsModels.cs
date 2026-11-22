@@ -242,6 +242,7 @@ internal static class TtsModels
                     ?? throw new InvalidDataException("The text-to-speech model archive is empty.");
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
             if (Directory.Exists(finalPath))
             {
                 Directory.Delete(finalPath, true);
@@ -283,18 +284,30 @@ internal static class TtsModels
         }
     }
 
-    public static void Delete(string id)
+    public static async Task DeleteAsync(string id)
     {
         if (Find(id)?.Family is "kokoro-sharp" or "piper")
         {
-            StreamingTtsProviders.Delete(id);
+            await StreamingTtsProviders.DeleteAsync(id).ConfigureAwait(false);
             return;
         }
 
         string dir = PathFor(Find(id)?.Id ?? id);
-        if (Directory.Exists(dir))
+        if (!await Gate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
         {
-            Directory.Delete(dir, true);
+            throw new InvalidOperationException("The text-to-speech model is busy downloading. Cancel the download and try again.");
+        }
+
+        try
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, true);
+            }
+        }
+        finally
+        {
+            Gate.Release();
         }
     }
 

@@ -15,7 +15,8 @@ public static class Vst3ProcessorFactory
         string identifier,
         string? stateBase64 = null,
         IReadOnlyDictionary<string, float>? pendingParameters = null,
-        bool start = true)
+        bool start = true,
+        bool allowInstrument = false)
     {
         if (!IsTrustedIdentifier(identifier))
         {
@@ -27,7 +28,8 @@ public static class Vst3ProcessorFactory
         {
             try
             {
-                return new IsolatedVst3Processor(identifier, stateBase64, pendingParameters, start);
+                return new IsolatedVst3Processor(
+                    identifier, stateBase64, pendingParameters, start, allowInstrument);
             }
             catch (Exception ex)
             {
@@ -36,8 +38,15 @@ public static class Vst3ProcessorFactory
         }
 
         return new GuardedVst3Processor(
-            new Vst3Processor(identifier, stateBase64, pendingParameters, start));
+            new Vst3Processor(identifier, stateBase64, pendingParameters, start, allowInstrument));
     }
+
+    public static IVst3Processor CreateInstrument(
+        string identifier,
+        string? stateBase64 = null,
+        IReadOnlyDictionary<string, float>? pendingParameters = null,
+        bool start = true) =>
+        Create(identifier, stateBase64, pendingParameters, start, allowInstrument: true);
 
     /// <summary>
     /// Accepts only VST3 bundles installed under the standard folders. A preset

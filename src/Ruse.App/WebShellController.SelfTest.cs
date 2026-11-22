@@ -743,6 +743,8 @@ internal sealed partial class WebShellController
             settingsBack.EngineCushionManualMs == 20 &&
             settingsBack.ElasticRing);
 
+        Check("storage folder migration", TestStorageFolderMigration());
+
         Check("ui scale clamps",
             Math.Abs(ClampUiScale(5) - 1.5) < 0.001 &&
             Math.Abs(ClampUiScale(0.1) - 0.75) < 0.001 &&
@@ -778,6 +780,44 @@ internal sealed partial class WebShellController
         _midiLearnTarget = null;
         RemoveEntryInternal(midiEntry.Id);
         Check("MIDI learn and CC control", midiBound && midiApplied);
+
+        var nodeMidiSource = RegisterSource(new SourceNode("MIDI node test", SourceKind.Tone), 0, 0);
+        _midiLearnTarget = new MidiLearnTarget(nodeMidiSource.Id, -1, -1, "gain");
+        ApplyMidiMessage(new MidiInputEvent(0, MidiInputKind.ControlChange, 11, 127));
+        ApplyMidiMessage(new MidiInputEvent(0, MidiInputKind.ControlChange, 11, 127));
+        bool nodeGainBound = nodeMidiSource.Source?.Gain > 1.49f;
+        _midiLearnTarget = new MidiLearnTarget(nodeMidiSource.Id, -1, -1, "mute");
+        ApplyMidiMessage(new MidiInputEvent(0, MidiInputKind.Note, 60, 127));
+        ApplyMidiMessage(new MidiInputEvent(0, MidiInputKind.Note, 60, 127));
+        bool nodeMuteBound = nodeMidiSource.Source?.Muted == true;
+        _midiBindings.Clear();
+        _midiLearnTarget = null;
+        RemoveEntryInternal(nodeMidiSource.Id);
+        Check("MIDI node gain and mute", nodeGainBound && nodeMuteBound);
+
+        using (var testMidi = new MidiInputManager())
+        {
+            int clockCount = 0;
+            int noteCount = 0;
+            int ccCount = 0;
+            testMidi.ClockReceived += () => Interlocked.Increment(ref clockCount);
+            testMidi.MessageReceived += message =>
+            {
+                if (message.Kind == MidiInputKind.Note && message.Value > 0)
+                {
+                    Interlocked.Increment(ref noteCount);
+                }
+                else if (message.Kind == MidiInputKind.ControlChange)
+                {
+                    Interlocked.Increment(ref ccCount);
+                }
+            };
+
+            testMidi.Open(MidiInputManager.TestDeviceName);
+            Thread.Sleep(450);
+            testMidi.Close();
+            Check("test MIDI device", clockCount > 5 && noteCount > 0 && ccCount > 0);
+        }
 
         bool previousCushion = OutputNode.AggressiveCushion;
         using (var cushionNode = OutputNode.CreateForTest(static (_, _) => { }))
@@ -1284,6 +1324,23 @@ internal sealed partial class WebShellController
             Check("timeline fade limits",
                 timelineClip.FadeInSamples == 1000 && timelineClip.FadeOutSamples == 1200 &&
                 timelineClip.LengthSamples == 6000);
+
+            {
+                var isolatedTimeline = new TimelineService();
+                var isolatedTrack = isolatedTimeline.AddTrack("Offline isolation");
+                bool isolatedAdd = isolatedTimeline.AddClip(isolatedTrack.Id, timelineWave, out _);
+                var isolatedClip = isolatedTimeline.Project.Tracks[0].Clips[0];
+                var offlineSnapshot = isolatedTimeline.SnapshotProject(includePeaks: false);
+                isolatedTimeline.MoveClip(isolatedTrack.Id, isolatedClip.Id, 4800);
+                isolatedTimeline.SetTrackGain(isolatedTrack.Id, 0.25f);
+                var offlineTimeline = new TimelineService();
+                offlineTimeline.LoadProject(offlineSnapshot);
+                Check("timeline offline snapshot isolation", isolatedAdd &&
+                    offlineTimeline.Project.Tracks[0].Clips[0].StartSample == 0 &&
+                    Math.Abs(offlineTimeline.Project.Tracks[0].Gain - 1f) < 0.001f);
+                offlineTimeline.Dispose();
+                isolatedTimeline.Dispose();
+            }
 
             {
                 var splitTimeline = new TimelineService();
@@ -2139,6 +2196,79 @@ internal sealed partial class WebShellController
         ClearGraph();
         ClearHistory();
         return $"web parity: {string.Join(", ", checks)} -> {(pass ? "PASS" : "FAIL")}";
+    }
+
+    private static bool TestStorageFolderMigration()
+    {
+        string? previousOverride = AppSettings.OverrideDirectory;
+        string root = Path.Combine(Path.GetTempPath(), "ruse-storage-test-" + Guid.NewGuid().ToString("N"));
+        string target = Path.Combine(Path.GetTempPath(), "ruse-storage-target-" + Guid.NewGuid().ToString("N"));
+        string targetConflict = Path.Combine(Path.GetTempPath(), "ruse-storage-conflict-" + Guid.NewGuid().ToString("N"));
+        string targetPartial = Path.Combine(Path.GetTempPath(), "ruse-storage-partial-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(root);
+            File.WriteAllText(Path.Combine(root, "settings.json"), "test");
+            AppSettings.OverrideDirectory = root;
+
+            StorageFolderChangeResult copied = StorageFolderService.Change(
+                StorageFolderService.Data, target, copyExisting: true);
+            string pointerPath = AppSettings.StorageLocationsPath;
+            if (!copied.Ok ||
+                !File.Exists(Path.Combine(target, "settings.json")) ||
+                !File.Exists(pointerPath))
+            {
+                return false;
+            }
+
+            string pointerBefore = File.ReadAllText(pointerPath);
+            Directory.CreateDirectory(targetConflict);
+            File.WriteAllText(Path.Combine(targetConflict, "settings.json"), "old");
+            StorageFolderChangeResult conflict = StorageFolderService.Change(
+                StorageFolderService.Data, targetConflict, copyExisting: true);
+            string pointerAfter = File.ReadAllText(pointerPath);
+            if (conflict.Ok ||
+                conflict.Conflicts != 1 ||
+                !string.Equals(pointerBefore, pointerAfter, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            File.WriteAllText(Path.Combine(root, "a.txt"), "a");
+            File.WriteAllText(Path.Combine(root, "b.txt"), "b");
+            using (new FileStream(Path.Combine(root, "b.txt"), FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                StorageFolderChangeResult partial = StorageFolderService.Change(
+                    StorageFolderService.Data, targetPartial, copyExisting: true);
+                if (partial.Ok ||
+                    partial.Failed == 0 ||
+                    Directory.EnumerateFiles(targetPartial, "*", SearchOption.AllDirectories).Any())
+                {
+                    return false;
+                }
+            }
+
+            return !StorageFolderService.Change(
+                StorageFolderService.Data, AppContext.BaseDirectory, copyExisting: false).Ok;
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            AppSettings.OverrideDirectory = previousOverride;
+            try
+            {
+                Directory.Delete(root, recursive: true);
+                Directory.Delete(target, recursive: true);
+                Directory.Delete(targetConflict, recursive: true);
+                Directory.Delete(targetPartial, recursive: true);
+            }
+            catch
+            {
+            }
+        }
     }
 
     private void SaveChainFromTest(ChainSaveDto chain)

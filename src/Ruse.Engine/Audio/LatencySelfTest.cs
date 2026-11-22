@@ -3156,6 +3156,88 @@ public static class LatencySelfTest
         return new BenchResult(sources, outputs, seconds, framesMixed, cpuMs, allocAfter - allocBefore);
     }
 
+    /// <summary>
+    /// Benchmarks the graph renderer with a modifier per source and every
+    /// modifier feeding every output. This exercises the per-node hot path
+    /// rather than only the direct output pump.
+    /// </summary>
+    public static BenchResult BenchmarkGraph(int sources, int outputs, double seconds)
+    {
+        sources = Math.Max(1, sources);
+        outputs = Math.Max(1, outputs);
+        seconds = Math.Max(1, seconds);
+
+        var graph = new AudioGraph { AutoRun = false };
+        var src = new SourceNode[sources];
+        var mods = new ModifierNode[sources];
+        var sinks = new OutputNode[outputs];
+        long framesMixed = 0;
+
+        for (int i = 0; i < sources; i++)
+        {
+            src[i] = new SourceNode($"graph-bench{i}", SourceKind.Application) { Gain = 0.75f };
+            var tone = new float[4800 * 2];
+            for (int s = 0; s < tone.Length; s++)
+            {
+                tone[s] = 0.2f * MathF.Sin(s * 0.05f);
+            }
+
+            src[i].WriteTestSamples(tone);
+            graph.AddSource(src[i]);
+
+            mods[i] = new ModifierNode($"graph-bench-fx{i}");
+            mods[i].Add(new GainProcessor { Gain = 0.75f });
+            graph.AddModifier(mods[i]);
+            graph.ConnectSourceToModifier(src[i], mods[i]);
+        }
+
+        for (int o = 0; o < outputs; o++)
+        {
+            var sink = OutputNode.CreateForTest((mix, length) =>
+            {
+                System.Threading.Interlocked.Add(ref framesMixed, length / 2);
+            });
+            sink.EnableGraphEngine();
+            sink.UnpacedTestSink = true;
+            graph.AddOutputNode(sink);
+            sink.Start();
+            sinks[o] = sink;
+
+            for (int i = 0; i < sources; i++)
+            {
+                graph.ConnectModifierToOutput(mods[i], sink, 0.75f);
+            }
+        }
+
+        long allocBefore = GC.GetTotalAllocatedBytes(precise: false);
+        var cpuBefore = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
+        var feed = new float[4800];
+        Array.Fill(feed, 0.2f);
+        int feedStop = 0;
+        var feeder = new Thread(() =>
+        {
+            while (Volatile.Read(ref feedStop) == 0)
+            {
+                for (int i = 0; i < sources; i++)
+                {
+                    src[i].WriteTestSamples(feed);
+                }
+            }
+        })
+        { IsBackground = true, Name = "GraphBenchFeed" };
+        feeder.Start();
+        graph.StartEngine();
+        Thread.Sleep((int)(seconds * 1000));
+        Volatile.Write(ref feedStop, 1);
+        feeder.Join();
+        var cpuAfter = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
+        long allocAfter = GC.GetTotalAllocatedBytes(precise: false);
+        graph.StopEngine();
+        graph.Dispose();
+        double cpuMs = (cpuAfter - cpuBefore).TotalMilliseconds;
+        return new BenchResult(sources, outputs, seconds, framesMixed, cpuMs, allocAfter - allocBefore);
+    }
+
     public sealed record LiveRouteResult(
         double Seconds,
         long CapturedFrames,

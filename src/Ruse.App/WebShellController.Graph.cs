@@ -1078,8 +1078,14 @@ internal sealed partial class WebShellController
     private NodeEntry AddVst3Plugin(string identifier, double x, double y)
     {
         var descriptor = FindVst3Descriptor(identifier);
+        var catalogItem = _catalog.Vst3Plugins.FirstOrDefault(item =>
+            string.Equals(item.Id, identifier, StringComparison.OrdinalIgnoreCase));
+        bool instrument = descriptor?.IsInstrument == true || catalogItem?.IsVst3Instrument == true;
         string name = string.IsNullOrWhiteSpace(descriptor?.Name) ? "VST3 plugin" : descriptor!.Name;
-        var processor = Vst3ProcessorFactory.Create(identifier, start: false);
+        var processor = Vst3ProcessorFactory.Create(
+            identifier,
+            start: false,
+            allowInstrument: true);
         var modifier = new ModifierNode(name);
         modifier.Add(processor);
         var entry = RegisterModifier(
@@ -1087,9 +1093,10 @@ internal sealed partial class WebShellController
             x,
             y,
             flavor: "vst3",
-            subtitle: "VST3 effect");
+            subtitle: instrument ? "VST3 instrument" : "VST3 effect");
         entry.Title = name;
-        SetStatus($"Added VST3: {name}.");
+        entry.Vst3MidiEnabled = instrument;
+        SetStatus($"Added VST3 {(instrument ? "instrument" : "effect")}: {name}.");
         return entry;
     }
 
@@ -1396,7 +1403,20 @@ internal sealed partial class WebShellController
 
         if (entry.Flavor == "vst3")
         {
-            entry.Subtitle = string.IsNullOrWhiteSpace(vst.Vendor) ? "VST3 effect" : $"{vst.Vendor} · VST3";
+            string kind = vst.IsInstrument ? "VST3 instrument" : "VST3 effect";
+            entry.Subtitle = string.IsNullOrWhiteSpace(vst.Vendor)
+                ? kind
+                : $"{vst.Vendor} �� {kind}";
+        }
+
+        if (vst.IsReady && vst.IsInstrument)
+        {
+            MarkVst3Instrument(vst.Identifier);
+            if (!entry.Vst3MidiConfigured && !entry.Vst3MidiEnabled)
+            {
+                entry.Vst3MidiEnabled = true;
+                RefreshVst3MidiTargets();
+            }
         }
 
         if (!string.IsNullOrWhiteSpace(vst.Error))
@@ -1765,6 +1785,7 @@ internal sealed partial class WebShellController
                 dto.Vst3HasEditor = vst.HasEditor;
                 dto.Vst3EditorOpen = vst.IsEditorOpen;
                 dto.Vst3LatencyMs = (int)Math.Round(vst.LatencySamples * 1000.0 / 48000.0);
+                dto.Vst3MidiEnabled = entry.Vst3MidiEnabled;
             }
             var chain = entry.Modifier.Processors.OfType<ChainProcessor>().FirstOrDefault();
             if (chain != null)
@@ -1806,6 +1827,10 @@ internal sealed partial class WebShellController
             }
         }
 
+        dto.MidiGainBinding = NodeMidiBindingLabel(entry.Id, "gain");
+        dto.MidiMuteBinding = NodeMidiBindingLabel(entry.Id, "mute");
+        dto.MidiGainLearning = IsNodeMidiLearning(entry.Id, "gain");
+        dto.MidiMuteLearning = IsNodeMidiLearning(entry.Id, "mute");
         return dto;
     }
 

@@ -195,6 +195,7 @@ public sealed class Vst3HostInfo
     public string Status { get; set; } = "Loading plugin";
     public string? Error { get; set; }
     public bool IsReady { get; set; }
+    public bool IsInstrument { get; set; }
     public bool HasEditor { get; set; }
     public bool IsEditorOpen { get; set; }
     public int LatencySamples { get; set; }

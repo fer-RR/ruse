@@ -111,7 +111,7 @@ internal sealed partial class WebShellController
         SetStatus("Cancelling text-to-speech model download...");
     }
 
-    private void DeleteTtsModel(string modelId)
+    private async void DeleteTtsModel(string modelId)
     {
         if (!TtsModels.IsInstalled(modelId))
         {
@@ -126,13 +126,6 @@ internal sealed partial class WebShellController
                 _ttsDownloadCancel?.Cancel();
             }
 
-            TtsModels.Delete(modelId);
-            if (string.Equals(_settings.TtsModel, modelId, StringComparison.OrdinalIgnoreCase))
-            {
-                _settings.TtsModel = TtsModels.DefaultId;
-                _settings.Save();
-            }
-
             foreach (var entry in _nodes.Values.Where(entry => entry.Source?.Kind == SourceKind.Tts &&
                          string.Equals(entry.TtsModel, modelId, StringComparison.OrdinalIgnoreCase)))
             {
@@ -140,6 +133,13 @@ internal sealed partial class WebShellController
                 entry.TtsGenerating = false;
                 entry.Source?.Stop();
                 entry.TtsStatus = "No model installed";
+            }
+
+            await TtsModels.DeleteAsync(modelId).ConfigureAwait(true);
+            if (string.Equals(_settings.TtsModel, modelId, StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.TtsModel = TtsModels.DefaultId;
+                _settings.Save();
             }
 
             PublishSettings();
@@ -790,12 +790,12 @@ internal sealed partial class WebShellController
         PublishSettings();
     }
 
-    private void DeleteVoskModel()
+    private async void DeleteVoskModel()
     {
         try
         {
             _voskDownloadCancel?.Cancel();
-            VoskModels.Delete();
+            await VoskModels.DeleteAsync().ConfigureAwait(true);
             PublishSettings();
             SetStatus("Vosk model deleted.");
         }

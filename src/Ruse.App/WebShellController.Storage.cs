@@ -63,6 +63,12 @@ internal sealed partial class WebShellController
 
         try
         {
+            if (HasActiveStorageWrites())
+            {
+                SetStatus("Stop downloads, recordings and offline renders before changing storage folders.", isError: true);
+                return;
+            }
+
             SetStatus("Changing storage folder...");
             StorageFolderChangeResult result = await Task.Run(
                 () => StorageFolderService.Change(kind, path, migrate)).ConfigureAwait(true);
@@ -84,14 +90,11 @@ internal sealed partial class WebShellController
                 ? $" Copied {result.Copied} file{(result.Copied == 1 ? "" : "s")}."
                 : "";
             string skippedNote = result.Skipped > 0
-                ? $" Skipped {result.Skipped} existing file{(result.Skipped == 1 ? "" : "s")}."
-                : "";
-            string failedNote = result.Failed > 0
-                ? $" {result.Failed} file{(result.Failed == 1 ? "" : "s")} could not be copied; see the log."
+                ? $" Skipped {result.Skipped} internal file{(result.Skipped == 1 ? "" : "s")}."
                 : "";
             SetStatus(
                 "Storage folder changed. Restart Ruse to use it." +
-                copyNote + skippedNote + failedNote);
+                copyNote + skippedNote);
             ShowToast("Restart Ruse to use the new storage folder.");
             PublishSettings();
         }
@@ -104,5 +107,23 @@ internal sealed partial class WebShellController
         {
             Interlocked.Exchange(ref _storageChangeBusy, 0);
         }
+    }
+
+    private bool HasActiveStorageWrites()
+    {
+        if (_modelDownloadCancel != null ||
+            _translationDownloadCancel != null ||
+            _ttsDownloadCancel != null ||
+            _voskDownloadCancel != null)
+        {
+            return true;
+        }
+
+        if (_timelineRecordingActive || _timelineBounceActive || _freezingSources.Count > 0)
+        {
+            return true;
+        }
+
+        return _nodes.Values.Any(entry => entry.Output?.IsRecording == true);
     }
 }

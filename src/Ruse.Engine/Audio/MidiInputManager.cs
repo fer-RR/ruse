@@ -10,6 +10,13 @@ public enum MidiInputKind
 
 public readonly record struct MidiInputEvent(int Channel, MidiInputKind Kind, int Number, int Value);
 
+public enum MidiTransportKind
+{
+    Start,
+    Continue,
+    Stop,
+}
+
 public readonly record struct MidiDeviceInfo(int Index, string Name);
 
 /// <summary>
@@ -18,12 +25,18 @@ public readonly record struct MidiDeviceInfo(int Index, string Name);
 /// </summary>
 public sealed class MidiInputManager : IDisposable
 {
+    public const string TestDeviceName = "Ruse Test MIDI";
+
     private MidiIn? _input;
+    private Timer? _testTimer;
+    private int _testTick;
 
     public event Action<MidiInputEvent>? MessageReceived;
+    public event Action? ClockReceived;
+    public event Action<MidiTransportKind>? TransportReceived;
 
     public IReadOnlyList<MidiDeviceInfo> Devices { get; private set; } = Array.Empty<MidiDeviceInfo>();
-    public bool IsOpen => _input != null;
+    public bool IsOpen => _input != null || _testTimer != null;
     public string? LastError { get; private set; }
 
     public void RefreshDevices()
@@ -42,6 +55,7 @@ public sealed class MidiInputManager : IDisposable
                 devices.Add(new MidiDeviceInfo(i, name));
             }
 
+            devices.Add(new MidiDeviceInfo(-1, TestDeviceName));
             Devices = devices;
             LastError = null;
         }
@@ -75,6 +89,14 @@ public sealed class MidiInputManager : IDisposable
                 return;
             }
 
+            if (string.Equals(device.Name, TestDeviceName, StringComparison.Ordinal))
+            {
+                _testTick = 0;
+                _testTimer = new Timer(EmitTestTick, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(20));
+                LastError = null;
+                return;
+            }
+
             var input = new MidiIn(device.Index);
             input.MessageReceived += OnMessageReceived;
             input.Start();
@@ -90,6 +112,10 @@ public sealed class MidiInputManager : IDisposable
 
     public void Close()
     {
+        var testTimer = _testTimer;
+        _testTimer = null;
+        testTimer?.Dispose();
+
         var input = _input;
         _input = null;
         if (input == null)
@@ -108,9 +134,59 @@ public sealed class MidiInputManager : IDisposable
         }
     }
 
+    private void EmitTestTick(object? state)
+    {
+        int tick = Interlocked.Increment(ref _testTick);
+        try { ClockReceived?.Invoke(); } catch { }
+
+        if (tick % 40 == 1)
+        {
+            try { MessageReceived?.Invoke(new MidiInputEvent(0, MidiInputKind.Note, 60, 100)); } catch { }
+        }
+        else if (tick % 40 == 20)
+        {
+            try { MessageReceived?.Invoke(new MidiInputEvent(0, MidiInputKind.Note, 60, 0)); } catch { }
+        }
+        else if (tick % 40 == 10)
+        {
+            try { MessageReceived?.Invoke(new MidiInputEvent(0, MidiInputKind.ControlChange, 1, 127)); } catch { }
+        }
+
+        if (tick % 200 == 1)
+        {
+            try { TransportReceived?.Invoke(MidiTransportKind.Start); } catch { }
+        }
+        else if (tick % 200 == 180)
+        {
+            try { TransportReceived?.Invoke(MidiTransportKind.Stop); } catch { }
+        }
+    }
+
     private void OnMessageReceived(object? sender, MidiInMessageEventArgs e)
     {
-        MidiInputEvent? message = e.MidiEvent switch
+        MidiEvent? midiEvent = e.MidiEvent;
+        if (midiEvent == null)
+        {
+            return;
+        }
+
+        switch (midiEvent.CommandCode)
+        {
+            case MidiCommandCode.TimingClock:
+                try { ClockReceived?.Invoke(); } catch { }
+                return;
+            case MidiCommandCode.StartSequence:
+                try { TransportReceived?.Invoke(MidiTransportKind.Start); } catch { }
+                return;
+            case MidiCommandCode.ContinueSequence:
+                try { TransportReceived?.Invoke(MidiTransportKind.Continue); } catch { }
+                return;
+            case MidiCommandCode.StopSequence:
+                try { TransportReceived?.Invoke(MidiTransportKind.Stop); } catch { }
+                return;
+        }
+
+        MidiInputEvent? message = midiEvent switch
         {
             NoteOnEvent note =>
                 new MidiInputEvent(Math.Clamp(note.Channel - 1, 0, 15), MidiInputKind.Note, note.NoteNumber,

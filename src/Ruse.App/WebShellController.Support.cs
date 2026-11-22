@@ -366,80 +366,10 @@ internal sealed partial class WebShellController
     {
         try
         {
-            directory = RuseFolders.Ensure(directory ?? RuseFolders.Support);
-            string stem = $"ruse-support-{DateTime.Now:yyyyMMdd-HHmmss}";
-            string path = Path.Combine(directory, stem + ".zip");
-            for (int suffix = 2; File.Exists(path); suffix++)
-            {
-                path = Path.Combine(directory, $"{stem}-{suffix}.zip");
-            }
-
-            using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
-            string version = typeof(WebShellController).Assembly.GetName().Version?.ToString(3) ?? "dev";
-            string trimmedDescription = (description ?? "").Trim();
-
-            if (includeDiagnostics)
-            {
-                AddBundleText(archive, "README.txt", string.Join(Environment.NewLine, new[]
-                {
-                    "Ruse support bundle",
-                    $"Created: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
-                    "",
-                    "Contents:",
-                    "  description.txt  - text entered by the user",
-                    "  diagnostics.txt  - app, audio and routing counters",
-                    "  settings.json    - non-secret settings only",
-                    "  devices.txt      - active Windows audio endpoints",
-                    "  routes.txt       - node and cable summary",
-                    "  network.txt      - local LAN IP and ports for network nodes (when present)",
-                    "  log-tail.txt     - sanitized last 256 KB of ruse.log",
-                    "",
-                    "No audio, recordings, models, clipboard contents, transcriptions,",
-                    "translations, text notes or TTS contents are included.",
-                    "The local LAN IP of a network node is kept for troubleshooting.",
-                    "Other IP addresses are redacted.",
-                    "Local paths, email addresses, endpoint IDs and quoted log names are redacted.",
-                    "Device names, app names and effect names may remain.",
-                    "Review this ZIP before sending it to anyone.",
-                    "",
-                }));
-                AddBundleText(archive, "diagnostics.txt", BuildDiagnosticsReport());
-                AddBundleText(archive, "settings.json", BuildSettingsReport());
-                AddBundleText(archive, "devices.txt", devicesReport ?? BuildDevicesReport());
-                AddBundleText(archive, "routes.txt", BuildRoutesReport());
-                if (HasNetworkNodes())
-                {
-                    AddBundleText(archive, "network.txt", BuildNetworkReport());
-                }
-
-                string logTail = ReadLogTail(AppLog.LogPath, SupportLogTailBytes);
-                if (HasNetworkNodes())
-                {
-                    logTail = $"Network local LAN IP: {NetworkPcm.GetLocalAddress()}" +
-                        Environment.NewLine + logTail;
-                }
-
-                AddBundleText(archive, "log-tail.txt", logTail);
-            }
-            else
-            {
-                AddBundleText(archive, "README.txt", string.Join(Environment.NewLine, new[]
-                {
-                    "Ruse bug report",
-                    $"Created: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
-                    "",
-                    "Logs and diagnostics were omitted at the user's request.",
-                    "Only the description and app version are included.",
-                    "",
-                }));
-                AddBundleText(archive, "version.txt", $"Ruse {version}{Environment.NewLine}");
-            }
-
-            if (trimmedDescription.Length > 0)
-            {
-                AddBundleText(archive, "description.txt", SanitizeSupportText(trimmedDescription));
-            }
-
+            string path = NextSupportBundlePath(directory);
+            List<(string Name, string Text)> entries =
+                BuildSupportBundleEntries(includeDiagnostics, description, devicesReport);
+            WriteSupportBundle(path, entries);
             if (announce)
             {
                 SetStatus($"Support bundle saved to {path}");
@@ -460,6 +390,114 @@ internal sealed partial class WebShellController
         }
     }
 
+    private async Task<string?> CreateSupportBundleAsync(
+        bool includeDiagnostics,
+        string? description,
+        string? devicesReport,
+        string? directory = null)
+    {
+        string path = NextSupportBundlePath(directory);
+        List<(string Name, string Text)> entries =
+            BuildSupportBundleEntries(includeDiagnostics, description, devicesReport);
+        await Task.Run(() => WriteSupportBundle(path, entries)).ConfigureAwait(true);
+        return path;
+    }
+
+    private static string NextSupportBundlePath(string? directory)
+    {
+        directory = RuseFolders.Ensure(directory ?? RuseFolders.Support);
+        string stem = $"ruse-support-{DateTime.Now:yyyyMMdd-HHmmss}";
+        string path = Path.Combine(directory, stem + ".zip");
+        for (int suffix = 2; File.Exists(path); suffix++)
+        {
+            path = Path.Combine(directory, $"{stem}-{suffix}.zip");
+        }
+
+        return path;
+    }
+
+    private List<(string Name, string Text)> BuildSupportBundleEntries(
+        bool includeDiagnostics,
+        string? description,
+        string? devicesReport)
+    {
+        var entries = new List<(string Name, string Text)>();
+        string version = typeof(WebShellController).Assembly.GetName().Version?.ToString(3) ?? "dev";
+        string trimmedDescription = (description ?? "").Trim();
+        bool hasNetwork = HasNetworkNodes();
+        if (includeDiagnostics)
+        {
+            entries.Add(("README.txt", string.Join(Environment.NewLine, new[]
+            {
+                "Ruse support bundle",
+                $"Created: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+                "",
+                "Contents:",
+                "  description.txt  - text entered by the user",
+                "  diagnostics.txt  - app, audio and routing counters",
+                "  settings.json    - non-secret settings only",
+                "  devices.txt      - active Windows audio endpoints",
+                "  routes.txt       - node and cable summary",
+                "  network.txt      - local LAN IP and ports for network nodes (when present)",
+                "  log-tail.txt     - sanitized last 256 KB of ruse.log",
+                "",
+                "No audio, recordings, models, clipboard contents, transcriptions,",
+                "translations, text notes or TTS contents are included.",
+                "The local LAN IP of a network node is kept for troubleshooting.",
+                "Other IP addresses are redacted.",
+                "Local paths, email addresses, endpoint IDs and quoted log names are redacted.",
+                "Device names, app names and effect names may remain.",
+                "Review this ZIP before sending it to anyone.",
+                "",
+            })));
+            entries.Add(("diagnostics.txt", BuildDiagnosticsReport()));
+            entries.Add(("settings.json", BuildSettingsReport()));
+            entries.Add(("devices.txt", devicesReport ?? BuildDevicesReport()));
+            entries.Add(("routes.txt", BuildRoutesReport()));
+            if (hasNetwork)
+            {
+                entries.Add(("network.txt", BuildNetworkReport()));
+            }
+
+            string logTail = ReadLogTail(AppLog.LogPath, SupportLogTailBytes);
+            if (hasNetwork)
+            {
+                logTail = $"Network local LAN IP: {NetworkPcm.GetLocalAddress()}" +
+                    Environment.NewLine + logTail;
+            }
+
+            entries.Add(("log-tail.txt", logTail));
+        }
+        else
+        {
+            entries.Add(("README.txt", string.Join(Environment.NewLine, new[]
+            {
+                "Ruse bug report",
+                $"Created: {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+                "",
+                "Logs and diagnostics were omitted at the user's request.",
+                "Only the description and app version are included.",
+                "",
+            })));
+            entries.Add(("version.txt", $"Ruse {version}{Environment.NewLine}"));
+        }
+
+        if (trimmedDescription.Length > 0)
+        {
+            entries.Add(("description.txt", SanitizeSupportText(trimmedDescription)));
+        }
+
+        return entries;
+    }
+
+    private static void WriteSupportBundle(string path, List<(string Name, string Text)> entries)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+        foreach (var item in entries)
+        {
+            AddBundleText(archive, item.Name, item.Text);
+        }
+    }
     private async Task ExportSupportBundleAsync()
     {
         _supportExporting = true;
@@ -471,9 +509,21 @@ internal sealed partial class WebShellController
                 return;
             }
 
-            string? path = await Task.Run(() => ExportSupportBundle(
-                announce: false,
-                devicesReport: devicesReport)).ConfigureAwait(true);
+            string? path;
+            try
+            {
+                path = await CreateSupportBundleAsync(
+                    includeDiagnostics: true,
+                    description: null,
+                    devicesReport: devicesReport).ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Could not create the support bundle.", ex);
+                SetStatus("Could not create the support bundle: " + ex.Message, isError: true);
+                return;
+            }
+
             if (_disposed)
             {
                 return;
@@ -537,11 +587,15 @@ internal sealed partial class WebShellController
             _supportExporting = true;
             try
             {
-                path = await Task.Run(() => ExportSupportBundle(
-                    announce: false,
+                path = await CreateSupportBundleAsync(
                     includeDiagnostics: includeDiagnostics,
                     description: trimmedNote,
-                    devicesReport: devicesReport)).ConfigureAwait(true);
+                    devicesReport: devicesReport).ConfigureAwait(true);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("Could not create the support bundle.", ex);
+                path = null;
             }
             finally
             {

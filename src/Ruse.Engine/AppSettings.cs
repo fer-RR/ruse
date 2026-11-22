@@ -199,7 +199,8 @@ public sealed class AppSettings
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Ruse");
 
     [JsonIgnore]
-    public static string StorageLocationsPath => Path.Combine(BootstrapDirectory, "storage.json");
+    public static string StorageLocationsPath =>
+        Path.Combine(OverrideDirectory ?? BootstrapDirectory, "storage.json");
 
     [JsonIgnore]
     public static string DefaultDataDirectory => BootstrapDirectory;
@@ -214,6 +215,9 @@ public sealed class AppSettings
 
     [JsonIgnore]
     public static string? ConfiguredUserDirectory => _locations.UserDirectory;
+
+    [JsonIgnore]
+    public static string? StorageFallbackWarning { get; private set; }
 
     /// <summary>Redirects settings/session storage (used by the UI self-test).</summary>
     [JsonIgnore]
@@ -234,7 +238,7 @@ public sealed class AppSettings
 
     public static bool SaveStorageLocations(StorageLocations locations, out string error)
     {
-        System.IO.Directory.CreateDirectory(BootstrapDirectory);
+        System.IO.Directory.CreateDirectory(Path.GetDirectoryName(StorageLocationsPath)!);
         return AtomicFile.TryWriteAllText(
             StorageLocationsPath,
             JsonSerializer.Serialize(locations, Options),
@@ -249,10 +253,38 @@ public sealed class AppSettings
             ModelsDirectory = NormalizeStoredPath(locations.ModelsDirectory),
             UserDirectory = NormalizeStoredPath(locations.UserDirectory),
         };
+        RefreshStorageFallbackWarnings();
+    }
+
+    private static void RefreshStorageFallbackWarnings()
+    {
+        StorageFallbackWarning = null;
+        WarnIfUnavailable(_locations.DataDirectory, "data");
+        WarnIfUnavailable(_locations.ModelsDirectory, "models");
+        WarnIfUnavailable(_locations.UserDirectory, "user");
+    }
+
+    private static void WarnIfUnavailable(string? path, string label)
+    {
+        if (path == null || System.IO.Directory.Exists(path))
+        {
+            return;
+        }
+
+        RecordFallbackWarning(label);
+    }
+
+    private static void RecordFallbackWarning(string label)
+    {
+        string message = $"The configured {label} folder is unavailable; using the default folder.";
+        StorageFallbackWarning = string.IsNullOrEmpty(StorageFallbackWarning)
+            ? message
+            : StorageFallbackWarning + " " + message;
     }
 
     private static StorageLocations ReadStorageLocations()
     {
+        StorageFallbackWarning = null;
         try
         {
             if (File.Exists(StorageLocationsPath))
@@ -261,9 +293,9 @@ public sealed class AppSettings
                     File.ReadAllText(StorageLocationsPath), Options);
                 if (loaded != null)
                 {
-                    loaded.DataDirectory = NormalizeStoredPath(loaded.DataDirectory);
-                    loaded.ModelsDirectory = NormalizeStoredPath(loaded.ModelsDirectory);
-                    loaded.UserDirectory = NormalizeStoredPath(loaded.UserDirectory);
+                    loaded.DataDirectory = NormalizeStoredPath(loaded.DataDirectory, "data");
+                    loaded.ModelsDirectory = NormalizeStoredPath(loaded.ModelsDirectory, "models");
+                    loaded.UserDirectory = NormalizeStoredPath(loaded.UserDirectory, "user");
                     return loaded;
                 }
             }
@@ -275,7 +307,7 @@ public sealed class AppSettings
         return new StorageLocations();
     }
 
-    private static string? NormalizeStoredPath(string? path)
+    private static string? NormalizeStoredPath(string? path, string? label = null)
     {
         if (string.IsNullOrWhiteSpace(path))
         {
@@ -285,7 +317,18 @@ public sealed class AppSettings
         try
         {
             string full = Path.GetFullPath(path);
-            return Path.IsPathFullyQualified(full) ? full : null;
+            if (!Path.IsPathFullyQualified(full))
+            {
+                return null;
+            }
+
+            if (label != null && !System.IO.Directory.Exists(full))
+            {
+                RecordFallbackWarning(label);
+                return null;
+            }
+
+            return full;
         }
         catch
         {

@@ -32,7 +32,9 @@ internal sealed partial class WebShellController
     private int _timelineRecordingLatencyFrames;
     private volatile bool _timelineRecordingActive;
     private bool _timelineBounceActive;
-    private bool _offlinePrepareActive;
+    private int _offlinePrepareCount;
+
+    private bool OfflinePrepareActive => Volatile.Read(ref _offlinePrepareCount) > 0;
     private CancellationTokenSource? _timelineBounceCancel;
     private SourceNode? _timelineMetronomeSource;
     private bool _timelineMetronome;
@@ -1065,7 +1067,7 @@ internal sealed partial class WebShellController
         bool ok;
         string error;
         OfflineTimelineBounce? bounce;
-        _offlinePrepareActive = true;
+        Interlocked.Increment(ref _offlinePrepareCount);
         try
         {
             bounce = await Task.Run(BuildTimelineBounceGraph).ConfigureAwait(true);
@@ -1078,7 +1080,7 @@ internal sealed partial class WebShellController
         }
         finally
         {
-            _offlinePrepareActive = false;
+            Interlocked.Decrement(ref _offlinePrepareCount);
         }
 
         if (bounce == null)
@@ -1161,7 +1163,7 @@ internal sealed partial class WebShellController
         bool ok;
         string error;
         OfflineTimelineBounce? bounce;
-        _offlinePrepareActive = true;
+        Interlocked.Increment(ref _offlinePrepareCount);
         try
         {
             bounce = await Task.Run(BuildTimelineBounceGraph).ConfigureAwait(true);
@@ -1174,7 +1176,7 @@ internal sealed partial class WebShellController
         }
         finally
         {
-            _offlinePrepareActive = false;
+            Interlocked.Decrement(ref _offlinePrepareCount);
         }
 
         if (bounce == null)

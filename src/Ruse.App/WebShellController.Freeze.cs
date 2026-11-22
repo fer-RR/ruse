@@ -347,7 +347,7 @@ internal sealed partial class WebShellController
         NodeEntry? target = null;
         string error = "";
         string path = "";
-        _offlinePrepareActive = true;
+        Interlocked.Increment(ref _offlinePrepareCount);
         try
         {
             var prepared = await Task.Run(() =>
@@ -365,7 +365,7 @@ internal sealed partial class WebShellController
         }
         finally
         {
-            _offlinePrepareActive = false;
+            Interlocked.Decrement(ref _offlinePrepareCount);
         }
 
         if (bounce == null || target == null)

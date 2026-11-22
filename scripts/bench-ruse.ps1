@@ -3,7 +3,8 @@ param(
     [ValidateSet("Debug", "Release")]
     [string]$Configuration = "Debug",
     [double]$Seconds = 3,
-    [switch]$Build
+    [switch]$Build,
+    [switch]$Graph
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,10 +34,12 @@ $scenarios = @(
 $rows = foreach ($scenario in $scenarios) {
     Remove-Item -LiteralPath $resultPath -Force -ErrorAction SilentlyContinue
     $clock = [Diagnostics.Stopwatch]::StartNew()
-    $process = Start-Process -FilePath $exe -WorkingDirectory $appDir -WindowStyle Hidden -PassThru -Wait -ArgumentList @(
+    $benchArgs = @(
         "--bench", "--sources", "$($scenario.Sources)", "--outputs", "$($scenario.Outputs)",
         "--seconds", "$Seconds"
     )
+    if ($Graph) { $benchArgs += "--graph" }
+    $process = Start-Process -FilePath $exe -WorkingDirectory $appDir -WindowStyle Hidden -PassThru -Wait -ArgumentList $benchArgs
     $clock.Stop()
 
     if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $resultPath)) {

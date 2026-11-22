@@ -19,6 +19,7 @@ internal sealed class CatalogItemDto
     public string? Direction { get; set; }
     public string? Provider { get; set; }
     public bool Virtual { get; set; }
+    public bool IsVst3Instrument { get; set; }
     public bool IsDefault { get; set; }
     public string? Badge { get; set; }
     public string? MicHint { get; set; }
@@ -214,6 +215,11 @@ internal sealed class NodeDto
     public bool Vst3HasEditor { get; set; }
     public bool Vst3EditorOpen { get; set; }
     public int Vst3LatencyMs { get; set; }
+    public bool Vst3MidiEnabled { get; set; }
+    public string? MidiGainBinding { get; set; }
+    public string? MidiMuteBinding { get; set; }
+    public bool MidiGainLearning { get; set; }
+    public bool MidiMuteLearning { get; set; }
     public string? ChainName { get; set; }
     public List<string> ChainElements { get; set; } = new();
     public bool DuplicateRisk { get; set; }
@@ -700,6 +706,7 @@ internal sealed class SettingsDto
     public string ModelsFolder { get; set; } = "";
     public string UserFolder { get; set; } = "";
     public bool StorageRestartRequired { get; set; }
+    public string StorageWarning { get; set; } = "";
 }
 
 internal sealed class MidiInputDto

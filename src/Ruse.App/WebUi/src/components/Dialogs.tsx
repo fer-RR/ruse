@@ -980,6 +980,7 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
                   </dd>
                 </div>
               </dl>
+              {settings.storageWarning && <p className="settings-note storage-warning">{settings.storageWarning}</p>}
               {settings.storageRestartRequired && <p className="settings-note">{t('Restart Ruse to use the new folder locations.')}</p>}
             </SettingsSection>
             <SettingsSection title="Updates" summary={updates.state.latestVersion ? `v${updates.state.latestVersion}` : undefined}>

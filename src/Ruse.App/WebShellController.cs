@@ -319,7 +319,14 @@ internal sealed partial class WebShellController : IDisposable
         try
         {
             var message = JsonSerializer.Deserialize<BridgeMessage>(e.WebMessageAsJson, _json);
-            if ((_routingStartTask is { IsCompleted: false } || _routingStopTask is { IsCompleted: false } || _offlinePrepareActive || _supportExporting) &&
+            if (Volatile.Read(ref _storageChangeBusy) != 0 &&
+                message?.Type is not ("window" or "ready" or "close-to-tray-result"))
+            {
+                SetStatus("A storage folder change is in progress; try again when it finishes.");
+                return;
+            }
+
+            if ((_routingStartTask is { IsCompleted: false } || _routingStopTask is { IsCompleted: false } || OfflinePrepareActive || _supportExporting) &&
                 message?.Type is not ("transport" or "retry-routing" or "window" or "ready" or "close-to-tray-result" or "timeline-bounce-cancel"))
             {
                 SetStatus("Audio is busy; try again in a moment.");
@@ -534,6 +541,8 @@ internal sealed partial class WebShellController : IDisposable
             case "mixer-ungroup": UngroupMixerGroup(String(message, "groupId")); break;
             case "midi-learn": StartMidiLearn(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
             case "midi-unbind": ClearMidiBinding(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
+            case "midi-learn-node": StartNodeMidiLearn(String(message, "id"), String(message, "target")); break;
+            case "midi-unbind-node": ClearNodeMidiBinding(String(message, "id"), String(message, "target")); break;
             case "midi-refresh": _midi.RefreshDevices(); PublishSettings(); break;
             case "param": SetParameter(message); break;
             case "effect-enabled": SetEffectEnabled(String(message, "id"), Bool(message, "value")); break;
@@ -592,6 +601,7 @@ internal sealed partial class WebShellController : IDisposable
             case "network-voice-port": SetNetworkVoicePort(String(message, "id"), (int)Number(message, "value", NetworkPcm.DefaultPort)); break;
             case "network-chat-port": SetNetworkChatPort(String(message, "id"), (int)Number(message, "value", ChatService.DefaultPort)); break;
             case "vst3-editor": SetVst3Editor(String(message, "id"), Bool(message, "open")); break;
+            case "vst3-midi": SetVst3Midi(String(message, "id"), Bool(message, "enabled")); break;
             case "vst3-rescan": RescanVst3Plugins(); break;
             case "rename": RenameNode(String(message, "id"), String(message, "title")); break;
             case "freeze-effects": FreezeSourceEffects(String(message, "id")); break;
@@ -781,6 +791,7 @@ internal sealed partial class WebShellController : IDisposable
 
     private void PublishGraph()
     {
+        RefreshVst3MidiTargets();
         var warnings = BuildGraphWarnings();
         var activeEndpoints = ActiveEndpoints();
         var nodes = new List<NodeDto>(_nodes.Count);
@@ -1236,6 +1247,7 @@ internal sealed partial class WebShellController : IDisposable
             ModelsFolder = DisplayedModelsFolder,
             UserFolder = DisplayedUserFolder,
             StorageRestartRequired = StorageRestartRequired,
+            StorageWarning = AppSettings.StorageFallbackWarning ?? "",
         });
     }
 
@@ -2044,6 +2056,8 @@ internal sealed partial class WebShellController : IDisposable
         SpeechModelCache.DropAll();
         TranslationModelCache.DropAll();
         _midi.MessageReceived -= OnMidiMessageReceived;
+        _midi.ClockReceived -= OnMidiClockReceived;
+        _midi.TransportReceived -= OnMidiTransportReceived;
         _midi.Dispose();
         AbortTimelineRecording();
         SetAudioPriorityBoost(false);
@@ -2101,6 +2115,8 @@ internal sealed partial class WebShellController : IDisposable
         public string? TextFileName { get; set; }
         public int Vst3Latency { get; set; } = -1;
         public bool Vst3Ready { get; set; }
+        public bool Vst3MidiEnabled { get; set; }
+        public bool Vst3MidiConfigured { get; set; }
     }
 
     internal sealed class LinkEntry

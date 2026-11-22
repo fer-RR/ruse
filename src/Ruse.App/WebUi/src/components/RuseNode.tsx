@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react';
 import { Handle, Position, useUpdateNodeInternals } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import {
@@ -76,14 +76,39 @@ function FlavorIcon({ flavor }: { flavor: string }) {
 }
 
 
-function VolumeControl({ id, value, muted }: { id: string; value: number; muted: boolean }) {
+function VolumeControl({ node }: { node: RuseFlowNode['data'] }) {
   const { t } = useI18n();
-  const [local, setLocal] = useState(value);
-  useEffect(() => setLocal(value), [value]);
+  const { id, muted } = node;
+  const [local, setLocal] = useState(node.volume);
+  useEffect(() => setLocal(node.volume), [node.volume]);
   const commit = (next: number) => {
     setLocal(next);
     send('gain', { id, value: next });
   };
+
+  const midiAction = (event: ReactMouseEvent<HTMLButtonElement>, target: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+    send(event.type === 'contextmenu' ? 'midi-unbind-node' : 'midi-learn-node', { id, target });
+  };
+
+  const midiButton = (target: 'gain' | 'mute', binding?: string, learning?: boolean, label?: string) =>
+    !node.midiEnabled ? null : (
+      <button
+        type="button"
+        className={`param-midi ${binding ? 'bound' : ''} ${learning ? 'learning' : ''}`}
+        title={binding
+          ? t('MIDI: {binding}. Click to relearn, right-click to clear.', { binding })
+          : `${t('Learn MIDI')}${label ? `: ${label}` : ''}`}
+        aria-label={binding
+          ? t('MIDI: {binding}. Click to relearn, right-click to clear.', { binding })
+          : t('Learn MIDI')}
+        onClick={event => midiAction(event, target)}
+        onContextMenu={event => midiAction(event, target)}
+      >
+        MIDI
+      </button>
+    );
 
   return (
     <div className="node-volume nodrag">
@@ -109,6 +134,7 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
         <small className="volume-db">{formatGainDb(local)}</small>
       </span>
       <span>{Math.round(local * 100)}%</span>
+      {midiButton('gain', node.midiGainBinding, node.midiGainLearning, t('Node volume'))}
       <button
         className={`icon-button compact ${muted ? 'danger-text' : ''}`}
         title={withShortcut(muted ? t('Unmute node') : t('Mute node'), 'muteSelected')}
@@ -117,6 +143,7 @@ function VolumeControl({ id, value, muted }: { id: string; value: number; muted:
       >
         {muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
       </button>
+      {midiButton('mute', node.midiMuteBinding, node.midiMuteLearning, t('Mute node'))}
     </div>
   );
 }
@@ -622,7 +649,7 @@ function NetworkLinkControls({ node }: { node: RuseFlowNode['data'] }) {
         )}
 
         <NetworkAddress node={node} />
-        <VolumeControl id={node.id} value={node.volume} muted={node.muted} />
+        <VolumeControl node={node} />
         <button
           className={`network-connect ${node.muted ? 'off' : 'on'}`}
           onClick={() => send('mute', { id: node.id, value: !node.muted })}
@@ -787,6 +814,15 @@ function Vst3Controls({ node }: { node: RuseFlowNode['data'] }) {
           onClick={() => send('vst3-editor', { id: node.id, open: !node.vst3EditorOpen })}
         >
           {node.vst3EditorOpen ? t('Close editor') : t('Open editor')}
+        </button>
+        <button
+          className={`small-button ${node.vst3MidiEnabled ? 'active' : ''}`}
+          disabled={status !== 'Ready'}
+          title={t('MIDI input')}
+          aria-label={t('MIDI input')}
+          onClick={() => send('vst3-midi', { id: node.id, enabled: !node.vst3MidiEnabled })}
+        >
+          {t('MIDI input')}
         </button>
         <button className="icon-button compact" title={`${t('Help')}: ${t('VST3 plugins')}`} aria-label={`${t('Help')}: ${t('VST3 plugins')}`} onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-explainer', { detail: 'vst3' }))}>?</button>
       </div>
@@ -1423,7 +1459,7 @@ function RuseNode({ id, data, selected }: NodeProps<RuseFlowNode>) {
           {data.isMetronome && <MetronomeControls node={data} telemetry={telemetry} />}
           {data.isToneGenerator && <ToneControls node={data} />}
           {data.isSynthGenerator && <SynthControls node={data} />}
-          {!isNetworkLink && !isTextNote && <VolumeControl id={data.id} value={data.volume} muted={data.muted} />}
+          {!isNetworkLink && !isTextNote && <VolumeControl node={data} />}
           {data.isNetworkOutput && !data.isNetworkInput && <NetworkOutputControls node={data} />}
           {data.isRecorder && <RecorderControls node={data} telemetry={telemetry} />}
         </>

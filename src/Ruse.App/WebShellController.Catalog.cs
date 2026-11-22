@@ -174,7 +174,7 @@ internal sealed partial class WebShellController
             {
                 var found = await PluginScanner.ScanAsync(PluginFormat.Vst3, ScanMode.Fast);
                 var descriptors = found
-                    .Where(plugin => !plugin.IsInstrument && !string.IsNullOrWhiteSpace(plugin.Identifier))
+                    .Where(plugin => !string.IsNullOrWhiteSpace(plugin.Identifier))
                     .OrderBy(plugin => plugin.Name, StringComparer.OrdinalIgnoreCase)
                     .ToArray();
 
@@ -196,11 +196,14 @@ internal sealed partial class WebShellController
                         Id = plugin.Identifier,
                         Kind = "vst3",
                         Name = string.IsNullOrWhiteSpace(plugin.Name) ? "VST3 plugin" : plugin.Name,
-                        Subtitle = string.IsNullOrWhiteSpace(plugin.Vendor) ? "VST3 effect" : $"{plugin.Vendor} · VST3",
+                        Subtitle = plugin.IsInstrument
+                            ? string.IsNullOrWhiteSpace(plugin.Vendor) ? "VST3 instrument" : $"{plugin.Vendor} · VST3 instrument"
+                            : string.IsNullOrWhiteSpace(plugin.Vendor) ? "VST3 effect" : $"{plugin.Vendor} · VST3",
                         Details = string.IsNullOrWhiteSpace(plugin.Category) ? plugin.FilePath : plugin.Category,
+                        IsVst3Instrument = plugin.IsInstrument,
                     }).ToList();
                     Post("catalog", _catalog);
-                    SetStatus($"Found {descriptors.Length} VST3 effect(s).");
+                    SetStatus($"Found {descriptors.Length} VST3 plugin(s).");
                 }));
             }
             catch (Exception ex)
@@ -213,6 +216,19 @@ internal sealed partial class WebShellController
     private PluginDescriptor? FindVst3Descriptor(string identifier) =>
         _vst3Descriptors.FirstOrDefault(plugin =>
             string.Equals(plugin.Identifier, identifier, StringComparison.OrdinalIgnoreCase));
+
+    private void MarkVst3Instrument(string identifier)
+    {
+        var item = _catalog.Vst3Plugins.FirstOrDefault(candidate =>
+            string.Equals(candidate.Id, identifier, StringComparison.OrdinalIgnoreCase));
+        if (item == null || item.IsVst3Instrument)
+        {
+            return;
+        }
+
+        item.IsVst3Instrument = true;
+        Post("catalog", _catalog);
+    }
 
     private void RescanVst3Plugins()
     {

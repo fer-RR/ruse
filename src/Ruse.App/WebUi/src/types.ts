@@ -23,6 +23,7 @@ export interface CatalogItem {
   direction?: string;
   provider?: string;
   virtual?: boolean;
+  isVst3Instrument?: boolean;
   isDefault?: boolean;
   badge?: string;
   micHint?: string;
@@ -243,6 +244,11 @@ export interface NodeModel {
   vst3HasEditor?: boolean;
   vst3EditorOpen?: boolean;
   vst3LatencyMs?: number;
+  vst3MidiEnabled?: boolean;
+  midiGainBinding?: string;
+  midiMuteBinding?: string;
+  midiGainLearning?: boolean;
+  midiMuteLearning?: boolean;
   isRecorder: boolean;
   recordingPath: string;
   recordingFormat: string;
@@ -654,6 +660,7 @@ export interface SettingsModel {
   modelsFolder?: string;
   userFolder?: string;
   storageRestartRequired?: boolean;
+  storageWarning?: string;
 }
 
 export interface StatusMessage {

@@ -726,6 +726,7 @@ select { min-height: 28px; padding: 3px 6px; font-size: 10px; }
 .vst3-meta { overflow: hidden; color: var(--text-3); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .vst3-actions { display: flex; gap: 5px; }
 .vst3-actions .small-button { min-height: 24px; padding: 0 7px; font-size: 9px; }
+.vst3-actions .small-button.active { color: var(--cyan); border-color: rgba(101, 214, 208, 0.35); background: rgba(101, 214, 208, 0.1); }
 .chain-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chain-chip { padding: 3px 6px; border: 1px solid rgba(229, 173, 81, 0.2); border-radius: 4px; background: rgba(229, 173, 81, 0.07); color: var(--amber); font-size: 9px; }
 .parameter-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-2); font-size: 10px; }
@@ -736,6 +737,8 @@ select { min-height: 28px; padding: 3px 6px; font-size: 10px; }
 .parameter-stack:focus-within .param-midi,
 .parameter-row:hover .param-midi,
 .parameter-row:focus-within .param-midi,
+.node-volume:hover .param-midi,
+.node-volume:focus-within .param-midi,
 .param-midi.learning { opacity: 1; pointer-events: auto; }
 .param-midi:hover { border-color: var(--amber); color: var(--amber); }
 .param-midi.bound { border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); color: var(--amber); }

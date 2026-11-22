@@ -54,14 +54,27 @@ internal static class UpdateApplier
 
             string target = Normalize(targetArg);
             string source = Normalize(sourceArg);
-            restart = Normalize(restartArg);
-            if (!IsSubPath(restart, target))
+            string restartPath = Normalize(restartArg);
+            string expectedRestart = Path.Combine(target, "Ruse.exe");
+            if (!string.Equals(restartPath, expectedRestart, StringComparison.OrdinalIgnoreCase))
             {
-                restart = Path.Combine(target, "Ruse.exe");
+                Log("The restart path is not the Ruse executable in the install folder.");
+                return 2;
+            }
+
+            restart = restartPath;
+
+            if (IsRootPath(target) ||
+                IsSubPath(target, updatesRoot) ||
+                IsSubPath(target, localRoot) ||
+                IsSubPath(localRoot, target))
+            {
+                Log("The install folder is not a valid update target.");
+                return 2;
             }
 
             if (!File.Exists(Path.Combine(target, "Ruse.exe")) ||
-                !IsSubPath(source, updatesRoot) ||
+                !IsStrictSubPath(source, updatesRoot) ||
                 !File.Exists(Path.Combine(source, "Ruse.exe")))
             {
                 Log("The install, staging or restart folder is not valid.");
@@ -73,6 +86,14 @@ internal static class UpdateApplier
                 IsSubPath(target, source))
             {
                 Log("The staging or target folder is not valid.");
+                return 2;
+            }
+
+            if (ContainsReparsePoint(target) ||
+                ContainsReparsePoint(source) ||
+                ContainsReparsePoint(restartPath))
+            {
+                Log("The install or staging folder contains a reparse point.");
                 return 2;
             }
 
@@ -317,5 +338,59 @@ internal static class UpdateApplier
         string relative = Path.GetRelativePath(parent, path);
         return !relative.StartsWith("..", StringComparison.Ordinal) &&
                !Path.IsPathRooted(relative);
+    }
+
+    private static bool IsStrictSubPath(string path, string parent) =>
+        !string.Equals(path, parent, StringComparison.OrdinalIgnoreCase) &&
+        IsSubPath(path, parent);
+
+    private static bool IsRootPath(string path) =>
+        string.Equals(path, Path.GetFullPath(Path.GetPathRoot(path) ?? path),
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool ContainsReparsePoint(string path)
+    {
+        try
+        {
+            if (!File.Exists(path) && !Directory.Exists(path))
+            {
+                return true;
+            }
+
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                return true;
+            }
+
+            if (!Directory.Exists(path))
+            {
+                return false;
+            }
+
+            var pending = new Stack<string>();
+            pending.Push(path);
+            while (pending.Count > 0)
+            {
+                foreach (string entry in Directory.EnumerateFileSystemEntries(pending.Pop()))
+                {
+                    FileAttributes attributes = File.GetAttributes(entry);
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
+                    {
+                        return true;
+                    }
+
+                    if ((attributes & FileAttributes.Directory) != 0)
+                    {
+                        pending.Push(entry);
+                    }
+                }
+            }
+
+            return false;
+        }
+        catch
+        {
+            return true;
+        }
     }
 }

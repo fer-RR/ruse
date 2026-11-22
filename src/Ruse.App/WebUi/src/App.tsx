@@ -1854,7 +1854,8 @@ export default function App() {
               return;
             }
 
-            const canInsert = item.kind === 'effect' || item.kind === 'chain' || item.kind === 'vst3';
+            const canInsert = item.kind === 'effect' || item.kind === 'chain' ||
+              (item.kind === 'vst3' && !item.isVst3Instrument);
             const linkId = canInsert ? findLinkAtPoint(position) : undefined;
             const halfWidth = item.kind === 'vst3' ? 170 : 102;
             let addPosition = linkId

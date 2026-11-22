@@ -30,11 +30,10 @@ internal static class StreamingTtsProviders
             ? PiperStreamingProvider.DownloadAsync(progress, token)
             : KokoroStreamingProvider.DownloadAsync(progress, token);
 
-    public static void Delete(string modelId)
-    {
-        if (TtsModels.Find(modelId)?.Family == "piper") PiperStreamingProvider.Delete();
-        else KokoroStreamingProvider.Delete();
-    }
+    public static Task DeleteAsync(string modelId) =>
+        TtsModels.Find(modelId)?.Family == "piper"
+            ? PiperStreamingProvider.DeleteAsync()
+            : KokoroStreamingProvider.DeleteAsync();
 
     public static long InstalledSize(string modelId) =>
         TtsModels.Find(modelId)?.Family == "piper"
@@ -72,11 +71,20 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
         await Gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
+            lock (Sync)
+            {
+                if (_deletePending)
+                {
+                    throw new InvalidOperationException("The Kokoro model is being deleted.");
+                }
+            }
+
             if (IsInstalled) return;
             Directory.CreateDirectory(Root);
             string downloaded = await KokoroLoader.DownloadModelAsync(KModel.float32, value =>
                 progress?.Report(new TtsModelProgress("kokoro-streaming", "downloading", value, "")))
                 .ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
             string source = Path.GetFullPath(downloaded);
             if (!string.Equals(source, ModelPath, StringComparison.OrdinalIgnoreCase))
             {
@@ -95,26 +103,73 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
         }
     }
 
-    public static void Delete()
+    public static async Task DeleteAsync()
     {
-        KokoroWavSynthesizer? old = null;
         lock (Sync)
         {
             _deletePending = true;
-            if (_active == 0)
+        }
+
+        bool stillActive = true;
+        for (int attempt = 0; attempt < 100; attempt++)
+        {
+            lock (Sync)
+            {
+                stillActive = _active > 0;
+            }
+
+            if (!stillActive)
+            {
+                break;
+            }
+
+            await Task.Delay(50).ConfigureAwait(false);
+        }
+
+        if (stillActive)
+        {
+            lock (Sync)
+            {
+                _deletePending = false;
+            }
+
+            throw new InvalidOperationException("Kokoro is still being used by active speech. Stop speech and try again.");
+        }
+
+        if (!await Gate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+        {
+            lock (Sync)
+            {
+                _deletePending = false;
+            }
+
+            throw new InvalidOperationException("The Kokoro model is busy downloading. Cancel the download and try again.");
+        }
+
+        try
+        {
+            KokoroWavSynthesizer? old;
+            lock (Sync)
             {
                 old = _synthesizer;
                 _synthesizer = null;
                 _deletePending = false;
             }
-        }
 
-        (old as IDisposable)?.Dispose();
-        _verified = false;
-        DeleteModelFiles();
+            (old as IDisposable)?.Dispose();
+            _verified = false;
+            if (!DeleteModelFiles())
+            {
+                throw new IOException("The Kokoro model files could not be removed. Close Ruse and try again.");
+            }
+        }
+        finally
+        {
+            Gate.Release();
+        }
     }
 
-    private static void DeleteModelFiles()
+    private static bool DeleteModelFiles()
     {
         try
         {
@@ -122,32 +177,28 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
             {
                 Directory.Delete(Root, true);
             }
+
+            return true;
         }
         catch
         {
+            return false;
         }
     }
 
     private static void ReleaseIfIdle()
     {
         KokoroWavSynthesizer? old = null;
-        bool deleteFiles = false;
         lock (Sync)
         {
             if (_active == 0 && _deletePending)
             {
                 old = _synthesizer;
                 _synthesizer = null;
-                _deletePending = false;
-                deleteFiles = true;
             }
         }
 
         (old as IDisposable)?.Dispose();
-        if (deleteFiles)
-        {
-            DeleteModelFiles();
-        }
     }
 
     private static async Task<KokoroWavSynthesizer> EnsureAsync(CancellationToken token)
@@ -160,6 +211,19 @@ internal sealed class KokoroStreamingProvider : IStreamingTtsProvider
         await Gate.WaitAsync(token).ConfigureAwait(false);
         try
         {
+            lock (Sync)
+            {
+                if (_deletePending)
+                {
+                    throw new OperationCanceledException("The Kokoro model is being deleted.");
+                }
+            }
+
+            if (!IsInstalled)
+            {
+                throw new OperationCanceledException("The Kokoro model is no longer installed.");
+            }
+
             if (_synthesizer == null)
             {
                 if (!_verified)
@@ -351,6 +415,7 @@ internal sealed class PiperStreamingProvider : IStreamingTtsProvider
             var model = await PiperDownloader.GetModelByKey(VoiceKey).ConfigureAwait(false)
                 ?? throw new InvalidOperationException("The Piper voice could not be downloaded.");
             await model.DownloadModel(Root).ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
             VerifyVoice(model);
             _voice = model;
             _verified = true;
@@ -363,7 +428,24 @@ internal sealed class PiperStreamingProvider : IStreamingTtsProvider
         }
     }
 
-    public static void Delete()
+    public static async Task DeleteAsync()
+    {
+        if (!await Gate.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("The Piper model is busy downloading. Cancel the download and try again.");
+        }
+
+        try
+        {
+            DeleteCore();
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
+
+    private static void DeleteCore()
     {
         PiperWaveProvider[] active;
         lock (ActiveSync)

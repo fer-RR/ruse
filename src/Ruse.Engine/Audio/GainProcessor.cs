@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace Ruse.App.Audio;
 
 /// <summary>
@@ -122,7 +124,7 @@ public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor, IN
         {
             if (!ramp)
             {
-                for (int i = 0; i < samples.Length; i++) samples[i] *= targetGain;
+                Scale(samples, targetGain);
             }
             else
             {
@@ -162,11 +164,34 @@ public sealed class GainProcessor : IAudioProcessor, IParameterizedProcessor, IN
 
         float leftGain = targetGain * Math.Min(1f, 1f - targetPan);
         float rightGain = targetGain * Math.Min(1f, 1f + targetPan);
+        if (leftGain == rightGain)
+        {
+            Scale(samples, leftGain);
+            return;
+        }
+
         for (int frame = 0; frame < frames; frame++)
         {
             int index = frame * channels;
             samples[index] *= leftGain;
             samples[index + 1] *= rightGain;
+        }
+    }
+
+    private static void Scale(Span<float> samples, float gain)
+    {
+        int i = 0;
+        int width = Vector<float>.Count;
+        var gainVector = new Vector<float>(gain);
+        for (; i <= samples.Length - width; i += width)
+        {
+            var block = new Vector<float>(samples.Slice(i));
+            (block * gainVector).CopyTo(samples.Slice(i));
+        }
+
+        for (; i < samples.Length; i++)
+        {
+            samples[i] *= gain;
         }
     }
 

@@ -41,7 +41,7 @@ public partial class App : Application
         "--fanout-test", "--sessions", "--delay-test", "--latency-test",
         "--record-test", "--web-test", "--chat-test", "--selftest", "--bench",
         "--vst3-bench-test", "--vst3-editor-test", "--vst3-isolated-test",
-        "--vst3-route-test", "--vst3-scan-test", "--vst3-test",
+        "--vst3-route-test", "--vst3-scan-test", "--vst3-test", "--vst3-instrument-test",
         "--transcription-test", "--translation-e2e-test", "--cable-test",
         "--capture-match", "--output-match", "--render-match",
     };
@@ -116,13 +116,15 @@ public partial class App : Application
         {
             string state = hostIndex + 4 < e.Args.Length ? e.Args[hostIndex + 4] : "";
             string handshake = hostIndex + 5 < e.Args.Length ? e.Args[hostIndex + 5] : "";
+            bool allowInstrument = hostIndex + 6 < e.Args.Length && e.Args[hostIndex + 6] == "1";
             Ruse.App.Diagnostics.AppLog.Initialize();
             Vst3HostRunner.Run(
                 e.Args[hostIndex + 1],
                 e.Args[hostIndex + 2],
                 e.Args[hostIndex + 3],
                 string.IsNullOrEmpty(state) ? null : state,
-                handshake);
+                handshake,
+                allowInstrument);
             Shutdown();
             return;
         }
@@ -317,6 +319,25 @@ public partial class App : Application
             catch (Exception ex)
             {
                 File.WriteAllText(e.Args[vst3TestIndex + 2], "FAILED: " + ex);
+                Environment.Exit(3);
+            }
+        }
+
+        int vst3InstrumentIndex = Array.FindIndex(
+            e.Args, a => a.Equals("--vst3-instrument-test", StringComparison.OrdinalIgnoreCase));
+        if (vst3InstrumentIndex >= 0 && vst3InstrumentIndex + 3 < e.Args.Length)
+        {
+            try
+            {
+                string line = Vst3SelfTest.RunInstrument(
+                    e.Args[vst3InstrumentIndex + 1],
+                    e.Args[vst3InstrumentIndex + 2]);
+                File.WriteAllText(e.Args[vst3InstrumentIndex + 3], line);
+                Environment.Exit(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(e.Args[vst3InstrumentIndex + 3], "FAILED: " + ex);
                 Environment.Exit(3);
             }
         }
@@ -956,7 +977,9 @@ public partial class App : Application
         string line;
         try
         {
-            var r = LatencySelfTest.Benchmark(sources, outputs, seconds);
+            var r = args.Contains("--graph", StringComparer.OrdinalIgnoreCase)
+                ? LatencySelfTest.BenchmarkGraph(sources, outputs, seconds)
+                : LatencySelfTest.Benchmark(sources, outputs, seconds);
             double perSecond = r.FramesMixed / r.Seconds;
             double coresUsed = r.CpuMs / (r.Seconds * 1000.0);
             double allocPerSec = r.AllocBytes / r.Seconds / 1024.0;

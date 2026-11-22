@@ -169,9 +169,19 @@ public static class PresetValidator
             input => Index(input.ModifierIndex, modifierCount) &&
                      (Index(input.SourceIndex, sourceCount) ||
                       Index(input.InputModifierIndex, modifierCount)));
-        droppedLinks += Prune(preset.MidiBindings,
-            binding => Index(binding.ModifierIndex, modifierCount) &&
-                       Index(binding.ProcessorIndex, preset.Modifiers[binding.ModifierIndex].Processors.Count));
+        droppedLinks += Prune(preset.MidiBindings, binding =>
+        {
+            string target = string.IsNullOrWhiteSpace(binding.Target) ? "parameter" : binding.Target;
+            return target switch
+            {
+                "gain" or "mute" => Index(binding.SourceIndex, sourceCount) ||
+                                    Index(binding.OutputIndex, outputCount),
+                "parameter" => Index(binding.ModifierIndex, modifierCount) &&
+                               Index(binding.ProcessorIndex,
+                                   preset.Modifiers[binding.ModifierIndex].Processors.Count),
+                _ => false,
+            };
+        });
 
         if (droppedLinks > 0)
         {

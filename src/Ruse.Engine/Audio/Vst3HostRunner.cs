@@ -7,7 +7,7 @@ namespace Ruse.App.Audio;
 public static class Vst3HostRunner
 {
     public static void Run(string audioPipeName, string controlPipeName, string identifier,
-        string? stateBase64 = null, string? handshakeToken = null)
+        string? stateBase64 = null, string? handshakeToken = null, bool allowInstrument = false)
     {
         try
         {
@@ -17,7 +17,8 @@ public static class Vst3HostRunner
             control.Connect(15000);
 
             using var shared = Vst3SharedAudio.Open(audioPipeName);
-            using var processor = new Vst3Processor(identifier, stateBase64, start: true);
+            using var processor = new Vst3Processor(
+                identifier, stateBase64, start: true, allowInstrument: allowInstrument);
             var audioThread = new Thread(() => AudioLoop(processor, shared))
             {
                 IsBackground = true,
@@ -107,13 +108,44 @@ public static class Vst3HostRunner
     {
         using var mmcss = MmcssScope.Enter();
         var buffer = new float[Vst3SharedAudio.MaxFrames * Vst3SharedAudio.Channels];
+        var midi = new Vst3MidiEvent[Vst3SharedAudio.MaxMidiEvents];
+        double lastTempo = 120.0;
+        bool lastPlaying = false;
+        int lastReset = 0;
         try
         {
             while (true)
             {
-                if (!shared.Receive(buffer, out int frames))
+                if (!shared.Receive(buffer, midi, out int frames, out int midiCount))
                 {
                     return;
+                }
+
+                double tempo = shared.ReadTempo();
+                if (Math.Abs(tempo - lastTempo) > 0.001)
+                {
+                    processor.SetTempo(tempo);
+                    lastTempo = tempo;
+                }
+
+                int transportReset = shared.ReadTransportReset();
+                if (transportReset != lastReset)
+                {
+                    processor.ResetTransportPosition();
+                    lastReset = transportReset;
+                }
+
+                bool playing = shared.ReadTransportState();
+                if (playing != lastPlaying)
+                {
+                    processor.SetTransportState(playing);
+                    lastPlaying = playing;
+                }
+
+                for (int i = 0; i < midiCount; i++)
+                {
+                    Vst3MidiEvent value = midi[i];
+                    processor.EnqueueMidi(value.Status, value.Data1, value.Data2, value.SampleOffset);
                 }
 
                 int samples = frames * Vst3SharedAudio.Channels;
@@ -141,6 +173,7 @@ public static class Vst3HostRunner
             Status = processor.Status,
             Error = processor.Error,
             IsReady = processor.IsReady,
+            IsInstrument = processor.IsInstrument,
             HasEditor = processor.HasEditor,
             IsEditorOpen = processor.IsEditorOpen,
             LatencySamples = processor.LatencySamples,

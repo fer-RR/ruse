@@ -1549,7 +1549,6 @@ public sealed class OutputNode : IDisposable
 
             return;
         }
-
         int read = _engineBuffer.Read(mix);
         if (read < mix.Length)
         {
@@ -1755,7 +1754,7 @@ public sealed class OutputNode : IDisposable
         string message =
             $"Output '{Title}' is underrunning; adding 4 ms of latency cushion " +
             $"(total +{_latencyPenaltyMs:0} ms, step {_latencyDowngrades}/3).";
-        ThreadPool.QueueUserWorkItem(_ => Ruse.App.Diagnostics.AppLog.Info(message));
+        ThreadPool.QueueUserWorkItem(static state => Ruse.App.Diagnostics.AppLog.Info((string)state!), message);
     }
 
     private void DecayLatencyPenalty()

@@ -73,12 +73,22 @@ internal sealed class GuardedVst3Processor : IVst3Processor
         : _inner.Status;
     public string? Error => Volatile.Read(ref _faulted) != 0 ? _stallError : _inner.Error;
     public bool IsReady => Volatile.Read(ref _faulted) == 0 && _inner.IsReady;
+    public bool IsInstrument => _inner.IsInstrument;
     public bool HasEditor => _inner.HasEditor;
     public bool IsEditorOpen => _inner.IsEditorOpen;
     public IReadOnlyList<AudioParameter> Parameters => _inner.Parameters;
     public int LatencySamples => _inner.IsReady ? _inner.LatencySamples + AudioEngineConfig.BlockFrames : 0;
 
     public void Start() => _inner.Start();
+
+    public void EnqueueMidi(byte status, byte data1, byte data2, int sampleOffset = 0) =>
+        _inner.EnqueueMidi(status, data1, data2, sampleOffset);
+
+    public void SetTempo(double bpm) => _inner.SetTempo(bpm);
+
+    public void SetTransportState(bool playing) => _inner.SetTransportState(playing);
+
+    public void ResetTransportPosition() => _inner.ResetTransportPosition();
 
     public string? CaptureStateBase64() => _inner.CaptureStateBase64();
 

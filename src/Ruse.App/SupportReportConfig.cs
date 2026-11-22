@@ -9,12 +9,13 @@ internal static class SupportReportConfig
     // For release builds, fill these with the deployed Apps Script values.
     // For local testing, %APPDATA%\Ruse\support-report.json can override them:
     // { "url": "https://script.google.com/macros/s/.../exec", "token": "..." }
-    public const string DefaultUrl = "";
-    public const string DefaultToken = "";
+    public const string DefaultUrl =
+        "https://script.google.com/macros/s/AKfycbzGWhzuts5pZMk21RcYCfnXaubi9A1iPbhJEjq1UINgCpw6UiWTGWirBSbYwaOU1Ef7/exec";
+    public const string DefaultToken = "zmalqowisjxncbdheyrtfgvb";
 
-    public static string ResolveUrl() => First(DefaultUrl, ReadFile().Url);
+    public static string ResolveUrl() => First(ReadFile().Url, DefaultUrl);
 
-    public static string ResolveToken() => First(DefaultToken, ReadFile().Token);
+    public static string ResolveToken() => First(ReadFile().Token, DefaultToken);
 
     private static string First(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "";

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.IO;
-using System.IO.Compression;
 using System.Net.Http;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -177,6 +176,7 @@ internal sealed class UpdateService : IDisposable
                 return;
             }
 
+            string expectedZipName = $"Ruse-{latest.ToString(3)}-win-x64.zip";
             string? zipName = null;
             string? zipUrl = null;
             string? shaName = null;
@@ -189,8 +189,7 @@ internal sealed class UpdateService : IDisposable
                     string assetName = asset.TryGetProperty("name", out JsonElement assetNameElement)
                         ? assetNameElement.GetString() ?? ""
                         : "";
-                    if (!assetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase) ||
-                        !assetName.Contains("win-x64", StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(assetName, expectedZipName, StringComparison.OrdinalIgnoreCase))
                     {
                         continue;
                     }
@@ -226,7 +225,8 @@ internal sealed class UpdateService : IDisposable
                 }
             }
 
-            if (string.IsNullOrWhiteSpace(zipName) ||
+            if (zipName == null ||
+                !string.Equals(zipName, expectedZipName, StringComparison.OrdinalIgnoreCase) ||
                 !IsTrustedReleaseUrl(zipUrl) ||
                 string.IsNullOrWhiteSpace(shaName) ||
                 !IsTrustedReleaseUrl(shaUrl))
@@ -316,7 +316,7 @@ internal sealed class UpdateService : IDisposable
                 .Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)
                 .FirstOrDefault() ?? "";
             string actualHash = await ComputeSha256Async(zipPath);
-            if (string.IsNullOrWhiteSpace(expectedHash) ||
+            if (!IsSha256(expectedHash) ||
                 !string.Equals(expectedHash, actualHash, StringComparison.OrdinalIgnoreCase))
             {
                 File.Delete(zipPath);
@@ -329,7 +329,7 @@ internal sealed class UpdateService : IDisposable
                 Directory.Delete(stageDirectory, recursive: true);
             }
 
-            ZipFile.ExtractToDirectory(zipPath, stageDirectory, overwriteFiles: true);
+            SafeZip.ExtractToDirectory(zipPath, stageDirectory, CancellationToken.None);
             string sourceDirectory = Path.Combine(stageDirectory, "Ruse");
             if (!File.Exists(Path.Combine(sourceDirectory, "Ruse.exe")))
             {
@@ -343,6 +343,7 @@ internal sealed class UpdateService : IDisposable
                 }
             }
 
+            EnsurePackageVersion(sourceDirectory, release.Version);
             _zipPath = zipPath;
             _zipSha256 = expectedHash;
             SetState(state =>
@@ -380,9 +381,10 @@ internal sealed class UpdateService : IDisposable
         {
             string? zipPath;
             string? expectedHash;
+            ReleaseInfo? release;
             lock (_gate)
             {
-                if (_state.Status != "ready" || _zipPath == null || _zipSha256 == null)
+                if (_state.Status != "ready" || _zipPath == null || _zipSha256 == null || _release == null)
                 {
                     Interlocked.Exchange(ref _busy, 0);
                     return;
@@ -390,6 +392,7 @@ internal sealed class UpdateService : IDisposable
 
                 zipPath = _zipPath;
                 expectedHash = _zipSha256;
+                release = _release;
             }
 
             SetState(state =>
@@ -416,10 +419,7 @@ internal sealed class UpdateService : IDisposable
             verifyDirectory = Path.Combine(
                 Path.GetDirectoryName(zipPath)!,
                 "stage-verify-" + Guid.NewGuid().ToString("N"));
-            using (var archive = new ZipArchive(zipStream, ZipArchiveMode.Read, leaveOpen: true))
-            {
-                archive.ExtractToDirectory(verifyDirectory, overwriteFiles: true);
-            }
+            SafeZip.ExtractToDirectory(zipPath, verifyDirectory, CancellationToken.None);
 
             string sourceDirectory = Path.Combine(verifyDirectory, "Ruse");
             if (!File.Exists(Path.Combine(sourceDirectory, "Ruse.exe")))
@@ -568,6 +568,40 @@ internal sealed class UpdateService : IDisposable
         await using FileStream stream = File.OpenRead(path);
         byte[] hash = await SHA256.HashDataAsync(stream);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static bool IsSha256(string value) =>
+        value.Length == 64 && value.All(Uri.IsHexDigit);
+
+    private static void EnsurePackageVersion(string sourceDirectory, Version expected)
+    {
+        string assembly = Path.Combine(sourceDirectory, "Ruse.dll");
+        if (!File.Exists(assembly))
+        {
+            assembly = Path.Combine(sourceDirectory, "Ruse.exe");
+        }
+
+        if (!File.Exists(assembly))
+        {
+            throw new InvalidDataException("The update package does not contain the Ruse application.");
+        }
+
+        FileVersionInfo info = FileVersionInfo.GetVersionInfo(assembly);
+        string versionText = (info.ProductVersion ?? info.FileVersion ?? "")
+            .Split('+', '-')[0]
+            .Trim();
+        if (!Version.TryParse(versionText, out Version? actual))
+        {
+            throw new InvalidDataException("The update package has an unreadable version.");
+        }
+
+        if (actual.Major != expected.Major ||
+            actual.Minor != expected.Minor ||
+            Math.Max(actual.Build, 0) != Math.Max(expected.Build, 0))
+        {
+            throw new InvalidDataException(
+                $"The update package version {actual.ToString(3)} does not match the release {expected.ToString(3)}.");
+        }
     }
 
     private static bool IsTrustedReleaseUrl(string? url)

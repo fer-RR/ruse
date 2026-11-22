@@ -192,6 +192,8 @@ public sealed class PresetModifier
     public string? TranslatorTarget { get; set; }
     public string? TranslatorModel { get; set; }
     public string? TranslatorTextSourceId { get; set; }
+    public bool Vst3MidiEnabled { get; set; }
+    public bool Vst3MidiConfigured { get; set; }
     public double X { get; set; }
     public double Y { get; set; }
     public double? Width { get; set; }
@@ -236,6 +238,9 @@ public sealed class PresetProcessor
 
     /// <summary>For a VST3 processor: the base64 component state chunk.</summary>
     public string? PluginState { get; set; }
+
+    /// <summary>For a VST3 processor: load and render it as an instrument.</summary>
+    public bool Vst3Instrument { get; set; }
 
     /// <summary>For a convolution reverb: the impulse response file path.</summary>
     public string? IrPath { get; set; }
@@ -282,9 +287,12 @@ public sealed class PresetModifierOutputLink
 
 public sealed class PresetMidiBinding
 {
+    public string Target { get; set; } = "parameter";
     public int ModifierIndex { get; set; }
     public int ProcessorIndex { get; set; }
     public int ParameterIndex { get; set; }
+    public int SourceIndex { get; set; } = -1;
+    public int OutputIndex { get; set; } = -1;
     public int Channel { get; set; }
     public string Kind { get; set; } = "cc";
     public int Number { get; set; }
@@ -315,6 +323,7 @@ public static class PresetSerializer
                 Name = vst.DisplayName,
                 PluginPath = vst.Identifier,
                 PluginState = vst.CaptureStateBase64(),
+                Vst3Instrument = vst.IsInstrument,
             };
             AddFiniteParameters(vstEntry.Parameters, vst.Parameters);
             return vstEntry;
@@ -407,7 +416,11 @@ public static class PresetSerializer
                 return null;
             }
 
-            return Vst3ProcessorFactory.Create(entry.PluginPath, entry.PluginState, entry.Parameters);
+            return Vst3ProcessorFactory.Create(
+                entry.PluginPath,
+                entry.PluginState,
+                entry.Parameters,
+                allowInstrument: entry.Vst3Instrument);
         }
 
         if (entry.TypeId == "chain")

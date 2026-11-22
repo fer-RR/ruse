@@ -287,6 +287,11 @@ internal sealed partial class WebShellController
         string nodeId, int processorIndex, int parameterIndex,
         float? value, float? normalized, out string error)
     {
+        if (IsControlMutationBlocked(allowTransport: false, out error))
+        {
+            return false;
+        }
+
         var entry = ResolveControlNode(nodeId);
         if (entry?.Modifier == null)
         {
@@ -343,6 +348,11 @@ internal sealed partial class WebShellController
 
     internal bool TryPatchControlNode(string nodeId, ControlNodePatchRequest patch, out string error)
     {
+        if (IsControlMutationBlocked(allowTransport: false, out error))
+        {
+            return false;
+        }
+
         var entry = ResolveControlNode(nodeId);
         if (entry == null)
         {
@@ -449,6 +459,11 @@ internal sealed partial class WebShellController
 
     internal bool TrySetControlTransport(bool running, out string error)
     {
+        if (IsControlMutationBlocked(allowTransport: true, out error))
+        {
+            return false;
+        }
+
         if (running)
         {
             StartRouting();
@@ -460,6 +475,28 @@ internal sealed partial class WebShellController
 
         error = "";
         return true;
+    }
+
+    private bool IsControlMutationBlocked(bool allowTransport, out string error)
+    {
+        if (Volatile.Read(ref _storageChangeBusy) != 0)
+        {
+            error = "A storage folder change is in progress; try again when it finishes.";
+            return true;
+        }
+
+        if (!allowTransport &&
+            (_routingStartTask is { IsCompleted: false } ||
+             _routingStopTask is { IsCompleted: false } ||
+             OfflinePrepareActive ||
+             _supportExporting))
+        {
+            error = "Audio is busy; try again in a moment.";
+            return true;
+        }
+
+        error = "";
+        return false;
     }
 
     internal string HandleControlWebSocketMessage(string json)

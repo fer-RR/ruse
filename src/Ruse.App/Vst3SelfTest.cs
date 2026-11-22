@@ -1,3 +1,5 @@
+using System.IO;
+using NAudio.Wave;
 using Ruse.App.Audio;
 
 namespace Ruse.App;
@@ -101,6 +103,94 @@ internal static class Vst3SelfTest
         return $"name={processor.PluginName}; vendor={processor.Vendor}; version={processor.Version}; " +
                $"parameters={processor.Parameters.Count}; latency={processor.LatencySamples} frames; " +
                $"editor={processor.HasEditor}; rms={rms:0.0000}; state={state}";
+    }
+
+    public static string RunInstrument(
+        string identifier,
+        string outputPath,
+        int timeoutSeconds = 90)
+    {
+        try
+        {
+            using IVst3Processor processor = Vst3ProcessorFactory.CreateInstrument(
+                identifier, start: true);
+            DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+            while (!processor.IsReady && processor.Error == null && DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(50);
+            }
+
+            if (!processor.IsReady)
+            {
+                return $"FAILED: {processor.Error ?? "timed out waiting for the instrument"}";
+            }
+
+            string? directory = Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            const int frames = 240;
+            var block = new float[frames * 2];
+            double peak = 0;
+            double sum = 0;
+            long measured = 0;
+            processor.SetTempo(120);
+            processor.SetTransportState(true);
+            processor.ResetTransportPosition();
+
+            long clockStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            using (var writer = new WaveFileWriter(
+                       outputPath, new WaveFormat(48000, 24, 2)))
+            {
+                for (int current = 0; current < 2000; current++)
+                {
+                    Array.Clear(block);
+                    if (current == 800)
+                    {
+                        processor.EnqueueMidi(0x90, 60, 100);
+                    }
+                    else if (current == 1400)
+                    {
+                        processor.EnqueueMidi(0x80, 60, 0);
+                    }
+
+                    processor.Process(block, frames);
+                    writer.WriteSamples(block, 0, block.Length);
+                    if (current < 100)
+                    {
+                        continue;
+                    }
+
+                    for (int i = 0; i < block.Length; i++)
+                    {
+                        double value = block[i];
+                        peak = Math.Max(peak, Math.Abs(value));
+                        sum += value * value;
+                        measured++;
+                    }
+
+                    long due = clockStart + (long)((current + 1) * (double)frames /
+                        AudioEngineConfig.SampleRate * System.Diagnostics.Stopwatch.Frequency);
+                    while (System.Diagnostics.Stopwatch.GetTimestamp() < due)
+                    {
+                        Thread.Sleep(1);
+                    }
+                }
+            }
+
+            processor.SetTransportState(false);
+            double rms = measured > 0 ? Math.Sqrt(sum / measured) : 0;
+            return $"name={processor.PluginName}; vendor={processor.Vendor}; " +
+                   $"instrument={processor.IsInstrument}; parameters={processor.Parameters.Count}; " +
+                   $"latency={processor.LatencySamples} frames; editor={processor.HasEditor}; " +
+                   $"peak={peak:0.0000}; rms={rms:0.0000}; file={outputPath}";
+        }
+        catch (Exception ex)
+        {
+            return "FAILED: " + ex.GetBaseException().Message;
+        }
     }
 
     public static string Benchmark(string identifier, int blocks = 2000, int warmup = 200,
