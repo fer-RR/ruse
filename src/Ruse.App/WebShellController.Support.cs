@@ -211,23 +211,48 @@ internal sealed partial class WebShellController
         try
         {
             using var enumerator = new MMDeviceEnumerator();
-            using var defaultRender = enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
-            using var defaultCapture = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia);
-            lines.Add($"Default output: {defaultRender.FriendlyName}");
-            lines.Add($"Default input: {defaultCapture.FriendlyName}");
+            TryAddDefaultEndpoint(lines, enumerator, DataFlow.Render, "Default output");
+            TryAddDefaultEndpoint(lines, enumerator, DataFlow.Capture, "Default input");
             lines.Add("");
-            lines.Add("Render endpoints:");
-            foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
-            {
-                using (device)
-                {
-                    lines.Add($"  {device.FriendlyName} [{device.ID}]");
-                }
-            }
+            AddEndpoints(lines, enumerator, DataFlow.Render, "Render endpoints");
+            lines.Add("");
+            AddEndpoints(lines, enumerator, DataFlow.Capture, "Capture endpoints");
+        }
+        catch (Exception ex)
+        {
+            lines.Add("Could not enumerate audio devices: " + ex.Message);
+        }
 
-            lines.Add("");
-            lines.Add("Capture endpoints:");
-            foreach (var device in enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active))
+        return SanitizeSupportText(string.Join(Environment.NewLine, lines));
+    }
+
+    private static void TryAddDefaultEndpoint(
+        List<string> lines,
+        MMDeviceEnumerator enumerator,
+        DataFlow flow,
+        string label)
+    {
+        try
+        {
+            using var device = enumerator.GetDefaultAudioEndpoint(flow, Role.Multimedia);
+            lines.Add($"{label}: {device.FriendlyName}");
+        }
+        catch (Exception ex)
+        {
+            lines.Add($"{label}: unavailable ({ex.Message})");
+        }
+    }
+
+    private static void AddEndpoints(
+        List<string> lines,
+        MMDeviceEnumerator enumerator,
+        DataFlow flow,
+        string label)
+    {
+        lines.Add(label + ":");
+        try
+        {
+            foreach (var device in enumerator.EnumerateAudioEndPoints(flow, DeviceState.Active))
             {
                 using (device)
                 {
@@ -237,10 +262,8 @@ internal sealed partial class WebShellController
         }
         catch (Exception ex)
         {
-            lines.Add("Could not enumerate audio devices: " + ex.Message);
+            lines.Add("  unavailable (" + ex.Message + ")");
         }
-
-        return SanitizeSupportText(string.Join(Environment.NewLine, lines));
     }
 
     private string BuildRoutesReport()

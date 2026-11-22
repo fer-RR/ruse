@@ -56,6 +56,43 @@ try {
     }
 
     Copy-Item -LiteralPath $vstNative -Destination (Join-Path $appDir "ownvst3.dll") -Force
+
+    # Native inference and VST3 DLLs depend on the Visual C++ runtime. Windows
+    # does not always ship the redistributable on older or clean machines, so
+    # deploy the app-local CRT next to Ruse.exe.
+    $vcFiles = @(
+        "concrt140.dll", "msvcp140.dll", "msvcp140_1.dll", "msvcp140_2.dll",
+        "msvcp140_atomic_wait.dll", "msvcp140_codecvt_ids.dll", "vccorlib140.dll",
+        "vcruntime140.dll", "vcruntime140_1.dll", "vcruntime140_threads.dll"
+    )
+    $vcSource = $null
+    $vcRedistRoot = "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\VC\Redist\MSVC"
+    if (Test-Path -LiteralPath $vcRedistRoot) {
+        $vcSource = Get-ChildItem -LiteralPath $vcRedistRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "x64\Microsoft.VC145.CRT" } |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            Select-Object -First 1
+    }
+
+    if ($null -eq $vcSource) {
+        $vcSource = Join-Path $env:WINDIR "System32"
+    }
+
+    $vcCopied = 0
+    foreach ($file in $vcFiles) {
+        $source = Join-Path $vcSource $file
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $appDir $file) -Force
+            $vcCopied++
+        }
+    }
+
+    if ($vcCopied -eq 0) {
+        throw "The Visual C++ runtime DLLs were not found."
+    }
+
+    Write-Host "Bundled Visual C++ runtime: $vcCopied file(s)." -ForegroundColor Cyan
     $linuxVulkan = Join-Path $appDir "runtimes\vulkan\linux-x64"
     if (Test-Path -LiteralPath $linuxVulkan) {
         Remove-Item -LiteralPath $linuxVulkan -Recurse -Force
@@ -115,6 +152,12 @@ try {
     $licenseDir = Join-Path $repo "LICENSES"
     if (Test-Path -LiteralPath $licenseDir) {
         Copy-Item -LiteralPath $licenseDir -Destination (Join-Path $stage "LICENSES") -Recurse
+    }
+
+    $vcLicense = "C:\Program Files (x86)\Microsoft Visual Studio\18\BuildTools\Licenses\1033\Redist.txt"
+    if (Test-Path -LiteralPath $vcLicense) {
+        Copy-Item -LiteralPath $vcLicense `
+            -Destination (Join-Path $stage "LICENSES\Microsoft-VC-Runtime-Redist.txt") -Force
     }
 
     Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue

@@ -34,6 +34,7 @@ public sealed class SourceNode : IDisposable
     private double _fileDurationSeconds;
     private long _driftFrames;
     private long _driftLastTicks;
+    private long _driftLastPacketTicks;
     private double _driftPpm;
     private double _outputClockPpm = double.NaN;
     private bool _ttsStreaming;
@@ -678,6 +679,9 @@ public sealed class SourceNode : IDisposable
 
         _faulted = false;
         _stopRequested = false;
+        _driftFrames = 0;
+        _driftLastTicks = 0;
+        _driftLastPacketTicks = 0;
 
         var subscriptions = Volatile.Read(ref _subscriptionSnapshot);
         for (int i = 0; i < subscriptions.Length; i++)
@@ -1076,6 +1080,7 @@ public sealed class SourceNode : IDisposable
         _converter = new FormatConverter(channels, sampleRate);
         _driftFrames = 0;
         _driftLastTicks = Stopwatch.GetTimestamp();
+        _driftLastPacketTicks = _driftLastTicks;
         _driftPpm = 0;
         if (formatChanged)
         {
@@ -1276,6 +1281,16 @@ public sealed class SourceNode : IDisposable
         }
 
         long now = Stopwatch.GetTimestamp();
+        if (_driftLastPacketTicks != 0 &&
+            now - _driftLastPacketTicks > Stopwatch.Frequency / 4)
+        {
+            _driftFrames = 0;
+            _driftLastTicks = now;
+            _driftLastPacketTicks = now;
+            return;
+        }
+
+        _driftLastPacketTicks = now;
         if (_driftLastTicks == 0)
         {
             _driftLastTicks = now;

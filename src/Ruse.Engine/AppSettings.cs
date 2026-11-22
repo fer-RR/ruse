@@ -339,6 +339,7 @@ public sealed class AppSettings
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
+        NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals,
     };
     public static AppSettings Load()
     {
