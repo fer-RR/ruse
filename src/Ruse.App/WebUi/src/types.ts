@@ -245,6 +245,8 @@ export interface NodeModel {
   vst3EditorOpen?: boolean;
   vst3LatencyMs?: number;
   vst3MidiEnabled?: boolean;
+  vst3MidiChannel?: number;
+  vst3TransportEnabled?: boolean;
   midiGainBinding?: string;
   midiMuteBinding?: string;
   midiGainLearning?: boolean;

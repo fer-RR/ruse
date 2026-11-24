@@ -92,6 +92,8 @@ internal sealed class GuardedVst3Processor : IVst3Processor
 
     public string? CaptureStateBase64() => _inner.CaptureStateBase64();
 
+    public bool ApplyStateBase64(string stateBase64) => _inner.ApplyStateBase64(stateBase64);
+
     public bool OpenEditor(string title) => _inner.OpenEditor(title);
 
     public void CloseEditor() => _inner.CloseEditor();

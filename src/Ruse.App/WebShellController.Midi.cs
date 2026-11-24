@@ -1,6 +1,8 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Windows.Threading;
 using Ruse.App.Audio;
+using Ruse.App.Diagnostics;
 
 namespace Ruse.App;
 
@@ -29,10 +31,32 @@ internal sealed partial class WebShellController
 
     private const int MidiClockWindow = 25;
 
+    private sealed record Vst3MidiTarget(
+        IVst3Processor Processor,
+        int Channel,
+        bool TransportEnabled);
+
+    private sealed record MidiBindingSnapshot(
+        string Target,
+        int ProcessorIndex,
+        int ParameterIndex,
+        int Channel,
+        MidiInputKind Kind,
+        int Number,
+        float Min,
+        float Max);
+
     private readonly MidiInputManager _midi = new();
     private readonly List<MidiBindingEntry> _midiBindings = new();
+    private readonly ConcurrentQueue<MidiInputEvent> _midiUiQueue = new();
+    private int _midiUiScheduled;
+    private bool _midiDeviceWasAvailable = true;
+    private string _midiDeviceSignature = "";
+    private int _midiMonitorBusy;
+    private int _midiOpenFailures;
+    private long _midiOpenRetryAtTicks;
     private readonly long[] _midiClockTicks = new long[MidiClockWindow];
-    private IVst3Processor[] _vst3MidiTargets = Array.Empty<IVst3Processor>();
+    private Vst3MidiTarget[] _vst3MidiTargets = Array.Empty<Vst3MidiTarget>();
     private int _midiClockIndex;
     private int _midiClockCount;
     private long _midiLastClockTimestamp;
@@ -46,19 +70,29 @@ internal sealed partial class WebShellController
         _midi.MessageReceived += OnMidiMessageReceived;
         _midi.ClockReceived += OnMidiClockReceived;
         _midi.TransportReceived += OnMidiTransportReceived;
-        _midi.RefreshDevices();
-        ConfigureMidi();
+        _ = ConfigureMidiAsync();
     }
 
-    private void ConfigureMidi()
+    private async Task ConfigureMidiAsync()
     {
+        PanicMidiTargets();
+        _midiDeviceWasAvailable = true;
+        _midiOpenFailures = 0;
+        _midiOpenRetryAtTicks = 0;
         if (!_settings.MidiEnabled)
         {
-            _midi.Close();
+            await _midi.CloseAsync().ConfigureAwait(true);
             return;
         }
 
-        _midi.RefreshDevices();
+        await Task.Run(_midi.RefreshDevices).ConfigureAwait(true);
+        if (_disposed || !_settings.MidiEnabled)
+        {
+            await _midi.CloseAsync().ConfigureAwait(true);
+            return;
+        }
+
+        _midiDeviceSignature = MidiDeviceSignature();
         if (string.IsNullOrWhiteSpace(_settings.MidiInputDevice))
         {
             _settings.MidiInputDevice = _midi.Devices
@@ -68,7 +102,166 @@ internal sealed partial class WebShellController
             _settings.Save();
         }
 
-        _midi.Open(_settings.MidiInputDevice);
+        await TryOpenMidiAsync(_settings.MidiInputDevice).ConfigureAwait(true);
+        PublishSettings();
+    }
+
+    private async Task TryOpenMidiAsync(string deviceName)
+    {
+        try
+        {
+            await _midi.OpenAsync(deviceName).ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning("Could not open the MIDI input: " + ex.Message);
+        }
+    }
+
+    private void MonitorMidiDevice()
+    {
+        if (_disposed ||
+            !_settings.MidiEnabled ||
+            string.IsNullOrWhiteSpace(_settings.MidiInputDevice) ||
+            Interlocked.Exchange(ref _midiMonitorBusy, 1) != 0)
+        {
+            return;
+        }
+
+        string deviceName = _settings.MidiInputDevice;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                _midi.RefreshDevices();
+                string signature = string.Join("|", _midi.Devices.Select(device => device.Name));
+                bool available = _midi.Devices.Any(device =>
+                    string.Equals(device.Name, deviceName, StringComparison.OrdinalIgnoreCase));
+                try
+                {
+                    _ = _window.Dispatcher.BeginInvoke(new Action(() =>
+                        ApplyMidiDeviceMonitor(deviceName, signature, available)));
+                }
+                catch
+                {
+                }
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning("MIDI device monitor failed: " + ex.Message);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _midiMonitorBusy, 0);
+            }
+        });
+    }
+
+    private void ApplyMidiDeviceMonitor(string deviceName, string signature, bool available)
+    {
+        if (_disposed ||
+            !_settings.MidiEnabled ||
+            !string.Equals(_settings.MidiInputDevice, deviceName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        bool listChanged = !string.Equals(signature, _midiDeviceSignature, StringComparison.Ordinal);
+        if (listChanged)
+        {
+            _midiDeviceSignature = signature;
+            PublishSettings();
+        }
+
+        if (!available)
+        {
+            if (_midiDeviceWasAvailable)
+            {
+                PanicMidiTargets();
+                _midiDeviceWasAvailable = false;
+                _midiOpenFailures = 0;
+                _midiOpenRetryAtTicks = 0;
+                _ = CloseMidiDeviceAsync(deviceName);
+            }
+
+            return;
+        }
+
+        if (_midiDeviceWasAvailable || Environment.TickCount64 < _midiOpenRetryAtTicks)
+        {
+            return;
+        }
+
+        _midiDeviceWasAvailable = true;
+        _ = OpenMidiDeviceAsync(deviceName);
+    }
+
+    private async Task OpenMidiDeviceAsync(string deviceName)
+    {
+        await TryOpenMidiAsync(deviceName).ConfigureAwait(true);
+        if (_disposed ||
+            !_settings.MidiEnabled ||
+            !string.Equals(_settings.MidiInputDevice, deviceName, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        bool open = _midi.IsOpen;
+        if (open)
+        {
+            _midiOpenFailures = 0;
+            _midiOpenRetryAtTicks = 0;
+        }
+        else
+        {
+            // Let the monitor try again after a widening backoff instead of
+            // blocking forever on a transient open failure.
+            _midiDeviceWasAvailable = false;
+            _midiOpenFailures = Math.Min(_midiOpenFailures + 1, 6);
+            long backoffMs = Math.Min(60_000L, 5_000L << Math.Min(_midiOpenFailures - 1, 4));
+            _midiOpenRetryAtTicks = Environment.TickCount64 + backoffMs;
+        }
+
+        SetStatus(
+            open
+                ? $"MIDI input '{deviceName}' connected."
+                : $"Could not open MIDI input '{deviceName}'. Retrying.",
+            isError: !open);
+        PublishSettings();
+    }
+
+    private async Task CloseMidiDeviceAsync(string deviceName)
+    {
+        try
+        {
+            await _midi.CloseAsync().ConfigureAwait(true);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning("Could not close the MIDI input: " + ex.Message);
+        }
+
+        if (_disposed)
+        {
+            return;
+        }
+
+        _midi.SetError($"MIDI input '{deviceName}' disconnected.");
+        SetStatus($"MIDI input '{deviceName}' disconnected.", isError: true);
+        PublishSettings();
+    }
+
+    private string MidiDeviceSignature() =>
+        string.Join("|", _midi.Devices.Select(device => device.Name));
+
+    private async Task RefreshMidiDevicesAsync()
+    {
+        await Task.Run(_midi.RefreshDevices).ConfigureAwait(true);
+        if (!_disposed)
+        {
+            _midiDeviceSignature = MidiDeviceSignature();
+            PublishSettings();
+        }
     }
 
     private void OnMidiMessageReceived(MidiInputEvent message)
@@ -80,24 +273,59 @@ internal sealed partial class WebShellController
 
         RouteMidiToVst3(message);
 
-        try
+        _midiUiQueue.Enqueue(message);
+        if (Interlocked.Exchange(ref _midiUiScheduled, 1) == 0)
         {
-            _window.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            try
             {
-                if (!_disposed)
-                {
-                    ApplyMidiMessage(message);
-                }
-            }));
+                _window.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(DrainMidiUiQueue));
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _midiUiScheduled, 0);
+            }
         }
-        catch
+    }
+
+    private void DrainMidiUiQueue()
+    {
+        if (_disposed)
         {
+            return;
+        }
+
+        int processed = 0;
+        while (processed < 512 && _midiUiQueue.TryDequeue(out var message))
+        {
+            try
+            {
+                ApplyMidiMessage(message);
+            }
+            catch (Exception ex)
+            {
+                AppLog.Warning("MIDI mapping failed: " + ex.Message);
+            }
+
+            processed++;
+        }
+
+        Interlocked.Exchange(ref _midiUiScheduled, 0);
+        if (!_midiUiQueue.IsEmpty && Interlocked.Exchange(ref _midiUiScheduled, 1) == 0)
+        {
+            try
+            {
+                _window.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(DrainMidiUiQueue));
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _midiUiScheduled, 0);
+            }
         }
     }
 
     private void RouteMidiToVst3(MidiInputEvent message)
     {
-        IVst3Processor[] targets = Volatile.Read(ref _vst3MidiTargets);
+        Vst3MidiTarget[] targets = Volatile.Read(ref _vst3MidiTargets);
         if (targets.Length == 0)
         {
             return;
@@ -112,7 +340,13 @@ internal sealed partial class WebShellController
 
         for (int i = 0; i < targets.Length; i++)
         {
-            targets[i].EnqueueMidi(status, number, value);
+            var target = targets[i];
+            if (!MidiRouting.AcceptsChannel(target.Channel, message.Channel))
+            {
+                continue;
+            }
+
+            target.Processor.EnqueueMidi(status, number, value);
         }
     }
 
@@ -152,10 +386,37 @@ internal sealed partial class WebShellController
             20.0,
             300.0);
         _midiLastTempoTimestamp = now;
-        IVst3Processor[] targets = Volatile.Read(ref _vst3MidiTargets);
+        Vst3MidiTarget[] targets = Volatile.Read(ref _vst3MidiTargets);
         for (int i = 0; i < targets.Length; i++)
         {
-            targets[i].SetTempo(bpm);
+            if (targets[i].TransportEnabled)
+            {
+                targets[i].Processor.SetTempo(bpm);
+            }
+        }
+
+        QueueTimelineTempo(bpm);
+    }
+
+    private void QueueTimelineTempo(double bpm)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = _window.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+            {
+                if (!_disposed && _timeline != null)
+                {
+                    TimelineSetTempo(bpm);
+                }
+            }));
+        }
+        catch
+        {
         }
     }
 
@@ -167,15 +428,26 @@ internal sealed partial class WebShellController
         }
 
         bool playing = kind != MidiTransportKind.Stop;
-        IVst3Processor[] targets = Volatile.Read(ref _vst3MidiTargets);
+        Vst3MidiTarget[] targets = Volatile.Read(ref _vst3MidiTargets);
         for (int i = 0; i < targets.Length; i++)
         {
-            if (kind == MidiTransportKind.Start)
+            var target = targets[i];
+            if (!target.TransportEnabled)
             {
-                targets[i].ResetTransportPosition();
+                continue;
             }
 
-            targets[i].SetTransportState(playing);
+            if (kind == MidiTransportKind.Start)
+            {
+                target.Processor.ResetTransportPosition();
+            }
+
+            target.Processor.SetTransportState(playing);
+        }
+
+        if (!playing)
+        {
+            PanicMidiTargets();
         }
 
         try
@@ -185,6 +457,23 @@ internal sealed partial class WebShellController
                 if (_disposed)
                 {
                     return;
+                }
+
+                if (_timeline != null)
+                {
+                    if (kind == MidiTransportKind.Start)
+                    {
+                        _timeline.Seek(0);
+                    }
+
+                    if (playing)
+                    {
+                        TimelinePlay();
+                    }
+                    else
+                    {
+                        TimelinePause();
+                    }
                 }
 
                 if (playing)
@@ -202,13 +491,28 @@ internal sealed partial class WebShellController
         }
     }
 
+    private static void SendAllNotesOff(IVst3Processor processor) =>
+        MidiRouting.EnqueueAllNotesOff((status, data1, data2) =>
+            processor.EnqueueMidi(status, data1, data2));
+
+    private void PanicMidiTargets()
+    {
+        Vst3MidiTarget[] targets = Volatile.Read(ref _vst3MidiTargets);
+        for (int i = 0; i < targets.Length; i++)
+        {
+            SendAllNotesOff(targets[i].Processor);
+        }
+    }
+
     private void RefreshVst3MidiTargets()
     {
-        IVst3Processor[] targets = _nodes.Values
+        Vst3MidiTarget[] targets = _nodes.Values
             .Where(entry => entry.Vst3MidiEnabled)
-            .Select(entry => entry.Modifier?.Processors.OfType<IVst3Processor>().FirstOrDefault())
-            .Where(processor => processor != null)
-            .Select(processor => processor!)
+            .Select(entry => entry.Modifier?.Processors.OfType<IVst3Processor>().FirstOrDefault() is { } processor
+                ? new Vst3MidiTarget(processor, entry.Vst3MidiChannel, entry.Vst3TransportEnabled)
+                : null)
+            .Where(target => target != null)
+            .Select(target => target!)
             .ToArray();
         Volatile.Write(ref _vst3MidiTargets, targets);
     }
@@ -216,15 +520,55 @@ internal sealed partial class WebShellController
     private void SetVst3Midi(string id, bool enabled)
     {
         if (!_nodes.TryGetValue(id, out var entry) ||
-            entry.Modifier?.Processors.OfType<IVst3Processor>().FirstOrDefault() == null)
+            entry.Modifier?.Processors.OfType<IVst3Processor>().FirstOrDefault() is not { } processor)
         {
             return;
+        }
+
+        if (!enabled)
+        {
+            SendAllNotesOff(processor);
         }
 
         entry.Vst3MidiEnabled = enabled;
         entry.Vst3MidiConfigured = true;
         RefreshVst3MidiTargets();
         SetStatus(enabled ? $"{entry.Title}: receiving MIDI input." : $"{entry.Title}: MIDI input disabled.");
+        PublishGraph();
+    }
+
+    private void SetVst3MidiChannel(string id, int channel)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Modifier?.Processors.OfType<IVst3Processor>().FirstOrDefault() is not { } processor)
+        {
+            return;
+        }
+
+        SendAllNotesOff(processor);
+        entry.Vst3MidiChannel = Math.Clamp(channel, -1, 15);
+        entry.Vst3MidiConfigured = true;
+        RefreshVst3MidiTargets();
+        SetStatus(entry.Vst3MidiChannel < 0
+            ? $"{entry.Title}: receiving all MIDI channels."
+            : $"{entry.Title}: receiving MIDI channel {entry.Vst3MidiChannel + 1}.");
+        PublishGraph();
+    }
+
+    private void SetVst3Transport(string id, bool enabled)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Modifier?.Processors.OfType<IVst3Processor>().FirstOrDefault() == null)
+        {
+            return;
+        }
+
+        entry.Vst3TransportEnabled = enabled;
+        entry.Vst3MidiConfigured = true;
+        RefreshVst3MidiTargets();
+        SetStatus(enabled
+            ? $"{entry.Title}: follows MIDI clock and transport."
+            : $"{entry.Title}: ignores MIDI clock and transport.");
         PublishGraph();
     }
 
@@ -539,6 +883,47 @@ internal sealed partial class WebShellController
         lock (_midiParameterLock)
         {
             _midiParameterChanges.Clear();
+        }
+    }
+
+    private List<MidiBindingSnapshot> SnapshotMidiBindings(string nodeId) =>
+        _midiBindings
+            .Where(binding => string.Equals(binding.NodeId, nodeId, StringComparison.Ordinal))
+            .Select(binding => new MidiBindingSnapshot(
+                binding.Target,
+                binding.ProcessorIndex,
+                binding.ParameterIndex,
+                binding.Channel,
+                binding.Kind,
+                binding.Number,
+                binding.Min,
+                binding.Max))
+            .ToList();
+
+    private void RestoreMidiBindingsForNode(
+        NodeEntry entry,
+        IReadOnlyList<MidiBindingSnapshot>? bindings)
+    {
+        _midiBindings.RemoveAll(binding => string.Equals(binding.NodeId, entry.Id, StringComparison.Ordinal));
+        if (bindings == null)
+        {
+            return;
+        }
+
+        foreach (var binding in bindings)
+        {
+            _midiBindings.Add(new MidiBindingEntry
+            {
+                NodeId = entry.Id,
+                Target = binding.Target,
+                ProcessorIndex = binding.ProcessorIndex,
+                ParameterIndex = binding.ParameterIndex,
+                Channel = binding.Channel,
+                Kind = binding.Kind,
+                Number = binding.Number,
+                Min = binding.Min,
+                Max = binding.Max,
+            });
         }
     }
 

@@ -194,6 +194,8 @@ public sealed class PresetModifier
     public string? TranslatorTextSourceId { get; set; }
     public bool Vst3MidiEnabled { get; set; }
     public bool Vst3MidiConfigured { get; set; }
+    public int Vst3MidiChannel { get; set; } = -1;
+    public bool Vst3TransportEnabled { get; set; } = true;
     public double X { get; set; }
     public double Y { get; set; }
     public double? Width { get; set; }
@@ -269,6 +271,9 @@ public sealed class PresetSidechainLink
     public int SourceIndex { get; set; }
     public int? SourceModifierIndex { get; set; }
     public int ModifierIndex { get; set; }
+    public float Gain { get; set; } = 1f;
+    public bool Inverted { get; set; }
+    public bool Enabled { get; set; } = true;
 }
 
 public sealed class PresetBargeKeyLink

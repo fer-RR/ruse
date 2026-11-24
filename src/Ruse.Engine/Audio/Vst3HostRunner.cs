@@ -71,6 +71,9 @@ public static class Vst3HostRunner
                             response.Ok = true;
                             response.State = processor.CaptureStateBase64();
                             break;
+                        case "load-state":
+                            response.Ok = processor.ApplyStateBase64(request.State ?? "");
+                            break;
                         case "open-editor":
                             response.Ok = processor.OpenEditor("VST3 editor");
                             break;

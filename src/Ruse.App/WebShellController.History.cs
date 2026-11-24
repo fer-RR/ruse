@@ -128,7 +128,12 @@ internal sealed partial class WebShellController
         float FilePitchCents = 0f,
         bool FileTapeMode = false,
         string? TextContent = null,
-        string? TextFileName = null);
+        string? TextFileName = null,
+        bool Vst3MidiEnabled = false,
+        bool Vst3MidiConfigured = false,
+        int Vst3MidiChannel = -1,
+        bool Vst3TransportEnabled = true,
+        List<MidiBindingSnapshot>? MidiBindings = null);
 
     private void PushAction(
         string label, Action undo, Action redo,
@@ -225,7 +230,12 @@ internal sealed partial class WebShellController
             entry.X, entry.Y, entry.Width, entry.Height, entry.MicHint, SourceKind.Application, null, null, null,
             false, false, null, AudioFileFormat.Wav24, RecorderMode.Off.ToString(), false,
             new List<PresetProcessor>(), 1, false, true, null, null, null, false,
-            ControlId: entry.ControlId);
+            ControlId: entry.ControlId,
+            Vst3MidiEnabled: entry.Vst3MidiEnabled,
+            Vst3MidiConfigured: entry.Vst3MidiConfigured,
+            Vst3MidiChannel: entry.Vst3MidiChannel,
+            Vst3TransportEnabled: entry.Vst3TransportEnabled,
+            MidiBindings: SnapshotMidiBindings(entry.Id));
 
         if (entry.Kind == "text")
         {
@@ -351,6 +361,7 @@ internal sealed partial class WebShellController
                     snapshot.NetworkPort, snapshot.ChatPort);
                 entry.Width = snapshot.Width;
                 entry.Height = snapshot.Height;
+                RestoreMidiBindingsForNode(entry, snapshot.MidiBindings);
                 return entry;
             }
 
@@ -401,6 +412,7 @@ internal sealed partial class WebShellController
                 }
                 sourceEntry.Width = snapshot.Width;
                 sourceEntry.Height = snapshot.Height;
+                RestoreMidiBindingsForNode(sourceEntry, snapshot.MidiBindings);
                 return sourceEntry;
             }
 
@@ -443,6 +455,7 @@ internal sealed partial class WebShellController
                 var outputEntry = RegisterOutput(output, snapshot.X, snapshot.Y, micHint, snapshot.Id, snapshot.ControlId);
                 outputEntry.Width = snapshot.Width;
                 outputEntry.Height = snapshot.Height;
+                RestoreMidiBindingsForNode(outputEntry, snapshot.MidiBindings);
                 return outputEntry;
             }
 
@@ -472,6 +485,12 @@ internal sealed partial class WebShellController
                     snapshot.TranslatorTarget, snapshot.TranslatorModel, snapshot.ControlId);
                 modifierEntry.Width = snapshot.Width;
                 modifierEntry.Height = snapshot.Height;
+                modifierEntry.Vst3MidiEnabled = snapshot.Vst3MidiEnabled;
+                modifierEntry.Vst3MidiConfigured = snapshot.Vst3MidiConfigured;
+                modifierEntry.Vst3MidiChannel = Math.Clamp(snapshot.Vst3MidiChannel, -1, 15);
+                modifierEntry.Vst3TransportEnabled = snapshot.Vst3TransportEnabled;
+                RestoreMidiBindingsForNode(modifierEntry, snapshot.MidiBindings);
+                RefreshVst3MidiTargets();
                 if (modifierEntry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true)
                 {
                     modifierEntry.TranslatorTextSourceId = snapshot.TranslatorTextSourceId;

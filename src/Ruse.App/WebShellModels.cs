@@ -216,6 +216,8 @@ internal sealed class NodeDto
     public bool Vst3EditorOpen { get; set; }
     public int Vst3LatencyMs { get; set; }
     public bool Vst3MidiEnabled { get; set; }
+    public int Vst3MidiChannel { get; set; } = -1;
+    public bool Vst3TransportEnabled { get; set; } = true;
     public string? MidiGainBinding { get; set; }
     public string? MidiMuteBinding { get; set; }
     public bool MidiGainLearning { get; set; }

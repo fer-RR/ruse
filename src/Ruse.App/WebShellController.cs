@@ -56,6 +56,7 @@ internal sealed partial class WebShellController : IDisposable
     private int _clockRefreshTick;
     private readonly DispatcherTimer _appsTimer;
     private readonly DispatcherTimer _devicesTimer;
+    private readonly DispatcherTimer _midiDeviceTimer;
     private readonly DispatcherTimer _updateTimer;
     private CoreWebView2? _core;
     private WebView2? _webView;
@@ -123,7 +124,8 @@ internal sealed partial class WebShellController : IDisposable
         _updates = new UpdateService(this);
         InitializeChat();
         ModelRuntime.UseGpu = _settings.UseGpu;
-        Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
+        _settings.IsolateVst3 = true;
+        Vst3ProcessorFactory.UseIsolation = true;
         OutputNode.AggressiveCushion = _settings.AggressiveOutputCushion;
         OutputNode.ClipGuardEnabled = _settings.ClipGuard;
         OutputNode.LowLatencyWasapi = _settings.LowLatencyWasapi;
@@ -156,6 +158,9 @@ internal sealed partial class WebShellController : IDisposable
             _devicesTimer.Stop();
             RefreshDevicesIfChanged(force: true);
         };
+        _midiDeviceTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _midiDeviceTimer.Tick += (_, _) => MonitorMidiDevice();
+        _midiDeviceTimer.Start();
         _updateTimer = new DispatcherTimer { Interval = TimeSpan.FromMinutes(30) };
         _updateTimer.Tick += (_, _) => _ = _updates.MaybeAutoCheckAsync();
     }
@@ -543,7 +548,7 @@ internal sealed partial class WebShellController : IDisposable
             case "midi-unbind": ClearMidiBinding(String(message, "id"), (int)Number(message, "processor"), (int)Number(message, "parameter")); break;
             case "midi-learn-node": StartNodeMidiLearn(String(message, "id"), String(message, "target")); break;
             case "midi-unbind-node": ClearNodeMidiBinding(String(message, "id"), String(message, "target")); break;
-            case "midi-refresh": _midi.RefreshDevices(); PublishSettings(); break;
+            case "midi-refresh": _ = RefreshMidiDevicesAsync(); break;
             case "param": SetParameter(message); break;
             case "effect-enabled": SetEffectEnabled(String(message, "id"), Bool(message, "value")); break;
             case "retry-effects": RetryEffectChain(String(message, "id")); break;
@@ -602,6 +607,10 @@ internal sealed partial class WebShellController : IDisposable
             case "network-chat-port": SetNetworkChatPort(String(message, "id"), (int)Number(message, "value", ChatService.DefaultPort)); break;
             case "vst3-editor": SetVst3Editor(String(message, "id"), Bool(message, "open")); break;
             case "vst3-midi": SetVst3Midi(String(message, "id"), Bool(message, "enabled")); break;
+            case "vst3-midi-channel": SetVst3MidiChannel(String(message, "id"), (int)Number(message, "channel", -1)); break;
+            case "vst3-transport": SetVst3Transport(String(message, "id"), Bool(message, "enabled")); break;
+            case "vst3-preset-save": _ = RunVst3PresetActionAsync(() => SaveVst3PresetAsync(String(message, "id"))); break;
+            case "vst3-preset-load": _ = RunVst3PresetActionAsync(() => LoadVst3PresetAsync(String(message, "id"))); break;
             case "vst3-rescan": RescanVst3Plugins(); break;
             case "rename": RenameNode(String(message, "id"), String(message, "title")); break;
             case "freeze-effects": FreezeSourceEffects(String(message, "id")); break;
@@ -637,6 +646,7 @@ internal sealed partial class WebShellController : IDisposable
             case "recorder-autosave": SetRecorderAutoSave(String(message, "id"), Bool(message, "value")); break;
             case "recorder-save-location": SetRecorderSaveLocation(String(message, "id"), Bool(message, "value")); break;
             case "recorder-silence": SetRecorderSilence(String(message, "id"), Number(message, "value")); break;
+            case "recorder-silence-ms": SetRecorderSilenceMs(String(message, "id"), Number(message, "value")); break;
             case "recorder-threshold": SetRecorderThreshold(String(message, "id"), Number(message, "value")); break;
             case "recorder-stop": StopRecorder(String(message, "id")); break;
             case "chain-save": SaveChain(message); break;
@@ -2034,6 +2044,7 @@ internal sealed partial class WebShellController : IDisposable
         StopNoiseCalibration();
         _appsTimer.Stop();
         _devicesTimer.Stop();
+        _midiDeviceTimer.Stop();
         foreach (var entry in _nodes.Values)
         {
             entry.TtsGenerationCancel?.Cancel();
@@ -2058,6 +2069,7 @@ internal sealed partial class WebShellController : IDisposable
         _midi.MessageReceived -= OnMidiMessageReceived;
         _midi.ClockReceived -= OnMidiClockReceived;
         _midi.TransportReceived -= OnMidiTransportReceived;
+        PanicMidiTargets();
         _midi.Dispose();
         AbortTimelineRecording();
         SetAudioPriorityBoost(false);
@@ -2117,6 +2129,8 @@ internal sealed partial class WebShellController : IDisposable
         public bool Vst3Ready { get; set; }
         public bool Vst3MidiEnabled { get; set; }
         public bool Vst3MidiConfigured { get; set; }
+        public int Vst3MidiChannel { get; set; } = -1;
+        public bool Vst3TransportEnabled { get; set; } = true;
     }
 
     internal sealed class LinkEntry

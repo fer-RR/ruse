@@ -30,20 +30,33 @@ public sealed class MidiInputManager : IDisposable
     private MidiIn? _input;
     private Timer? _testTimer;
     private int _testTick;
+    private MidiDeviceInfo[] _devices = Array.Empty<MidiDeviceInfo>();
+    private string? _deviceError;
+    private string? _openError;
+
+    // Open and close operations are chained onto a single background queue so a
+    // close always finishes before the next open starts, without ever blocking
+    // the caller. A hung driver can stall the queue but not the UI.
+    private readonly object _queueLock = new();
+    private Task _queueTail = Task.CompletedTask;
+    private int _openSequence;
+    private bool _disposed;
 
     public event Action<MidiInputEvent>? MessageReceived;
     public event Action? ClockReceived;
     public event Action<MidiTransportKind>? TransportReceived;
 
-    public IReadOnlyList<MidiDeviceInfo> Devices { get; private set; } = Array.Empty<MidiDeviceInfo>();
-    public bool IsOpen => _input != null || _testTimer != null;
-    public string? LastError { get; private set; }
+    public IReadOnlyList<MidiDeviceInfo> Devices => Volatile.Read(ref _devices);
+    public bool IsOpen =>
+        Volatile.Read(ref _input) != null || Volatile.Read(ref _testTimer) != null;
+    public string? LastError =>
+        Volatile.Read(ref _openError) ?? Volatile.Read(ref _deviceError);
 
     public void RefreshDevices()
     {
+        var devices = new List<MidiDeviceInfo>();
         try
         {
-            var devices = new List<MidiDeviceInfo>();
             int count = MidiIn.NumberOfDevices;
             for (int i = 0; i < count; i++)
             {
@@ -55,20 +68,81 @@ public sealed class MidiInputManager : IDisposable
                 devices.Add(new MidiDeviceInfo(i, name));
             }
 
-            devices.Add(new MidiDeviceInfo(-1, TestDeviceName));
-            Devices = devices;
-            LastError = null;
+            Volatile.Write(ref _deviceError, null);
         }
         catch (Exception ex)
         {
-            Devices = Array.Empty<MidiDeviceInfo>();
-            LastError = ex.Message;
+            Volatile.Write(ref _deviceError, ex.Message);
+        }
+
+        devices.Add(new MidiDeviceInfo(-1, TestDeviceName));
+        Volatile.Write(ref _devices, devices.ToArray());
+    }
+
+    public void SetError(string message) => Volatile.Write(ref _openError, message);
+
+    /// <summary>
+    /// Queues an open after any pending close. Returns immediately; await the
+    /// task to know when the device is ready.
+    /// </summary>
+    public Task OpenAsync(string deviceName)
+    {
+        lock (_queueLock)
+        {
+            if (_disposed)
+            {
+                return Task.CompletedTask;
+            }
+
+            // Only the most recent open request has to run. If several arrive
+            // while a close is still finishing, the older ones become no-ops.
+            int token = ++_openSequence;
+            return EnqueueLocked(() =>
+            {
+                if (token != Volatile.Read(ref _openSequence))
+                {
+                    return;
+                }
+
+                OpenCore(deviceName);
+            });
         }
     }
 
-    public void Open(string deviceName)
+    /// <summary>Queues a close without blocking the caller.</summary>
+    public Task CloseAsync()
     {
-        Close();
+        lock (_queueLock)
+        {
+            return EnqueueLocked(CloseCore);
+        }
+    }
+
+    private Task EnqueueLocked(Action action)
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _queueTail = _queueTail.ContinueWith(
+            _ =>
+            {
+                try
+                {
+                    action();
+                    completion.TrySetResult();
+                }
+                catch (Exception ex)
+                {
+                    completion.TrySetException(ex);
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.None,
+            TaskScheduler.Default);
+        return completion.Task;
+    }
+
+    private void OpenCore(string deviceName)
+    {
+        CloseCore();
         if (string.IsNullOrWhiteSpace(deviceName))
         {
             return;
@@ -85,39 +159,38 @@ public sealed class MidiInputManager : IDisposable
                 string.Equals(item.Name, deviceName, StringComparison.OrdinalIgnoreCase));
             if (device.Name == null)
             {
-                LastError = $"MIDI input '{deviceName}' was not found.";
+                Volatile.Write(ref _openError, $"MIDI input '{deviceName}' was not found.");
                 return;
             }
 
             if (string.Equals(device.Name, TestDeviceName, StringComparison.Ordinal))
             {
                 _testTick = 0;
-                _testTimer = new Timer(EmitTestTick, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(20));
-                LastError = null;
+                Interlocked.Exchange(
+                    ref _testTimer,
+                    new Timer(EmitTestTick, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(1000.0 / 48)));
+                Volatile.Write(ref _openError, null);
                 return;
             }
 
             var input = new MidiIn(device.Index);
             input.MessageReceived += OnMessageReceived;
             input.Start();
-            _input = input;
-            LastError = null;
+            Volatile.Write(ref _input, input);
+            Volatile.Write(ref _openError, null);
         }
         catch (Exception ex)
         {
-            LastError = ex.Message;
-            Close();
+            Volatile.Write(ref _openError, ex.Message);
+            CloseCore();
         }
     }
 
-    public void Close()
+    private void CloseCore()
     {
-        var testTimer = _testTimer;
-        _testTimer = null;
-        testTimer?.Dispose();
+        Interlocked.Exchange(ref _testTimer, null)?.Dispose();
 
-        var input = _input;
-        _input = null;
+        var input = Interlocked.Exchange(ref _input, null);
         if (input == null)
         {
             return;
@@ -125,12 +198,13 @@ public sealed class MidiInputManager : IDisposable
 
         try
         {
-            input.Stop();
             input.MessageReceived -= OnMessageReceived;
+            input.Stop();
             input.Dispose();
         }
-        catch
+        catch (Exception ex)
         {
+            Volatile.Write(ref _openError, "The MIDI device did not close cleanly: " + ex.Message);
         }
     }
 
@@ -186,17 +260,7 @@ public sealed class MidiInputManager : IDisposable
                 return;
         }
 
-        MidiInputEvent? message = midiEvent switch
-        {
-            NoteOnEvent note =>
-                new MidiInputEvent(Math.Clamp(note.Channel - 1, 0, 15), MidiInputKind.Note, note.NoteNumber,
-                    note.CommandCode == MidiCommandCode.NoteOff ? 0 : note.Velocity),
-            ControlChangeEvent cc =>
-                new MidiInputEvent(Math.Clamp(cc.Channel - 1, 0, 15), MidiInputKind.ControlChange, (int)cc.Controller, cc.ControllerValue),
-            _ => null,
-        };
-
-        if (message is { } value)
+        if (ParseChannelEvent(midiEvent) is { } value)
         {
             try
             {
@@ -208,5 +272,51 @@ public sealed class MidiInputManager : IDisposable
         }
     }
 
-    public void Dispose() => Close();
+    /// <summary>
+    /// NAudio creates NoteEvent for hardware note-off messages and NoteOnEvent only
+    /// for note-ons with non-zero velocity. Handle both shapes here.
+    /// </summary>
+    public static MidiInputEvent? ParseChannelEvent(MidiEvent? midiEvent) =>
+        midiEvent switch
+        {
+            NoteEvent note when note.CommandCode is MidiCommandCode.NoteOn or MidiCommandCode.NoteOff =>
+                new MidiInputEvent(
+                    Math.Clamp(note.Channel - 1, 0, 15),
+                    MidiInputKind.Note,
+                    note.NoteNumber,
+                    note.CommandCode == MidiCommandCode.NoteOn ? note.Velocity : 0),
+            ControlChangeEvent cc =>
+                new MidiInputEvent(
+                    Math.Clamp(cc.Channel - 1, 0, 15),
+                    MidiInputKind.ControlChange,
+                    (int)cc.Controller,
+                    cc.ControllerValue),
+            _ => null,
+        };
+
+    public void Dispose()
+    {
+        Task close;
+        lock (_queueLock)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            close = EnqueueLocked(CloseCore);
+        }
+
+        try
+        {
+            if (!close.Wait(TimeSpan.FromSeconds(2)))
+            {
+                Volatile.Write(ref _openError, "The MIDI device did not close cleanly.");
+            }
+        }
+        catch
+        {
+        }
+    }
 }

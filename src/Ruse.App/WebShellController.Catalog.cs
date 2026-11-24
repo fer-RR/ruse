@@ -19,6 +19,7 @@ internal sealed partial class WebShellController
     private IReadOnlyList<PluginDescriptor> _vst3Descriptors = Array.Empty<PluginDescriptor>();
     private readonly Dictionary<string, CatalogItemDto> _appCatalogCache = new(StringComparer.OrdinalIgnoreCase);
     private Task? _vst3ScanTask;
+    private int _vst3ScanGeneration;
     private string _lastDeviceSignature = "";
     private string _lastAppsSignature = "";
 
@@ -168,6 +169,8 @@ internal sealed partial class WebShellController
             return;
         }
 
+        int generation = Interlocked.Increment(ref _vst3ScanGeneration);
+
         _vst3ScanTask = Task.Run(async () =>
         {
             try
@@ -175,33 +178,24 @@ internal sealed partial class WebShellController
                 var found = await PluginScanner.ScanAsync(PluginFormat.Vst3, ScanMode.Fast);
                 var descriptors = found
                     .Where(plugin => !string.IsNullOrWhiteSpace(plugin.Identifier))
+                    .Where(plugin => IsRunnableVst3Bundle(plugin.Identifier))
                     .OrderBy(plugin => plugin.Name, StringComparer.OrdinalIgnoreCase)
                     .ToArray();
 
-                if (_disposed)
+                if (_disposed || generation != Volatile.Read(ref _vst3ScanGeneration))
                 {
                     return;
                 }
 
                 _ = _window.Dispatcher.BeginInvoke(new Action(() =>
                 {
-                    if (_disposed)
+                    if (_disposed || generation != Volatile.Read(ref _vst3ScanGeneration))
                     {
                         return;
                     }
 
                     _vst3Descriptors = descriptors;
-                    _catalog.Vst3Plugins = descriptors.Select(plugin => new CatalogItemDto
-                    {
-                        Id = plugin.Identifier,
-                        Kind = "vst3",
-                        Name = string.IsNullOrWhiteSpace(plugin.Name) ? "VST3 plugin" : plugin.Name,
-                        Subtitle = plugin.IsInstrument
-                            ? string.IsNullOrWhiteSpace(plugin.Vendor) ? "VST3 instrument" : $"{plugin.Vendor} · VST3 instrument"
-                            : string.IsNullOrWhiteSpace(plugin.Vendor) ? "VST3 effect" : $"{plugin.Vendor} · VST3",
-                        Details = string.IsNullOrWhiteSpace(plugin.Category) ? plugin.FilePath : plugin.Category,
-                        IsVst3Instrument = plugin.IsInstrument,
-                    }).ToList();
+                    _catalog.Vst3Plugins = descriptors.Select(CreateVst3CatalogItem).ToList();
                     Post("catalog", _catalog);
                     SetStatus($"Found {descriptors.Length} VST3 plugin(s).");
                 }));
@@ -212,6 +206,49 @@ internal sealed partial class WebShellController
             }
         });
     }
+
+    private static bool IsRunnableVst3Bundle(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                return new FileInfo(path).Length > 0;
+            }
+
+            if (!Directory.Exists(path) || !path.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            string contents = Path.Combine(path, "Contents");
+            return Directory.Exists(contents) &&
+                   Directory.EnumerateFiles(contents, "*", SearchOption.AllDirectories)
+                       .Any(file => file.EndsWith(".vst3", StringComparison.OrdinalIgnoreCase) ||
+                                    file.EndsWith(".dll", StringComparison.OrdinalIgnoreCase));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static CatalogItemDto CreateVst3CatalogItem(PluginDescriptor plugin) => new()
+    {
+        Id = plugin.Identifier,
+        Kind = "vst3",
+        Name = string.IsNullOrWhiteSpace(plugin.Name) ? "VST3 plugin" : plugin.Name,
+        Subtitle = plugin.IsInstrument
+            ? string.IsNullOrWhiteSpace(plugin.Vendor) ? "VST3 instrument" : $"{plugin.Vendor} · VST3 instrument"
+            : string.IsNullOrWhiteSpace(plugin.Vendor) ? "VST3 effect" : $"{plugin.Vendor} · VST3",
+        Details = Vst3Details(plugin),
+        IsVst3Instrument = plugin.IsInstrument,
+    };
+
+    private static string Vst3Details(PluginDescriptor plugin) =>
+        !string.IsNullOrWhiteSpace(plugin.Category)
+            ? plugin.Category
+            : plugin.FilePath;
 
     private PluginDescriptor? FindVst3Descriptor(string identifier) =>
         _vst3Descriptors.FirstOrDefault(plugin =>

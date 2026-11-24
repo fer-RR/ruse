@@ -231,16 +231,17 @@ export function DuplicateAudioDialog({ warning, onClose }: {
   );
 }
 
-function ToggleSetting({ label, description, checked, onChange }: {
+function ToggleSetting({ label, description, checked, onChange, disabled = false }: {
   label: string;
   description: string;
   checked: boolean;
   onChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <label className="setting-row">
       <span><strong>{label}</strong><small>{description}</small></span>
-      <input type="checkbox" role="switch" checked={checked} onChange={event => onChange(event.target.checked)} />
+      <input type="checkbox" role="switch" checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} />
     </label>
   );
 }
@@ -835,8 +836,9 @@ export function SettingsDialog({ settings, onChange, onClose, initialTab = 'beha
               <ToggleSetting
                 label={t('Isolate VST3 plugins')}
                 description={t('Run each VST3 in a separate process so a crashing plugin cannot close Ruse. New VST3 nodes use this setting.')}
-                checked={settings.isolateVst3}
-                onChange={value => onChange({ ...settings, isolateVst3: value })}
+                checked
+                disabled
+                onChange={() => {}}
               />
               <div className="settings-actions">
                 <button className="tool-button" onClick={() => send('vst3-rescan')}><FolderOpen size={14} /> {t('Rescan VST3 plugins')}</button>

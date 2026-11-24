@@ -247,6 +247,7 @@ public sealed class AudioGraph : IDisposable
             {
                 other.Next.Remove(modifier);
                 other.SidechainModifiers.Remove(modifier);
+                other.SidechainModifierSettings.Remove(modifier);
             }
         });
 
@@ -311,6 +312,7 @@ public sealed class AudioGraph : IDisposable
             {
                 modifier.Inputs.Remove(source);
                 modifier.SidechainInputs.Remove(source);
+                modifier.SidechainSourceSettings.Remove(source);
             }
 
             Sources.Remove(source);
@@ -442,6 +444,7 @@ public sealed class AudioGraph : IDisposable
             modifier.SidechainInputs.Add(source);
         }
 
+        modifier.SidechainSourceSettings.TryAdd(source, new ModifierNode.SidechainKeySettings());
         EnsureRunning(source);
         InvalidateEngine();
     }
@@ -449,6 +452,31 @@ public sealed class AudioGraph : IDisposable
     public void DisconnectSourceFromModifierSidechain(SourceNode source, ModifierNode modifier)
     {
         modifier.SidechainInputs.Remove(source);
+        modifier.SidechainSourceSettings.Remove(source);
+        InvalidateEngine();
+    }
+
+    public void SetSourceSidechainSettings(
+        SourceNode source,
+        ModifierNode modifier,
+        float gain,
+        bool inverted,
+        bool enabled)
+    {
+        if (!modifier.SidechainInputs.Contains(source))
+        {
+            return;
+        }
+
+        if (!modifier.SidechainSourceSettings.TryGetValue(source, out var settings))
+        {
+            settings = new ModifierNode.SidechainKeySettings();
+            modifier.SidechainSourceSettings[source] = settings;
+        }
+
+        settings.Gain = float.IsFinite(gain) ? Math.Clamp(gain, 0f, 1.5f) : 1f;
+        settings.Inverted = inverted;
+        settings.Enabled = enabled;
         InvalidateEngine();
     }
 
@@ -465,6 +493,7 @@ public sealed class AudioGraph : IDisposable
             modifier.SidechainModifiers.Add(source);
         }
 
+        modifier.SidechainModifierSettings.TryAdd(source, new ModifierNode.SidechainKeySettings());
         foreach (var upstreamSource in UpstreamSources(source))
         {
             EnsureRunning(upstreamSource);
@@ -476,6 +505,31 @@ public sealed class AudioGraph : IDisposable
     public void DisconnectModifierFromModifierSidechain(ModifierNode source, ModifierNode modifier)
     {
         modifier.SidechainModifiers.Remove(source);
+        modifier.SidechainModifierSettings.Remove(source);
+        InvalidateEngine();
+    }
+
+    public void SetModifierSidechainSettings(
+        ModifierNode source,
+        ModifierNode modifier,
+        float gain,
+        bool inverted,
+        bool enabled)
+    {
+        if (!modifier.SidechainModifiers.Contains(source))
+        {
+            return;
+        }
+
+        if (!modifier.SidechainModifierSettings.TryGetValue(source, out var settings))
+        {
+            settings = new ModifierNode.SidechainKeySettings();
+            modifier.SidechainModifierSettings[source] = settings;
+        }
+
+        settings.Gain = float.IsFinite(gain) ? Math.Clamp(gain, 0f, 1.5f) : 1f;
+        settings.Inverted = inverted;
+        settings.Enabled = enabled;
         InvalidateEngine();
     }
 

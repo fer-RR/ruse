@@ -69,7 +69,7 @@ internal static class Vst3SelfTest
 
     public static string RunIsolated(string identifier, int timeoutSeconds = 60)
     {
-        using var processor = new IsolatedVst3Processor(identifier);
+        using var processor = new IsolatedVst3Processor(identifier, allowInstrument: true);
         DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
         while (!processor.IsReady && processor.Error == null && DateTime.UtcNow < deadline)
         {
@@ -273,7 +273,7 @@ internal static class Vst3SelfTest
 
     public static string RunEditor(string identifier, int timeoutSeconds = 60)
     {
-        using var vst = new Vst3Processor(identifier);
+        using var vst = new Vst3Processor(identifier, allowInstrument: true);
         DateTime deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
         while (!vst.IsReady && vst.Error == null && DateTime.UtcNow < deadline)
         {
@@ -291,10 +291,12 @@ internal static class Vst3SelfTest
         }
 
         bool opened = vst.OpenEditor("VST3 editor test");
-        Thread.Sleep(1500);
+        VstEditorWindowActivator.Activate(vst.PluginName);
+        Thread.Sleep(250);
+        bool visible = VstEditorWindowActivator.IsVisible(vst.PluginName);
         bool stillOpen = vst.IsEditorOpen;
         vst.CloseEditor();
-        return $"opened={opened}; wasOpen={stillOpen}; closed={!vst.IsEditorOpen}";
+        return $"opened={opened}; visible={visible}; wasOpen={stillOpen}; closed={!vst.IsEditorOpen}";
     }
 
     public static string RunRoute(string identifier, int timeoutSeconds = 60)

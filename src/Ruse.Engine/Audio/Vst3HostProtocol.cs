@@ -9,6 +9,7 @@ public static class Vst3HostProtocol
 {
     public const int CommandProcess = 1;
     public const int CommandStop = 2;
+    private const int MaxControlBytes = 16 * 1024 * 1024;
 
     public static readonly JsonSerializerOptions Json = new()
     {
@@ -71,7 +72,7 @@ public static class Vst3HostProtocol
         Span<byte> length = stackalloc byte[4];
         ReadExactly(stream, length);
         int size = BinaryPrimitives.ReadInt32LittleEndian(length);
-        if (size <= 0 || size > 2_000_000)
+        if (size <= 0 || size > MaxControlBytes)
         {
             throw new InvalidDataException("Invalid VST3 host message length.");
         }
@@ -88,7 +89,7 @@ public static class Vst3HostProtocol
         var length = new byte[4];
         await ReadExactlyAsync(stream, length, cancellationToken).ConfigureAwait(false);
         int size = BinaryPrimitives.ReadInt32LittleEndian(length);
-        if (size <= 0 || size > 2_000_000)
+        if (size <= 0 || size > MaxControlBytes)
         {
             throw new InvalidDataException("Invalid VST3 host message length.");
         }

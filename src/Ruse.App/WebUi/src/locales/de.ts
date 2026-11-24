@@ -1122,4 +1122,10 @@ export const de: Record<string, string> = {
   "Include logs and diagnostics": "Include logs and diagnostics",
   "Recommended for troubleshooting. Turn this off to send only your description and app version.": "Recommended for troubleshooting. Turn this off to send only your description and app version.",
   "Description (required)": "Description (required)",
-  "A description is required.": "A description is required.",  "Local paths, IP addresses, email addresses, endpoint IDs, and quoted log names are redacted.": "Local paths, IP addresses, email addresses, endpoint IDs, and quoted log names are redacted.",  "The local LAN IP of network nodes is included; other IP addresses are redacted.": "The local LAN IP of network nodes is included; other IP addresses are redacted.",  "Local paths, email addresses, endpoint IDs, and quoted log names are redacted.": "Local paths, email addresses, endpoint IDs, and quoted log names are redacted.",  "Transcriptions, translations, text notes, and TTS contents are excluded.": "Transcriptions, translations, text notes, and TTS contents are excluded.",};
+  "A description is required.": "A description is required.",  "Local paths, IP addresses, email addresses, endpoint IDs, and quoted log names are redacted.": "Local paths, IP addresses, email addresses, endpoint IDs, and quoted log names are redacted.",  "The local LAN IP of network nodes is included; other IP addresses are redacted.": "The local LAN IP of network nodes is included; other IP addresses are redacted.",  "Local paths, email addresses, endpoint IDs, and quoted log names are redacted.": "Local paths, email addresses, endpoint IDs, and quoted log names are redacted.",  "Transcriptions, translations, text notes, and TTS contents are excluded.": "Transcriptions, translations, text notes, and TTS contents are excluded.",
+  "Key level": "Key-Pegel",
+  "Invert key": "Key invertieren",
+  "Unmute key": "Key wieder aktivieren",
+  "Mute key": "Key stumm",
+  "Channel": "Kanal",
+  "Follow transport": "Transport folgen"};

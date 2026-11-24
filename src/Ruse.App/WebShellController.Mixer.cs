@@ -133,6 +133,11 @@ internal sealed partial class WebShellController
         if (link == null) return;
         bool old = link.Inverted;
         link.Inverted = inverted;
+        if (link.Kind == "sidechain")
+        {
+            ApplyLinkRouting(link, publish: false);
+        }
+
         SyncMixerInput(link);
         PublishMixerInputChange(link);
         PublishLinkState(id);
@@ -147,6 +152,11 @@ internal sealed partial class WebShellController
         var link = _links.FirstOrDefault(item => item.Id == id);
         if (link == null) return;
         link.Inverted = inverted;
+        if (link.Kind == "sidechain")
+        {
+            ApplyLinkRouting(link, publish: false);
+        }
+
         SyncMixerInput(link);
         PublishMixerInputChange(link);
         PublishLinkState(id);
@@ -325,6 +335,16 @@ internal sealed partial class WebShellController
             else if (link.Kind == "sidechain")
             {
                 SetNoteKey(from, to, link.Enabled);
+                if (from.Source != null && to.Modifier != null)
+                {
+                    _graph.SetSourceSidechainSettings(
+                        from.Source, to.Modifier, link.Gain, link.Inverted, link.Enabled);
+                }
+                else if (from.Modifier != null && to.Modifier != null)
+                {
+                    _graph.SetModifierSidechainSettings(
+                        from.Modifier, to.Modifier, link.Gain, link.Inverted, link.Enabled);
+                }
             }
         }
 

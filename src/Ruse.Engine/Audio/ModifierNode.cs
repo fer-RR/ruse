@@ -184,8 +184,21 @@ public sealed class ModifierNode : IDisposable
     /// <summary>Sources that drive a sidechain/key input without being mixed audibly.</summary>
     public List<SourceNode> SidechainInputs { get; } = new();
 
+    /// <summary>Per-key gain, polarity and mute for source sidechain links.</summary>
+    public Dictionary<SourceNode, SidechainKeySettings> SidechainSourceSettings { get; } = new();
+
     /// <summary>Upstream modifiers that drive a sidechain/key input.</summary>
     public List<ModifierNode> SidechainModifiers { get; } = new();
+
+    /// <summary>Per-key gain, polarity and mute for modifier sidechain links.</summary>
+    public Dictionary<ModifierNode, SidechainKeySettings> SidechainModifierSettings { get; } = new();
+
+    public sealed class SidechainKeySettings
+    {
+        public float Gain { get; set; } = 1f;
+        public bool Inverted { get; set; }
+        public bool Enabled { get; set; } = true;
+    }
 
     /// <summary>Outputs this modifier feeds.</summary>
     public List<OutputNode> Outputs { get; } = new();

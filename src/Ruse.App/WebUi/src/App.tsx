@@ -12,7 +12,7 @@ import { isHosted, send, subscribe } from './bridge';
 import { createDemoTelemetry, demoCatalog, demoGraph, demoSettings } from './demo';
 import { I18nProvider, normalizeLanguage, translate } from './i18n';
 import type { RuseFlowNode } from './flow';
-import { chainLayout, nearestFreePosition } from './layout';
+import { audioLinkDirection, chainLayout, clampPositionToRect, isAudioNode, nearestFreePosition } from './layout';
 import { catalogKey } from './library';
 import { SHORTCUTS, hasOpenDialog, shouldIgnoreShortcut } from './shortcuts';
 import { themeGraphDotColor } from './themes';
@@ -1182,6 +1182,27 @@ export default function App() {
     return ((sourceSide || source.kind === 'modifier') && target.kind !== 'source');
   }, [nodeById]);
 
+  const hasAudioLink = useCallback((from: string, to: string) =>
+    graphRef.current.links.some(link =>
+      link.from === from && link.to === to && link.kind !== 'sidechain' && link.kind !== 'barge-key'),
+    []);
+
+  const wouldCreateLoop = useCallback((from: string, to: string) => {
+    const pending = [to];
+    const seen = new Set<string>();
+    while (pending.length > 0) {
+      const id = pending.pop()!;
+      if (id === from) return true;
+      if (!seen.add(id)) continue;
+      for (const link of graphRef.current.links) {
+        if (link.from === id && link.kind !== 'sidechain' && link.kind !== 'barge-key') {
+          pending.push(link.to);
+        }
+      }
+    }
+    return false;
+  }, []);
+
   const setInteracting = (value: boolean) => {
     appShellRef.current?.classList.toggle('is-interacting', value);
   };
@@ -1199,7 +1220,26 @@ export default function App() {
     flushPendingTelemetry();
   };
 
-  const onNodeDragStop = (_event: unknown, node: RuseFlowNode) => {
+  const clampToVisibleCanvas = (
+    position: { x: number; y: number },
+    width: number,
+    height: number,
+  ) => {
+    const canvas = document.querySelector<HTMLElement>('.react-flow');
+    if (!canvas) return position;
+
+    const rect = canvas.getBoundingClientRect();
+    const topLeft = flow.screenToFlowPosition({ x: rect.left, y: rect.top });
+    const bottomRight = flow.screenToFlowPosition({ x: rect.right, y: rect.bottom });
+    return clampPositionToRect(position, width, height, {
+      x: topLeft.x,
+      y: topLeft.y,
+      width: bottomRight.x - topLeft.x,
+      height: bottomRight.y - topLeft.y,
+    });
+  };
+
+  const onNodeDragStop = (_event: unknown, node: RuseFlowNode, draggedNodes?: RuseFlowNode[]) => {
     const others = nodesRef.current.map(item => ({
       id: item.id,
       x: item.position.x,
@@ -1214,7 +1254,11 @@ export default function App() {
       flushPendingTelemetry();
       return;
     }
-    const free = nearestFreePosition({ ...moving, x: node.position.x, y: node.position.y }, others);
+    const free = clampToVisibleCanvas(
+      nearestFreePosition({ ...moving, x: node.position.x, y: node.position.y }, others),
+      moving.width,
+      moving.height,
+    );
     if (free.x !== node.position.x || free.y !== node.position.y) {
       setNodes(current => current.map(item => item.id === node.id ? { ...item, position: free } : item));
     }
@@ -1227,13 +1271,12 @@ export default function App() {
     };
     let connectTarget: RuseFlowNode | undefined;
     let bestOverlap = 0;
-    if (node.data.kind === 'source' || node.data.kind === 'output') {
+    // Skip auto-connect during a multi-node drag so one gesture cannot wire
+    // several nodes to whatever happens to overlap.
+    if ((!draggedNodes || draggedNodes.length <= 1) && isAudioNode(node.data)) {
       for (const candidate of nodesRef.current) {
-        if (candidate.id === node.id || candidate.data.diagnostics) continue;
-        const matches = node.data.kind === 'source'
-          ? candidate.data.kind === 'output'
-          : candidate.data.kind === 'source';
-        if (!matches) continue;
+        if (candidate.id === node.id || !isAudioNode(candidate.data)) continue;
+        if (!audioLinkDirection(node.data, candidate.data)) continue;
         const targetRect = {
           x: candidate.position.x,
           y: candidate.position.y,
@@ -1252,12 +1295,9 @@ export default function App() {
     }
 
     if (connectTarget) {
-      const from = node.data.kind === 'source' ? node.id : connectTarget.id;
-      const to = node.data.kind === 'source' ? connectTarget.id : node.id;
-      const exists = graphRef.current.links.some(link =>
-        link.kind === 'direct' && link.from === from && link.to === to);
-      if (!exists) {
-        send('connect', { from, to, gain: 1, enabled: true });
+      const direction = audioLinkDirection(node.data, connectTarget.data);
+      if (direction && !hasAudioLink(direction.from, direction.to) && !wouldCreateLoop(direction.from, direction.to)) {
+        send('connect', { from: direction.from, to: direction.to, gain: 1, enabled: true });
       }
     }
 
@@ -1862,6 +1902,16 @@ export default function App() {
               ? { x: position.x - halfWidth, y: position.y - 60 }
               : findFreeSpot({ x: position.x, y: position.y }, halfWidth * 2);
             let connectTo = '';
+            if (!linkId) {
+              const hit = nodesRef.current.find(node => {
+                if (!isAudioNode(node.data)) return false;
+                const width = node.measured?.width ?? node.data.width ?? 204;
+                const height = node.measured?.height ?? 140;
+                return position.x >= node.position.x && position.x <= node.position.x + width &&
+                  position.y >= node.position.y && position.y <= node.position.y + height;
+              });
+              if (hit) connectTo = hit.id;
+            }
             if (item.kind === 'sample' && item.filePath) {
               const output = nodesRef.current.find(node => {
                 if (node.data.kind !== 'output' && node.data.isNetworkOutput !== true) return false;
@@ -2221,6 +2271,22 @@ export default function App() {
               <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.native === true} title={menuLink.nativeBlockedReason || undefined} onClick={() => { send('link-native', { id: menuLink.id, value: menuLink.native !== true }); setCanvasMenu(null); } }><Zap size={14} /> <span className="menu-label">{t('Native passthrough')}{menuLink.native === true ? ' ✓' : ''}</span></button>
               {menuLink.nativeFallback && <button role="menuitem" tabIndex={-1} onClick={() => { send('link-native-cancel-restore', { id: menuLink.id }); setCanvasMenu(null); } }><Zap size={14} /> <span className="menu-label">{t('Cancel native restore')}</span></button>}
               <button role="menuitem" tabIndex={-1} onClick={() => { openExplainer('native'); setCanvasMenu(null); } }><Info size={14} /> <span className="menu-label">{t('About native passthrough')}</span></button>
+            </>}
+            {menuLink.kind === 'sidechain' && <>
+              <div className="context-control">
+                <span>{t('Key level')}</span>
+                <input
+                  type="range"
+                  min={0}
+                  max={1.5}
+                  step={0.01}
+                  value={menuLink.gain ?? 1}
+                  onChange={event => send('link-gain', { id: menuLink.id, value: Number(event.target.value) })}
+                />
+                <span>{Math.round((menuLink.gain ?? 1) * 100)}%</span>
+              </div>
+              <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.inverted === true} onClick={() => send('link-polarity', { id: menuLink.id, value: menuLink.inverted !== true })}><RefreshCw size={14} /> <span className="menu-label">{t('Invert key')}{menuLink.inverted === true ? ' ✓' : ''}</span></button>
+              <button role="menuitem" tabIndex={-1} aria-pressed={menuLink.enabled === false} onClick={() => send('link-enabled', { id: menuLink.id, value: menuLink.enabled === false })}><VolumeX size={14} /> <span className="menu-label">{menuLink.enabled === false ? t('Unmute key') : t('Mute key')}</span></button>
             </>}
             <button role="menuitem" tabIndex={-1} className="danger" onClick={() => { send('disconnect', { id: menuLink.id }); setCanvasMenu(null); } }><Unplug size={14} /> <span className="menu-label">{t('Disconnect cable')}</span></button>
           </>}

@@ -189,7 +189,7 @@ public sealed class IsolatedVst3Processor : IVst3Processor
             startInfo.ArgumentList.Add(audioName);
             startInfo.ArgumentList.Add(controlName);
             startInfo.ArgumentList.Add(_identifier);
-            startInfo.ArgumentList.Add(_initialState ?? "");
+            startInfo.ArgumentList.Add(_lastState ?? _initialState ?? "");
             string handshakeToken = Guid.NewGuid().ToString("N");
             startInfo.ArgumentList.Add(handshakeToken);
             startInfo.ArgumentList.Add(_allowInstrument ? "1" : "0");
@@ -627,6 +627,32 @@ public sealed class IsolatedVst3Processor : IVst3Processor
         {
             return _lastState;
         }
+    }
+
+    public bool ApplyStateBase64(string stateBase64)
+    {
+        if (string.IsNullOrWhiteSpace(stateBase64))
+        {
+            return false;
+        }
+
+        var response = SendControl(new Vst3HostRequest
+        {
+            Command = "load-state",
+            State = stateBase64,
+        });
+        if (response is not { Ok: true })
+        {
+            return false;
+        }
+
+        lock (_stateLock)
+        {
+            _lastState = stateBase64;
+        }
+
+        RaiseChanged();
+        return true;
     }
 
     public bool OpenEditor(string title)

@@ -133,7 +133,7 @@ try {
         Move-Item -LiteralPath $culture.FullName -Destination (Join-Path $localizationDir $culture.Name)
     }
 
-    foreach ($document in @("README.md", "LICENSE", "THIRD-PARTY-NOTICES.md")) {
+    foreach ($document in @("README.md", "README.pt-BR.md", "LICENSE", "THIRD-PARTY-NOTICES.md")) {
         $source = Join-Path $repo $document
         if (Test-Path -LiteralPath $source) {
             Copy-Item -LiteralPath $source -Destination (Join-Path $stage $document)

@@ -1,9 +1,65 @@
+import type { NodeModel } from './types';
+
 export interface NodeRect {
   id: string;
   x: number;
   y: number;
   width: number;
   height: number;
+}
+
+export type AudioLinkData = NodeModel & { diagnostics?: boolean };
+
+/** True when a node can drive an audio cable from its OUT port. */
+export function canProvideAudio(node: AudioLinkData): boolean {
+  return node.kind === 'source' || node.kind === 'modifier' || node.isNetworkInput === true;
+}
+
+/** True when a node can accept an audio cable on its IN port. */
+export function canReceiveAudio(node: AudioLinkData): boolean {
+  return node.kind === 'output' || node.kind === 'modifier' || node.isNetworkOutput === true;
+}
+
+/**
+ * Picks the legal direction for a cable between two nodes. The first argument
+ * is treated as the one the user moved or dropped, so its role wins when both
+ * directions are possible (for example two modifiers).
+ */
+export function audioLinkDirection(
+  a: AudioLinkData,
+  b: AudioLinkData,
+): { from: string; to: string } | null {
+  if (a.id === b.id) return null;
+  if (canProvideAudio(a) && canReceiveAudio(b)) return { from: a.id, to: b.id };
+  if (canProvideAudio(b) && canReceiveAudio(a)) return { from: b.id, to: a.id };
+  return null;
+}
+
+/** Excludes notes/diagnostics and nodes that carry no audio at either end. */
+export function isAudioNode(node: AudioLinkData): boolean {
+  return !node.diagnostics && !node.isTextNote && (canProvideAudio(node) || canReceiveAudio(node));
+}
+
+export interface VisibleRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Keeps a node inside the visible canvas when it fits; otherwise pins it to the top-left. */
+export function clampPositionToRect(
+  position: { x: number; y: number },
+  width: number,
+  height: number,
+  rect: VisibleRect,
+): { x: number; y: number } {
+  const maxX = Math.max(rect.x, rect.x + rect.width - width);
+  const maxY = Math.max(rect.y, rect.y + rect.height - height);
+  return {
+    x: Math.max(rect.x, Math.min(position.x, maxX)),
+    y: Math.max(rect.y, Math.min(position.y, maxY)),
+  };
 }
 
 const GRID = 20;

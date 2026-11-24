@@ -219,6 +219,8 @@ internal sealed partial class WebShellController
                     TranslatorTextSourceId = entry.TranslatorTextSourceId,
                     Vst3MidiEnabled = entry.Vst3MidiEnabled,
                     Vst3MidiConfigured = entry.Vst3MidiConfigured,
+                    Vst3MidiChannel = entry.Vst3MidiChannel,
+                    Vst3TransportEnabled = entry.Vst3TransportEnabled,
                     X = entry.X + offsetX,
                     Y = entry.Y + offsetY,
                     Width = entry.Width,
@@ -271,6 +273,9 @@ internal sealed partial class WebShellController
                     {
                         SourceIndex = keySource,
                         ModifierIndex = keyModifier,
+                        Gain = link.Gain,
+                        Inverted = link.Inverted,
+                        Enabled = link.Enabled,
                     });
                 }
                 else if (modifierIndex.TryGetValue(link.From, out int keyModifierSource))
@@ -279,6 +284,9 @@ internal sealed partial class WebShellController
                     {
                         SourceModifierIndex = keyModifierSource,
                         ModifierIndex = keyModifier,
+                        Gain = link.Gain,
+                        Inverted = link.Inverted,
+                        Enabled = link.Enabled,
                     });
                 }
             }
@@ -745,6 +753,8 @@ internal sealed partial class WebShellController
             modifierEntry.Color = NormalizeNodeColor(saved.Color);
             modifierEntry.Vst3MidiEnabled = saved.Vst3MidiEnabled;
             modifierEntry.Vst3MidiConfigured = saved.Vst3MidiConfigured;
+            modifierEntry.Vst3MidiChannel = Math.Clamp(saved.Vst3MidiChannel, -1, 15);
+            modifierEntry.Vst3TransportEnabled = saved.Vst3TransportEnabled;
             if (modifierEntry.Modifier?.Processors.OfType<TranslatorProcessor>().Any() == true)
             {
                 modifierEntry.TranslatorTextSourceId =
@@ -797,14 +807,23 @@ internal sealed partial class WebShellController
                 continue;
             }
 
+            LinkEntry? keyLink = null;
             if (link.SourceModifierIndex is int keyModifierIndex &&
                 Resolve(modifiers, keyModifierIndex) is { } keyModifier)
             {
-                ConnectEntries(keyModifier, modifier, kind: "sidechain");
+                keyLink = ConnectEntries(keyModifier, modifier, kind: "sidechain");
             }
             else if (Resolve(sources, link.SourceIndex) is { } source)
             {
-                ConnectEntries(source, modifier, kind: "sidechain");
+                keyLink = ConnectEntries(source, modifier, kind: "sidechain");
+            }
+
+            if (keyLink != null)
+            {
+                keyLink.Gain = float.IsFinite(link.Gain) ? Math.Clamp(link.Gain, 0f, 1.5f) : 1f;
+                keyLink.Inverted = link.Inverted;
+                keyLink.Enabled = link.Enabled;
+                ApplyLinkRouting(keyLink, publish: false);
             }
         }
 
@@ -1305,8 +1324,14 @@ internal sealed partial class WebShellController
         bool gpuChanged = _settings.UseGpu != settings.UseGpu;
         _settings.UseGpu = settings.UseGpu;
         ModelRuntime.UseGpu = _settings.UseGpu;
-        _settings.IsolateVst3 = settings.IsolateVst3;
-        Vst3ProcessorFactory.UseIsolation = _settings.IsolateVst3;
+        _settings.IsolateVst3 = true;
+        Vst3ProcessorFactory.UseIsolation = true;
+        bool midiChanged =
+            _settings.MidiEnabled != settings.MidiEnabled ||
+            !string.Equals(
+                _settings.MidiInputDevice,
+                settings.MidiInputDevice ?? "",
+                StringComparison.Ordinal);
         _settings.MidiEnabled = settings.MidiEnabled;
         _settings.MidiInputDevice = settings.MidiInputDevice ?? "";
         if (gpuChanged)
@@ -1328,7 +1353,10 @@ internal sealed partial class WebShellController
         StartupRegistration.SetEnabled(settings.StartWithWindows);
         _settings.Save();
         ConfigureAudioEngine();
-        ConfigureMidi();
+        if (midiChanged)
+        {
+            _ = ConfigureMidiAsync();
+        }
 
         // App-follow should notice a newly playing app as it starts, not up to
         // four seconds later when the first sound is already gone.

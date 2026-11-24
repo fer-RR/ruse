@@ -870,10 +870,14 @@ internal sealed class GraphEngine : IDisposable
                         continue;
                     }
 
+                    modifier.SidechainSourceSettings.TryGetValue(source, out var settings);
                     node.SidechainKeys.Add(new NodeInput
                     {
                         Source = keyState,
                         Delay = maxInputLatency > 0 ? new DelayLine(maxInputLatency, Channels) : null,
+                        LinkGain = settings?.Gain ?? 1f,
+                        Inverted = settings?.Inverted ?? false,
+                        Muted = settings?.Enabled == false,
                     });
                 }
 
@@ -885,10 +889,14 @@ internal sealed class GraphEngine : IDisposable
                     }
 
                     int delay = maxInputLatency - keyState.Latency;
+                    modifier.SidechainModifierSettings.TryGetValue(keyModifier, out var settings);
                     node.SidechainKeys.Add(new NodeInput
                     {
                         Upstream = keyState,
                         Delay = delay > 0 ? new DelayLine(delay, Channels) : null,
+                        LinkGain = settings?.Gain ?? 1f,
+                        Inverted = settings?.Inverted ?? false,
+                        Muted = settings?.Enabled == false,
                     });
                 }
 
@@ -1589,20 +1597,21 @@ internal sealed class GraphEngine : IDisposable
                         continue;
                     }
 
+                    float gain = key.Muted ? 0f : key.LinkGain * (key.Inverted ? -1f : 1f);
                     if (key.Delay != null)
                     {
                         keyBlock.AsSpan().CopyTo(_temp);
                         key.Delay.Process(_temp, Channels);
                         for (int s = 0; s < _sidechain.Length; s++)
                         {
-                            _sidechain[s] += _temp[s];
+                            _sidechain[s] += _temp[s] * gain;
                         }
                     }
                     else
                     {
                         for (int s = 0; s < _sidechain.Length; s++)
                         {
-                            _sidechain[s] += keyBlock[s];
+                            _sidechain[s] += keyBlock[s] * gain;
                         }
                     }
                 }

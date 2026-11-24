@@ -9,6 +9,8 @@ public static class Vst3ProcessorFactory
     /// <summary>When true, VST3 nodes run in a child process.</summary>
     public static bool UseIsolation { get; set; } = true;
 
+    internal static readonly SemaphoreSlim NativeGate = new(1, 1);
+
     private static readonly string[] PluginRoots = BuildPluginRoots();
 
     public static IVst3Processor Create(
@@ -33,7 +35,9 @@ public static class Vst3ProcessorFactory
             }
             catch (Exception ex)
             {
-                AppLog.Warning("Could not start the isolated VST3 host; using the in-process host. " + ex.Message);
+                AppLog.Error("Could not start the isolated VST3 host.", ex);
+                throw new InvalidOperationException(
+                    "Could not start the isolated VST3 host: " + ex.GetBaseException().Message, ex);
             }
         }
 

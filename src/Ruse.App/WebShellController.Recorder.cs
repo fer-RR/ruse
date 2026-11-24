@@ -283,6 +283,20 @@ internal sealed partial class WebShellController
         PublishGraph();
     }
 
+    private void SetRecorderSilenceMs(string id, double milliseconds)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) || entry.Output is not { IsFileRecorder: true } output)
+        {
+            return;
+        }
+
+        output.RecorderSilenceStopSeconds = double.IsFinite(milliseconds) && milliseconds > 0
+            ? Math.Clamp(milliseconds, 100, 3_600_000) / 1000.0
+            : 0;
+        _recorderSilenceStarted.Remove(id);
+        PublishGraph();
+    }
+
     private void SetRecorderThreshold(string id, double db)
     {
         if (!_nodes.TryGetValue(id, out var entry) || entry.Output is not { IsFileRecorder: true } output)
@@ -348,7 +362,7 @@ internal sealed partial class WebShellController
                 Post("catalog", _catalog);
             }
 
-            SetStatus($"{entry.Title}: recording stopped after {seconds:0.#} s of silence.");
+            SetStatus($"{entry.Title}: recording stopped after {seconds * 1000:0} ms of silence.");
             AppLog.Info($"Recording stopped after silence: {path}");
             PublishGraph();
             PublishTelemetry(force: true);

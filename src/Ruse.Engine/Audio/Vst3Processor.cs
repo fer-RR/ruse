@@ -108,8 +108,18 @@ public sealed class Vst3Processor : IVst3Processor
 
     private async Task LoadAsync()
     {
+        bool gateHeld = false;
         try
         {
+            gateHeld = await Vst3ProcessorFactory.NativeGate
+                .WaitAsync(TimeSpan.FromSeconds(30))
+                .ConfigureAwait(false);
+            if (!gateHeld)
+            {
+                Fail("Another VST3 plugin is still loading or unloading. Try again.");
+                return;
+            }
+
             SetState("Loading plugin", null);
             RaiseChanged();
 
@@ -183,6 +193,13 @@ public sealed class Vst3Processor : IVst3Processor
         {
             Fail(ex.GetBaseException().Message);
             AppLog.Error($"Could not host VST3 '{_identifier}'.", ex);
+        }
+        finally
+        {
+            if (gateHeld)
+            {
+                Vst3ProcessorFactory.NativeGate.Release();
+            }
         }
     }
 
@@ -395,6 +412,34 @@ public sealed class Vst3Processor : IVst3Processor
         }
 
         return _lastStateBase64;
+    }
+
+    public bool ApplyStateBase64(string stateBase64)
+    {
+        var wrapper = _wrapper;
+        if (wrapper == null || !_ready || string.IsNullOrWhiteSpace(stateBase64))
+        {
+            return false;
+        }
+
+        try
+        {
+            byte[] state = Convert.FromBase64String(stateBase64);
+            var task = Task.Run(() => wrapper.SetStateAsync(state));
+            if (!task.Wait(2000) || !task.Result)
+            {
+                return false;
+            }
+
+            _lastStateBase64 = stateBase64;
+            RaiseChanged();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning($"Could not apply VST3 state for '{_identifier}': {ex.Message}");
+            return false;
+        }
     }
 
     public bool OpenEditor(string title)
@@ -610,8 +655,22 @@ public sealed class Vst3Processor : IVst3Processor
 
         _disposed = true;
         _ready = false;
-        CloseEditor();
-        _wrapper?.Dispose();
-        _wrapper = null;
+        if (!Vst3ProcessorFactory.NativeGate.Wait(TimeSpan.FromSeconds(30)))
+        {
+            AppLog.Warning(
+                $"Gave up waiting to unload VST3 '{_identifier}'; another plugin is still loading or unloading.");
+            return;
+        }
+
+        try
+        {
+            CloseEditor();
+            _wrapper?.Dispose();
+            _wrapper = null;
+        }
+        finally
+        {
+            Vst3ProcessorFactory.NativeGate.Release();
+        }
     }
 }

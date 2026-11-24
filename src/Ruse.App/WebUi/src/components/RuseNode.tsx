@@ -816,16 +816,60 @@ function Vst3Controls({ node }: { node: RuseFlowNode['data'] }) {
           {node.vst3EditorOpen ? t('Close editor') : t('Open editor')}
         </button>
         <button
-          className={`small-button ${node.vst3MidiEnabled ? 'active' : ''}`}
+          className={`small-button midi-toggle ${node.vst3MidiEnabled ? 'on' : 'off'}`}
           disabled={status !== 'Ready'}
           title={t('MIDI input')}
           aria-label={t('MIDI input')}
+          aria-pressed={node.vst3MidiEnabled === true}
           onClick={() => send('vst3-midi', { id: node.id, enabled: !node.vst3MidiEnabled })}
         >
-          {t('MIDI input')}
+          <span className="midi-toggle-dot" />
+          <span>MIDI {node.vst3MidiEnabled ? t('On') : t('Off')}</span>
+        </button>
+        <button
+          className="icon-button compact"
+          disabled={status !== 'Ready'}
+          title={t('Save preset')}
+          aria-label={t('Save preset')}
+          onClick={() => send('vst3-preset-save', { id: node.id })}
+        >
+          <Save size={12} />
+        </button>
+        <button
+          className="icon-button compact"
+          disabled={status !== 'Ready'}
+          title={t('Load preset')}
+          aria-label={t('Load preset')}
+          onClick={() => send('vst3-preset-load', { id: node.id })}
+        >
+          <FolderOpen size={12} />
         </button>
         <button className="icon-button compact" title={`${t('Help')}: ${t('VST3 plugins')}`} aria-label={`${t('Help')}: ${t('VST3 plugins')}`} onClick={() => window.dispatchEvent(new CustomEvent('ruse-open-explainer', { detail: 'vst3' }))}>?</button>
       </div>
+      {node.vst3MidiEnabled && (
+        <div className="vst3-midi-options">
+          <label>
+            <span>{t('Channel')}</span>
+            <select
+              value={node.vst3MidiChannel ?? -1}
+              onChange={event => send('vst3-midi-channel', { id: node.id, channel: Number(event.target.value) })}
+            >
+              <option value={-1}>{t('All')}</option>
+              {Array.from({ length: 16 }, (_, index) => (
+                <option key={index} value={index}>{index + 1}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={node.vst3TransportEnabled !== false}
+              onChange={event => send('vst3-transport', { id: node.id, enabled: event.target.checked })}
+            />
+            <span>{t('Follow transport')}</span>
+          </label>
+        </div>
+      )}
       {node.vst3Error && <div className="node-error">{node.vst3Error}</div>}
     </div>
   );
@@ -899,14 +943,22 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
   const recording = telemetry?.recordingStatus === 'REC';
   const armed = mode === 'Armed' && !recording;
   const fileName = node.recordingPath ? node.recordingPath.split(/[\\/]/).pop() : t('No file selected');
-  const silenceSeconds = node.recorderSilenceStopSeconds ?? 0;
+  const silenceMilliseconds = Math.round((node.recorderSilenceStopSeconds ?? 0) * 1000);
+  const silenceEnabled = silenceMilliseconds > 0;
   const startThresholdDb = node.recorderStartThresholdDb ?? -40;
   const recordRates: number[] = node.recordingFormat === 'Mp3' ? [44100, 48000] : [...RECORD_RATES];
   const recordRate = recordRates.includes(node.recorderSampleRate ?? 48000)
     ? node.recorderSampleRate ?? 48000
     : 48000;
   const [advanced, setAdvanced] = useState(false);
+  const lastSilenceRef = useRef(5000);
   const updateNodeInternals = useUpdateNodeInternals();
+
+  useEffect(() => {
+    if (silenceMilliseconds > 0) {
+      lastSilenceRef.current = silenceMilliseconds;
+    }
+  }, [silenceMilliseconds]);
 
   useEffect(() => {
     updateNodeInternals(node.id);
@@ -1007,20 +1059,32 @@ function RecorderControls({ node, telemetry }: { node: RuseFlowNode['data']; tel
       </button>
       {advanced && (
         <div className="recorder-advanced">
-          <label className="recorder-advanced-row">
-            <span>{t('Stop after silence')}</span>
+          <div className="recorder-advanced-row">
+            <label className="recorder-silence-label">
+              <input
+                type="checkbox"
+                checked={silenceEnabled}
+                onChange={event => send('recorder-silence-ms', {
+                  id: node.id,
+                  value: event.target.checked ? lastSilenceRef.current : 0,
+                })}
+                aria-label={t('Stop after silence')}
+              />
+              <span>{t('Stop after silence')}</span>
+            </label>
             <span className="recorder-advanced-value">
               <NumberField
-                value={silenceSeconds}
-                min={0}
-                max={3600}
-                step={1}
-                onChange={value => send('recorder-silence', { id: node.id, value })}
+                value={silenceEnabled ? silenceMilliseconds : lastSilenceRef.current}
+                min={100}
+                max={3_600_000}
+                step={10}
+                disabled={!silenceEnabled}
+                onChange={value => send('recorder-silence-ms', { id: node.id, value })}
                 ariaLabel={t('Stop after silence')}
               />
-              <span>{t('seconds')}</span>
+              <span>ms</span>
             </span>
-          </label>
+          </div>
           <label className="recorder-advanced-row">
             <span>{t('Start threshold')}</span>
             <span className="recorder-advanced-value">

@@ -726,7 +726,13 @@ select { min-height: 28px; padding: 3px 6px; font-size: 10px; }
 .vst3-meta { overflow: hidden; color: var(--text-3); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .vst3-actions { display: flex; gap: 5px; }
 .vst3-actions .small-button { min-height: 24px; padding: 0 7px; font-size: 9px; }
-.vst3-actions .small-button.active { color: var(--cyan); border-color: rgba(101, 214, 208, 0.35); background: rgba(101, 214, 208, 0.1); }
+.vst3-actions .small-button.midi-toggle { display: inline-flex; align-items: center; gap: 5px; font-weight: 700; }
+.vst3-actions .small-button.midi-toggle .midi-toggle-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.vst3-actions .small-button.midi-toggle.off { color: var(--text-3); border-color: var(--line); background: transparent; }
+.vst3-actions .small-button.midi-toggle.on { color: var(--cyan); border-color: var(--cyan); background: rgba(101, 214, 208, 0.18); box-shadow: inset 0 0 0 1px rgba(101, 214, 208, 0.2); }
+.vst3-midi-options { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--text-3); font: 600 9px/1.2 Consolas, monospace; }
+.vst3-midi-options label { display: inline-flex; align-items: center; gap: 4px; }
+.vst3-midi-options select { min-height: 22px; padding: 0 4px; font: inherit; }
 .chain-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chain-chip { padding: 3px 6px; border: 1px solid rgba(229, 173, 81, 0.2); border-radius: 4px; background: rgba(229, 173, 81, 0.07); color: var(--amber); font-size: 9px; }
 .parameter-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-2); font-size: 10px; }
@@ -843,6 +849,8 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .recorder-advanced-toggle:hover { border-color: var(--line-strong); color: var(--text-2); }
 .recorder-advanced { display: grid; gap: 6px; padding-top: 2px; }
 .recorder-advanced-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-3); font-size: 9px; }
+.recorder-silence-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.recorder-silence-label input { accent-color: var(--cyan); }
 .recorder-advanced-value { display: flex; align-items: center; gap: 4px; color: var(--text-3); }
 .recorder-advanced-value input { width: 58px; padding: 3px 5px; border: 1px solid var(--line); border-radius: 4px; background: var(--inset); color: var(--text-2); font: 9px Consolas, monospace; text-align: right; }
 .recorder-advanced-hint { color: var(--text-3); font-size: 8px; line-height: 1.35; }
@@ -900,6 +908,8 @@ button.recorder-path:hover { color: var(--cyan); text-decoration: underline; }
 .context-menu button.danger:hover { background: rgba(255, 107, 107, 0.1); color: var(--danger); }
 .context-menu .menu-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .context-menu kbd { flex: 0 0 auto; margin-left: auto; color: var(--text-3); font: 9px Consolas, monospace; }
+.context-control { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 7px; min-height: 32px; padding: 0 9px; color: var(--text-3); font: 9px Consolas, monospace; }
+.context-control input { min-width: 0; accent-color: var(--cyan); }
 .menu-separator { height: 1px; margin: 5px 4px; background: var(--line); }
 
 .startup-overlay { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; z-index: 4000; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 50% 40%, rgba(101, 214, 208, 0.1), transparent 42%), var(--surface-0); }

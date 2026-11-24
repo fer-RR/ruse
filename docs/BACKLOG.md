@@ -255,11 +255,24 @@ speech lifecycle, then UI/performance. Audit bullets below remain the full list.
   channel.
 - Editor parameter changes are polled into node sliders while the editor is
   open; editor-only state is cached about every 2 s during the same poll.
+- Isolated-host restarts now reuse the most recent cached editor state instead
+  of the original load state.
+- VST3 state can be saved and loaded as a per-plugin `.rusevstpreset` file.
+- VST3 nodes are forced into the isolated host in the app; the in-process path
+  remains only for CLI/self-tests. The isolate toggle is locked on.
+- The first editor open now activates the native editor window above WebView2.
+- Invalid VST3 data bundles without a runnable binary are filtered from the
+  catalog. Automatic `ResolveAsync` startup probing remains removed.
 - Optional 32-bit bridge. VST2 stays unsupported. CLAP is a future option.
 - VST3 MIDI input is in: raw notes/CC reach MIDI-enabled VST3 nodes, node
   gain/mute can be learned, and MIDI clock/tempo plus start/stop/continue drive
   VST3 transport and routing. Events travel with the audio block, so the only
   latency is the existing graph/isolated-host block.
+- Per-node MIDI channel filters and transport-follow opt-out are in.
+- Hardware MIDI note-off parsing is fixed; all-notes-off panic is sent when a
+  filter, device, transport, or MIDI-enabled state changes.
+- MIDI Start/Continue/Stop now drive timeline playback, and MIDI clock updates
+  timeline tempo. MIDI transport still starts/stops live routing as well.
 - VST3 instrument nodes are in: the scanner lists instruments separately, they
   load as no-input modifiers, receive MIDI, and render into the normal graph.
   MIDI-only plugins still need MIDI output events, which the host does not
@@ -271,10 +284,11 @@ speech lifecycle, then UI/performance. Audit bullets below remain the full list.
 - Fixed isolated MIDI loss when render blocks are dropped, stale MIDI after
   bypass/idle, queue overflow reporting, idle-host audio-thread shutdown, and a
   shutdown block on an unresponsive VST3 control pipe.
-- The fast scanner still reports several instruments as effects; runtime
-  detection now corrects the node and enables MIDI after load. A slower
-  background capability probe could still improve catalog labels and prevent
-  inserting an instrument into an audio cable.
+- Automatic `ResolveAsync` metadata probing was removed after it caused startup
+  hangs while loading plugins. Runtime detection still corrects nodes after
+  load; a future deep probe must run out-of-process with a timeout.
+- Sidechain links now have key level, polarity and mute controls, stored in
+  presets and undo history. This applies to Ruse's managed processors.
 - VST3 sidechain remains blocked by `OwnAudioVst 2.1.0`: the wrapper exposes one
   flat stereo audio buffer and no input-bus enumeration/activation. A patched
   native host is required before Ruse can route into a VST3 auxiliary bus.
@@ -298,13 +312,18 @@ speech lifecycle, then UI/performance. Audit bullets below remain the full list.
   trim overfill with a crossfade. `NetworkPcmCapture` now polls non-blocking,
   disposes the socket immediately on stop, and slices the pump wait so shutdown
   latency is bounded; a job object remains a last resort only if a real driver
-  still wedges a thread. In-process VST3 still runs on the render thread and
-  needs a dedicated plugin thread.
+  still wedges a thread. The in-process VST3 path is now CLI/self-test only;
+  production VST3 nodes use the isolated host.
 - `SourceNode` decode scratch can still grow for capture packets above 16384
   samples; verify large 96 kHz/multichannel devices.
 - `AudioFileRecorder.Stop` joins the writer for 2 s; on a failing disk it can
   time out. Keep the writer alive and surface the error rather than disposing
   from another thread.
+- File-recorder silence auto-stop now uses a millisecond field with a 100 ms
+  minimum and can be turned off. Detection still runs on the 100 ms telemetry
+  tick.
+- VST3 MIDI instruments are forced through the isolated host in the app.
+  In-process hosting remains only for CLI/self-tests.
 
 ## App, onboarding and platform
 
@@ -318,3 +337,10 @@ speech lifecycle, then UI/performance. Audit bullets below remain the full list.
 - Release notes and richer thread/device diagnostics.
 - Noise calibration now has a countdown and cancel; profile preview remains.
 - Window restore is clamped to the current monitor work area.
+- Dragged nodes are clamped to the visible graph canvas. Pure clamp helper is
+  covered by Web UI tests.
+- Dragging one node onto another auto-connects a compatible cable, and a library
+  item dropped onto a node connects the same way. Duplicate cables and loops are
+  skipped; both directions are covered by Web UI and regression checks.
+- Support endpoint still needs abuse hardening: rate limits, size check before
+  Base64 decode, private Drive folder, and no raw attachment emails.

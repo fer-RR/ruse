@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.IO;
 using System.IO.Compression;
 using System.Text.Json;
+using NAudio.Midi;
 using NAudio.Wave;
 using Ruse.App.Audio;
 
@@ -795,6 +796,82 @@ internal sealed partial class WebShellController
         RemoveEntryInternal(nodeMidiSource.Id);
         Check("MIDI node gain and mute", nodeGainBound && nodeMuteBound);
 
+        bool channelFilterOk =
+            MidiRouting.AcceptsChannel(-1, 0) &&
+            MidiRouting.AcceptsChannel(-1, 15) &&
+            MidiRouting.AcceptsChannel(2, 2) &&
+            !MidiRouting.AcceptsChannel(2, 1) &&
+            !MidiRouting.AcceptsChannel(15, 14);
+        var panicEvents = new List<(byte Status, byte Data1, byte Data2)>();
+        MidiRouting.EnqueueAllNotesOff((status, data1, data2) =>
+            panicEvents.Add((status, data1, data2)));
+        bool panicOk = panicEvents.Count == 48;
+        for (int channel = 0; channel < 16 && panicOk; channel++)
+        {
+            byte status = (byte)(0xB0 | channel);
+            panicOk =
+                panicEvents.Contains((status, (byte)120, (byte)0)) &&
+                panicEvents.Contains((status, (byte)123, (byte)0)) &&
+                panicEvents.Contains((status, (byte)64, (byte)0));
+        }
+
+        Check("MIDI channel and panic", channelFilterOk && panicOk);
+
+        var midiSnapshotModifier = new ModifierNode("MIDI history test");
+        midiSnapshotModifier.Add(new GainProcessor());
+        var midiSnapshotEntry = RegisterModifier(midiSnapshotModifier, 0, 0);
+        midiSnapshotEntry.Vst3MidiEnabled = true;
+        midiSnapshotEntry.Vst3MidiConfigured = true;
+        midiSnapshotEntry.Vst3MidiChannel = 5;
+        midiSnapshotEntry.Vst3TransportEnabled = false;
+        _midiBindings.Add(new MidiBindingEntry
+        {
+            NodeId = midiSnapshotEntry.Id,
+            Target = "gain",
+            Channel = 4,
+            Kind = MidiInputKind.ControlChange,
+            Number = 21,
+            Min = 0f,
+            Max = 1.5f,
+        });
+        var midiSnapshot = CaptureNode(midiSnapshotEntry);
+        RemoveEntryInternal(midiSnapshotEntry.Id);
+        var midiRestored = RestoreNodeSnapshot(midiSnapshot);
+        string restoredMidiNodeId = midiRestored?.Id ?? "";
+        bool midiHistoryOk = midiRestored != null &&
+            midiRestored.Vst3MidiEnabled &&
+            midiRestored.Vst3MidiConfigured &&
+            midiRestored.Vst3MidiChannel == 5 &&
+            !midiRestored.Vst3TransportEnabled &&
+            _midiBindings.Any(binding =>
+                binding.NodeId == restoredMidiNodeId &&
+                binding.Target == "gain" &&
+                binding.Channel == 4 &&
+                binding.Number == 21);
+        if (midiRestored != null)
+        {
+            RemoveEntryInternal(midiRestored.Id);
+        }
+
+        _midiBindings.Clear();
+        Check("MIDI history snapshot", midiHistoryOk);
+
+        static int RawMidi(int status, int data1, int data2) =>
+            status | (data1 << 8) | (data2 << 16);
+        var parsedOn = MidiInputManager.ParseChannelEvent(
+            MidiEvent.FromRawMessage(RawMidi(0x90, 60, 100)));
+        var parsedOff = MidiInputManager.ParseChannelEvent(
+            MidiEvent.FromRawMessage(RawMidi(0x80, 60, 64)));
+        var parsedZeroVelocity = MidiInputManager.ParseChannelEvent(
+            MidiEvent.FromRawMessage(RawMidi(0x90, 60, 0)));
+        var parsedCc = MidiInputManager.ParseChannelEvent(
+            MidiEvent.FromRawMessage(RawMidi(0xB2, 7, 99)));
+        Check("MIDI note-off parsing",
+            parsedOn is { Kind: MidiInputKind.Note, Number: 60, Value: 100, Channel: 0 } &&
+            parsedOff is { Kind: MidiInputKind.Note, Number: 60, Value: 0, Channel: 0 } &&
+            parsedZeroVelocity is { Kind: MidiInputKind.Note, Number: 60, Value: 0, Channel: 0 } &&
+            parsedCc is { Kind: MidiInputKind.ControlChange, Number: 7, Value: 99, Channel: 2 });
+
         using (var testMidi = new MidiInputManager())
         {
             int clockCount = 0;
@@ -813,9 +890,9 @@ internal sealed partial class WebShellController
                 }
             };
 
-            testMidi.Open(MidiInputManager.TestDeviceName);
+            testMidi.OpenAsync(MidiInputManager.TestDeviceName).Wait(3000);
             Thread.Sleep(450);
-            testMidi.Close();
+            testMidi.CloseAsync().Wait(3000);
             Check("test MIDI device", clockCount > 5 && noteCount > 0 && ccCount > 0);
         }
 
@@ -1766,6 +1843,20 @@ internal sealed partial class WebShellController
         Redo();
         Check("redo connect", _links.Count == 1);
 
+        var autoModifierNode = new ModifierNode("Auto connect effect");
+        autoModifierNode.Add(new GainProcessor());
+        var autoModifier = RegisterModifier(autoModifierNode, 600, 40);
+        var autoLink = TryAutoConnect(autoModifier, output);
+        bool autoLinked = autoLink != null &&
+            _links.Any(item => item.From == autoModifier.Id && item.To == output.Id);
+        bool autoDuplicateBlocked =
+            TryAutoConnect(autoModifier, output) == null &&
+            TryAutoConnect(source, output) == null;
+        RemoveEntryInternal(autoModifier.Id);
+        bool autoCleaned = _links.Count == 1 && _nodes.Count == 2 &&
+            _links.All(item => item.From != autoModifier.Id && item.To != autoModifier.Id);
+        Check("auto connect", autoLinked && autoDuplicateBlocked && autoCleaned);
+
         var insertedNode = new ModifierNode("Inserted effect");
         insertedNode.Add(new GainProcessor());
         var inserted = RegisterModifier(insertedNode, 600, 40);
@@ -2025,6 +2116,39 @@ internal sealed partial class WebShellController
         }
 
         Check("vst3 block bounds", oversizedRejected);
+
+        string vst3FilterRoot = Path.Combine(
+            Path.GetTempPath(), "ruse-vst3-filter-" + Guid.NewGuid().ToString("N") + ".vst3");
+        string vst3Single = Path.Combine(
+            Path.GetTempPath(), "ruse-vst3-single-" + Guid.NewGuid().ToString("N") + ".vst3");
+        bool vst3FilterOk = false;
+        try
+        {
+            Directory.CreateDirectory(vst3FilterRoot);
+            bool invalidRejected = !IsRunnableVst3Bundle(vst3FilterRoot);
+
+            string vst3Contents = Path.Combine(vst3FilterRoot, "Contents", "x86_64-win");
+            Directory.CreateDirectory(vst3Contents);
+            File.WriteAllBytes(Path.Combine(vst3Contents, "plugin.vst3"), new byte[] { 0 });
+            bool bundleAccepted = IsRunnableVst3Bundle(vst3FilterRoot);
+
+            File.WriteAllBytes(vst3Single, new byte[] { 0 });
+            bool singleAccepted = IsRunnableVst3Bundle(vst3Single);
+            vst3FilterOk = invalidRejected && bundleAccepted && singleAccepted;
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(vst3FilterRoot, recursive: true);
+                File.Delete(vst3Single);
+            }
+            catch
+            {
+            }
+        }
+
+        Check("vst3 bundle filtering", vst3FilterOk);
 
         var eqNode = new ModifierNode("EQ test");
         eqNode.Add(new GraphicEqualizerProcessor());

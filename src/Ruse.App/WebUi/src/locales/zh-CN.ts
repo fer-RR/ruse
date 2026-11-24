@@ -1122,4 +1122,10 @@ export const zhCN: Record<string, string> = {
   "Include logs and diagnostics": "Include logs and diagnostics",
   "Recommended for troubleshooting. Turn this off to send only your description and app version.": "Recommended for troubleshooting. Turn this off to send only your description and app version.",
   "Description (required)": "Description (required)",
-  "A description is required.": "A description is required.",  "Local paths, IP addresses, email addresses, endpoint IDs, and quoted log names are redacted.": "Local paths, IP addresses, email addresses, endpoint IDs, and quoted log names are redacted.",  "The local LAN IP of network nodes is included; other IP addresses are redacted.": "The local LAN IP of network nodes is included; other IP addresses are redacted.",  "Local paths, email addresses, endpoint IDs, and quoted log names are redacted.": "Local paths, email addresses, endpoint IDs, and quoted log names are redacted.",  "Transcriptions, translations, text notes, and TTS contents are excluded.": "Transcriptions, translations, text notes, and TTS contents are excluded.",};
+  "A description is required.": "A description is required.",  "Local paths, IP addresses, email addresses, endpoint IDs, and quoted log names are redacted.": "Local paths, IP addresses, email addresses, endpoint IDs, and quoted log names are redacted.",  "The local LAN IP of network nodes is included; other IP addresses are redacted.": "The local LAN IP of network nodes is included; other IP addresses are redacted.",  "Local paths, email addresses, endpoint IDs, and quoted log names are redacted.": "Local paths, email addresses, endpoint IDs, and quoted log names are redacted.",  "Transcriptions, translations, text notes, and TTS contents are excluded.": "Transcriptions, translations, text notes, and TTS contents are excluded.",
+  "Key level": "侧链电平",
+  "Invert key": "反相侧链",
+  "Unmute key": "取消侧链静音",
+  "Mute key": "静音侧链",
+  "Channel": "通道",
+  "Follow transport": "跟随走带"};

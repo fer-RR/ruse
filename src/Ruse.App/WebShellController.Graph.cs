@@ -26,6 +26,7 @@ internal sealed partial class WebShellController
         string id = String(message, "id");
         string title = String(message, "title");
         string linkId = String(message, "linkId");
+        string connectTo = String(message, "connectTo");
         double x = Number(message, "x", 60);
         double y = Number(message, "y", 60);
         uint processId = (uint)Number(message, "processId");
@@ -132,6 +133,19 @@ internal sealed partial class WebShellController
         List<LinkEntry> restoredLinks = entry != null
             ? RestoreSavedAppRoutes(entry)
             : new List<LinkEntry>();
+
+        if (entry != null &&
+            string.IsNullOrEmpty(linkId) &&
+            !string.IsNullOrWhiteSpace(connectTo) &&
+            !string.Equals(connectTo, entry.Id, StringComparison.Ordinal) &&
+            _nodes.TryGetValue(connectTo, out var connectTarget))
+        {
+            var autoLink = TryAutoConnect(entry, connectTarget);
+            if (autoLink != null)
+            {
+                restoredLinks.Add(autoLink);
+            }
+        }
 
         if (entry != null && !string.IsNullOrEmpty(linkId) && InsertModifierIntoLink(entry, linkId))
         {
@@ -1060,6 +1074,29 @@ internal sealed partial class WebShellController
                 {
                     SetStatus("This VST3 has no editor window.", isError: true);
                 }
+                else
+                {
+                    string pluginName = vst.PluginName;
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(150).ConfigureAwait(false);
+                        try
+                        {
+                            _ = _window.Dispatcher.BeginInvoke(
+                                DispatcherPriority.ApplicationIdle,
+                                new Action(() =>
+                                {
+                                    if (!_disposed && vst.IsEditorOpen)
+                                    {
+                                        VstEditorWindowActivator.Activate(pluginName);
+                                    }
+                                }));
+                        }
+                        catch
+                        {
+                        }
+                    });
+                }
             }
             else
             {
@@ -1073,6 +1110,136 @@ internal sealed partial class WebShellController
 
         PublishGraph();
         PublishTelemetry(force: true);
+    }
+
+    private async Task RunVst3PresetActionAsync(Func<Task> action)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex)
+        {
+            ShowError("VST3 preset action failed: " + ex.Message, ex);
+        }
+    }
+
+    private async Task SaveVst3PresetAsync(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Modifier?.Processors.OfType<IVst3Processor>().FirstOrDefault() is not { } vst ||
+            !vst.IsReady)
+        {
+            return;
+        }
+
+        string safeName = new string(
+            (string.IsNullOrWhiteSpace(vst.PluginName) ? "vst3-preset" : vst.PluginName)
+                .Select(character => Path.GetInvalidFileNameChars().Contains(character) ? '_' : character)
+                .ToArray()).Trim();
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "Save VST3 preset",
+            Filter = "Ruse VST3 preset (*.rusevstpreset)|*.rusevstpreset|JSON (*.json)|*.json|All files (*.*)|*.*",
+            FileName = (string.IsNullOrWhiteSpace(safeName) ? "vst3-preset" : safeName) + ".rusevstpreset",
+            DefaultExt = "rusevstpreset",
+            AddExtension = true,
+        };
+        if (dialog.ShowDialog(_window) != true)
+        {
+            return;
+        }
+
+        string? state = await Task.Run(vst.CaptureStateBase64);
+        if (string.IsNullOrWhiteSpace(state))
+        {
+            SetStatus("Could not capture the VST3 preset state.", isError: true);
+            return;
+        }
+
+        var preset = new Vst3PresetFile
+        {
+            PluginName = vst.PluginName,
+            Identifier = vst.Identifier,
+            State = state,
+        };
+        string json = JsonSerializer.Serialize(preset, new JsonSerializerOptions { WriteIndented = true });
+        (bool saved, string error) = await Task.Run(() =>
+        {
+            bool ok = AtomicFile.TryWriteAllText(dialog.FileName, json, out string writeError);
+            return (ok, writeError);
+        });
+        if (!saved)
+        {
+            SetStatus("Could not save the VST3 preset: " + error, isError: true);
+            return;
+        }
+
+        SetStatus($"VST3 preset saved: {Path.GetFileName(dialog.FileName)}");
+    }
+
+    private async Task LoadVst3PresetAsync(string id)
+    {
+        if (!_nodes.TryGetValue(id, out var entry) ||
+            entry.Modifier?.Processors.OfType<IVst3Processor>().FirstOrDefault() is not { } vst ||
+            !vst.IsReady)
+        {
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Load VST3 preset",
+            Filter = "Ruse VST3 preset (*.rusevstpreset)|*.rusevstpreset|JSON (*.json)|*.json|All files (*.*)|*.*",
+            CheckFileExists = true,
+        };
+        if (dialog.ShowDialog(_window) != true)
+        {
+            return;
+        }
+
+        Vst3PresetFile? preset;
+        try
+        {
+            preset = await Task.Run(() =>
+                JsonSerializer.Deserialize<Vst3PresetFile>(File.ReadAllText(dialog.FileName)));
+        }
+        catch (Exception ex)
+        {
+            ShowError("Could not read the VST3 preset: " + ex.Message, ex);
+            return;
+        }
+
+        if (preset == null || string.IsNullOrWhiteSpace(preset.State))
+        {
+            SetStatus("That file does not contain a VST3 preset.", isError: true);
+            return;
+        }
+
+        if (!string.Equals(preset.Identifier, vst.Identifier, StringComparison.OrdinalIgnoreCase))
+        {
+            SetStatus("That preset belongs to a different VST3 plugin.", isError: true);
+            return;
+        }
+
+        bool applied = await Task.Run(() => vst.ApplyStateBase64(preset.State));
+        if (!applied)
+        {
+            SetStatus("The VST3 plugin did not accept the preset state.", isError: true);
+            return;
+        }
+
+        SetStatus($"VST3 preset loaded: {Path.GetFileName(dialog.FileName)}");
+        PublishGraph();
+        PublishTelemetry(force: true);
+    }
+
+    private sealed class Vst3PresetFile
+    {
+        public int Version { get; set; } = 1;
+        public string PluginName { get; set; } = "";
+        public string Identifier { get; set; } = "";
+        public string State { get; set; } = "";
     }
 
     private NodeEntry AddVst3Plugin(string identifier, double x, double y)
@@ -1786,6 +1953,8 @@ internal sealed partial class WebShellController
                 dto.Vst3EditorOpen = vst.IsEditorOpen;
                 dto.Vst3LatencyMs = (int)Math.Round(vst.LatencySamples * 1000.0 / 48000.0);
                 dto.Vst3MidiEnabled = entry.Vst3MidiEnabled;
+                dto.Vst3MidiChannel = entry.Vst3MidiChannel;
+                dto.Vst3TransportEnabled = entry.Vst3TransportEnabled;
             }
             var chain = entry.Modifier.Processors.OfType<ChainProcessor>().FirstOrDefault();
             if (chain != null)
@@ -2359,6 +2528,64 @@ internal sealed partial class WebShellController
         if (entry.Modifier != null) entry.Modifier.Title = title;
         if (publish) PublishGraph();
     }
+
+    /// <summary>
+    /// Connects two nodes with a default audio cable when their roles allow it.
+    /// Mirrors <see cref="ConnectNodes"/> validation so an overlap drop never
+    /// opens an error dialog. Returns the new link, or null when no safe
+    /// connection exists.
+    /// </summary>
+    private LinkEntry? TryAutoConnect(NodeEntry a, NodeEntry b)
+    {
+        if (a.Id == b.Id)
+        {
+            return null;
+        }
+
+        NodeEntry from;
+        NodeEntry to;
+        if (CanProvideAudio(a) && CanReceiveAudio(b))
+        {
+            from = a;
+            to = b;
+        }
+        else if (CanProvideAudio(b) && CanReceiveAudio(a))
+        {
+            from = b;
+            to = a;
+        }
+        else
+        {
+            return null;
+        }
+
+        if (WouldCreateCycle(from.Id, to.Id) ||
+            _links.Any(link => link.From == from.Id && link.To == to.Id &&
+                               link.Kind != "sidechain" && link.Kind != "barge-key"))
+        {
+            return null;
+        }
+
+        try
+        {
+            var link = ConnectEntries(from, to, publish: false);
+            link.Enabled = true;
+            ApplyLinkRouting(link, publish: false);
+            SetStatus($"Connected {from.Title} to {to.Title}.");
+            return link;
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning($"Could not auto-connect '{from.Title}' to '{to.Title}': {ex.Message}");
+            return null;
+        }
+    }
+
+    private static bool CanProvideAudio(NodeEntry entry) =>
+        entry.Source != null || entry.Modifier != null;
+
+    private static bool CanReceiveAudio(NodeEntry entry) =>
+        entry.Output != null || entry.Modifier != null;
 
     private void ConnectNodes(string fromId, string toId, string kind = "", float gain = 1, bool enabled = true)
     {

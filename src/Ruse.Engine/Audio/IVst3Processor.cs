@@ -26,6 +26,7 @@ public interface IVst3Processor : IAudioProcessor, IParameterizedProcessor, ISha
     void SetTransportState(bool playing);
     void ResetTransportPosition();
     string? CaptureStateBase64();
+    bool ApplyStateBase64(string stateBase64);
     bool OpenEditor(string title);
     void CloseEditor();
 }

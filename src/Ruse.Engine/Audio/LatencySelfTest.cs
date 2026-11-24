@@ -914,6 +914,8 @@ public static class LatencySelfTest
             Title = "High-pass",
             X = 340,
             Y = 120,
+            Vst3MidiChannel = 5,
+            Vst3TransportEnabled = false,
             Processors =
             {
                 new PresetProcessor
@@ -932,7 +934,14 @@ public static class LatencySelfTest
         });
 
         preset.SourceModifiers.Add(new PresetSourceModifierLink { SourceIndex = 0, ModifierIndex = 0 });
-        preset.Sidechains.Add(new PresetSidechainLink { SourceIndex = 0, ModifierIndex = 0 });
+        preset.Sidechains.Add(new PresetSidechainLink
+        {
+            SourceIndex = 0,
+            ModifierIndex = 0,
+            Gain = 0.5f,
+            Inverted = true,
+            Enabled = false,
+        });
         preset.Sidechains.Add(new PresetSidechainLink { SourceModifierIndex = 2, ModifierIndex = 1 });
         preset.MidiBindings.Add(new PresetMidiBinding { ModifierIndex = 0, ProcessorIndex = 0, ParameterIndex = 0, Channel = 0, Kind = "cc", Number = 7, Min = 0, Max = 1 });
         preset.ModifierLinks.Add(new PresetModifierLink { FromModifierIndex = 0, ToModifierIndex = 1 });
@@ -977,12 +986,17 @@ public static class LatencySelfTest
                 failures.Add("output fields changed across save/load");
             }
 
-            if (back.Modifiers[0].Color != "#3366CC")
+            if (back.Modifiers[0].Color != "#3366CC" ||
+                back.Modifiers[1].Vst3MidiChannel != 5 ||
+                back.Modifiers[1].Vst3TransportEnabled)
             {
-                failures.Add("modifier color changed across save/load");
+                failures.Add("modifier MIDI fields changed across save/load");
             }
 
             if (back.Sidechains[0].SourceIndex != 0 ||
+                Math.Abs(back.Sidechains[0].Gain - 0.5f) > 1e-6 ||
+                !back.Sidechains[0].Inverted ||
+                back.Sidechains[0].Enabled ||
                 back.Sidechains[1].SourceModifierIndex != 2 ||
                 back.Sidechains[1].ModifierIndex != 1)
             {
@@ -3960,8 +3974,15 @@ public static class LatencySelfTest
         bool wiringOk = modifier.Inputs.Count == 1 &&
                         modifier.SidechainInputs.Count == 1 &&
                         modifier.SidechainInputs[0] == keySource;
+        graph.ConnectSourceToModifierSidechain(keySource, modifier);
+        graph.SetSourceSidechainSettings(keySource, modifier, 0.5f, inverted: true, enabled: true);
+        wiringOk &= modifier.SidechainSourceSettings.TryGetValue(keySource, out var keySettings) &&
+                    Math.Abs(keySettings.Gain - 0.5f) < 1e-6f &&
+                    keySettings.Inverted &&
+                    keySettings.Enabled;
         graph.DisconnectSourceFromModifierSidechain(keySource, modifier);
-        wiringOk &= modifier.SidechainInputs.Count == 0;
+        wiringOk &= modifier.SidechainInputs.Count == 0 &&
+                    !modifier.SidechainSourceSettings.ContainsKey(keySource);
 
         var chain = new ChainProcessor("key chain");
         chain.Add(new SidechainDuckerProcessor());
